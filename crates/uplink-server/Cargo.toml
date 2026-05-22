@@ -7,6 +7,7 @@ edition = "2021"
 uplink-config = { path = "../uplink-config" }
 
 anyhow = "1"
+arc-swap = "1"
 axum = "0.7"
 base64 = "0.22"
 bcrypt = "0.17"
@@ -16,6 +17,7 @@ mime_guess = "2"
 rust-embed = { version = "8", features = ["debug-embed"] }
 rustls = "0.23"
 rustls-pemfile = "2"
+sha2 = "0.10"
 subtle = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-rustls = "0.26"
