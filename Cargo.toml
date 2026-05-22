@@ -13,3 +13,7 @@ members = [
     "crates/uplink-server",
     "crates/uplink-cli",
 ]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
