@@ -110,6 +110,41 @@ impl Config {
     }
 }
 
+// ── Section-diff ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigSection {
+    Tls,
+    BasicAuth,
+    Accounts,
+    /// Restart required per SPEC §3.3.
+    Bind,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConfigChanged {
+    pub section: ConfigSection,
+}
+
+/// Returns one entry per config section that differs between `old` and `new`.
+pub fn diff_config_sections(old: &Config, new: &Config) -> Vec<ConfigSection> {
+    let mut changed = Vec::new();
+    if old.server.bind != new.server.bind {
+        changed.push(ConfigSection::Bind);
+    }
+    if old.server.tls != new.server.tls {
+        changed.push(ConfigSection::Tls);
+    }
+    if old.server.basic_auth != new.server.basic_auth {
+        changed.push(ConfigSection::BasicAuth);
+    }
+    // M3+: per-account add/remove/modify diffing
+    if old.accounts != new.accounts {
+        changed.push(ConfigSection::Accounts);
+    }
+    changed
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -292,5 +327,81 @@ server:
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(yaml.as_bytes()).unwrap();
         assert!(Config::load(f.path()).is_err());
+    }
+
+    // ── Section-diff tests ────────────────────────────────────────────────────
+
+    fn base_config() -> Config {
+        Config {
+            server: ServerConfig {
+                bind: "0.0.0.0:8443".into(),
+                tls: TlsConfig {
+                    cert: "/tmp/cert.pem".into(),
+                    key: "/tmp/key.pem".into(),
+                },
+                basic_auth: BasicAuthConfig {
+                    user: "alice".into(),
+                    password_bcrypt: "hash".into(),
+                },
+            },
+            data: None,
+            master_key_file: None,
+            accounts: vec![],
+        }
+    }
+
+    #[test]
+    fn diff_empty_when_identical() {
+        let cfg = base_config();
+        assert!(diff_config_sections(&cfg, &cfg.clone()).is_empty());
+    }
+
+    #[test]
+    fn diff_detects_tls_change() {
+        let old = base_config();
+        let mut new = old.clone();
+        new.server.tls.cert = "/tmp/cert2.pem".into();
+        assert_eq!(
+            diff_config_sections(&old, &new),
+            vec![ConfigSection::Tls]
+        );
+    }
+
+    #[test]
+    fn diff_detects_basic_auth_change() {
+        let old = base_config();
+        let mut new = old.clone();
+        new.server.basic_auth.password_bcrypt = "newhash".into();
+        assert_eq!(
+            diff_config_sections(&old, &new),
+            vec![ConfigSection::BasicAuth]
+        );
+    }
+
+    #[test]
+    fn diff_detects_bind_change() {
+        let old = base_config();
+        let mut new = old.clone();
+        new.server.bind = "127.0.0.1:9000".into();
+        assert_eq!(
+            diff_config_sections(&old, &new),
+            vec![ConfigSection::Bind]
+        );
+    }
+
+    #[test]
+    fn diff_detects_accounts_change() {
+        let old = base_config();
+        let mut new = old.clone();
+        new.accounts.push(AccountConfig::Matrix(MatrixAccountConfig {
+            id: "mx".into(),
+            homeserver: "https://matrix.org".into(),
+            mxid: "@u:matrix.org".into(),
+            state_dir: PathBuf::from("/tmp/mx"),
+        }));
+        assert_eq!(
+            diff_config_sections(&old, &new),
+            vec![ConfigSection::Accounts]
+        );
     }
 }
