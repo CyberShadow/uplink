@@ -26,19 +26,30 @@
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
         # ── web (SPA) ──────────────────────────────────────────────────────
-        # Build the Preact SPA via npm (buildNpmPackage is well-tested in nixpkgs).
-        # pnpm is used in development; npm is used for the Nix build.
-        # Update npmDepsHash with: nix build .#uplinkWeb 2>&1 | grep "got:"
-        uplinkWeb = pkgs.buildNpmPackage {
+        # pnpm_9 (9.x) produces a JSON-based v10 store that fetchPnpmDeps
+        # handles correctly; pnpm_10/11 produces a SQLite v11 store that
+        # is not fully supported by the fixup phase yet.
+        # Update pnpmDepsHash with: nix build .#uplinkWebDeps 2>&1 | grep "got:"
+        uplinkWebDeps = pkgs.fetchPnpmDeps {
+          pname = "uplink-web-deps";
+          src = ./web;
+          fetcherVersion = 3;
+          pnpm = pkgs.pnpm_9;
+          hash = "sha256-HN/XY+FjaI25/xW1oJ4sjOfYioEIiIPayDH6s+FWYHc=";
+        };
+
+        uplinkWeb = pkgs.stdenv.mkDerivation {
           pname = "uplink-web";
           version = "0.1.0";
           src = ./web;
-          npmDepsHash = "sha256-20dwDHil36WVB72XC0L5XXjNSQ/owY4M6EiYQBSUWGQ=";
+          nativeBuildInputs = [ pkgs.nodejs pkgs.pnpm_9 pkgs.pnpmConfigHook ];
+          pnpmDeps = uplinkWebDeps;
           buildPhase = ''
-            npm run build -- --outDir $out
+            pnpm exec tsc
+            pnpm exec vite build --outDir $out
           '';
           installPhase = "true";
-          dontNpmInstall = true;
+          dontInstall = true;
         };
 
         # ── Rust ───────────────────────────────────────────────────────────
@@ -71,6 +82,8 @@
         packages = {
           default = uplinkBin;
           uplink = uplinkBin;
+          uplinkWeb = uplinkWeb;
+          uplinkWebDeps = uplinkWebDeps;
         };
 
         # ── dev shell ──────────────────────────────────────────────────────
@@ -78,7 +91,7 @@
           checks = self.checks.${system};
           packages = [
             pkgs.nodejs
-            pkgs.pnpm_10
+            pkgs.pnpm_9
             pkgs.openssl
             pkgs.sqlite
             pkgs.pkg-config
@@ -100,19 +113,19 @@
             cargoClippyExtraArgs = "--workspace -- -D warnings";
           });
 
-          # pnpm build is used in the dev workflow; npm build is used in Nix.
-          # This check verifies the npm-based build produces a valid output.
-          frontend-build = pkgs.buildNpmPackage {
+          # Verify the pnpm-based SPA build produces valid output.
+          frontend-build = pkgs.stdenv.mkDerivation {
             pname = "uplink-frontend-check";
             version = "0.1.0";
             src = ./web;
-            npmDepsHash = "sha256-20dwDHil36WVB72XC0L5XXjNSQ/owY4M6EiYQBSUWGQ=";
+            nativeBuildInputs = [ pkgs.nodejs pkgs.pnpm_9 pkgs.pnpmConfigHook ];
+            pnpmDeps = uplinkWebDeps;
             buildPhase = ''
-              mkdir -p $out
-              npm run build -- --outDir $out
+              pnpm exec tsc
+              pnpm exec vite build --outDir $out
             '';
             installPhase = "true";
-            dontNpmInstall = true;
+            dontInstall = true;
           };
         };
       });
