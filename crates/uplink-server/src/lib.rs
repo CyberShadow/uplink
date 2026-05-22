@@ -159,7 +159,7 @@ async fn handle_config_changed(
     event: ConfigChanged,
     config_path: &PathBuf,
     tls_holder: &Arc<ArcSwap<ServerConfig>>,
-    _basic_auth: &Arc<ArcSwap<BasicAuthConfig>>,
+    basic_auth: &Arc<ArcSwap<BasicAuthConfig>>,
 ) {
     match event.section {
         ConfigSection::Tls => {
@@ -203,7 +203,33 @@ async fn handle_config_changed(
                 }
             }
         }
-        _ => {}
+        ConfigSection::BasicAuth => {
+            match Config::load(config_path) {
+                Ok(cfg) => {
+                    basic_auth.store(Arc::new(cfg.server.basic_auth));
+                    info!("config: basic_auth reloaded");
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "config: basic_auth reload failed, keeping old config: {e:#}"
+                    );
+                }
+            }
+        }
+        ConfigSection::Accounts => {
+            match Config::load(config_path) {
+                Ok(cfg) => {
+                    info!(
+                        "config: accounts section changed ({} accounts) — no-op in M2",
+                        cfg.accounts.len()
+                    );
+                }
+                Err(_) => {}
+            }
+        }
+        ConfigSection::Bind => {
+            tracing::warn!("config: bind changed — restart required (ignored)");
+        }
     }
 }
 
@@ -480,5 +506,72 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn basic_auth_hot_reload() {
+        // Verify that swapping the ArcSwap<BasicAuthConfig> takes effect
+        // immediately on the next request.
+        let state = test_state();
+        let app = build_app(state.clone());
+
+        // Old credentials accepted.
+        let r = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header(
+                        header::AUTHORIZATION,
+                        basic_auth_header(TEST_USER, TEST_PASS),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+
+        // Swap to new credentials.
+        const NEW_USER: &str = "bob";
+        const NEW_PASS: &str = "newpass";
+        let new_bcrypt = bcrypt::hash(NEW_PASS, 4).unwrap();
+        state.basic_auth.store(Arc::new(BasicAuthConfig {
+            user: NEW_USER.into(),
+            password_bcrypt: new_bcrypt,
+        }));
+
+        // Old credentials rejected.
+        let r = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header(
+                        header::AUTHORIZATION,
+                        basic_auth_header(TEST_USER, TEST_PASS),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+
+        // New credentials accepted.
+        let r = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header(
+                        header::AUTHORIZATION,
+                        basic_auth_header(NEW_USER, NEW_PASS),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
     }
 }
