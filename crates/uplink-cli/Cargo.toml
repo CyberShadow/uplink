@@ -1,0 +1,12 @@
+[package]
+name = "uplink-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "uplink"
+path = "src/main.rs"
+
+[dependencies]
+uplink-server = { path = "../uplink-server" }
+anyhow = "1"

@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/uplink-protocol",
+    "crates/uplink-config",
+    "crates/uplink-storage",
+    "crates/uplink-tx-log",
+    "crates/uplink-realtime",
+    "crates/uplink-email",
+    "crates/uplink-matrix",
+    "crates/uplink-calendar",
+    "crates/uplink-todos",
+    "crates/uplink-server",
+    "crates/uplink-cli",
+]
