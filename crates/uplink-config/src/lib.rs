@@ -145,6 +145,172 @@ pub fn diff_config_sections(old: &Config, new: &Config) -> Vec<ConfigSection> {
     changed
 }
 
+// ── Watcher ───────────────────────────────────────────────────────────────────
+
+/// Watches the config file (and the configured TLS cert/key files) for
+/// changes and broadcasts `ConfigChanged` events via the supplied sender.
+///
+/// Coalesces rapid save-sequences (~250 ms debounce) so editor patterns
+/// (vim temp-file rename) don't produce spurious duplicate events.
+///
+/// Dropping the `Watcher` stops the background thread cleanly.
+pub struct Watcher {
+    // Kept to drive the inotify subscription; dropping it closes the event
+    // channel, which causes the background thread to exit.
+    _watcher: notify::RecommendedWatcher,
+    _thread: std::thread::JoinHandle<()>,
+}
+
+impl Watcher {
+    pub fn new(
+        config_path: PathBuf,
+        tx: tokio::sync::broadcast::Sender<ConfigChanged>,
+    ) -> Result<Self> {
+        use notify::Watcher as _;
+
+        let initial_config = Config::load(&config_path)?;
+
+        let (evt_tx, evt_rx) =
+            std::sync::mpsc::channel::<notify::Result<notify::Event>>();
+
+        let mut file_watcher =
+            notify::RecommendedWatcher::new(evt_tx, notify::Config::default())
+                .context("creating file watcher")?;
+
+        // Watch the config file's parent directory so we catch both in-place
+        // modifications and write-then-rename patterns (e.g. vim, sed -i).
+        let config_parent = config_path
+            .parent()
+            .context("config path must have a parent directory")?;
+        file_watcher
+            .watch(config_parent, notify::RecursiveMode::NonRecursive)
+            .with_context(|| {
+                format!("watching config dir {}", config_parent.display())
+            })?;
+
+        // Derive the initial cert/key paths and watch their parent directories
+        // if they differ from the config's parent (so cert renewal in a
+        // separate directory also fires a reload).
+        let cert_path = PathBuf::from(&initial_config.server.tls.cert);
+        let key_path = PathBuf::from(&initial_config.server.tls.key);
+
+        for tls_path in [&cert_path, &key_path] {
+            if let Some(parent) = tls_path.parent() {
+                if parent != config_parent && parent.exists() {
+                    if let Err(e) = file_watcher
+                        .watch(parent, notify::RecursiveMode::NonRecursive)
+                    {
+                        tracing::warn!(
+                            "config: could not watch {}: {e}",
+                            parent.display()
+                        );
+                    }
+                }
+            }
+        }
+
+        let thread = std::thread::spawn(move || {
+            watcher_thread(
+                config_path,
+                cert_path,
+                key_path,
+                initial_config,
+                evt_rx,
+                tx,
+            );
+        });
+
+        Ok(Self {
+            _watcher: file_watcher,
+            _thread: thread,
+        })
+    }
+}
+
+fn watcher_thread(
+    config_path: PathBuf,
+    cert_path: PathBuf,
+    key_path: PathBuf,
+    initial_config: Config,
+    evt_rx: std::sync::mpsc::Receiver<notify::Result<notify::Event>>,
+    tx: tokio::sync::broadcast::Sender<ConfigChanged>,
+) {
+    let mut current_config = initial_config;
+
+    // Use filenames for matching so we're robust against path normalization
+    // differences (symlinks, /proc/self/fd, etc.) between what we registered
+    // and what notify returns in event.paths.
+    let config_name = config_path.file_name().map(std::ffi::OsStr::to_os_string);
+    let cert_name = cert_path.file_name().map(std::ffi::OsStr::to_os_string);
+    let key_name = key_path.file_name().map(std::ffi::OsStr::to_os_string);
+
+    loop {
+        let event = match evt_rx.recv() {
+            Ok(Ok(e)) => e,
+            Ok(Err(e)) => {
+                tracing::warn!("config: watcher error: {e}");
+                continue;
+            }
+            Err(_) => break, // watcher dropped → channel closed
+        };
+
+        if !is_relevant(&event) {
+            continue;
+        }
+
+        // Debounce: sleep then drain any queued events, accumulating all
+        // touched paths.  For rename-over (write-then-rename), the first
+        // event carries the source name (e.g. cert_new.pem) and the second
+        // carries the destination (cert.pem) — we must inspect both.
+        let mut all_paths: Vec<PathBuf> = event.paths.clone();
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        while let Ok(Ok(drained)) = evt_rx.try_recv() {
+            if is_relevant(&drained) {
+                all_paths.extend(drained.paths);
+            }
+        }
+
+        // Determine what changed based on which path was affected.
+        let config_touched = config_name.as_ref().map_or(false, |n| {
+            all_paths.iter().any(|p| p.file_name() == Some(n.as_os_str()))
+        });
+        let tls_file_touched = all_paths.iter().any(|p| {
+            let f = p.file_name();
+            cert_name.as_deref().map_or(false, |n| f == Some(n))
+                || key_name.as_deref().map_or(false, |n| f == Some(n))
+        });
+
+        if config_touched {
+            match Config::load(&config_path) {
+                Ok(new_config) => {
+                    let sections = diff_config_sections(&current_config, &new_config);
+                    for section in sections {
+                        let _ = tx.send(ConfigChanged { section });
+                    }
+                    current_config = new_config;
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "config: reload failed, keeping old config: {e:#}"
+                    );
+                }
+            }
+        } else if tls_file_touched {
+            let _ = tx.send(ConfigChanged {
+                section: ConfigSection::Tls,
+            });
+        }
+    }
+}
+
+fn is_relevant(event: &notify::Event) -> bool {
+    // Accept any event that might indicate file content changed.
+    // Rename-over (write-then-rename editor pattern) generates Create events
+    // for the destination; Modify for in-place writes; Other/Any for platform-
+    // specific events. We exclude only pure Access events (reads).
+    !matches!(event.kind, notify::EventKind::Access(_))
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -402,6 +568,246 @@ server:
         assert_eq!(
             diff_config_sections(&old, &new),
             vec![ConfigSection::Accounts]
+        );
+    }
+
+    // ── Watcher tests ─────────────────────────────────────────────────────────
+
+    fn write_minimal_config(path: &Path, cert: &str, key: &str, bind: &str) {
+        let yaml = format!(
+            "server:\n  bind: \"{bind}\"\n  tls:\n    cert: \"{cert}\"\n    key: \"{key}\"\n  basic_auth:\n    user: alice\n    password_bcrypt: \"$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"\n"
+        );
+        std::fs::write(path, yaml).unwrap();
+    }
+
+    #[tokio::test]
+    async fn watcher_emits_tls_on_cert_file_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("cert.pem");
+        let key_path = dir.path().join("key.pem");
+        let cfg_path = dir.path().join("uplink.yaml");
+
+        std::fs::write(&cert_path, b"cert1").unwrap();
+        std::fs::write(&key_path, b"key1").unwrap();
+        write_minimal_config(
+            &cfg_path,
+            cert_path.to_str().unwrap(),
+            key_path.to_str().unwrap(),
+            "127.0.0.1:8443",
+        );
+
+        let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+        let _watcher = Watcher::new(cfg_path.clone(), tx).unwrap();
+
+        // Overwrite the cert file in-place.
+        std::fs::write(&cert_path, b"cert2").unwrap();
+
+        let event = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            rx.recv(),
+        )
+        .await
+        .expect("timed out waiting for ConfigChanged")
+        .expect("channel error");
+
+        assert_eq!(event.section, ConfigSection::Tls);
+    }
+
+    #[tokio::test]
+    async fn watcher_emits_basic_auth_on_config_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("cert.pem");
+        let key_path = dir.path().join("key.pem");
+        let cfg_path = dir.path().join("uplink.yaml");
+
+        std::fs::write(&cert_path, b"cert").unwrap();
+        std::fs::write(&key_path, b"key").unwrap();
+        write_minimal_config(
+            &cfg_path,
+            cert_path.to_str().unwrap(),
+            key_path.to_str().unwrap(),
+            "127.0.0.1:8443",
+        );
+
+        let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+        let _watcher = Watcher::new(cfg_path.clone(), tx).unwrap();
+
+        // Rewrite the config with a changed password_bcrypt, keeping bind
+        // the same so only BasicAuth shows up in the diff.
+        let new_yaml = format!(
+            "server:\n  bind: \"127.0.0.1:8443\"\n  tls:\n    cert: \"{}\"\n    key: \"{}\"\n  basic_auth:\n    user: alice\n    password_bcrypt: \"NEWHASH\"\n",
+            cert_path.display(),
+            key_path.display()
+        );
+        std::fs::write(&cfg_path, new_yaml).unwrap();
+
+        let event = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            rx.recv(),
+        )
+        .await
+        .expect("timed out waiting for ConfigChanged")
+        .expect("channel error");
+
+        assert_eq!(event.section, ConfigSection::BasicAuth);
+    }
+
+    #[tokio::test]
+    async fn watcher_emits_tls_on_tls_path_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert1 = dir.path().join("cert1.pem");
+        let cert2 = dir.path().join("cert2.pem");
+        let key_path = dir.path().join("key.pem");
+        let cfg_path = dir.path().join("uplink.yaml");
+
+        std::fs::write(&cert1, b"cert1").unwrap();
+        std::fs::write(&cert2, b"cert2").unwrap();
+        std::fs::write(&key_path, b"key").unwrap();
+        write_minimal_config(
+            &cfg_path,
+            cert1.to_str().unwrap(),
+            key_path.to_str().unwrap(),
+            "127.0.0.1:8443",
+        );
+
+        let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+        let _watcher = Watcher::new(cfg_path.clone(), tx).unwrap();
+
+        // Update config to point at cert2.
+        write_minimal_config(
+            &cfg_path,
+            cert2.to_str().unwrap(),
+            key_path.to_str().unwrap(),
+            "127.0.0.1:8443",
+        );
+
+        let event = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            rx.recv(),
+        )
+        .await
+        .expect("timed out waiting for ConfigChanged")
+        .expect("channel error");
+
+        assert_eq!(event.section, ConfigSection::Tls);
+    }
+
+    #[tokio::test]
+    async fn watcher_emits_accounts_on_accounts_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("cert.pem");
+        let key_path = dir.path().join("key.pem");
+        let cfg_path = dir.path().join("uplink.yaml");
+
+        std::fs::write(&cert_path, b"cert").unwrap();
+        std::fs::write(&key_path, b"key").unwrap();
+        write_minimal_config(
+            &cfg_path,
+            cert_path.to_str().unwrap(),
+            key_path.to_str().unwrap(),
+            "127.0.0.1:8443",
+        );
+
+        let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+        let _watcher = Watcher::new(cfg_path.clone(), tx).unwrap();
+
+        // Add an account to the config, keeping bind the same so only
+        // Accounts shows up in the diff.
+        let new_yaml = format!(
+            "server:\n  bind: \"127.0.0.1:8443\"\n  tls:\n    cert: \"{cert}\"\n    key: \"{key}\"\n  basic_auth:\n    user: alice\n    password_bcrypt: \"$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"\naccounts:\n  - id: mx\n    kind: matrix\n    homeserver: \"https://matrix.example.org\"\n    mxid: \"@alice:example.org\"\n    state_dir: /tmp/mx\n",
+            cert = cert_path.display(),
+            key = key_path.display()
+        );
+        std::fs::write(&cfg_path, new_yaml).unwrap();
+
+        let event = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            rx.recv(),
+        )
+        .await
+        .expect("timed out waiting for ConfigChanged")
+        .expect("channel error");
+
+        assert_eq!(event.section, ConfigSection::Accounts);
+    }
+
+    #[tokio::test]
+    async fn watcher_coalesces_rapid_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("cert.pem");
+        let key_path = dir.path().join("key.pem");
+        let cfg_path = dir.path().join("uplink.yaml");
+
+        std::fs::write(&cert_path, b"cert").unwrap();
+        std::fs::write(&key_path, b"key").unwrap();
+        write_minimal_config(
+            &cfg_path,
+            cert_path.to_str().unwrap(),
+            key_path.to_str().unwrap(),
+            "127.0.0.1:8443",
+        );
+
+        let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+        let _watcher = Watcher::new(cfg_path.clone(), tx).unwrap();
+
+        // Write the cert file 5 times in quick succession.
+        for i in 0..5u8 {
+            std::fs::write(&cert_path, [i]).unwrap();
+        }
+
+        // We should get at most 2 events (the rapid writes coalesce).
+        let first = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            rx.recv(),
+        )
+        .await
+        .expect("timed out")
+        .expect("channel error");
+        assert_eq!(first.section, ConfigSection::Tls);
+
+        // No second event should arrive within a short window.
+        let second = tokio::time::timeout(
+            std::time::Duration::from_millis(400),
+            rx.recv(),
+        )
+        .await;
+        assert!(
+            second.is_err(),
+            "expected no second event but got one"
+        );
+    }
+
+    #[tokio::test]
+    async fn watcher_keeps_old_config_on_parse_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("cert.pem");
+        let key_path = dir.path().join("key.pem");
+        let cfg_path = dir.path().join("uplink.yaml");
+
+        std::fs::write(&cert_path, b"cert").unwrap();
+        std::fs::write(&key_path, b"key").unwrap();
+        write_minimal_config(
+            &cfg_path,
+            cert_path.to_str().unwrap(),
+            key_path.to_str().unwrap(),
+            "127.0.0.1:8443",
+        );
+
+        let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+        let _watcher = Watcher::new(cfg_path.clone(), tx).unwrap();
+
+        // Write invalid YAML.
+        std::fs::write(&cfg_path, b"not: valid: yaml: [[[").unwrap();
+
+        // No event should be emitted when the config is invalid.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(600),
+            rx.recv(),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "expected no event on parse error but got one"
         );
     }
 }
