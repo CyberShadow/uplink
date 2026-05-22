@@ -1,0 +1,4 @@
+/target/
+web/node_modules/
+crates/uplink-server/static/*
+!crates/uplink-server/static/.gitkeep
