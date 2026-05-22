@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use axum::{
     extract::Request,
-    http::{header, StatusCode},
+    http::{header, StatusCode, Uri},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
@@ -49,14 +49,6 @@ async fn run_async() -> Result<()> {
         config: config.clone(),
     };
 
-    let app = Router::new()
-        .route("/", get(index_handler))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            basic_auth_middleware,
-        ))
-        .with_state(state);
-
     let bind: SocketAddr = config
         .server
         .bind
@@ -66,6 +58,8 @@ async fn run_async() -> Result<()> {
     let tls_acceptor = build_tls_acceptor(&config)?;
     let listener = TcpListener::bind(&bind).await?;
     info!("listening on https://{}", bind);
+
+    let app = build_app(state);
 
     loop {
         let (stream, peer_addr) = listener.accept().await?;
@@ -94,6 +88,17 @@ async fn run_async() -> Result<()> {
     }
 }
 
+fn build_app(state: AppState) -> Router {
+    Router::new()
+        .route("/", get(index_handler))
+        .fallback(static_file_handler)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            basic_auth_middleware,
+        ))
+        .with_state(state)
+}
+
 async fn index_handler() -> impl IntoResponse {
     if let Some(file) = StaticFiles::get("index.html") {
         (
@@ -108,6 +113,21 @@ async fn index_handler() -> impl IntoResponse {
             "hello from uplink",
         )
             .into_response()
+    }
+}
+
+async fn static_file_handler(uri: Uri) -> impl IntoResponse {
+    let path = uri.path().trim_start_matches('/');
+    match StaticFiles::get(path) {
+        Some(file) => {
+            let mime = mime_guess::from_path(path).first_or_octet_stream();
+            (
+                [(header::CONTENT_TYPE, mime.as_ref().to_owned())],
+                file.data.into_owned(),
+            )
+                .into_response()
+        }
+        None => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
@@ -193,4 +213,131 @@ fn parse_config_flag() -> PathBuf {
         i += 1;
     }
     PathBuf::from("uplink.yaml")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    use uplink_config::{BasicAuthConfig, ServerConfig, TlsConfig};
+
+    // password = "testpass", cost = 4 (min cost for fast tests)
+    const TEST_BCRYPT: &str = "$2b$04$G1zE/xiQeRXdPalTbG/Quu55uU6n5a9ICljrYbTpceT/qklM.0yay";
+    const TEST_USER: &str = "testuser";
+    const TEST_PASS: &str = "testpass";
+
+    fn test_state() -> AppState {
+        AppState {
+            config: Arc::new(Config {
+                server: ServerConfig {
+                    bind: "127.0.0.1:0".to_string(),
+                    tls: TlsConfig {
+                        cert: String::new(),
+                        key: String::new(),
+                    },
+                    basic_auth: BasicAuthConfig {
+                        user: TEST_USER.to_string(),
+                        password_bcrypt: TEST_BCRYPT.to_string(),
+                    },
+                },
+            }),
+        }
+    }
+
+    fn basic_auth_header(user: &str, pass: &str) -> String {
+        format!("Basic {}", BASE64.encode(format!("{}:{}", user, pass)))
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_request_returns_401() {
+        let app = build_app(test_state());
+        let response = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn authenticated_root_returns_200() {
+        let app = build_app(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header(header::AUTHORIZATION, basic_auth_header(TEST_USER, TEST_PASS))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn static_assets_are_served() {
+        // Fetch index.html to find an embedded asset path.
+        // This test only runs meaningfully when the SPA is embedded
+        // (i.e. in the full nix build); in a plain cargo test with an
+        // empty static/ dir the test is a no-op.
+        let Some(index_file) = StaticFiles::get("index.html") else {
+            return;
+        };
+        let index_html = String::from_utf8(index_file.data.into_owned()).unwrap();
+
+        // Vite emits <script ... src="/assets/index-HASH.js"> in index.html.
+        let Some(asset_path) = index_html
+            .split('"')
+            .find(|s| s.starts_with("/assets/") && s.ends_with(".js"))
+        else {
+            return;
+        };
+        let asset_path = asset_path.to_owned();
+
+        let app = build_app(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(&asset_path)
+                    .header(header::AUTHORIZATION, basic_auth_header(TEST_USER, TEST_PASS))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .expect("Content-Type header missing")
+            .to_str()
+            .unwrap();
+        assert!(
+            content_type.contains("javascript"),
+            "expected javascript content-type, got: {content_type}"
+        );
+
+        // Consume body to verify it's non-empty.
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(!body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unknown_path_returns_404() {
+        let app = build_app(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/does-not-exist.txt")
+                    .header(header::AUTHORIZATION, basic_auth_header(TEST_USER, TEST_PASS))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
 }
