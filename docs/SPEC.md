@@ -253,17 +253,14 @@ accounts:
     kind: m365
     address: alice@example.com
     # Impersonate the Outlook desktop public client. No client_secret;
-    # uses authorization-code + PKCE through a CLI-driven flow once.
-    # The Outlook client_id is the documented escape hatch on locked-down
-    # tenants. Scopes are bundled into Outlook's implicit consent.
+    # uses the v1 AAD endpoint with `resource=` (no PKCE, no scope=) —
+    # see SPEC §13.3. Granted permissions are determined by Outlook
+    # desktop's pre-authorisation, not requested per-call. The Outlook
+    # client_id is the documented escape hatch on locked-down tenants.
     oauth:
       client_id: "d3590ed6-52b3-4102-aeff-aad2292ab01c"
       authority: "https://login.microsoftonline.com/common"
-      scopes:
-        - "https://graph.microsoft.com/Mail.ReadWrite"
-        - "https://graph.microsoft.com/Mail.Send"
-        - "https://graph.microsoft.com/Calendars.Read"
-        - "offline_access"
+      resource: "https://graph.microsoft.com"
       token_file: /var/lib/uplink/accounts/alice-m365.token
 
   # — Matrix —
@@ -966,19 +963,36 @@ that's ~50 KB hashed per keystroke (or per coalesced batch). Sha256 of
 
 ### 8.3 M365 — receive
 
-- **Transport**: Microsoft Graph `GET /me/mailFolders/inbox/messages/delta`
-  on first call, then `@odata.deltaLink` for subsequent calls. Library:
-  `reqwest` + `oauth2`. No Graph SDK (none of the Rust ones are first-
-  party and Graph is JSON+OAuth, easy to call directly).
-- **Polling**: every 60 s (no IDLE on Graph). Could be reduced if we set
-  up subscriptions (push), but subscriptions require an HTTPS endpoint
-  reachable from Microsoft. Deferred.
+- **Transport**: Microsoft Graph `GET /me/mailFolders/{folder}/messages/delta`
+  per folder on first call, then `@odata.deltaLink` for subsequent calls.
+  Library: `reqwest` (no Rust Graph SDK; Graph is JSON+OAuth, easy to call
+  directly). Raw MIME for storage via `/messages/{id}/$value`.
+- **IMAP fallback**: none. Outlook desktop's pre-authorised scopes on the
+  `outlook.office365.com` resource do not include `IMAP.AccessAsUser.All`
+  (confirmed by spike `docs/spikes/outlook-impersonation.md`, May 2026 —
+  Outlook itself does not use IMAP, so impersonating it cannot grant
+  IMAP). All M365 mail flows through Graph.
+- **Push — interim**: poll the delta link every 30 s per folder. Cheap
+  under Graph throttling for a single user. The user must never see UI
+  for "manual refresh"; polling is silent.
+- **Push — future**: real Outlook gets push via MAPI HangingNotification
+  (a long-poll over HTTPS, no public endpoint required). The closest
+  third-party-accessible equivalent on M365 today is EWS Streaming
+  Notifications (same long-poll pattern; Outlook desktop's token includes
+  `EWS.AccessAsUser.All`). EWS is being retired by Microsoft (last
+  announced sunset October 2026, slipping). A future milestone will:
+  (a) research what current first-party clients (new Outlook for Windows,
+  OWA, Outlook Mobile) actually use today — possibly a Graph-native
+  streaming mechanism that doesn't yet appear in public docs — and
+  (b) implement whichever of EWS Streaming or its Graph successor is
+  cheapest. Until then, polling is the only mechanism. See §15.11.
 - **Threading**: use `conversationId` from each message.
 - **Folders**: Graph exposes mailFolders; each folder becomes a `label` row.
   Categories (`categories: ["red", "blue"]`) become additional labels
   prefixed with `cat:`.
 - **OAuth**: Outlook desktop client_id impersonation
-  (`d3590ed6-52b3-4102-aeff-aad2292ab01c`). PKCE auth-code flow. See §13.
+  (`d3590ed6-52b3-4102-aeff-aad2292ab01c`). v1 endpoint, `resource=`
+  parameter, no PKCE. See §13.3.
 
 ### 8.4 M365 — send
 
@@ -1389,14 +1403,47 @@ operator and `fail2ban` on the system handles brute-force concerns.
 
 ### 13.3 OAuth flow (M365 with Outlook impersonation)
 
-- Same shape as Gmail. `client_id =
-  d3590ed6-52b3-4102-aeff-aad2292ab01c`, no `client_secret`.
+Confirmed by the spike `docs/spikes/outlook-impersonation.md` (May 2026)
+against a real corporate tenant. The flow is **not** the same shape as
+Gmail — it uses the v1 (classic) AAD endpoint with a `resource=` parameter
+rather than v2 OIDC with `scope=`, and the Outlook desktop client_id
+requires the URN-form redirect URI:
+
+- `client_id = d3590ed6-52b3-4102-aeff-aad2292ab01c` (Outlook desktop),
+  no `client_secret`.
 - Authority `https://login.microsoftonline.com/common`.
-- Redirect URI `http://localhost:<random-port>/oauth-callback`. The CLI
-  opens an ephemeral local HTTP server to catch the redirect, then shuts
-  it down. Avoids the user having to paste a code.
-- Scopes per §3.2.
-- Refresh tokens rotate; we always write the latest sealed token back.
+- Endpoints **v1**: `/oauth2/authorize`, `/oauth2/token` (NOT
+  `/oauth2/v2.0/…`).
+- Redirect URI **`urn:ietf:wg:oauth:2.0:oob`**. The `nativeclient` URL
+  works for DavMail's own client_id but is NOT registered against
+  Outlook desktop's; using it returns `AADSTS50011`. The OOB URN
+  redirect means AAD returns the code via a `Location: urn:...?code=...`
+  header that the browser cannot follow — the user must extract the
+  code from DevTools or from whatever results page AAD renders. The
+  CLI pairing step explains this and accepts any of the observed forms
+  (URN, full URL, "Success code=…" string, or bare code).
+- Authorize parameters: `response_type=code`, `redirect_uri=<URN>`,
+  `response_mode=query`, `login_hint=<email>`,
+  `resource=https://graph.microsoft.com` (or
+  `https://outlook.office365.com` for the EWS resource when we need it).
+  No PKCE — DavMail doesn't use it for this flow and the v1 endpoint
+  accepts the public-client form without.
+- Token exchange parameters: `grant_type=authorization_code`, `code`,
+  `redirect_uri`, `client_id`. No `scope`, no `resource`, no
+  `code_verifier`.
+- Cross-resource refresh: at the v1 endpoint, a refresh token issued
+  against one resource can be redeemed for an access token against
+  another by re-stating `resource=<target>` on the refresh POST. We
+  do not currently rely on this — Graph is the only resource we hit —
+  but the future EWS Streaming work (§8.3) will use it to mint
+  `outlook.office365.com` tokens from the same sign-in.
+- Refresh tokens may or may not rotate per call. Persistence atomically
+  replaces the sealed token on every successful refresh (§15.4).
+- Granted scopes are determined by Outlook desktop's pre-authorisation,
+  not requested per-call. The Graph token gets the full Outlook scope
+  set: `Mail.ReadWrite Mail.Send Calendars.ReadWrite Contacts.ReadWrite
+  Files.* People.* User.Read.*` and more. No `IMAP.AccessAsUser.All` —
+  Outlook itself does not use IMAP. See §8.3.
 
 ### 13.4 Sealing OAuth secrets at rest
 
@@ -1494,8 +1541,10 @@ lose any persisted messages.
 
 ### M5. M365 receive
 
-- OAuth2 auth-code+PKCE with Outlook-client impersonation.
-- Graph delta sync for mail.
+- OAuth2 v1 auth-code flow with Outlook-client impersonation (no PKCE,
+  `resource=` parameter, URN redirect — per §13.3).
+- Graph delta sync for mail, polling every 30 s per folder (no push in
+  this milestone — see §8.3).
 - Same .eml persist + FTS pipeline.
 
 **Done when:** an M365 account, paired via the CLI, streams its messages
@@ -1633,8 +1682,11 @@ config schema covers both.
 Per stack research §3, Microsoft could in principle clamp down on
 non-Microsoft processes using the Outlook desktop client_id. Risk horizon:
 1–3 years. **Mitigation**: keep the auth layer pluggable so we can swap
-to a tenant-registered Entra app or to IMAP+XOAUTH2 with minimal
-disruption. Do not couple anything but the OAuth crate to the client_id.
+to a tenant-registered Entra app. IMAP+XOAUTH2 is **not** an available
+fallback — Outlook desktop's pre-authorisation does not include
+`IMAP.AccessAsUser.All` (confirmed by the M365 impersonation spike,
+May 2026; Outlook itself does not use IMAP). Do not couple anything
+but the OAuth crate to the client_id.
 
 ### 15.4 Refresh-token rotation under Outlook impersonation
 
@@ -1762,6 +1814,36 @@ tool. The risk is UI regressions from agentic refactors — mitigated by
 stable testids and component-level integration tests covering rendered
 output, but not eliminated. Revisit if regressions become a recurring
 problem.
+
+### 15.11 M365 push mechanism is a moving target
+
+MVP M365 push is polling the Graph delta link every 30 s per folder
+(§8.3). This is "good enough, not great" — real Outlook gets sub-second
+push via MAPI HangingNotification. The eventual replacement for our
+polling is EWS Streaming Notifications, which:
+
+- works today (Outlook desktop's token includes `EWS.AccessAsUser.All`),
+- is a long-poll over HTTPS, so no public endpoint is required, but
+- is on Microsoft's retirement list (last announced sunset October 2026,
+  has slipped before).
+
+Before implementing EWS Streaming we should also research what current
+first-party clients (new Outlook for Windows, OWA, Outlook Mobile)
+actually use today; Microsoft may have shipped a Graph-native streaming
+mechanism that simply isn't documented yet. That research is bundled
+with the EWS Streaming work — whichever option is cheaper at the time
+becomes the implementation. The two non-options:
+
+- Graph webhook subscriptions require a publicly reachable HTTPS endpoint
+  on the uplink host; incompatible with the "self-hosted on your laptop"
+  baseline. Off the table.
+- Manual refresh UI. Off the table on principle — the user must never
+  see a "refresh" button.
+
+**Risk horizon**: when (not if) Microsoft retires EWS and has not shipped
+a Graph-native streaming alternative we can use, M365 push reverts to
+polling. The polling code-path stays in the codebase for exactly this
+reason and is the always-available baseline.
 
 ---
 

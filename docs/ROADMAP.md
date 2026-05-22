@@ -67,10 +67,16 @@ Deferred:
 
 MVP:
 - Gmail via IMAP+XOAUTH2 with IDLE.
-- M365 via Graph (mail) with delta sync.
+- M365 via Graph (mail) with delta-link polling every 30 s (no push;
+  see SPEC §8.3 and §15.11 — IMAP is not available via Outlook
+  impersonation, EWS Streaming deferred).
 - Per-account configuration via single YAML file.
 
 Deferred:
+- M365 push via EWS Streaming Notifications (or whatever first-party
+  Outlook successor uses if one ships first — research bundled with
+  the implementation work). See SPEC §15.11. The polling baseline
+  stays in place as the always-available fallback.
 - Generic IMAP/SMTP accounts (any non-Gmail, non-M365 server).
 - Gmail API push notifications (Cloud Pub/Sub).
 - JMAP support.
