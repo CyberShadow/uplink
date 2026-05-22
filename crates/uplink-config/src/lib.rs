@@ -271,13 +271,13 @@ fn watcher_thread(
         }
 
         // Determine what changed based on which path was affected.
-        let config_touched = config_name.as_ref().map_or(false, |n| {
+        let config_touched = config_name.as_ref().is_some_and(|n| {
             all_paths.iter().any(|p| p.file_name() == Some(n.as_os_str()))
         });
         let tls_file_touched = all_paths.iter().any(|p| {
             let f = p.file_name();
-            cert_name.as_deref().map_or(false, |n| f == Some(n))
-                || key_name.as_deref().map_or(false, |n| f == Some(n))
+            cert_name.as_deref().is_some_and(|n| f == Some(n))
+                || key_name.as_deref().is_some_and(|n| f == Some(n))
         });
 
         if config_touched {

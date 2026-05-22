@@ -14,7 +14,7 @@ use rust_embed::Embed;
 use rustls::ServerConfig;
 use rustls_pemfile::{certs, private_key};
 use sha2::Digest;
-use std::{io::BufReader, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{io::BufReader, net::SocketAddr, path::{Path, PathBuf}, sync::Arc};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tower::Service;
@@ -157,7 +157,7 @@ async fn config_reload_task(
 
 async fn handle_config_changed(
     event: ConfigChanged,
-    config_path: &PathBuf,
+    config_path: &Path,
     tls_holder: &Arc<ArcSwap<ServerConfig>>,
     basic_auth: &Arc<ArcSwap<BasicAuthConfig>>,
 ) {
@@ -217,14 +217,11 @@ async fn handle_config_changed(
             }
         }
         ConfigSection::Accounts => {
-            match Config::load(config_path) {
-                Ok(cfg) => {
-                    info!(
-                        "config: accounts section changed ({} accounts) — no-op in M2",
-                        cfg.accounts.len()
-                    );
-                }
-                Err(_) => {}
+            if let Ok(cfg) = Config::load(config_path) {
+                info!(
+                    "config: accounts section changed ({} accounts) — no-op in M2",
+                    cfg.accounts.len()
+                );
             }
         }
         ConfigSection::Bind => {
