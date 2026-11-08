@@ -6,13 +6,15 @@ keyboard-driven web UI with Gmail's shortcuts, and a transaction log that
 makes every action undoable. See `docs/VISION.md` for the goals and
 `docs/SPEC.md` for the design.
 
-**Status:** Gmail mail can be read, searched, archived, labelled, starred
-and marked read/unread, with undo, and written (drafts saved as you type,
-synced across tabs), replied to, forwarded and sent, with undo-send.
-Matrix rooms (end-to-end encrypted ones too) can be read and written to,
-in plain text. To-dos can be kept, and messages flagged for follow-up
-(which adds a to-do). Microsoft 365 and calendar are in progress
-(SPEC §14).
+**Status:** Gmail mail can be read (attachments too), searched,
+archived, labelled, starred, marked read/unread, trashed and reported as
+spam, with undo, and written (drafts saved as you type, synced across
+tabs, with files attached), replied to, forwarded and sent, with
+undo-send. Matrix rooms (end-to-end encrypted ones too) can be read,
+written to in plain text, joined and left. To-dos can be kept, and
+messages flagged for follow-up (which adds a to-do). The history lists
+everything done, and undoes any of it. Microsoft 365 and calendar are in
+progress (SPEC §14).
 
 ## Try it
 
