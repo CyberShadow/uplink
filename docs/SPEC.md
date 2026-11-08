@@ -1789,7 +1789,7 @@ flake is the source of truth.
 | `integration-gmail`    | NixOS VM test: uplink service + Gmail emulator                |
 | `integration-m365`     | NixOS VM test: uplink service + Graph fake                    |
 | `integration-matrix`   | NixOS VM test: uplink service + a real homeserver             |
-| `e2e` *(future)*       | Reserved name; not wired in MVP                               |
+| `e2e`                  | NixOS VM test: the web UI in Chromium (Playwright), keyboard-driven, against uplink + Gmail emulator; screenshots in its output |
 
 **Unit / property tests**
 

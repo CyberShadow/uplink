@@ -172,6 +172,10 @@
             inherit pkgs emulate;
             uplinkModule = self.nixosModules.default;
           };
+          e2e = import ./nix/tests/e2e.nix {
+            inherit pkgs emulate;
+            uplinkModule = self.nixosModules.default;
+          };
         };
       }) // {
         nixosModules.default = import ./nix/module.nix {
