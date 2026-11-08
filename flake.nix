@@ -84,6 +84,7 @@
             cp -r ${uplinkWeb}/. crates/uplink-server/static/
           '';
           cargoExtraArgs = "--bin uplink";
+          meta.mainProgram = "uplink";
         });
 
         # Provider fakes for integration tests.
@@ -148,6 +149,16 @@
             installPhase = "true";
             dontInstall = true;
           };
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          # NixOS VM tests (SPEC §15.10).
+          integration-gmail = import ./nix/tests/gmail.nix {
+            inherit pkgs emulate;
+            uplinkModule = self.nixosModules.default;
+          };
         };
-      });
+      }) // {
+        nixosModules.default = import ./nix/module.nix {
+          defaultPackage = pkgs: self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+        };
+      };
 }

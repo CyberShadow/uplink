@@ -1792,7 +1792,14 @@ Each runs the full stack as close to production as possible: uplink as a
 systemd service with its real config, TLS and data directory, next to
 fakes of the providers, driven over the WebSocket protocol by the test
 script (e.g. inject a message on the provider side, watch it arrive,
-archive it, check the provider's labels, undo).
+archive it, check the provider's labels, undo). The service comes from
+the flake's NixOS module (`nixosModules.default`, `nix/module.nix`), the
+same one a deployment uses. The test script's WebSocket client
+(`nix/tests/uplink_ws.py`) stands in for the UI; it uses Python
+websockets' asyncio client, since the threaded one reads and writes one
+TLS connection from two threads, which OpenSSL does not support (a TLS
+1.3 session ticket arriving mid-write silently loses the upgrade
+request).
 
 - **Gmail:** [vercel-labs/emulate](https://github.com/vercel-labs/emulate)'s
   Google emulator (`packages.emulate`) — stateful Gmail REST plus Google
@@ -1809,7 +1816,9 @@ archive it, check the provider's labels, undo).
   `users.getProfile` (uplink's starting `historyId`) and a
   `gmail_history_limit` seed option under which `history.list` answers
   404 for a `startHistoryId` older than the retained history, so the
-  full-resync fallback is testable.
+  full-resync fallback is testable; `0002` lets a loopback redirect URI
+  match a registered one on any port, as Google does for installed apps
+  (RFC 8252 §7.3), so `uplink oauth init` can listen on an ephemeral port.
   uplink's Google endpoints (auth, token, API base) are configurable,
   defaulting to Google's.
 - **Real accounts.** A fake can diverge from the real service in
