@@ -1,5 +1,5 @@
-# The web UI in Chromium, driven with the keyboard against uplink and
-# emulated Gmail (SPEC §15.10).
+# The web UI in Chromium, driven with the keyboard against uplink,
+# emulated Gmail, and a Conduit homeserver (SPEC §15.10).
 { pkgs, uplinkModule, emulate }:
 
 let
@@ -18,6 +18,26 @@ pkgs.testers.nixosTest {
   nodes.machine = {
     imports = [ machine.module ];
     environment.systemPackages = [ uplinkUi ];
+
+    services.matrix-conduit = {
+      enable = true;
+      settings.global = {
+        server_name = "localhost";
+        address = "127.0.0.1";
+        allow_registration = true;
+        allow_federation = false;
+        trusted_servers = [ ];
+      };
+    };
+    services.uplink.settings.accounts = [
+      {
+        id = "alice-matrix";
+        kind = "matrix";
+        homeserver = "http://127.0.0.1:6167";
+        mxid = "@alice:localhost";
+        state_dir = "/var/lib/uplink/matrix/alice-matrix";
+      }
+    ];
     environment.variables = {
       PLAYWRIGHT_BROWSERS_PATH = "${pkgs.playwright-driver.browsers}";
       PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS = "true";

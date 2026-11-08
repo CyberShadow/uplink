@@ -1,5 +1,5 @@
-# The web UI in a real browser against the real server and emulated Gmail
-# (SPEC §15.10 `e2e`). gmail-machine.nix prepends gmail_helpers.py.
+# The web UI in a real browser against the real server, emulated Gmail and
+# Conduit (SPEC §15.10 `e2e`). gmail-machine.nix prepends gmail_helpers.py.
 
 
 def ui(step):
@@ -16,8 +16,34 @@ def inbox_subjects():
     return {subject_of(m["id"]) for m in messages}
 
 
+MATRIX = "http://127.0.0.1:6167/_matrix/client/v3"
+
+
+def matrix(token, method, path, body=None):
+    data = f"-d {shlex.quote(json.dumps(body))}" if body is not None else ""
+    auth = f"-H 'Authorization: Bearer {token}'" if token else ""
+    return json.loads(machine.succeed(f"curl -sf -X {method} {auth} {data} {shlex.quote(MATRIX + path)}"))
+
+
+def register(user):
+    return matrix(None, "POST", "/register", {
+        "username": user, "password": "matrix-password", "auth": {"type": "m.login.dummy"},
+    })["access_token"]
+
+
 start_all()
 authorize_uplink()
+
+machine.wait_for_unit("conduit.service")
+machine.wait_for_open_port(6167)
+register("admin")  # Conduit makes its first user admin.
+alice = register("alice")
+bob = register("bob")
+machine.succeed(
+    "printf 'matrix-password\n\n' | runuser -u uplink -- "
+    "uplink --config /etc/uplink/uplink.yaml matrix pair --account alice-matrix >/tmp/pair.log 2>&1"
+)
+machine.succeed("grep -q 'Skipped: the device is not verified' /tmp/pair.log")
 token = provider_token()
 gmail(token, "POST", "/labels", {"name": "Projects"})
 deliver(token, "Quarterly report", "Numbers are up this quarter.", date="Mon, 2 Nov 2026 09:00:00 +0000")
@@ -73,5 +99,20 @@ with subtest("a reply written in the UI is sent after the delay, in the thread")
         "the sent copy to be synced back, emptying the outbox",
         lambda: machine.succeed(f"sqlite3 {STATE}/db/uplink.sqlite 'SELECT count(*) FROM mail_outbox'").strip() == "0",
     )
+
+with subtest("a Matrix room shows messages, raw JSON for other events, and sends"):
+    room = matrix(bob, "POST", "/createRoom", {"name": "Planning", "invite": ["@alice:localhost"]})["room_id"]
+    # Alice joins from another device; uplink has no invitation UI.
+    matrix(alice, "POST", f"/join/{room}", {})
+    matrix(bob, "PUT", f"/rooms/{room}/send/m.room.message/1", {"msgtype": "m.text", "body": "Hi from Bob"})
+    matrix(bob, "PUT", f"/rooms/{room}/send/org.example.custom/2", {"answer": 42})
+    ui("matrix")
+
+    def bodies():
+        events = matrix(bob, "GET", f"/rooms/{room}/messages?dir=b&limit=20")["chunk"]
+        return [e["content"].get("body") for e in events if e["type"] == "m.room.message"]
+
+    eventually("uplink's message to reach Bob", lambda: "Hello from uplink" in bodies())
+    assert machine.succeed(f"sqlite3 {STATE}/db/uplink.sqlite 'SELECT count(*) FROM matrix_outbox'").strip() == "0"
 
 machine.copy_from_vm("/tmp/screenshots", "")

@@ -114,7 +114,26 @@ def reply(page):
     return {"path": page.url.split("/", 3)[3]}
 
 
-STEPS = {f.__name__: f for f in [read, archive, undo, label, search, reply]}
+def matrix(page):
+    """Opens the Planning room, reads Bob's message, and answers."""
+    page.get_by_role("navigation").get_by_role("link", name="Planning").click()
+    timeline = page.get_by_role("list", name="Timeline")
+    expect(timeline).to_contain_text("Hi from Bob")
+    expect(timeline).to_contain_text("org.example.custom")
+    page.keyboard.press("r")
+    page.keyboard.type("Hello from uplink")
+    page.keyboard.press("Enter")
+    expect(page.get_by_role("status")).to_contain_text("Sent 'Hello from uplink'")
+    # Sent, and synced back: no longer pending, but in the timeline.
+    expect(timeline.locator("[class*=pending]")).to_have_count(0, timeout=15000)
+    expect(timeline.get_by_text("Hello from uplink")).to_have_count(1)
+    timeline.locator("summary", has_text="org.example.custom").click()
+    expect(timeline).to_contain_text('"answer": 42')
+    page.screenshot(path=f"{SHOTS}/room.png")
+    return {"path": page.url.split("/", 3)[3]}
+
+
+STEPS = {f.__name__: f for f in [read, archive, undo, label, search, reply, matrix]}
 
 step = STEPS[sys.argv[1]]
 with sync_playwright() as p:

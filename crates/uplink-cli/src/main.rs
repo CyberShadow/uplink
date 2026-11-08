@@ -113,7 +113,8 @@ async fn matrix_pair(config_path: &std::path::Path, id: &str) -> Result<()> {
         "Pairing {} as {} on {}.",
         account.id, account.mxid, account.homeserver
     );
-    let password = rpassword::prompt_password("Password: ")?;
+    let mut secrets = Secrets::new();
+    let password = secrets.read("Password: ")?;
     let device_name = format!("uplink ({})", account.id);
     let client = client::login(account, &key, &password, &device_name).await?;
     println!(
@@ -126,7 +127,7 @@ async fn matrix_pair(config_path: &std::path::Path, id: &str) -> Result<()> {
         "To verify the device, so that your other devices share keys with it, enter \
          the account's recovery key or Secret Storage passphrase. Leave it empty to skip."
     );
-    let recovery = rpassword::prompt_password("Recovery key or passphrase: ")?;
+    let recovery = secrets.read("Recovery key or passphrase: ")?;
     if recovery.trim().is_empty() {
         println!("Skipped: the device is not verified.");
     } else if client::import_secrets(&client, recovery.trim()).await? {
@@ -134,8 +135,29 @@ async fn matrix_pair(config_path: &std::path::Path, id: &str) -> Result<()> {
     } else {
         anyhow::bail!("imported the secrets, but the device is still not verified");
     }
-    println!("Paired. Restart uplink to start syncing the account.");
+    println!("Paired. A running uplink starts syncing the account within a minute.");
     Ok(())
+}
+
+/// Secrets typed at a terminal without echo, or else read from standard
+/// input a line each, for scripts.
+struct Secrets(Option<std::io::Lines<std::io::StdinLock<'static>>>);
+
+impl Secrets {
+    fn new() -> Self {
+        use std::io::{BufRead, IsTerminal};
+        let stdin = std::io::stdin();
+        Self((!stdin.is_terminal()).then(|| stdin.lock().lines()))
+    }
+
+    fn read(&mut self, prompt: &str) -> Result<String> {
+        match &mut self.0 {
+            None => Ok(rpassword::prompt_password(prompt)?),
+            Some(lines) => Ok(lines
+                .next()
+                .with_context(|| format!("standard input ended before: {prompt}"))??),
+        }
+    }
 }
 
 async fn oauth_init(config_path: &std::path::Path, id: &str) -> Result<()> {
