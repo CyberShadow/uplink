@@ -208,7 +208,7 @@ async fn mirrors_the_mailbox_and_pushes_changes() {
 #[tokio::test(flavor = "multi_thread")]
 async fn resyncs_fully_once_history_expired() {
     let uplink = Uplink::new();
-    if std::env::var_os("UPLINK_TEST_GMAIL").is_some() {
+    if common::real() {
         eprintln!("skipped: needs an emulated account, whose history can expire");
         return;
     }

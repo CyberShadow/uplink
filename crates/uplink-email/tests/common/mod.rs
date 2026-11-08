@@ -1,9 +1,10 @@
 //! The Gmail account provider-facing tests run against: vercel-labs/emulate
 //! by default (`UPLINK_EMULATE`, set by the dev shell and `nix flake
-//! check`), or a real account when `UPLINK_TEST_GMAIL` names a YAML file
-//! with `address`, `client_id`, `client_secret` and `refresh_token` (SPEC
-//! §15.10). Tests arrange provider-side state through the Gmail API
-//! itself, so they work the same in both modes.
+//! check`), or a real account when `UPLINK_TEST_GMAIL_CONFIG` names an
+//! uplink.yaml and `UPLINK_TEST_GMAIL_ACCOUNT` one of its Gmail accounts,
+//! authorized with `uplink oauth init` (SPEC §15.10). Tests arrange
+//! provider-side state through the Gmail API itself, so they work the same
+//! in both modes.
 
 #![allow(dead_code)]
 
@@ -11,7 +12,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::Deserialize;
 use serde_json::json;
 use std::{path::Path, process::Stdio, sync::Arc, time::Duration};
-use uplink_config::{GmailAccountConfig, GmailOAuthConfig, GoogleEndpoints};
+use uplink_config::{AccountConfig, Config, GmailAccountConfig, GmailOAuthConfig, GoogleEndpoints};
 use uplink_email::{
     gmail::oauth::{self, Credentials},
     seal::{self, MasterKey, Token},
@@ -26,13 +27,34 @@ pub struct Provider {
     delivered: std::sync::Mutex<Vec<String>>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RealAccount {
-    address: String,
-    client_id: String,
-    client_secret: String,
-    refresh_token: String,
+/// Whether the tests run against a real account.
+pub fn real() -> bool {
+    std::env::var_os("UPLINK_TEST_GMAIL_CONFIG").is_some()
+}
+
+/// The real account the environment names, and its refresh token.
+fn real_account() -> (GmailAccountConfig, Token) {
+    let path = std::env::var_os("UPLINK_TEST_GMAIL_CONFIG").unwrap();
+    let id = std::env::var("UPLINK_TEST_GMAIL_ACCOUNT")
+        .expect("UPLINK_TEST_GMAIL_ACCOUNT names the account in UPLINK_TEST_GMAIL_CONFIG");
+    let config = Config::load(Path::new(&path)).unwrap();
+    let account = config
+        .accounts
+        .into_iter()
+        .find_map(|account| match account {
+            AccountConfig::Gmail(gmail) if gmail.id == id => Some(gmail),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no Gmail account {id} in {}", path.display()));
+    let key = MasterKey::load(
+        config
+            .master_key_file
+            .as_ref()
+            .expect("the configuration has a master_key_file"),
+    )
+    .unwrap();
+    let token = seal::read_token(&key, &account.id, &account.oauth.token_file).unwrap();
+    (account, token)
 }
 
 impl Provider {
@@ -45,54 +67,42 @@ impl Provider {
         let token_file = dir.join("accounts/test.token");
         let http = reqwest::Client::new();
 
-        let (account, emulate) = match std::env::var_os("UPLINK_TEST_GMAIL") {
-            Some(path) => {
-                assert!(
-                    history_limit.is_none(),
-                    "a real account's history can't be limited"
-                );
-                let real: RealAccount =
-                    serde_yaml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-                let account = GmailAccountConfig {
-                    id: "test".into(),
-                    address: real.address,
-                    oauth: GmailOAuthConfig {
-                        client_id: real.client_id,
-                        client_secret: real.client_secret,
-                        token_file,
-                    },
-                    endpoints: GoogleEndpoints::default(),
-                };
-                seal::write_token(
-                    &key,
-                    &account.id,
-                    &Token {
-                        refresh_token: real.refresh_token,
-                    },
-                    &account.oauth.token_file,
-                )
-                .unwrap();
-                (account, None)
-            }
-            None => {
-                let (base, child) = start_emulate(dir, history_limit).await;
-                let account = GmailAccountConfig {
-                    id: "test".into(),
-                    address: "alice@example.com".into(),
-                    oauth: GmailOAuthConfig {
-                        client_id: "uplink-test".into(),
-                        client_secret: "uplink-test-secret".into(),
-                        token_file,
-                    },
-                    endpoints: GoogleEndpoints {
-                        auth: format!("{base}/o/oauth2/v2/auth"),
-                        token: format!("{base}/oauth2/token"),
-                        api: base.clone(),
-                    },
-                };
-                authorize(&http, &account, &key, &base).await;
-                (account, Some(child))
-            }
+        let (account, emulate) = if real() {
+            assert!(
+                history_limit.is_none(),
+                "a real account's history can't be limited"
+            );
+            // A copy of the account under the test's own key and
+            // directory, so the configured one is left as it was.
+            let (real, token) = real_account();
+            let account = GmailAccountConfig {
+                id: "test".into(),
+                oauth: GmailOAuthConfig {
+                    token_file,
+                    ..real.oauth
+                },
+                ..real
+            };
+            seal::write_token(&key, &account.id, &token, &account.oauth.token_file).unwrap();
+            (account, None)
+        } else {
+            let (base, child) = start_emulate(dir, history_limit).await;
+            let account = GmailAccountConfig {
+                id: "test".into(),
+                address: "alice@example.com".into(),
+                oauth: GmailOAuthConfig {
+                    client_id: "uplink-test".into(),
+                    client_secret: "uplink-test-secret".into(),
+                    token_file,
+                },
+                endpoints: GoogleEndpoints {
+                    auth: format!("{base}/o/oauth2/v2/auth"),
+                    token: format!("{base}/oauth2/token"),
+                    api: base.clone(),
+                },
+            };
+            authorize(&http, &account, &key, &base).await;
+            (account, Some(child))
         };
         Self {
             credentials: Credentials::new(http.clone(), account.clone(), key.clone()),
