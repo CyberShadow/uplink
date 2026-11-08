@@ -97,6 +97,23 @@ pub struct MessageContent {
     /// The HTML body, sanitized, if the message has one. It may refer to
     /// remote resources, which clients should not load unasked.
     pub body_html: Option<String>,
+    pub attachments: Vec<Attachment>,
+}
+
+/// A part of a message other than its body. Its content is had over HTTP:
+/// `/api/messages/{message}/attachments/{index}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Attachment {
+    pub index: u32,
+    /// The file name the message gives it, if any.
+    pub name: Option<String>,
+    /// `type/subtype`.
+    pub mime: String,
+    /// Decoded, in bytes.
+    pub size: u64,
+    /// An image the HTML body shows, rather than a file attached.
+    pub inline: bool,
 }
 
 // ── events ────────────────────────────────────────────────────────────────

@@ -139,4 +139,27 @@ with subtest("# moves a message to Trash in Gmail"):
     eventually("the message to be in Gmail's Trash", trashed)
     assert result["trashed"] not in inbox_subjects()
 
+with subtest("a file attached to a message downloads"):
+    raw = (
+        "Message-ID: <figures@uplink.test>\r\nFrom: Bob Sender <bob@example.org>\r\n"
+        "To: alice@example.com\r\nDate: Wed, 4 Nov 2026 10:00:00 +0000\r\n"
+        "Subject: Quarterly figures\r\nMIME-Version: 1.0\r\n"
+        "Content-Type: multipart/mixed; boundary=b\r\n\r\n"
+        "--b\r\nContent-Type: text/plain\r\n\r\nAttached.\r\n"
+        "--b\r\nContent-Type: application/pdf\r\n"
+        "Content-Disposition: attachment; filename=figures.pdf\r\n"
+        "Content-Transfer-Encoding: base64\r\n\r\n"
+        + base64.b64encode(b"%PDF-1.4 figures").decode() + "\r\n--b--\r\n"
+    )
+    encoded = base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
+    gmail(token, "POST", "/messages/import", {"raw": encoded, "labelIds": ["INBOX", "UNREAD"]})
+    eventually(
+        "the message to be synced",
+        lambda: machine.succeed(
+            f"sqlite3 {STATE}/db/uplink.sqlite \"SELECT count(*) FROM message WHERE subject = 'Quarterly figures'\""
+        ).strip() == "1",
+    )
+    result = ui("attachment")
+    assert result == {"name": "figures.pdf", "content": "%PDF-1.4 figures"}, result
+
 machine.copy_from_vm("/tmp/screenshots", "")

@@ -277,6 +277,7 @@ function MessageView(props: { mail: MailStore; entry: Entry }) {
             <dt>Date</dt>
             <dd>{new Date(content.date_sent === null ? entry.received_at : content.date_sent * 1000).toLocaleString()}</dd>
           </dl>
+          <Attachments message={content} />
           {content.body_html === null ? (
             <pre class={styles.body}>{content.body_text}</pre>
           ) : (
@@ -286,6 +287,30 @@ function MessageView(props: { mail: MailStore; entry: Entry }) {
       )}
     </article>
   )
+}
+
+/** The files attached, to download; not the images the body shows. */
+function Attachments(props: { message: MessageContent }) {
+  const files = props.message.attachments.filter((a) => !a.inline)
+  if (files.length === 0) return null
+  return (
+    <ul class={styles.attachments} aria-label="Attachments">
+      {files.map((a) => (
+        <li key={a.index}>
+          <a href={`/api/messages/${props.message.id}/attachments/${a.index}`} download={a.name ?? ''}>
+            {a.name ?? `Attachment ${a.index + 1}`}
+          </a>{' '}
+          <span class={styles.size}>{size(a.size)}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function size(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
 /** The entry's labels worth showing beside it: user labels and Starred. */

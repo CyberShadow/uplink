@@ -116,3 +116,27 @@
   color: var(--accent);
   text-decoration: none;
 }
+
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+}
+
+.attachments li {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.attachments a {
+  color: var(--accent);
+}
+
+.size {
+  color: var(--muted);
+  font-size: 12px;
+}

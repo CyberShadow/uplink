@@ -3,7 +3,7 @@
 use crate::{
     compose::{self, CancelSend, DeleteDraft, EditDraft, PutDraft, SendDraft},
     mailbox::{LabelChange, SetLabels},
-    parse::{html_body, parse},
+    parse::{self, html_body, parse},
     query::{self, ConfiguredAccount},
     store::{MailStore, VariantHash},
 };
@@ -146,7 +146,34 @@ impl Mail {
                         date_sent: parsed.date_sent,
                         body_text: parsed.body_text,
                         body_html: html_body(&raw),
+                        attachments: parse::attachments(&raw),
                     },
+                })
+            })
+            .await
+    }
+
+    /// The message's attachment at `index`: its name, MIME type and
+    /// content.
+    pub async fn attachment(
+        &self,
+        message: MessageId,
+        index: u32,
+    ) -> Result<(Option<String>, String, Vec<u8>), ServerError> {
+        let store = self.store.clone();
+        self.reader
+            .read(move |conn| {
+                let (_, variant) = query::preferred_variant(conn, message)
+                    .map_err(internal)?
+                    .ok_or_else(|| {
+                        error(ErrorCode::NotFound, format!("no message {}", message.0))
+                    })?;
+                let raw = store.get(&VariantHash(variant)).map_err(internal)?;
+                parse::attachment(&raw, index).ok_or_else(|| {
+                    error(
+                        ErrorCode::NotFound,
+                        format!("message {} has no attachment {index}", message.0),
+                    )
                 })
             })
             .await

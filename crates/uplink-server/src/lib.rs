@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
 use axum::{
-    extract::{ws::WebSocketUpgrade, Request, State},
+    extract::{self, ws::WebSocketUpgrade, Request, State},
     http::{header, HeaderMap, StatusCode, Uri},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -353,12 +353,63 @@ fn build_app(state: AppState) -> Router {
     Router::new()
         .route("/", get(index_handler))
         .route("/ws", get(ws_handler))
+        .route(
+            "/api/messages/:message/attachments/:index",
+            get(attachment_handler),
+        )
         .fallback(static_file_handler)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             basic_auth_middleware,
         ))
         .with_state(state)
+}
+
+/// A message's attachment, as a download: never shown by the browser in
+/// uplink's origin, where an HTML one could act as the page.
+async fn attachment_handler(
+    State(state): State<AppState>,
+    extract::Path((message, index)): extract::Path<(i64, u32)>,
+) -> Response {
+    match state
+        .services
+        .mail
+        .attachment(uplink_protocol::mail::MessageId(message), index)
+        .await
+    {
+        Ok((name, mime, content)) => {
+            let name = name.unwrap_or_else(|| format!("attachment-{index}"));
+            (
+                [
+                    (header::CONTENT_TYPE, mime),
+                    (
+                        header::CONTENT_DISPOSITION,
+                        format!("attachment; filename*=UTF-8''{}", percent_encode(&name)),
+                    ),
+                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
+                    (header::CONTENT_SECURITY_POLICY, "sandbox".to_owned()),
+                ],
+                content,
+            )
+                .into_response()
+        }
+        Err(e) if e.code == ErrorCode::NotFound => {
+            (StatusCode::NOT_FOUND, e.message).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.message).into_response(),
+    }
+}
+
+/// RFC 5987 encoding, for `filename*`: all but unreserved characters.
+fn percent_encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 async fn index_handler() -> impl IntoResponse {
@@ -686,6 +737,28 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn attachments_need_auth_and_an_existing_message() {
+        let get = |auth: bool| {
+            let mut request = Request::builder().uri("/api/messages/7/attachments/0");
+            if auth {
+                request = request.header(
+                    header::AUTHORIZATION,
+                    basic_auth_header(TEST_USER, TEST_PASS),
+                );
+            }
+            build_app(test_state()).oneshot(request.body(Body::empty()).unwrap())
+        };
+        assert_eq!(get(false).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(get(true).await.unwrap().status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn attachment_names_are_percent_encoded() {
+        assert_eq!(percent_encode("Résumé 1.pdf"), "R%C3%A9sum%C3%A9%201.pdf");
+        assert_eq!(percent_encode("a\"b;c"), "a%22b%3Bc");
     }
 
     #[tokio::test]

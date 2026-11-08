@@ -98,6 +98,21 @@ describe('mail', () => {
     expect(frame.srcdoc).toContain('img-src data: https: http:')
   })
 
+  it('lists the files attached to a message, to download', async () => {
+    const first = server.deliver('work', 'With files')
+    server.attachments.set(first.message, [
+      { index: 0, name: null, mime: 'image/png', size: 10, inline: true },
+      { index: 1, name: 'report.pdf', mime: 'application/pdf', size: 123456, inline: false },
+    ])
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('{Enter}')
+    const list = await screen.findByRole('list', { name: 'Attachments' })
+    const link = within(list).getByRole('link', { name: 'report.pdf' })
+    expect(link.getAttribute('href')).toBe(`/api/messages/${first.message}/attachments/1`)
+    expect(link.getAttribute('download')).toBe('report.pdf')
+    expect(list.textContent).toBe('report.pdf 121 KB')
+  })
+
   it('archives the open message and returns to the list', async () => {
     const user = await start('/mail/work/INBOX')
     await user.keyboard('{Enter}')

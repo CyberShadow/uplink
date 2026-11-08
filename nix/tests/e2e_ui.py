@@ -194,7 +194,22 @@ def trash(page):
     return {"trashed": first, "trash": subjects(page)}
 
 
-STEPS = {f.__name__: f for f in [read, archive, undo, label, search, reply, matrix, todos, history, trash]}
+def attachment(page):
+    """Opens the message with a file attached, and downloads the file."""
+    rows = page.get_by_role("list", name="Messages").get_by_role("listitem")
+    rows.filter(has_text="Quarterly figures").click()
+    files = page.get_by_role("list", name="Attachments")
+    expect(files).to_contain_text("figures.pdf")
+    page.screenshot(path=f"{SHOTS}/attachment.png")
+    with page.expect_download() as download:
+        files.get_by_role("link", name="figures.pdf").click()
+    path = download.value.path()
+    with open(path, "rb") as f:
+        content = f.read().decode()
+    return {"name": download.value.suggested_filename, "content": content}
+
+
+STEPS = {f.__name__: f for f in [read, archive, undo, label, search, reply, matrix, todos, history, trash, attachment]}
 
 step = STEPS[sys.argv[1]]
 with sync_playwright() as p:

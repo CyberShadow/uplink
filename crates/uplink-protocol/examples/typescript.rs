@@ -45,6 +45,7 @@ fn main() {
         Entry,
         ListPosition,
         MessageContent,
+        Attachment,
         EntriesAdded,
         EntriesRemoved,
         LabelsChanged,

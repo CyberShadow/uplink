@@ -135,7 +135,29 @@ date_sent: number | null, body_text: string,
  * The HTML body, sanitized, if the message has one. It may refer to
  * remote resources, which clients should not load unasked.
  */
-body_html: string | null, };
+body_html: string | null, attachments: Array<Attachment>, };
+
+/**
+ * A part of a message other than its body. Its content is had over HTTP:
+ * `/api/messages/{message}/attachments/{index}`.
+ */
+export type Attachment = { index: number, 
+/**
+ * The file name the message gives it, if any.
+ */
+name: string | null, 
+/**
+ * `type/subtype`.
+ */
+mime: string, 
+/**
+ * Decoded, in bytes.
+ */
+size: number, 
+/**
+ * An image the HTML body shows, rather than a file attached.
+ */
+inline: boolean, };
 
 export type EntriesAdded = { entries: Array<EntryId>, };
 

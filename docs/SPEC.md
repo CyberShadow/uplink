@@ -1133,8 +1133,8 @@ IMAP's per-folder copies, and a REST fake is practical to test against
   `<random@account.uplink>`; the Date when it is sent.
 - **Replies and forwards** are prefilled by the client from the loaded
   message: `Re:`/`Fwd:` subject, recipients (reply-all drops the
-  account's own address), and the body quoted. Attachments are not
-  supported yet.
+  account's own address), and the body quoted. Attaching files is not
+  supported yet (ROADMAP).
 
 ### 8.6 Persistence of sent mail
 
@@ -1190,8 +1190,18 @@ origin only so that it can be sized to its content; popups so that links,
 with `<base target=_blank>`, open in a new tab), under a CSP of
 `default-src 'none'; img-src data:; style-src 'unsafe-inline'`: nothing
 remote loads, so tracking pixels and remote fonts don't, until the user
-asks to show remote images for the message. Inline `cid:` images are not
-shown yet. Messages without an HTML part show their text.
+asks to show remote images for the message. The message's own images
+(`<img src="cid:…">`) are inlined by the server as `data:` URIs, so the
+CSP need not change; `cid:` anywhere else is dropped. Messages without
+an HTML part show their text.
+
+Attachments: `LoadMessage` lists the message's parts other than its body
+(name, MIME type, decoded size; `inline` if the HTML body shows it), and
+`GET /api/messages/{message}/attachments/{index}` (behind basic auth,
+like everything) serves one as a download: `Content-Disposition:
+attachment`, `nosniff`, and `Content-Security-Policy: sandbox`, so that
+an HTML attachment opened anyway cannot act as uplink's page. Sending
+attachments is not supported yet.
 
 ---
 
@@ -1816,7 +1826,9 @@ themes following the system (`color-scheme`, so native controls follow
 too; HTML mail keeps its white paper); `#` and `!` with Gmail's hiding
 of Trash and Spam, and All Mail (`ga`) (§8.1); joining and leaving
 Matrix rooms (§9.7); search and lists under 100 ms on a 50,000-message
-mailbox (§8.7).
+mailbox (§8.7); attachments listed and downloaded, and inline images
+shown (§8.9). Not done: attaching files when composing; list
+virtualization (lists load a page at a time as they scroll).
 
 ### Why this ordering
 

@@ -5,6 +5,7 @@
 import type { Requester } from '../connection'
 import { RequestError } from '../connection'
 import type {
+  Attachment,
   Account,
   ClientRequest,
   Draft,
@@ -206,6 +207,8 @@ export class FakeServer implements Requester {
 
   /** HTML bodies by message, for messages that have one. */
   readonly html = new Map<number, string>()
+  /** Attachments by message, for messages that have some. */
+  readonly attachments = new Map<number, Attachment[]>()
 
   labelsOf(entry: EntryId): LabelId[] {
     return this.entries.find((e) => e.id === entry)!.labels
@@ -267,6 +270,7 @@ export class FakeServer implements Requester {
             date_sent: entry.received_at / 1000,
             body_text: `Body of ${entry.subject}`,
             body_html: this.html.get(entry.message) ?? null,
+            attachments: this.attachments.get(entry.message) ?? [],
           },
         }
       }
