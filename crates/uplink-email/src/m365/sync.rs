@@ -7,14 +7,10 @@
 //! are the labels UNREAD, STARRED and IMPORTANT, and categories are labels
 //! `cat:<name>`.
 
-use super::{
-    api::{Delta, Flag, FlagStatus, Graph, Importance, Message, MessageUpdate},
-    oauth,
-};
+use super::api::{Delta, Flag, FlagStatus, Graph, Importance, Message, MessageUpdate};
 use crate::{
     account::{Account, Pending, Provider, SendError, SyncTask},
     mailbox::{EntryLabels, LabelChange, LabelsPushed, MailboxObserved, NewEntry, ObservedLabel},
-    oauth::Credentials,
 };
 use anyhow::{bail, Context, Result};
 use futures_util::{stream, StreamExt, TryStreamExt};
@@ -22,12 +18,10 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     path::Path,
-    sync::Arc,
     time::Duration,
 };
 use uplink_config::M365AccountConfig;
 use uplink_protocol::mail::EntryId;
-use uplink_storage::seal::MasterKey;
 use uplink_tx_log::Dispatcher;
 
 pub const KIND: &str = "m365";
@@ -64,19 +58,16 @@ struct SyncState {
     folders: BTreeMap<String, String>,
 }
 
-/// The sync task of `config`'s account, storing mail under `data_root`.
+/// The sync task of `config`'s account, reaching it through `graph` and
+/// storing mail under `data_root`.
 pub fn task(
     config: &M365AccountConfig,
-    key: Arc<MasterKey>,
-    http: reqwest::Client,
+    graph: Graph,
     dispatcher: Dispatcher,
     data_root: &Path,
 ) -> Result<SyncTask<M365Sync>> {
-    let credentials = Credentials::new(http.clone(), oauth::grant(config), key);
     Ok(SyncTask::new(
-        M365Sync {
-            graph: Graph::new(http, &config.oauth.resource, credentials),
-        },
+        M365Sync { graph },
         config.id.clone(),
         config.address.clone(),
         dispatcher,
@@ -312,7 +303,7 @@ impl M365Sync {
         };
         let mut items = vec![];
         loop {
-            let Some(page) = self.graph.delta(&url).await? else {
+            let Some(page) = self.graph.delta::<Delta>(&url).await? else {
                 if full {
                     bail!("Graph refused to list folder {}", folder.name);
                 }

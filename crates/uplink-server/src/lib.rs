@@ -103,8 +103,8 @@ pub fn start_syncs(config: &Config, services: &Services) -> Result<()> {
                 tokio::spawn(sync.run());
             }
             AccountConfig::M365(account) => {
-                let sync =
-                    m365::sync::task(account, key.clone(), http.clone(), dispatcher.clone(), root)?;
+                let graph = m365::api::Graph::of(account, key.clone(), http.clone());
+                let sync = m365::sync::task(account, graph, dispatcher.clone(), root)?;
                 info!(account = account.id, "starting Microsoft 365 sync");
                 tokio::spawn(sync.run());
             }

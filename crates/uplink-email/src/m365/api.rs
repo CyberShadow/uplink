@@ -6,10 +6,13 @@ use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use reqwest::{header, Method, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::sync::Arc;
+use uplink_config::M365AccountConfig;
+use uplink_storage::seal::MasterKey;
 
-/// Ids that stay the same when a message moves between folders, and
-/// pages of a size that keeps requests few.
-const PREFER: &str = "IdType=\"ImmutableId\", odata.maxpagesize=100";
+/// Ids that stay the same when a message moves between folders, times in
+/// UTC, and pages of a size that keeps requests few.
+const PREFER: &str = "IdType=\"ImmutableId\", outlook.timezone=\"UTC\", odata.maxpagesize=100";
 
 /// The message properties sync needs.
 const SELECT: &str =
@@ -82,9 +85,10 @@ pub enum Delta {
     Message(Message),
 }
 
+/// A page of a delta query, of `T`s.
 #[derive(Debug, Deserialize)]
-pub struct DeltaPage {
-    pub value: Vec<Delta>,
+pub struct DeltaPage<T> {
+    pub value: Vec<T>,
     #[serde(rename = "@odata.nextLink")]
     pub next_link: Option<String>,
     #[serde(rename = "@odata.deltaLink")]
@@ -122,6 +126,12 @@ struct List<T> {
 }
 
 impl Graph {
+    /// The account's Graph, with its token sealed under `key`.
+    pub fn of(config: &M365AccountConfig, key: Arc<MasterKey>, http: reqwest::Client) -> Self {
+        let credentials = Credentials::new(http.clone(), super::oauth::grant(config), key);
+        Self::new(http, &config.oauth.resource, credentials)
+    }
+
     /// The API of `resource`, e.g. `https://graph.microsoft.com`.
     pub fn new(http: reqwest::Client, resource: &str, credentials: Credentials) -> Self {
         Self {
@@ -163,7 +173,7 @@ impl Graph {
 
     /// A page of a delta query, at a next or delta link; `None` if the
     /// delta link has expired, and the folder needs listing anew.
-    pub async fn delta(&self, link: &str) -> Result<Option<DeltaPage>> {
+    pub async fn delta<T: DeserializeOwned>(&self, link: &str) -> Result<Option<DeltaPage<T>>> {
         let response = self.send::<()>(Method::GET, link, None).await?;
         if response.status() == StatusCode::GONE {
             return Ok(None);
@@ -259,7 +269,8 @@ impl Graph {
         unreachable!("the second attempt returns")
     }
 
-    fn url(&self, path: &str) -> String {
+    /// The URL of `path` below `/me`.
+    pub fn url(&self, path: &str) -> String {
         format!("{}{path}", self.base)
     }
 
@@ -347,7 +358,7 @@ mod tests {
 
     #[test]
     fn delta_items_are_messages_or_removals() {
-        let page: DeltaPage = serde_json::from_str(
+        let page: DeltaPage<Delta> = serde_json::from_str(
             r#"{"value": [
                 {"id": "a", "@removed": {"reason": "deleted"}},
                 {"id": "b", "parentFolderId": "f", "conversationId": "c",
