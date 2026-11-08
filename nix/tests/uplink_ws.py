@@ -26,7 +26,7 @@ def session():
     context = ssl.create_default_context(cafile=os.environ["UPLINK_CA"])
     credentials = f"{os.environ['UPLINK_USER']}:{os.environ['UPLINK_PASSWORD']}"
     return connect(
-        os.environ["UPLINK_URL"],
+        os.environ["UPLINK_URL"].replace("https://", "wss://", 1) + "/ws",
         ssl=context,
         subprotocols=["uplink.v1"],
         additional_headers={
