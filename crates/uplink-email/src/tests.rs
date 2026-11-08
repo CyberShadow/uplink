@@ -14,7 +14,7 @@ use uplink_protocol::{
 };
 use uplink_realtime::Hub;
 use uplink_storage::rusqlite::{params, Connection};
-use uplink_tx_log::{Dispatcher, Registry, UndoError};
+use uplink_tx_log::{Conflict, Dispatcher, Registry, UndoError};
 
 pub(crate) struct Db {
     pub dir: TempDir,
@@ -455,6 +455,100 @@ async fn set_labels_undo_redo() {
             row("m1", "INBOX", true, true),
             row("m2", "INBOX", false, true)
         ]
+    );
+}
+
+#[tokio::test]
+async fn an_entry_is_in_one_folder() {
+    let db = Db::new();
+    let store = db.store();
+    let folders = ["INBOX", "ARCHIVE", "TRASH", "Folder_1", "Folder_2"]
+        .into_iter()
+        .map(|id| ObservedLabel {
+            external_id: id.into(),
+            name: id.into(),
+            system: !id.starts_with("Folder_"),
+            folder: true,
+        })
+        .chain(labels(&["UNREAD"]).unwrap())
+        .collect();
+    db.observe(
+        "a",
+        observed(
+            Some(folders),
+            vec![new_entry(
+                &store,
+                "m1",
+                &["INBOX", "UNREAD"],
+                &raw("1@x", "s@x", DATE, "1", ""),
+            )],
+            vec![],
+            &[],
+        ),
+    )
+    .await;
+    let m1 = db.entry("m1");
+    let change = |label: &str, desired| LabelChange {
+        entry: m1,
+        label: db.label("a", label),
+        desired,
+    };
+    let desired = |db: &Db| -> Vec<String> {
+        db.label_rows()
+            .into_iter()
+            .filter(|r| r.2)
+            .map(|r| r.1)
+            .collect()
+    };
+    let mut live = db.hub.subscribe();
+
+    // Archiving puts it in the Archive.
+    let archived = db
+        .dispatcher
+        .dispatch(SetLabels {
+            changes: vec![change("INBOX", false)],
+        })
+        .await
+        .unwrap();
+    assert_eq!(live.recv().await.unwrap().description, "Archived 1 message");
+    assert_eq!(desired(&db), ["ARCHIVE", "UNREAD"]);
+    // Undo takes it out again.
+    db.dispatcher.undo(archived).await.unwrap();
+    live.recv().await.unwrap();
+    assert_eq!(desired(&db), ["INBOX", "UNREAD"]);
+
+    // Labelling with a folder moves it there; other labels stay.
+    db.dispatcher
+        .dispatch(SetLabels {
+            changes: vec![change("Folder_1", true)],
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        live.recv().await.unwrap().description,
+        "Labelled 1 message 'Folder_1'"
+    );
+    assert_eq!(desired(&db), ["Folder_1", "UNREAD"]);
+    db.dispatcher
+        .dispatch(SetLabels {
+            changes: vec![change("TRASH", true), change("UNREAD", false)],
+        })
+        .await
+        .unwrap();
+    live.recv().await.unwrap();
+    assert_eq!(desired(&db), ["TRASH"]);
+
+    // Into two folders at once: refused.
+    let e = db
+        .dispatcher
+        .dispatch(SetLabels {
+            changes: vec![change("Folder_1", true), change("Folder_2", true)],
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        e.downcast::<Conflict>().unwrap().0,
+        "a message is in one folder at a time"
     );
 }
 

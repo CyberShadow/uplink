@@ -12,7 +12,7 @@ use crate::{
     parse::{self, Parsed},
     store::VariantHash,
 };
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use uplink_protocol::{
@@ -510,6 +510,11 @@ fn set_label_row(
 /// Sets the desired membership of labels on entries. Changes that are
 /// already in effect are skipped, so the inverse reverts exactly what this
 /// op changed (SPEC §6.2).
+///
+/// An entry is in exactly one of its account's folders, if the account has
+/// them (SPEC §8.3): adding a folder takes the entry out of the others, and
+/// removing its last one puts it in the Archive. Those implied changes are
+/// part of the op, and of its inverse, but not of its description.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SetLabels {
@@ -532,7 +537,25 @@ impl Op for SetLabels {
         let mut events = vec![];
         // (label, desired) → entries changed
         let mut groups: BTreeMap<(LabelId, bool), usize> = BTreeMap::new();
-        for change in self.changes {
+        let mut entries: Vec<EntryId> = vec![];
+        for change in &self.changes {
+            if !entries.contains(&change.entry) {
+                entries.push(change.entry);
+            }
+        }
+        let mut changes = vec![];
+        for entry in entries {
+            let requested: Vec<LabelChange> = self
+                .changes
+                .iter()
+                .filter(|c| c.entry == entry)
+                .copied()
+                .collect();
+            let implied = implied_by_folders(tx, entry, &requested)?;
+            changes.extend(requested.into_iter().map(|c| (c, false)));
+            changes.extend(implied.into_iter().map(|c| (c, true)));
+        }
+        for (change, implied) in changes {
             let entry_account: String = tx
                 .query_row(
                     "SELECT account_id FROM mail_entry WHERE id = ?1",
@@ -562,7 +585,9 @@ impl Op for SetLabels {
             }
             set_label_row(tx, change.entry, change.label, change.desired, observed)?;
             inverse.push(LabelChange { desired, ..change });
-            *groups.entry((change.label, change.desired)).or_default() += 1;
+            if !implied {
+                *groups.entry((change.label, change.desired)).or_default() += 1;
+            }
             events.push(LabelState {
                 entry: change.entry,
                 label: change.label,
@@ -590,6 +615,71 @@ impl Op for SetLabels {
                 changes: events,
             })],
         })
+    }
+}
+
+/// The changes that keep `entry` in exactly one folder, given the
+/// `requested` ones; none if its account has no folders.
+fn implied_by_folders(
+    tx: &Transaction,
+    entry: EntryId,
+    requested: &[LabelChange],
+) -> Result<Vec<LabelChange>> {
+    let account: Option<String> = tx
+        .query_row(
+            "SELECT account_id FROM mail_entry WHERE id = ?1",
+            [entry.0],
+            |r| r.get(0),
+        )
+        .optional()?;
+    // Refused below, as the entry is gone.
+    let Some(account) = account else {
+        return Ok(vec![]);
+    };
+    let folders: BTreeMap<LabelId, String> = tx
+        .prepare("SELECT id, external_id FROM label WHERE account_id = ?1 AND folder")?
+        .query_map([&account], |r| Ok((LabelId(r.get(0)?), r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    if folders.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut desired: BTreeSet<LabelId> = tx
+        .prepare(
+            "SELECT el.label FROM entry_label el JOIN label l ON l.id = el.label
+             WHERE el.entry = ?1 AND el.desired AND l.folder",
+        )?
+        .query_map([entry.0], |r| Ok(LabelId(r.get(0)?)))?
+        .collect::<Result<_, _>>()?;
+    let mut added = vec![];
+    for change in requested.iter().filter(|c| folders.contains_key(&c.label)) {
+        if change.desired {
+            desired.insert(change.label);
+            added.push(change.label);
+        } else {
+            desired.remove(&change.label);
+        }
+    }
+    let implied = |label, desired| LabelChange {
+        entry,
+        label,
+        desired,
+    };
+    match &added[..] {
+        [] if desired.is_empty() => {
+            let archive = folders
+                .iter()
+                .find(|(_, external_id)| *external_id == "ARCHIVE")
+                .map(|(&id, _)| id)
+                .with_context(|| format!("account {account} has folders, but no Archive"))?;
+            Ok(vec![implied(archive, true)])
+        }
+        [] => Ok(vec![]),
+        &[into] => Ok(desired
+            .into_iter()
+            .filter(|&f| f != into)
+            .map(|f| implied(f, false))
+            .collect()),
+        _ => bail!(Conflict("a message is in one folder at a time".into())),
     }
 }
 
