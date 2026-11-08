@@ -8,8 +8,7 @@ use std::path::{Path, PathBuf};
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub server: ServerConfig,
-    #[serde(default)]
-    pub data: Option<DataConfig>,
+    pub data: DataConfig,
     #[serde(default)]
     pub master_key_file: Option<PathBuf>,
     #[serde(default)]
@@ -119,6 +118,8 @@ pub enum ConfigSection {
     Accounts,
     /// Restart required per SPEC §3.3.
     Bind,
+    /// Restart required: the database is opened once at startup.
+    Data,
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +132,9 @@ pub fn diff_config_sections(old: &Config, new: &Config) -> Vec<ConfigSection> {
     let mut changed = Vec::new();
     if old.server.bind != new.server.bind {
         changed.push(ConfigSection::Bind);
+    }
+    if old.data != new.data {
+        changed.push(ConfigSection::Data);
     }
     if old.server.tls != new.server.tls {
         changed.push(ConfigSection::Tls);
@@ -366,10 +370,7 @@ accounts:
 
         assert_eq!(cfg.server.bind, "0.0.0.0:8443");
         assert_eq!(cfg.server.tls.cert, "/etc/uplink/cert.pem");
-        assert_eq!(
-            cfg.data.as_ref().unwrap().root,
-            PathBuf::from("/var/lib/uplink")
-        );
+        assert_eq!(cfg.data.root, PathBuf::from("/var/lib/uplink"));
         assert_eq!(
             cfg.master_key_file,
             Some(PathBuf::from("/etc/uplink/master.key"))
@@ -404,6 +405,8 @@ server:
   basic_auth:
     user: alice
     password_bcrypt: "$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+data:
+  root: /tmp/uplink
 "#;
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(yaml.as_bytes()).unwrap();
@@ -411,7 +414,7 @@ server:
         assert_eq!(cfg.server.bind, "127.0.0.1:8443");
         assert_eq!(cfg.server.basic_auth.user, "alice");
         assert!(cfg.accounts.is_empty());
-        assert!(cfg.data.is_none());
+        assert_eq!(cfg.data.root, PathBuf::from("/tmp/uplink"));
         assert!(cfg.master_key_file.is_none());
     }
 
@@ -425,6 +428,8 @@ server:
   basic_auth:
     user: alice
     password_bcrypt: "$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+data:
+  root: /tmp/uplink
 "#;
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(yaml.as_bytes()).unwrap();
@@ -442,6 +447,8 @@ server:
   basic_auth:
     user: alice
     password_bcrypt: "$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+data:
+  root: /tmp/uplink
 accounts:
   - id: bad
     kind: exchange
@@ -468,6 +475,8 @@ server:
   basic_auth:
     user: alice
     password_bcrypt: "$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+data:
+  root: /tmp/uplink
 accounts:
   - id: alice-gmail
     kind: gmail
@@ -489,6 +498,8 @@ server:
     user: alice
     password_bcrypt: "$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
   unknown_top_level_key: oops
+data:
+  root: /tmp/uplink
 "#;
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(yaml.as_bytes()).unwrap();
@@ -510,7 +521,9 @@ server:
                     password_bcrypt: "hash".into(),
                 },
             },
-            data: None,
+            data: DataConfig {
+                root: PathBuf::from("/tmp/uplink"),
+            },
             master_key_file: None,
             accounts: vec![],
         }
@@ -556,6 +569,17 @@ server:
     }
 
     #[test]
+    fn diff_detects_data_change() {
+        let old = base_config();
+        let mut new = old.clone();
+        new.data.root = PathBuf::from("/tmp/elsewhere");
+        assert_eq!(
+            diff_config_sections(&old, &new),
+            vec![ConfigSection::Data]
+        );
+    }
+
+    #[test]
     fn diff_detects_accounts_change() {
         let old = base_config();
         let mut new = old.clone();
@@ -575,7 +599,7 @@ server:
 
     fn write_minimal_config(path: &Path, cert: &str, key: &str, bind: &str) {
         let yaml = format!(
-            "server:\n  bind: \"{bind}\"\n  tls:\n    cert: \"{cert}\"\n    key: \"{key}\"\n  basic_auth:\n    user: alice\n    password_bcrypt: \"$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"\n"
+            "server:\n  bind: \"{bind}\"\n  tls:\n    cert: \"{cert}\"\n    key: \"{key}\"\n  basic_auth:\n    user: alice\n    password_bcrypt: \"$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"\ndata:\n  root: /tmp/uplink\n"
         );
         std::fs::write(path, yaml).unwrap();
     }
@@ -635,7 +659,7 @@ server:
         // Rewrite the config with a changed password_bcrypt, keeping bind
         // the same so only BasicAuth shows up in the diff.
         let new_yaml = format!(
-            "server:\n  bind: \"127.0.0.1:8443\"\n  tls:\n    cert: \"{}\"\n    key: \"{}\"\n  basic_auth:\n    user: alice\n    password_bcrypt: \"NEWHASH\"\n",
+            "server:\n  bind: \"127.0.0.1:8443\"\n  tls:\n    cert: \"{}\"\n    key: \"{}\"\n  basic_auth:\n    user: alice\n    password_bcrypt: \"NEWHASH\"\ndata:\n  root: /tmp/uplink\n",
             cert_path.display(),
             key_path.display()
         );
@@ -714,7 +738,7 @@ server:
         // Add an account to the config, keeping bind the same so only
         // Accounts shows up in the diff.
         let new_yaml = format!(
-            "server:\n  bind: \"127.0.0.1:8443\"\n  tls:\n    cert: \"{cert}\"\n    key: \"{key}\"\n  basic_auth:\n    user: alice\n    password_bcrypt: \"$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"\naccounts:\n  - id: mx\n    kind: matrix\n    homeserver: \"https://matrix.example.org\"\n    mxid: \"@alice:example.org\"\n    state_dir: /tmp/mx\n",
+            "server:\n  bind: \"127.0.0.1:8443\"\n  tls:\n    cert: \"{cert}\"\n    key: \"{key}\"\n  basic_auth:\n    user: alice\n    password_bcrypt: \"$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"\ndata:\n  root: /tmp/uplink\naccounts:\n  - id: mx\n    kind: matrix\n    homeserver: \"https://matrix.example.org\"\n    mxid: \"@alice:example.org\"\n    state_dir: /tmp/mx\n",
             cert = cert_path.display(),
             key = key_path.display()
         );

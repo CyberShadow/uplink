@@ -144,7 +144,8 @@ fn write_config(
     key_path: &Path,
 ) {
     let yaml = format!(
-        "server:\n  bind: \"127.0.0.1:0\"\n  tls:\n    cert: {cert}\n    key: {key}\n  basic_auth:\n    user: alice\n    password_bcrypt: \"$2b$04$G1zE/xiQeRXdPalTbG/Quu55uU6n5a9ICljrYbTpceT/qklM.0yay\"\n",
+        "server:\n  bind: \"127.0.0.1:0\"\n  tls:\n    cert: {cert}\n    key: {key}\n  basic_auth:\n    user: alice\n    password_bcrypt: \"$2b$04$G1zE/xiQeRXdPalTbG/Quu55uU6n5a9ICljrYbTpceT/qklM.0yay\"\ndata:\n  root: {data}\n",
+        data = config_path.parent().unwrap().join("data").display(),
         cert = cert_path.display(),
         key = key_path.display()
     );

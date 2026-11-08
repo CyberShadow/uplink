@@ -1,5 +1,5 @@
 # uplink sample / development configuration
-# All fields parsed; only server.* is consumed in M2.
+# All fields parsed; server.* and data.* are consumed so far.
 # DO NOT USE IN PRODUCTION — credentials and certs are obvious placeholders.
 
 # ── server ──────────────────────────────────────────────────────────────────
@@ -16,7 +16,7 @@ server:
 
 # ── data location ───────────────────────────────────────────────────────────
 data:
-  root: ./data   # created on first run (M3+)
+  root: ./data   # created on first run
 
 # ── master key ──────────────────────────────────────────────────────────────
 # 32-byte random key, base64. Used to seal OAuth refresh tokens at rest.

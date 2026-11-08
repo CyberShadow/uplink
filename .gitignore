@@ -5,3 +5,4 @@ web/node_modules/
 web/package-lock.json
 crates/uplink-server/static/*
 !crates/uplink-server/static/.gitkeep
+/data/

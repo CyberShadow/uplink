@@ -227,6 +227,9 @@ async fn handle_config_changed(
         ConfigSection::Bind => {
             tracing::warn!("config: bind changed — restart required (ignored)");
         }
+        ConfigSection::Data => {
+            tracing::warn!("config: data changed — restart required (ignored)");
+        }
     }
 }
 
