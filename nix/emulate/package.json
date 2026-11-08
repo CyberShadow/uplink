@@ -1,0 +1,9 @@
+{
+  "name": "uplink-test-emulate",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Pins vercel-labs/emulate, used as the provider fake in integration tests",
+  "dependencies": {
+    "emulate": "0.13.0"
+  }
+}

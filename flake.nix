@@ -86,9 +86,13 @@
           cargoExtraArgs = "--bin uplink";
         });
 
+        # Provider fakes for integration tests.
+        emulate = pkgs.callPackage ./nix/emulate { };
+
       in {
         # ── packages ───────────────────────────────────────────────────────
         packages = {
+          inherit emulate;
           default = uplinkBin;
           uplink = uplinkBin;
           uplinkWeb = uplinkWeb;
