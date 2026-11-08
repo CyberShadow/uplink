@@ -1,7 +1,7 @@
 //! What uplink takes from a raw message: identity, listing headers and the
 //! text to index (SPEC §4.4–4.5).
 
-use mail_parser::{Address, HeaderName, MessageParser};
+use mail_parser::{Address, HeaderName, MessageParser, PartType};
 
 /// Characters of body text shown in message lists.
 const SNIPPET_CHARS: usize = 200;
@@ -87,6 +87,42 @@ pub fn parse(raw: &[u8]) -> Parsed {
     }
 }
 
+/// The message's HTML body, if it has one, sanitized for display: no
+/// scripts, event handlers or forms; styles and presentational attributes
+/// stay, since mail layout depends on them. Remote resources are left in
+/// place for the client to block or allow (SPEC §8.9).
+pub fn html_body(raw: &[u8]) -> Option<String> {
+    let message = MessageParser::new().parse(raw)?;
+    let PartType::Html(html) = &message.html_part(0)?.body else {
+        // A text-only message: its text part stands in as the HTML one.
+        return None;
+    };
+    Some(
+        ammonia::Builder::default()
+            .rm_clean_content_tags(["style"])
+            .add_tags(["style", "font", "center"])
+            .add_generic_attributes([
+                "style",
+                "class",
+                "id",
+                "width",
+                "height",
+                "align",
+                "valign",
+                "bgcolor",
+                "color",
+                "border",
+                "cellpadding",
+                "cellspacing",
+                "face",
+                "size",
+                "dir",
+            ])
+            .clean(html)
+            .to_string(),
+    )
+}
+
 fn addresses(address: Option<&Address>) -> Vec<String> {
     address
         .into_iter()
@@ -168,6 +204,24 @@ mod tests {
     fn reply_to_is_ignored_outside_lists() {
         let p = parse(&raw("From: a@example.com\nReply-To: b@example.com", "hi"));
         assert_eq!(p.senders, ["a@example.com"]);
+    }
+
+    #[test]
+    fn html_bodies_are_sanitized() {
+        let html = html_body(&raw(
+            "From: a@example.com\nContent-Type: text/html",
+            "<style>p { color: red }</style><p style=\"margin: 0\" onclick=\"x()\">Hi\
+             <script>alert(1)</script><img src=\"https://t.example/p.gif\"></p>",
+        ))
+        .unwrap();
+        assert!(html.contains("<style>p { color: red }</style>"), "{html}");
+        assert!(html.contains("style=\"margin: 0\""), "{html}");
+        assert!(html.contains("https://t.example/p.gif"), "{html}");
+        assert!(
+            !html.contains("onclick") && !html.contains("script"),
+            "{html}"
+        );
+        assert_eq!(html_body(&raw("From: a@example.com", "plain")), None);
     }
 
     #[test]

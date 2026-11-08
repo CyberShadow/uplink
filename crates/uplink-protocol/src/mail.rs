@@ -84,6 +84,9 @@ pub struct MessageContent {
     /// The `Date:` header, unix seconds.
     pub date_sent: Option<i64>,
     pub body_text: String,
+    /// The HTML body, sanitized, if the message has one. It may refer to
+    /// remote resources, which clients should not load unasked.
+    pub body_html: Option<String>,
 }
 
 // ── events ────────────────────────────────────────────────────────────────

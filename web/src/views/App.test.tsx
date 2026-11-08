@@ -82,6 +82,19 @@ describe('mail', () => {
     expect(focusedSubject()).toBe('Third')
   })
 
+  it('shows an HTML body in a sandbox, remote images only when asked', async () => {
+    const first = server.deliver('work', 'Newsletter')
+    server.html.set(first.message, '<p>Hello <img src="https://t.example/pixel.gif"></p>')
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('{Enter}')
+    const frame = (await screen.findByTitle('Message body')) as HTMLIFrameElement
+    expect(frame.getAttribute('sandbox')).not.toContain('allow-scripts')
+    expect(frame.srcdoc).toContain('<p>Hello <img src="https://t.example/pixel.gif"></p>')
+    expect(frame.srcdoc).toContain("img-src data:;")
+    await user.click(screen.getByRole('button', { name: 'Show them' }))
+    expect(frame.srcdoc).toContain('img-src data: https: http:')
+  })
+
   it('archives the open message and returns to the list', async () => {
     const user = await start('/mail/work/INBOX')
     await user.keyboard('{Enter}')

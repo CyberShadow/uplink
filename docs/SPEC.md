@@ -720,7 +720,8 @@ than it buffers is closed; the client reconnects and resumes.
 - `ListAccounts` — mail accounts with their labels and counts.
 - `ListEntries { label, after, limit }` — a page of a label, newest first.
 - `Search { query, limit }` — FTS5 cross-account search.
-- `LoadMessage { message }` — fetch full body (text; sanitized HTML at M6).
+- `LoadMessage { message }` — headers, the text body, and the sanitized
+  HTML body if there is one (§8.9).
 - `LoadRoomTimeline { room_id, before_event_id, limit }`.
 - `Undo { tx_log_id }`.
 - `ListDrafts`, `ListOutbox` — all drafts; outbox items not yet synced
@@ -1123,6 +1124,19 @@ syntax.
 - **Provider requests fail** (network, 5xx): retry with backoff (1s, 2s,
   4s, 8s, 16s, 30s, 60s cap). Log warning at 5 m of continuous failure.
 - **Gmail / Graph 429**: respect `Retry-After`. Backoff in the same units.
+
+### 8.9 Displaying HTML mail
+
+`LoadMessage` returns the message's first `text/html` part, sanitized
+with ammonia: scripts, event handlers and forms go; `<style>` and
+presentational attributes stay, since mail layout depends on them. The
+client shows it in an `<iframe srcdoc>` sandboxed without scripts (same
+origin only so that it can be sized to its content; popups so that links,
+with `<base target=_blank>`, open in a new tab), under a CSP of
+`default-src 'none'; img-src data:; style-src 'unsafe-inline'`: nothing
+remote loads, so tracking pixels and remote fonts don't, until the user
+asks to show remote images for the message. Inline `cid:` images are not
+shown yet. Messages without an HTML part show their text.
 
 ---
 

@@ -6,6 +6,7 @@ import { keepFocus, useKeymap } from '../keymap'
 import type { MailStore, View } from '../stores/mail'
 import { respond, type Response } from '../compose/reply'
 import { mailPath, searchPath } from './App'
+import { HtmlBody } from './HtmlBody'
 import { LabelPicker } from './LabelPicker'
 import { labelName } from './Nav'
 import { composePath } from './Outgoing'
@@ -239,7 +240,11 @@ function MessageView(props: { mail: MailStore; entry: Entry }) {
             <dt>Date</dt>
             <dd>{new Date(content.date_sent === null ? entry.received_at : content.date_sent * 1000).toLocaleString()}</dd>
           </dl>
-          <pre class={styles.body}>{content.body_text}</pre>
+          {content.body_html === null ? (
+            <pre class={styles.body}>{content.body_text}</pre>
+          ) : (
+            <HtmlBody html={content.body_html} />
+          )}
         </>
       )}
     </article>

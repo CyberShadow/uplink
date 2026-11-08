@@ -104,6 +104,9 @@ export class FakeServer implements Requester {
     this.observe(account, [{ type: 'labels_changed', changes: [change] }])
   }
 
+  /** HTML bodies by message, for messages that have one. */
+  readonly html = new Map<number, string>()
+
   labelsOf(entry: EntryId): LabelId[] {
     return this.entries.find((e) => e.id === entry)!.labels
   }
@@ -157,6 +160,7 @@ export class FakeServer implements Requester {
             cc_addrs: [],
             date_sent: entry.received_at / 1000,
             body_text: `Body of ${entry.subject}`,
+            body_html: this.html.get(entry.message) ?? null,
           },
         }
       }

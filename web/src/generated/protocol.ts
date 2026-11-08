@@ -108,7 +108,12 @@ export type MessageContent = { id: MessageId, message_id: string, subject: strin
 /**
  * The `Date:` header, unix seconds.
  */
-date_sent: number | null, body_text: string, };
+date_sent: number | null, body_text: string, 
+/**
+ * The HTML body, sanitized, if the message has one. It may refer to
+ * remote resources, which clients should not load unasked.
+ */
+body_html: string | null, };
 
 export type EntriesAdded = { entries: Array<EntryId>, };
 

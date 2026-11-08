@@ -3,7 +3,7 @@
 use crate::{
     compose::{self, CancelSend, DeleteDraft, EditDraft, PutDraft, SendDraft},
     mailbox::{LabelChange, SetLabels},
-    parse::parse,
+    parse::{html_body, parse},
     query::{self, ConfiguredAccount},
     store::{MailStore, VariantHash},
 };
@@ -117,6 +117,7 @@ impl Mail {
                     cc_addrs: parsed.cc_addrs,
                     date_sent: parsed.date_sent,
                     body_text: parsed.body_text,
+                    body_html: html_body(&raw),
                 },
             })
         })

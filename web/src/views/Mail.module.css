@@ -96,3 +96,14 @@
   padding: 16px;
   color: var(--muted);
 }
+
+.html {
+  display: block;
+  width: 100%;
+  border: none;
+}
+
+.remote {
+  margin: 0 0 8px;
+  color: var(--muted);
+}
