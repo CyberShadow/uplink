@@ -279,6 +279,11 @@ accounts:
 | `server.basic_auth` | Update in-memory hash. New requests authenticate against new hash. |
 | `accounts[].oauth.*` | Re-issue refresh token if file changed; restart that account's sync task. |
 | `accounts[]` add/remove | Spawn / shut down sync task. Push `AccountListChanged` to clients. |
+
+Account changes currently require a restart (logged and ignored, like
+`server.bind`); applying them live is deferred to M10. A sync task
+re-reads its token file on every refresh, so re-running `uplink oauth
+init` needs no restart.
 | `server.bind` | **Restart required.** Logged as warning, ignored at runtime. |
 
 ### 3.4 Why not env vars / multiple files
@@ -1399,8 +1404,15 @@ operator and `fail2ban` on the system handles brute-force concerns.
   pastes the URL it was redirected to back into the CLI. The CLI exchanges
   the code for refresh+access token, seals the refresh token (see §13.4),
   writes it to `accounts/alice-gmail.token`.
-- Runtime: server reads sealed token at startup, unseals with `master_key`,
-  uses `oauth2` crate to refresh on each access-token expiry.
+- Runtime: the account's sync task unseals the token with `master_key`
+  on each access-token refresh (so a re-authorization takes effect
+  without a restart), and re-seals it if Google rotates it. A refused
+  refresh (`invalid_grant`) is retried with backoff like any failure
+  until the account is authorized again.
+- The token requests are a few form POSTs, made directly with `reqwest`
+  (no `oauth2` crate). Google's endpoints are configurable per account
+  (`endpoints: { auth, token, api }`, defaulting to Google's), so tests
+  point them at a fake (§15.10).
 
 ### 13.3 OAuth flow (M365 with Outlook impersonation)
 
@@ -1451,8 +1463,11 @@ requires the URN-form redirect URI:
 - `master.key` is a 32-byte file generated once by `uplink keygen` and
   stored at `master_key_file` (default `/etc/uplink/master.key`, mode 0400
   owned by the uplink user).
-- Token files contain `chacha20poly1305(master_key, nonce, refresh_token)
-  || nonce`. Library: `chacha20poly1305` crate (RustCrypto).
+- Token files contain `nonce || chacha20poly1305(master_key, nonce,
+  refresh_token)`, with the account id as associated data, so a token
+  file opens only for the account it was written for. Written to a
+  temporary file (mode 0600) and renamed into place. Library:
+  `chacha20poly1305` crate (RustCrypto).
 - Why bother, given the trust boundary is server-disk: blast-radius
   reduction. A `cat` of a token file on a debugging session, a misplaced
   backup tarball, a btrfs snapshot copied to a less-secure machine — none
@@ -1690,8 +1705,8 @@ but the OAuth crate to the client_id.
 ### 15.4 Refresh-token rotation under Outlook impersonation
 
 Microsoft sometimes rotates refresh tokens on every refresh; sometimes
-not. The `oauth2` crate handles either, but our token-file persistence
-must atomically replace the token on every refresh. **Decision**: write
+not. Our token-file persistence must atomically replace the token on
+every refresh that returns a new one. **Decision**: write
 to `tokens.<id>.<random>.tmp` and `rename(2)` over the canonical file.
 Acknowledged design; nothing to spike.
 
@@ -1966,7 +1981,8 @@ would add a third subscription — out of scope for MVP.
 | `mail-parser`             | RFC 5322 + MIME parsing                                    |
 | `mail-builder`            | Outbound MIME assembly                                     |
 | `ammonia`                 | Server-side HTML sanitizer                                 |
-| `reqwest` + `oauth2`      | HTTPS + OAuth                                              |
+| `reqwest`                 | HTTPS, including the OAuth token requests                  |
+| `clap`                    | CLI (`serve`, `keygen`, `oauth init`)                      |
 | `matrix-sdk`              | Matrix client with E2EE                                    |
 | `notify`                  | inotify config reload                                      |
 | `chacha20poly1305`        | OAuth token sealing                                        |

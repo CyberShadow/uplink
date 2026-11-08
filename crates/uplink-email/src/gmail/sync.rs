@@ -6,10 +6,14 @@
 //! fetch is always recorded before the next push starts, a stale fetch can
 //! never be recorded over a push and revert it.
 
-use super::api::{BatchModify, Format, Gmail, Message};
+use super::{
+    api::{BatchModify, Format, Gmail, Message},
+    oauth::Credentials,
+};
 use crate::{
     mailbox::{EntryLabels, LabelChange, LabelsPushed, MailboxObserved, NewEntry, ObservedLabel},
     parse::parse,
+    seal::MasterKey,
     store::MailStore,
 };
 use anyhow::{Context, Result};
@@ -17,10 +21,12 @@ use futures_util::{stream, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashSet},
+    path::Path,
     sync::{Arc, Mutex},
     time::Duration,
 };
 use tokio::sync::broadcast::{self, error::RecvError};
+use uplink_config::GmailAccountConfig;
 use uplink_protocol::{
     mail::{EntryId, LabelId},
     LogEntry, Source,
@@ -56,6 +62,25 @@ pub struct Sync {
 }
 
 impl Sync {
+    /// The sync task of `account`, storing mail under `data_root`.
+    pub fn new(
+        account: &GmailAccountConfig,
+        key: Arc<MasterKey>,
+        http: reqwest::Client,
+        dispatcher: Dispatcher,
+        data_root: &Path,
+    ) -> Result<Self> {
+        let credentials = Credentials::new(http.clone(), account.clone(), key);
+        Ok(Self {
+            account: account.id.clone(),
+            gmail: Gmail::new(http, &account.endpoints.api, credentials),
+            dispatcher,
+            reader: uplink_storage::open_reader(data_root)?,
+            store: MailStore::new(data_root),
+            poll_interval: POLL_INTERVAL,
+        })
+    }
+
     /// Runs until the process exits, retrying failures with backoff.
     pub async fn run(self) {
         Task {

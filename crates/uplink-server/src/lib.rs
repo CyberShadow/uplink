@@ -25,9 +25,10 @@ use tokio_rustls::TlsAcceptor;
 use tower::Service;
 use tracing::info;
 use uplink_config::{
-    AccountConfig, BasicAuthConfig, Config, ConfigChanged, ConfigSection, Watcher,
+    AccountConfig, BasicAuthConfig, Config, ConfigChanged, ConfigSection, GmailAccountConfig,
+    Watcher,
 };
-use uplink_email::{query::ConfiguredAccount, service::Mail};
+use uplink_email::{gmail::sync::Sync, query::ConfiguredAccount, seal::MasterKey, service::Mail};
 use uplink_protocol::{ClientRequest, ErrorCode, ServerError, ServerResponse, TxLogId};
 use uplink_realtime::{Backend, Hub, Replay};
 use uplink_tx_log::{Dispatcher, LogReader, Registry, UndoError};
@@ -47,24 +48,11 @@ struct AppState {
     services: Services,
 }
 
-pub fn run() -> Result<()> {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?
-        .block_on(run_async())
-}
-
-async fn run_async() -> Result<()> {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "uplink=info".into()),
-        )
-        .try_init();
-
-    let config_path = parse_config_flag();
+/// Runs the server for the config at `config_path` until it fails.
+pub async fn serve(config_path: PathBuf) -> Result<()> {
     let config = Config::load(&config_path)?;
     let services = open(&config, Registry::new())?;
+    start_syncs(&config, &services)?;
 
     let bind: SocketAddr = config
         .server
@@ -76,6 +64,41 @@ async fn run_async() -> Result<()> {
     info!("listening on https://{}", bind);
 
     serve_with_listener(config, config_path, listener, services).await
+}
+
+/// Starts the sync task of every configured account.
+pub fn start_syncs(config: &Config, services: &Services) -> Result<()> {
+    let gmail: Vec<&GmailAccountConfig> = config
+        .accounts
+        .iter()
+        .filter_map(|account| match account {
+            AccountConfig::Gmail(gmail) => Some(gmail),
+            AccountConfig::M365(_) | AccountConfig::Matrix(_) => None,
+        })
+        .collect();
+    // The master key is needed only to unseal OAuth tokens.
+    if gmail.is_empty() {
+        return Ok(());
+    }
+    let key = Arc::new(MasterKey::load(
+        config
+            .master_key_file
+            .as_ref()
+            .context("master_key_file is required with OAuth accounts")?,
+    )?);
+    let http = reqwest::Client::new();
+    for account in gmail {
+        let sync = Sync::new(
+            account,
+            key.clone(),
+            http.clone(),
+            services.dispatcher.clone(),
+            &config.data.root,
+        )?;
+        info!(account = account.id, "starting Gmail sync");
+        tokio::spawn(sync.run());
+    }
+    Ok(())
 }
 
 /// What answers clients: the database's only writer, a reader for replay,
@@ -259,12 +282,7 @@ async fn handle_config_changed(
             }
         },
         ConfigSection::Accounts => {
-            if let Ok(cfg) = Config::load(config_path) {
-                info!(
-                    "config: accounts section changed ({} accounts) — no-op in M2",
-                    cfg.accounts.len()
-                );
-            }
+            tracing::warn!("config: accounts changed — restart required (ignored)");
         }
         ConfigSection::Bind => {
             tracing::warn!("config: bind changed — restart required (ignored)");
@@ -483,21 +501,6 @@ pub fn build_tls_server_config(cert_pem: &[u8], key_pem: &[u8]) -> Result<Arc<Se
         .context("building TLS ServerConfig")?;
 
     Ok(Arc::new(sc))
-}
-
-fn parse_config_flag() -> PathBuf {
-    let args: Vec<String> = std::env::args().collect();
-    let mut i = 1;
-    while i < args.len() {
-        if args[i] == "--config" && i + 1 < args.len() {
-            return PathBuf::from(&args[i + 1]);
-        }
-        if let Some(path) = args[i].strip_prefix("--config=") {
-            return PathBuf::from(path);
-        }
-        i += 1;
-    }
-    PathBuf::from("uplink.yaml")
 }
 
 #[cfg(test)]

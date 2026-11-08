@@ -27,8 +27,8 @@ tokio = { version = "1", features = ["full"] }
 tokio-rustls = "0.26"
 tower = "0.5"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uplink-email = { version = "0.1.0", path = "../uplink-email" }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
 uplink-tx-log = { path = "../uplink-tx-log", features = ["test-ops"] }
