@@ -14,11 +14,6 @@ rather than enumerated. Anything left intentionally open is in §15.
 
 - `docs/VISION.md` — goals, non-goals.
 - `docs/ROADMAP.md` — MVP scope by complement (i.e. what's *not* in MVP).
-- `/home/vladimir/work/.cydo/tasks/22672/output.md` — stack research (Rust,
-  M365 Outlook-impersonation, hybrid storage, real-time transport).
-- `/home/vladimir/work/.cydo/tasks/22673/output.md` — Matrix UI research
-  (Option 1: build on uplink's WS protocol, with DOMPurify + markdown-it +
-  emoji-mart + linkifyjs + ~600 LoC of Matrix-aware code).
 
 ---
 
@@ -153,7 +148,7 @@ uplink/
 │   └── uplink-cli/                  # `uplink matrix pair`, `uplink migrate`
 ├── web/                             # Preact SPA (Vite)
 │   ├── package.json
-│   ├── vite.config.ts               # mirrors cydo's proxy + auth pattern
+│   ├── vite.config.ts               # dev proxy to the backend
 │   ├── src/
 │   │   ├── main.tsx
 │   │   ├── connection.ts            # WS manager + reconnect
@@ -1252,7 +1247,7 @@ beyond preact-iso. No CSS framework — hand-written CSS modules.
 
 ### 12.2 Vite config
 
-Mirroring the cydo pattern (proxy + auth forwarding):
+Dev server proxying API and WebSocket traffic to the backend:
 
 ```ts
 // web/vite.config.ts
@@ -1717,7 +1712,7 @@ for MVP.
 ### 15.10 Test infrastructure
 
 CI runs exactly `nix flake check`. No separate workflow YAML to drift; the
-flake is the source of truth. Mirrors the pattern in `../cydo`.
+flake is the source of truth.
 
 **Flake checks (each runs independently and parallel-friendly):**
 
