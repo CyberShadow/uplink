@@ -33,6 +33,7 @@ fn main() {
         ServerError,
         ErrorCode,
         LogEntry,
+        HistoryEntry,
         Source,
         ServerEvent,
         MessageId,

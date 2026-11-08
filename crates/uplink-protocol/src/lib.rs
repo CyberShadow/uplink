@@ -85,6 +85,12 @@ pub enum ClientRequest {
     Undo {
         tx_log_id: TxLogId,
     },
+    /// The user's ops, newest first, starting before `before` (SPEC §6.3):
+    /// what can be undone, and what was.
+    ListHistory {
+        before: Option<TxLogId>,
+        limit: u32,
+    },
     /// The configured mail accounts and their labels.
     ListAccounts,
     /// Entries carrying `label`, newest first, starting after `after`.
@@ -238,6 +244,12 @@ pub enum ServerResponse {
         as_of: TxLogId,
         todos: Vec<todos::Todo>,
     },
+    History {
+        as_of: TxLogId,
+        entries: Vec<HistoryEntry>,
+        /// Whether there are earlier ones than those listed.
+        more: bool,
+    },
 }
 
 impl ServerResponse {
@@ -254,7 +266,8 @@ impl ServerResponse {
             | Self::Rooms { as_of, .. }
             | Self::Timeline { as_of, .. }
             | Self::MatrixOutbox { as_of, .. }
-            | Self::Todos { as_of, .. } => Some(*as_of),
+            | Self::Todos { as_of, .. }
+            | Self::History { as_of, .. } => Some(*as_of),
             // Message content does not change.
             Self::Message { .. } => None,
         }
@@ -298,6 +311,15 @@ pub struct LogEntry {
     pub undoes: Option<TxLogId>,
     /// What the entry changed, for clients to apply to their state.
     pub events: Vec<ServerEvent>,
+}
+
+/// A user's op as the history lists it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct HistoryEntry {
+    pub entry: LogEntry,
+    /// The entry that undid it, if it was undone.
+    pub undone_by: Option<TxLogId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

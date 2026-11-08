@@ -424,3 +424,42 @@ async fn replay_of_empty_log() {
     assert_eq!(replay.head, TxLogId(0));
     assert_eq!(replay.entries.unwrap(), vec![]);
 }
+
+#[tokio::test]
+async fn history_lists_user_ops_newest_first_with_their_undos() {
+    let mut f = fixture();
+    let first = f
+        .dispatcher
+        .dispatch(SampleInsert { id: 1, x: 1 })
+        .await
+        .unwrap();
+    f.dispatcher
+        .observe("acct".into(), SampleObserved { id: 2, x: 2 })
+        .await
+        .unwrap();
+    f.dispatcher
+        .dispatch(SampleInsert { id: 3, x: 3 })
+        .await
+        .unwrap();
+    let undo = f.dispatcher.undo(first).await.unwrap();
+    let published = f.published();
+
+    let reader = f.reader(10);
+    let (head, entries, more) = reader.history(None, 10).await.unwrap();
+    assert_eq!(head, undo);
+    assert!(!more);
+    // The observation is not the user's.
+    let listed: Vec<(i64, Option<TxLogId>)> = entries
+        .iter()
+        .map(|h| (h.entry.id.0, h.undone_by))
+        .collect();
+    assert_eq!(listed, [(4, None), (3, None), (1, Some(undo))]);
+    assert_eq!(entries[0].entry, published[3]);
+
+    let (_, page, more) = reader.history(None, 2).await.unwrap();
+    assert_eq!(page.len(), 2);
+    assert!(more);
+    let (_, rest, more) = reader.history(Some(page[1].entry.id), 2).await.unwrap();
+    assert_eq!(rest.iter().map(|h| h.entry.id.0).collect::<Vec<_>>(), [1]);
+    assert!(!more);
+}

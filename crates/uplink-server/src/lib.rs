@@ -41,6 +41,8 @@ use uplink_tx_log::{Dispatcher, LogReader, Registry, UndoError};
 const HUB_CAPACITY: usize = 4096;
 /// A reconnecting client further behind than this reloads instead.
 const MAX_REPLAY: usize = 4096;
+/// The most history entries one request may ask for.
+const MAX_HISTORY: u32 = 500;
 
 #[derive(Embed)]
 #[folder = "static/"]
@@ -413,6 +415,24 @@ impl Backend for Services {
                 .await
                 .map(|id| ServerResponse::Undone { tx_log_id: id })
                 .map_err(undo_error),
+            ClientRequest::ListHistory { before, limit } => {
+                if !(1..=MAX_HISTORY).contains(&limit) {
+                    return Err(ServerError {
+                        code: ErrorCode::Invalid,
+                        message: format!("limit must be between 1 and {MAX_HISTORY}"),
+                    });
+                }
+                let (as_of, entries, more) = self
+                    .reader
+                    .history(before, limit)
+                    .await
+                    .map_err(uplink_tx_log::answer::internal)?;
+                Ok(ServerResponse::History {
+                    as_of,
+                    entries,
+                    more,
+                })
+            }
             ClientRequest::ListAccounts => self.mail.list_accounts().await,
             ClientRequest::ListEntries {
                 label,

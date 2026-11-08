@@ -23,6 +23,7 @@ export type Action =
   | 'done'
   | 'delete'
   | 'add'
+  | 'undo'
   | 'compose'
   | 'reply'
   | 'replyAll'
@@ -34,6 +35,7 @@ export type Action =
   | 'goSent'
   | 'goDrafts'
   | 'goTodos'
+  | 'goHistory'
   | 'search'
   | 'help'
 
@@ -63,6 +65,7 @@ export const KEYMAP: Binding[] = [
   { action: 'done', keys: ['e'], label: 'e', help: 'Mark done, or not done (in to-dos)' },
   { action: 'delete', keys: ['[Shift]+#'], label: '#', help: 'Delete (in to-dos)' },
   { action: 'add', keys: ['a'], label: 'a', help: 'Add a to-do (in to-dos)' },
+  { action: 'undo', keys: ['z'], label: 'z', help: 'Undo or redo (in history)' },
   { action: 'compose', keys: ['c'], label: 'c', help: 'Compose' },
   { action: 'reply', keys: ['r'], label: 'r', help: 'Reply (in a room: write a message)' },
   { action: 'replyAll', keys: ['a'], label: 'a', help: 'Reply all' },
@@ -74,6 +77,7 @@ export const KEYMAP: Binding[] = [
   { action: 'goSent', keys: ['g t'], label: 'g t', help: 'Go to Sent' },
   { action: 'goDrafts', keys: ['g d'], label: 'g d', help: 'Go to Drafts' },
   { action: 'goTodos', keys: ['g k'], label: 'g k', help: 'Go to To-dos' },
+  { action: 'goHistory', keys: ['g h'], label: 'g h', help: 'Go to History (undo anything)' },
   { action: 'search', keys: ['/'], label: '/', help: 'Search' },
   { action: 'help', keys: ['[Shift]+?'], label: '?', help: 'Keyboard shortcuts' },
 ]

@@ -156,7 +156,26 @@ def todos(page):
     return {"flagged": first, "todos": titles}
 
 
-STEPS = {f.__name__: f for f in [read, archive, undo, label, search, reply, matrix, todos]}
+def history(page):
+    """Lists what was done, then undoes the latest with z."""
+    page.keyboard.press("g")
+    page.keyboard.press("h")
+    items = page.get_by_role("list", name="History").get_by_role("listitem")
+    expect(items).not_to_have_count(0)
+    before = items.count()
+    latest = items.first.locator("[class*=description]").inner_text()
+    page.keyboard.press("z")
+    expect(items).to_have_count(before + 1)
+    expect(items.nth(1)).to_contain_text("undone")
+    page.screenshot(path=f"{SHOTS}/history.png")
+    return {
+        "undid": latest,
+        "descriptions": [item.locator("[class*=description]").inner_text() for item in items.all()],
+        "undone": [item.locator("[class*=description]").inner_text() for item in items.filter(has_text="undone").all()],
+    }
+
+
+STEPS = {f.__name__: f for f in [read, archive, undo, label, search, reply, matrix, todos, history]}
 
 step = STEPS[sys.argv[1]]
 with sync_playwright() as p:

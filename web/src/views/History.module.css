@@ -1,0 +1,44 @@
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  flex: 1;
+}
+
+.item {
+  display: grid;
+  grid-template-columns: 9em 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 4px 16px 4px 12px;
+  border-bottom: 1px solid var(--line);
+  border-left: 4px solid transparent;
+  min-height: 28px;
+}
+
+.focused {
+  border-left-color: var(--accent);
+}
+
+.time,
+.state {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.description {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.undone .description {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.placeholder {
+  padding: 16px;
+  color: var(--muted);
+}

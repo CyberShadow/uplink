@@ -25,6 +25,7 @@ async function start(path = '/') {
   client.reset()
   if (path.startsWith('/rooms/')) await screen.findByRole('list', { name: 'Timeline' })
   else if (path === '/todos') await screen.findByRole('region', { name: 'To-dos' })
+  else if (path === '/history') await screen.findByRole('list', { name: 'History' })
   else await screen.findByRole('list', { name: 'Messages' })
   return userEvent.setup()
 }
@@ -324,5 +325,28 @@ describe('to-dos', () => {
 
     await user.keyboard('j#')
     await waitFor(() => expect(todoTitles()).toEqual(['Pay the rent']))
+  })
+})
+
+describe('history', () => {
+  const items = () => within(screen.getByRole('list', { name: 'History' })).getAllByRole('listitem')
+
+  it('lists what was done, newest first, and undoes and redoes with z', async () => {
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('e')
+    await waitFor(() => expect(subjects()).toEqual(['Second', 'Third']))
+    await user.keyboard('gh')
+    await screen.findByRole('list', { name: 'History' })
+    expect(items().map((i) => i.querySelector('[class*=description]')!.textContent)).toEqual([
+      server.lastDescription(),
+    ])
+
+    await user.keyboard('z')
+    await waitFor(() => expect(items()).toHaveLength(2))
+    expect(within(items()[0]).getByRole('button').textContent).toBe('Redo')
+    expect(within(items()[1]).queryByRole('button')).toBeNull()
+    expect(items()[1].textContent).toContain('undone')
+    await user.keyboard('gi')
+    await waitFor(() => expect(subjects()).toEqual(['First', 'Second', 'Third']))
   })
 })

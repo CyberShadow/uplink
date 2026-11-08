@@ -736,7 +736,8 @@ than it buffers is closed; the client reconnects and resumes.
 - `ListRooms` — Matrix accounts and their rooms with unread counts;
   `ListTimeline { room, page, limit }` — the latest events, or those
   before or after one, oldest first; `ListMatrixOutbox`.
-- `Undo { tx_log_id }`.
+- `Undo { tx_log_id }`; `ListHistory { before, limit }` — the user's
+  ops, newest first, each with the entry that undid it, if any (§6.3).
 - `ListDrafts`, `ListOutbox` — all drafts; outbox items not yet synced
   back.
 - One request per op kind the client can dispatch, answered with the
@@ -841,6 +842,13 @@ The `Undo { tx_log_id }` request:
 
 Redo of an undo is just "undo the undo entry". This means the user can
 toggle back and forth.
+
+The history view (`/history`, M10) lists the user's ops, newest first,
+from `ListHistory` (a partial index on `tx_log(id) WHERE account_id IS
+NULL` keeps that quick however many observations syncing records), with
+Undo on each not yet undone, and Redo on undo entries. The client loads
+it once per connection and then applies the entries that follow: a
+user's op goes on top, an undo marks the entry it undid.
 
 ### 6.4 Mass operations
 
@@ -1395,12 +1403,13 @@ src/views/
 ├── Outgoing.tsx           # drafts and the mail outbox
 ├── Room.tsx               # a Matrix room: timeline and composer
 ├── Todos.tsx              # the to-do list
+├── History.tsx            # the user's ops, with Undo
 ├── SearchBox.tsx
 ├── NoticeBar.tsx          # the last op, with Undo
 └── Help.tsx               # keyboard shortcuts
 ```
 
-Planned: calendar, the transaction log.
+Planned: calendar.
 
 ### 12.5 Keyboard shortcuts
 
@@ -1433,10 +1442,12 @@ focuses the box that adds one, `e` marks done or not, `#` deletes, and
 `o`/`Enter` opens a flagged to-do's message, or renames any other (as
 double-clicking its title does).
 
-- **No `z` for undo.** Undo lives in the transaction log view and as an
-  optional toast immediately after each mutating op. `z` overloads
-  unhelpfully when search/compose has focus, and the tx_log is the
-  better surface for the multi-step undo we actually support.
+- **No global `z` for undo.** Undo lives in the history view and in the
+  notice shown after each op. A global `z` would have to mean "undo the
+  latest op", which is not always the one the user has in mind; the
+  history is the better surface for the multi-step undo we support.
+  Within the history (`gh`), `j`/`k` move and `z` undoes, or redoes, the
+  focused entry.
 
 ### 12.6 Client state
 
@@ -2068,7 +2079,7 @@ visible. Routes (handled by `preact-iso`):
 | `/matrix/:account/space/:space`        | Space overview (deferred)              |
 | `/calendar/:account`                   | Calendar (week/month)                  |
 | `/todos`                               | Todo list                              |
-| `/log`                                 | Transaction log (Undo UI)              |
+| `/history`                             | The user's ops, with Undo (§6.3)       |
 
 ### 16.3 Nav tree as a WS query
 

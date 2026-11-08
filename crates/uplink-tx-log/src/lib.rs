@@ -16,7 +16,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
     time::{SystemTime, UNIX_EPOCH},
 };
-use uplink_protocol::{LogEntry, ServerEvent, Source, TxLogId};
+use uplink_protocol::{HistoryEntry, LogEntry, ServerEvent, Source, TxLogId};
 use uplink_realtime::{Hub, Replay};
 use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 
@@ -430,6 +430,50 @@ impl LogReader {
             _ => None,
         };
         Ok(Replay { head, entries })
+    }
+}
+
+impl LogReader {
+    /// Up to `limit` of the user's ops before `before`, newest first, and
+    /// whether there are more; as of the head it returns.
+    pub async fn history(
+        self: &Arc<Self>,
+        before: Option<TxLogId>,
+        limit: u32,
+    ) -> Result<(TxLogId, Vec<HistoryEntry>, bool)> {
+        let reader = self.clone();
+        match tokio::task::spawn_blocking(move || reader.history_blocking(before, limit)).await {
+            Ok(r) => r,
+            Err(e) => std::panic::resume_unwind(e.into_panic()),
+        }
+    }
+
+    fn history_blocking(
+        &self,
+        before: Option<TxLogId>,
+        limit: u32,
+    ) -> Result<(TxLogId, Vec<HistoryEntry>, bool)> {
+        let mut conn = self.conn.lock().expect("database connection poisoned");
+        let tx = conn.transaction()?;
+        let head = as_of(&tx)?;
+        let mut entries: Vec<HistoryEntry> = tx
+            .prepare(
+                "SELECT id, ts, account_id, description, op_type, undoes, events_json, undone_by
+                 FROM tx_log WHERE account_id IS NULL AND id < ?1 ORDER BY id DESC LIMIT ?2",
+            )?
+            .query_map(
+                params![before.map_or(i64::MAX, |b| b.0), i64::from(limit) + 1],
+                |r| {
+                    Ok(HistoryEntry {
+                        entry: log_entry(r)?,
+                        undone_by: r.get::<_, Option<i64>>(7)?.map(TxLogId),
+                    })
+                },
+            )?
+            .collect::<Result<_, _>>()?;
+        let more = entries.len() > limit as usize;
+        entries.truncate(limit as usize);
+        Ok((head, entries, more))
     }
 }
 

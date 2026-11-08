@@ -3,6 +3,7 @@
 import type { Requester } from '../connection'
 import type { LogEntry } from '../generated/protocol'
 import { DraftStore } from './drafts'
+import { HistoryStore } from './history'
 import { MailStore } from './mail'
 import { MatrixStore } from './matrix'
 import { Ops } from './ops'
@@ -14,6 +15,7 @@ export class Client {
   readonly drafts: DraftStore
   readonly matrix: MatrixStore
   readonly todos: TodoStore
+  readonly history: HistoryStore
 
   constructor(server: Requester) {
     this.ops = new Ops(server)
@@ -21,6 +23,7 @@ export class Client {
     this.drafts = new DraftStore(server, this.ops)
     this.matrix = new MatrixStore(server, this.ops)
     this.todos = new TodoStore(server, this.ops)
+    this.history = new HistoryStore(server)
   }
 
   /** Everything is void; load afresh. */
@@ -29,6 +32,7 @@ export class Client {
     this.drafts.reset()
     this.matrix.reset()
     this.todos.reset()
+    this.history.reset()
   }
 
   apply(entry: LogEntry) {
@@ -37,5 +41,6 @@ export class Client {
     this.drafts.apply(entry)
     this.matrix.apply(entry)
     this.todos.apply(entry)
+    this.history.apply(entry)
   }
 }

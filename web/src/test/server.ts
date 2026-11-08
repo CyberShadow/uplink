@@ -48,6 +48,8 @@ export class FakeServer implements Requester {
   private entries: Entry[] = []
   private log: LogEntry[] = []
   private undoable = new Map<number, Undoable>()
+  /** The entry being undone, while its inverse commits. */
+  private undoing: number | null = null
   private nextLabel = 1
   private nextEntry = 1
 
@@ -266,7 +268,25 @@ export class FakeServer implements Requester {
         if (!op) throw new RequestError({ code: 'not_undoable', message: 'not undoable' })
         if (op.undone) throw new RequestError({ code: 'already_undone', message: 'already undone' })
         op.undone = true
-        return { type: 'undone', tx_log_id: op.revert() }
+        this.undoing = body.tx_log_id
+        try {
+          return { type: 'undone', tx_log_id: op.revert() }
+        } finally {
+          this.undoing = null
+        }
+      }
+      case 'list_history': {
+        const user = this.log.filter((e) => e.source.type === 'user' && e.id < (body.before ?? Infinity))
+        const page = user.reverse().slice(0, body.limit)
+        return {
+          type: 'history',
+          as_of: this.head(),
+          entries: page.map((entry) => ({
+            entry,
+            undone_by: this.log.find((e) => e.undoes === entry.id)?.id ?? null,
+          })),
+          more: user.length > body.limit,
+        }
       }
       case 'list_drafts':
         return { type: 'drafts', as_of: this.head(), drafts: [...this.drafts.values()] }
@@ -485,12 +505,16 @@ export class FakeServer implements Requester {
       source,
       description,
       op_type: 'test',
-      undoes: null,
+      undoes: this.undoing,
       events,
     }
     this.log.push(entry)
     this.client.apply(entry)
     return entry.id
+  }
+
+  lastDescription(): string {
+    return this.log.at(-1)!.description
   }
 
   private head(): number {

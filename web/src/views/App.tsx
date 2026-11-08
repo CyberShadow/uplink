@@ -7,6 +7,7 @@ import { ServicesContext, useServices } from '../context'
 import { useKeymap } from '../keymap'
 import type { Client } from '../stores/client'
 import { Help } from './Help'
+import { History } from './History'
 import { Mail } from './Mail'
 import { Nav } from './Nav'
 import { NoticeBar } from './NoticeBar'
@@ -19,9 +20,9 @@ import styles from './App.module.css'
 const Compose = lazy(() => import('./Compose'))
 
 export function App(props: { client: Client; status: ReadonlySignal<Status> }) {
-  const { ops, mail, drafts, matrix, todos } = props.client
+  const { ops, mail, drafts, matrix, todos, history } = props.client
   return (
-    <ServicesContext.Provider value={{ ops, mail, drafts, matrix, todos, status: props.status }}>
+    <ServicesContext.Provider value={{ ops, mail, drafts, matrix, todos, history, status: props.status }}>
       <LocationProvider>
         <Shell />
       </LocationProvider>
@@ -30,7 +31,7 @@ export function App(props: { client: Client; status: ReadonlySignal<Status> }) {
 }
 
 function Shell() {
-  const { mail, drafts, matrix, todos, status } = useServices()
+  const { mail, drafts, matrix, todos, history, status } = useServices()
   const { route, path } = useLocation()
   const [help, setHelp] = useState(false)
 
@@ -49,6 +50,7 @@ function Shell() {
     goSent: go('SENT'),
     goDrafts: () => route('/drafts'),
     goTodos: () => route('/todos'),
+    goHistory: () => route('/history'),
     compose: async () => {
       const id = account()
       if (!id) return
@@ -59,7 +61,7 @@ function Shell() {
     help: () => setHelp((shown) => !shown),
   })
 
-  const error = mail.error.value ?? drafts.error.value ?? matrix.error.value ?? todos.error.value
+  const error = mail.error.value ?? drafts.error.value ?? matrix.error.value ?? todos.error.value ?? history.error.value
   return (
     <div class={styles.shell}>
       <header class={styles.header}>
@@ -79,6 +81,7 @@ function Shell() {
           <Route path="/search/:terms/:entry?" component={Mail} />
           <Route path="/message/:message" component={Mail} />
           <Route path="/todos" component={Todos} />
+          <Route path="/history" component={History} />
           <Route path="/compose/:draft" component={Compose} />
           <Route path="/drafts" component={Drafts} />
           <Route path="/outbox" component={Outbox} />

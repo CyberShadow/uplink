@@ -123,4 +123,11 @@ with subtest("flagging a message adds a to-do, which opens it"):
     ).splitlines()
     assert rows == [f"{result['flagged']}|1", "Book the train|0"], rows
 
+with subtest("the history lists the user's ops, and undoes any of them"):
+    result = ui("history")
+    assert "Added 'Book the train'" in result["descriptions"], result
+    # The undo step's archive, and the latest op, just now.
+    assert result["undid"] in result["undone"], result
+    assert any(d.startswith("Archived") for d in result["undone"]), result
+
 machine.copy_from_vm("/tmp/screenshots", "")

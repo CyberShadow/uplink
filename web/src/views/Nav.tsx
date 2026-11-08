@@ -50,6 +50,7 @@ export function Nav() {
       <ul>
         {link('/drafts', 'Drafts', drafts.drafts.value?.size ?? 0)}
         {link('/outbox', 'Outbox', drafts.outbox.value?.length ?? 0)}
+        {link('/history', 'History', 0)}
         {link('/todos', 'To-dos', todos.todos.value?.filter((t) => t.done_at === null).length ?? 0)}
       </ul>
       {mail.accounts.value?.map((account) => (
