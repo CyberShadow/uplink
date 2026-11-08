@@ -1,6 +1,7 @@
 .shell {
   display: grid;
-  grid-template: 'header header' auto 'nav content' 1fr / 220px 1fr;
+  /* The notice has a row of its own, so that it covers nothing. */
+  grid-template: 'header header' auto 'nav content' 1fr 'notice notice' auto / 220px 1fr;
   height: 100vh;
 }
 

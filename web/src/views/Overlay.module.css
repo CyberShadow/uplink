@@ -62,9 +62,9 @@
 }
 
 .notice {
-  position: fixed;
-  left: 24px;
-  bottom: 24px;
+  grid-area: notice;
+  justify-self: start;
+  margin: 8px 24px;
   display: flex;
   gap: 16px;
   align-items: center;
