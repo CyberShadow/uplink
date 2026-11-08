@@ -44,9 +44,8 @@ accounts:
   #   mxid: "@alice:example.org"
   #   state_dir: ./data/matrix/alice-matrix
   #
-  # Not implemented yet; the server ignores this kind with a warning.
-  #
-  # — Microsoft 365 —
+  # — Microsoft 365 — signed in as the Outlook desktop client
+  # (`uplink oauth init`; see README).
   # - id: alice-m365
   #   kind: m365
   #   address: alice@example.com

@@ -1148,10 +1148,45 @@ IMAP's per-folder copies, and a REST fake is practical to test against
   streaming mechanism that doesn't yet appear in public docs — and
   (b) implement whichever of EWS Streaming or its Graph successor is
   cheapest. Until then, polling is the only mechanism. See §15.11.
+- **Ids**: every request asks for immutable ids (`Prefer:
+  IdType="ImmutableId"`), so a message keeps its id when it moves, and
+  is one `mail_entry` whatever folder it is in.
 - **Threading**: use `conversationId` from each message.
-- **Folders**: Graph exposes mailFolders; each folder becomes a `label` row.
-  Categories (`categories: ["red", "blue"]`) become additional labels
-  prefixed with `cat:`.
+- **Folders**: Graph exposes mailFolders; each folder becomes a `label`
+  row marked as a folder, and an entry is in exactly one folder (§6.6,
+  `SetLabels`): adding a folder moves the entry out of its other one,
+  and removing its last one puts it in the Archive, as the web UI's
+  archive (`e`, removing INBOX) means. The well-known folders take the
+  ids of the Gmail system labels that mean the same, so the rest of
+  uplink treats both providers alike: `inbox` → `INBOX`, `sentitems` →
+  `SENT`, `drafts` → `DRAFT`, `deleteditems` → `TRASH`, `junkemail` →
+  `SPAM`, plus `archive` → `ARCHIVE`. The Outbox, and what is below it,
+  is left out, as Gmail has no counterpart. Other folders are keyed by
+  their Graph id and named by their path of display names
+  (`Inbox/Projects`).
+- **State labels**: `isRead` false is `UNREAD`, `flag.flagStatus`
+  `flagged` is `STARRED`, and `importance` `high` is `IMPORTANT`.
+  Categories (`categories: ["red", "blue"]`) become labels `cat:<name>`;
+  Graph has no list of them that a delta reports, so the account's
+  categories are those recorded plus those seen on messages.
+- **A poll round** follows each folder's delta link to its end, then
+  settles what left: a message moved is reported gone from one folder
+  and present in another, and the folders' links are read one after
+  another, so a removal is only acted on once every folder has been
+  read. A removal from a folder the entry was not last seen in is a
+  stale one and is ignored; a removal not explained by the message
+  being present elsewhere, an entry listed in two folders, or an entry
+  of a folder listed anew but not in the listing, is checked with `GET
+  /messages/{id}`: there, it is where it is; gone (404), it is removed.
+  The round's observations carry the new delta links
+  (`account.sync_state`: `{"folders": {<id>: <delta link>}}`); a round
+  that changes nothing records nothing. A delta link Graph has forgotten
+  (410 Gone) is replaced by listing that folder anew.
+- **Push**: a pending folder change is `POST /messages/{id}/move` to the
+  desired folder (by well-known name or id); read, flag, importance and
+  categories are one `PATCH /messages/{id}` with their desired values
+  (categories in full). A message gone meanwhile (404) is left to the
+  next round to remove.
 - **OAuth**: Outlook desktop client_id impersonation
   (`d3590ed6-52b3-4102-aeff-aad2292ab01c`). v1 endpoint, `resource=`
   parameter, no PKCE. See §13.3.
@@ -1159,9 +1194,12 @@ IMAP's per-folder copies, and a REST fake is practical to test against
 ### 8.4 M365 — send
 
 - **Transport**: `POST /me/sendMail` with the RFC 5322 message we built
-  (base64 MIME body), so our Message-ID is kept and the provider's copy
-  becomes a variant of the same logical message. Verify at M6 that Graph
-  preserves the Message-ID.
+  (base64 MIME, `Content-Type: text/plain`), so our Message-ID is kept
+  and the provider's copy in Sent Items becomes a variant of the same
+  logical message. Graph threads by the headers; there is no thread id
+  to pass. Message-ID preservation is confirmed against the emulator
+  only (§15.12). Graph takes MIME messages of up to 4 MB this way;
+  larger attachments would need an upload session (not done).
 - **OAuth scope required**: `Mail.Send`.
 
 ### 8.5 Compose
@@ -1660,8 +1698,10 @@ requires the URN-form redirect URI:
   redirect means AAD returns the code via a `Location: urn:...?code=...`
   header that the browser cannot follow — the user must extract the
   code from DevTools or from whatever results page AAD renders. The
-  CLI pairing step explains this and accepts any of the observed forms
-  (URN, full URL, "Success code=…" string, or bare code).
+  CLI pairing step (`uplink oauth init --account <id>`, which serves
+  both providers) explains this and accepts any of the observed forms
+  (URN, full URL, "Success code=…" string, or bare code), pasted on
+  standard input.
 - Authorize parameters: `response_type=code`, `redirect_uri=<URN>`,
   `response_mode=query`, `login_hint=<email>`,
   `resource=https://graph.microsoft.com` (or
@@ -1800,6 +1840,16 @@ server loses no persisted messages and resumes from the stored
 into the unified inbox alongside Gmail; the UI cleanly distinguishes
 which account each message is from; the delta-link survives restart.
 
+**State:** done against the emulator; not yet against a real tenant
+(§15.12). `crates/uplink-email/src/m365/` syncs as §8.3 has it; its
+tests (`tests/m365_sync.rs`) and the `integration-m365` VM test run
+against emulate's Graph (§15.10): pairing with the real CLI and a pasted
+code, first sync, new mail, archive and undo as moves, a move and a
+category made in Outlook, an expired delta link, sending, and a restart
+that records nothing. With more than one mail account, `/` is every
+account's Inbox as one list (`All inboxes`), each row naming its
+account.
+
 ### M6. Send + Compose + local Drafts
 
 - TipTap compose UI.
@@ -1812,7 +1862,8 @@ undoing a send within the delay keeps it from going out; the provider's
 copy of a sent message shows up within one sync interval as a second
 variant of the same logical message.
 
-**State:** done for Gmail. Graph `sendMail` waits for M5. "Switching tabs
+**State:** done; Graph `sendMail` against the emulator only (§15.12).
+"Switching tabs
 mid-edit" is covered by the compose session tests (an edit from another
 tab while typing, and while an edit is in flight), and by the e2e test,
 which writes one draft in two Chromium tabs, both typing at once, as
@@ -2009,9 +2060,10 @@ The plan rests on these assumptions, which I did not prototype:
   refuses startup if a previously applied migration's body has been
   edited. Worth a 30-min check.
 - **Graph delta sync stale-token recovery**: when the delta token
-  expires (Microsoft holds them ~7 days minimum, often much longer), the
-  recovery path is "full re-sync". I assume our code can detect this
-  (HTTP 410 Gone) and re-initialize without losing state. Worth verifying.
+  expires (Microsoft holds them ~7 days minimum, often much longer),
+  Graph answers 410 Gone, and uplink lists that folder anew (§8.3),
+  checking entries it last saw there but did not list. Tested against
+  the emulator, which answers 410 for a token it does not know.
 
 ### 15.8 Storage capacity planning
 
@@ -2102,9 +2154,18 @@ request).
   `messages.import` to deliver mail), which works in both modes, and
   clean up after themselves. Divergences found this way are fixed in the
   fake (upstream) or in uplink.
-- **M365 (Graph):** emulate's Microsoft emulator covers OAuth only, no
-  mail. Look for prior art at M5 start; otherwise a small Graph fake of
-  the endpoints uplink uses (delta, `$value`, sendMail, PATCH/move).
+- **M365 (Graph):** emulate's Microsoft emulator covered OAuth only, so
+  patch `0004` adds Graph mail to it: well-known and user folders
+  (`mailFolders`, `childFolders`), per-folder `messages/delta` with
+  next and delta links, `@removed` entries and 410 for an unknown delta
+  token, messages created from MIME, `$value`, `PATCH`, `move` (ids
+  immutable), `DELETE`, and `sendMail` (MIME or JSON) delivering to the
+  seeded users; and the v1 `/{tenant}/oauth2/authorize` page, which the
+  Outlook client's flow uses. Without seeded OAuth clients it accepts
+  any client id, as Azure AD does the public Outlook client. The Rust
+  tests (`tests/m365_sync.rs`) and `integration-m365` run against it,
+  arranging the Outlook side through Graph as a real account's tests
+  would; there is no real tenant to run them against yet (§15.12).
 - **Matrix:** Conduit (single-binary Rust homeserver, from nixpkgs), a
   real homeserver rather than a fake. The Rust tests start one per test
   (`UPLINK_CONDUIT`, set by the dev shell and the checks; in the build
@@ -2156,6 +2217,26 @@ polling. The polling code-path stays in the codebase for exactly this
 reason and is the always-available baseline.
 
 ---
+
+### 15.12 Not yet verified against the real services
+
+There is no Microsoft 365 account to test with yet, so the M365 side is
+verified against the emulator only (§15.10). Open until it runs against
+a real tenant: the Outlook-client sign-in (§13.3: the authorize URL's
+parameters, what the browser shows for the URN redirect, and whether the
+token endpoint wants anything more), the immutable-id `Prefer` header
+together with `odata.maxpagesize`, `$select` on delta queries, whether
+Graph's real delta pages report a move as a removal from one folder and
+an addition to another (as the emulator does) and flags, importance and
+category changes as updates, `sendMail` keeping our Message-ID, and the
+throttling of polling every folder every 30 s. The provider tests are
+written against endpoints passed in, so pointing them at a real account
+is a configuration step, as it is for Gmail.
+
+Gmail is verified against a real account only as far as Google let a
+throwaway one sign in, which it did not (automated sign-in is refused);
+`UPLINK_TEST_GMAIL_CONFIG` runs the Gmail tests against an account
+authorized by hand.
 
 ## 16. UI shell
 

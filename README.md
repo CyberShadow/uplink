@@ -1,20 +1,21 @@
 # uplink
 
-A self-hosted, single-user web client for mail (Gmail now; Microsoft 365
-next), Matrix, calendar and tasks: one HTTPS + WebSocket server, a
+A self-hosted, single-user web client for mail (Gmail and Microsoft 365),
+Matrix, calendar and tasks: one HTTPS + WebSocket server, a
 keyboard-driven web UI with Gmail's shortcuts, and a transaction log that
 makes every action undoable. See `docs/VISION.md` for the goals and
 `docs/SPEC.md` for the design.
 
-**Status:** Gmail mail can be read (attachments too), searched,
+**Status:** Gmail and Microsoft 365 mail can be read (attachments too), searched,
 archived, labelled, starred, marked read/unread, trashed and reported as
 spam, with undo, and written (drafts saved as you type, synced across
 tabs, with files attached), replied to, forwarded and sent, with
 undo-send. Matrix rooms (end-to-end encrypted ones too) can be read,
 written to in plain text, joined and left. To-dos can be kept, and
 messages flagged for follow-up (which adds a to-do). The history lists
-everything done, and undoes any of it. Microsoft 365 and calendar are in
-progress (SPEC §14).
+everything done, and undoes any of it. With several mail accounts, their
+Inboxes are also one list. Microsoft 365 is tested against an emulator
+only so far (SPEC §15.12); the calendar is in progress (SPEC §14).
 
 ## Try it
 
@@ -78,6 +79,25 @@ consent screen keeps warning that the app is unverified.
 uplink asks for the `gmail.modify` scope: read mail, change labels and
 send. It never deletes mail itself: `#` moves it to Trash, which Gmail
 empties after 30 days.
+
+## Connecting a Microsoft 365 account
+
+uplink signs in as the Outlook desktop client, so there is nothing to
+register (SPEC §13.3). Uncomment the `alice-m365` account in
+`uplink.yaml`, set `id` and `address`, and run:
+
+```sh
+./result/bin/uplink oauth init --account alice-m365
+```
+
+Open the URL it prints and sign in. Azure AD then redirects to
+`urn:ietf:wg:oauth:2.0:oob?code=…`, which the browser cannot open: copy
+that address (from the address bar, the error page, or the developer
+tools' Network tab, as the last request's `Location`), or the code
+alone, and paste it into `uplink oauth init`. A running uplink picks
+the account up once restarted; changes made in Outlook arrive within
+30 s. Folders are labels of which a message has one; categories are
+labels too.
 
 ## Connecting a Matrix account
 
