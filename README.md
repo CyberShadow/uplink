@@ -14,8 +14,9 @@ undo-send. Matrix rooms (end-to-end encrypted ones too) can be read,
 written to in plain text, joined and left. To-dos can be kept, and
 messages flagged for follow-up (which adds a to-do). The history lists
 everything done, and undoes any of it. With several mail accounts, their
-Inboxes are also one list. Microsoft 365 is tested against an emulator
-only so far (SPEC §15.12); the calendar is in progress (SPEC §14).
+Inboxes are also one list. Microsoft 365 calendars are shown by week or
+as an agenda (read-only). Microsoft 365 is tested against an emulator
+only so far (SPEC §15.12).
 
 ## Try it
 
@@ -97,7 +98,8 @@ tools' Network tab, as the last request's `Location`), or the code
 alone, and paste it into `uplink oauth init`. A running uplink picks
 the account up once restarted; changes made in Outlook arrive within
 30 s. Folders are labels of which a message has one; categories are
-labels too.
+labels too. The account's calendar, from a month ago to a year ahead,
+is under Calendar (`g c`), within 5 minutes of a change.
 
 ## Connecting a Matrix account
 

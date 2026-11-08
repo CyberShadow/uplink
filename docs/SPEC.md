@@ -72,7 +72,7 @@ Appendices:
                         │           ▼                              │
                         │     ┌──────────────────────────┐         │
                         │     │ SQLite (WAL + FTS5)      │         │
-                        │     │ + raw .eml/.ics on disk  │         │
+                        │     │ + raw .eml on disk       │         │
                         │     │ + matrix sdk state store │         │
                         │     └──────────────────────────┘         │
                         └──────────────────────────────────────────┘
@@ -98,10 +98,13 @@ Don't litigate these in code review.
    reconcilers bring provider state in line afterwards (§6.6). Mass
    operations are a *single* tx_log entry with a batch inverse. Undo is
    itself an op (append-only log).
-4. **Raw `.eml` files and raw `.ics` blobs are sacred.** Content-addressed by
+4. **Raw `.eml` files are sacred.** Content-addressed by
    SHA-256(raw bytes), never modified, never deleted by the application, no
    attachment extraction. Indexes (search, threading, labels) live in SQLite
-   and are *derived* and rebuildable from the on-disk blobs.
+   and are *derived* and rebuildable from the on-disk blobs. (Calendar
+   events are not files: Graph has no iCalendar export, and an event,
+   unlike a message, changes. Each is kept as Graph's JSON in its row, a
+   mirror that can be listed anew from Graph; §10.1.)
 5. **Real-time uses one channel: a JSON-over-WebSocket protocol uplink
    defines.** No SSE, no long-poll, no second port. Heartbeat is app-level
    ping/pong at 25–30 s. The stream is the log itself (§6): reconnection
@@ -222,7 +225,7 @@ server:
 
 # ── data location ───────────────────────────────────────────────────────
 data:
-  root: /var/lib/uplink          # contains db/, mail/, calendar/, matrix/
+  root: /var/lib/uplink          # contains db/, mail/, matrix/, accounts/
 
 # ── master key ──────────────────────────────────────────────────────────
 # 32-byte random key, base64. Used to seal OAuth refresh tokens at rest.
@@ -313,15 +316,13 @@ $DATA/
 │   └── uplink.sqlite-shm
 ├── mail/
 │   └── <sha256>/<sha256>.eml         # content-addressed; 2-char shard dir
-├── calendar/
-│   └── <sha256>.ics                  # content-addressed
 ├── matrix/
 │   └── <account_id>/                 # opaque matrix-rust-sdk state store
 └── accounts/
     └── <account_id>.token            # sealed OAuth refresh token
 ```
 
-The `.eml` and `.ics` files are **sacred** (invariant 4). They are written
+The `.eml` files are **sacred** (invariant 4). They are written
 once, read many times, never mutated. If the SQLite index becomes corrupt,
 the entire derived state can be rebuilt by walking the directory and re-
 indexing — this is a basic correctness lever, not a performance feature.
@@ -479,23 +480,30 @@ CREATE TABLE matrix_outbox (
 );
 -- Full-text search of Matrix messages is deferred.
 
--- ── calendar (M365 read-only) ────────────────────────────────────────
+-- ── calendar (M365 read-only; as built, V0012; §10) ──────────────────
+-- One row per event *instance*, as a Graph calendar view lists them:
+-- single events, and each occurrence or exception of a series.
 CREATE TABLE calendar_event (
-  id              TEXT PRIMARY KEY,         -- sha256(ics raw bytes)
+  id              INTEGER PRIMARY KEY,
   account_id      TEXT NOT NULL REFERENCES account(id),
-  uid             TEXT NOT NULL,            -- iCal UID
-  external_id     TEXT,                     -- Graph eventId
-  summary         TEXT,
-  description     TEXT,
-  location        TEXT,
-  start_ts        INTEGER NOT NULL,         -- unix seconds (or floating)
+  external_id     TEXT NOT NULL,            -- Graph id of the instance
+  series          TEXT,                     -- seriesMasterId, if recurring
+  exception       INTEGER NOT NULL,         -- an occurrence changed from its series
+  subject         TEXT NOT NULL,
+  location        TEXT NOT NULL,
+  preview         TEXT NOT NULL,            -- bodyPreview
+  start_ts        INTEGER NOT NULL,         -- ms since the epoch, UTC
   end_ts          INTEGER NOT NULL,
-  start_tz        TEXT,                     -- IANA name
-  end_tz          TEXT,
-  rrule           TEXT,                     -- RFC 5545 RRULE; client expands
-  raw_path        TEXT NOT NULL             -- calendar/<sha256>.ics
+  all_day         INTEGER NOT NULL,         -- then start/end are UTC midnights
+  raw             TEXT NOT NULL,            -- the event's Graph JSON
+  UNIQUE (account_id, external_id)
 );
-CREATE INDEX calendar_event_by_account_start ON calendar_event(account_id, start_ts);
+CREATE INDEX calendar_event_by_start ON calendar_event(start_ts);
+-- The window listed and its delta link: {start, end, delta_link}.
+CREATE TABLE calendar_sync (
+  account_id      TEXT PRIMARY KEY REFERENCES account(id),
+  state           TEXT NOT NULL
+);
 
 -- ── TODOs (local-only MVP; as built, V0005) ──────────────────────────
 -- Ids are never reused (AUTOINCREMENT): log entries refer to them.
@@ -1423,25 +1431,44 @@ its own inverse redoes. `tests/conduit.rs` joins an invitation, undoes
 
 ### 10.1 M365 only, read-only
 
-- **Transport**: Graph `GET /me/calendars/{cal}/calendarView/delta` with
-  `startDateTime`/`endDateTime` parameters covering a rolling 1-year
-  window (configurable). Persists `@odata.deltaLink` in
-  `account.sync_state`.
-- **Polling**: every 5 minutes.
-- **Storage**: per Graph event, fetch the `.ics` representation
-  (`?$select=...&prefer=outlook.body-content-type="text"`) and write it
-  to `calendar/<sha256>.ics`. Insert `calendar_event` row.
-- **Recurring events**: Graph returns expanded instances *or* master events
-  with RRULE. We store the master with `rrule`, and the SPA expands them
-  client-side using the `rrule` JS library (the same library Element uses
-  for `m.room.encryption` rotation period parsing — not Matrix-related, but
-  general-purpose JS rrule). For master events with exceptions, we also
-  store each exception as its own row.
+- **Transport**: Graph `GET /me/calendarView/delta` of the default
+  calendar, with the M365 mail sync's `Graph` (one per account, §8.3) and
+  its `Prefer` header, so times are UTC and pages up to 100. The window
+  is from 31 days ago to 366 days ahead. A delta link holds its window,
+  so once the window's start lags where it would be now by over 7 days
+  the calendar is listed anew for the window of now; a 410 for the delta
+  link does the same.
+- **Polling**: every 5 minutes. A round that finds no changes records
+  nothing, keeping the old delta link (good until it changes).
+- **Recorded as** a `calendar.observed` log entry (an observation, §6;
+  not undoable): the first listing (or a new window's) replaces the
+  account's events, later rounds upsert changed instances and delete
+  `@removed` ones, and the `calendar_sync` state is written in the same
+  transaction. Its `calendar_changed` event tells clients to query again.
+- **Recurring events**: a calendar view expands series itself — each
+  occurrence is an instance with its own id and `seriesMasterId`, an
+  exception (`type: exception`) carries its changes, and cancelled
+  occurrences are left out. So uplink stores instances as Graph lists
+  them, with no client-side RRULE expansion: the SPEC's earlier plan
+  (store masters with `rrule`, expand with the `rrule` JS library) would
+  duplicate Graph's expansion and its exceptions handling, and calendar
+  view delta takes no `$select` to ask for masters anyway.
+- **Storage**: the instance's Graph JSON in `calendar_event.raw`, and the
+  fields shown in columns (§4.3). The earlier plan to keep `.ics` files
+  is dropped: Graph has no iCalendar export of an event.
+- **Query**: `list_events {from, to}` (ms) answers every account's
+  events overlapping the range (at most 400 days), by start.
 
 ### 10.2 Display
 
-Calendar view in the SPA: agenda (list) + day/week grid. Recurring rules
-expanded client-side. Time zones honored per event.
+`/calendar/week/<date>`: the week from Monday, a column a day, all-day
+events in a row above the hours, timed events at local times and side
+by side where they overlap. `/calendar/agenda/<date>`: the days with
+events in the fortnight from the date. Recurring events are marked ↻,
+changed occurrences ↻*. All-day events are on their (UTC) dates, which
+are the same days wherever one is; timed events are shown in the
+browser's time zone. `j`/`k` move by week or fortnight, `t` goes to
+today, `w` and `a` switch views, `g c` goes to the calendar.
 
 ### 10.3 No write in MVP
 
@@ -1504,7 +1531,6 @@ shown), and back is back to where it was opened from.
   no `preact/compat` (§15.1).
 - **tinykeys** for keyboard shortcuts (Gmail-style `j`/`k`/`gi`/`c`).
 - **@tanstack/react-virtual** for virtualized message lists.
-- **rrule** for client-side recurring-event expansion.
 
 No state-management library — `@preact/signals` is the store. No router
 beyond preact-iso. No CSS framework — hand-written CSS modules.
@@ -1543,12 +1569,11 @@ src/views/
 ├── Room.tsx               # a Matrix room: timeline and composer
 ├── Todos.tsx              # the to-do list
 ├── History.tsx            # the user's ops, with Undo
+├── Calendar.tsx           # week and agenda (§10.2)
 ├── SearchBox.tsx
 ├── NoticeBar.tsx          # the last op, with Undo
 └── Help.tsx               # keyboard shortcuts
 ```
-
-Planned: calendar.
 
 ### 12.5 Keyboard shortcuts
 
@@ -1894,14 +1919,22 @@ pairs an account with the real CLI and chats from Chromium.
 ### M8. Calendar (M365 read-only)
 
 - Graph calendarView delta.
-- .ics persist.
-- Agenda view + month grid in SPA.
-- Client-side RRULE expansion.
+- Instances stored as Graph expands them (§10.1).
+- Agenda view + week grid in SPA.
 
 **Done when:** a recurring meeting on the M365 calendar appears in
 uplink's day/week views at every occurrence over a 6-month range; a
 modified single occurrence (exception) shows the modification, not the
 master event.
+
+**State:** done against the emulator (patch `0005`, §15.10), with no real
+tenant to try it on yet (§15.12). The Rust tests (`uplink-calendar`'s
+`tests/graph.rs`) list a weekly series over the window, with a moved and
+a cancelled occurrence; follow changes through the delta link and move
+the window as days pass; and list anew on a 410. `integration-m365`
+checks the first sync of a series and a single event. The web tests show
+a week and an agenda in New York, where local times and UTC dates
+differ, and refresh on `calendar_changed`.
 
 ### M9. TODOs + flag-for-followup
 
@@ -1936,7 +1969,7 @@ search returns relevant cross-account hits in < 100 ms; the tx_log view
 shows the last 100 user actions with working Undo buttons.
 
 **State:** done, but for what waits on other milestones: "check
-calendar" in the daily loop is M8's. Done: the history view (§6.3);
+calendar" in the daily loop is M8's, now done. Done: the history view (§6.3);
 light and dark themes following the system (`color-scheme`, so native
 controls follow too; HTML mail keeps its white paper); `#` and `!` with
 Gmail's hiding of Trash and Spam, and All Mail (`ga`) (§8.1); the rest
@@ -2166,6 +2199,11 @@ request).
   tests (`tests/m365_sync.rs`) and `integration-m365` run against it,
   arranging the Outlook side through Graph as a real account's tests
   would; there is no real tenant to run them against yet (§15.12).
+  Patch `0005` adds the calendar: `events` (create, get, `PATCH`,
+  `DELETE`, of a series' occurrences too, which makes them exceptions or
+  cancels them), `instances`, `calendarView` and `calendarView/delta`,
+  expanding daily, weekly, absolute monthly and yearly patterns, in UTC
+  only.
 - **Matrix:** Conduit (single-binary Rust homeserver, from nixpkgs), a
   real homeserver rather than a fake. The Rust tests start one per test
   (`UPLINK_CONDUIT`, set by the dev shell and the checks; in the build
@@ -2229,7 +2267,11 @@ together with `odata.maxpagesize`, `$select` on delta queries, whether
 Graph's real delta pages report a move as a removal from one folder and
 an addition to another (as the emulator does) and flags, importance and
 category changes as updates, `sendMail` keeping our Message-ID, and the
-throttling of polling every folder every 30 s. The provider tests are
+throttling of polling every folder every 30 s; for the calendar, that
+calendar view delta expands series and reports exceptions and cancelled
+occurrences as the emulator does, how long its delta links last, and
+that `outlook.timezone="UTC"` gives UTC times (all-day events
+included). The provider tests are
 written against endpoints passed in, so pointing them at a real account
 is a configuration step, as it is for Gmail.
 
@@ -2292,7 +2334,7 @@ visible. Routes (handled by `preact-iso`):
 | `/drafts`, `/outbox`                   | Drafts; mail being sent                |
 | `/rooms/:room`                         | Room timeline (uplink's room id)       |
 | `/matrix/:account/space/:space`        | Space overview (deferred)              |
-| `/calendar/:account`                   | Calendar (week/month)                  |
+| `/calendar/:view/:date`                | Calendar, `week` or `agenda` (§10.2)   |
 | `/todos`                               | Todo list                              |
 | `/history`                             | The user's ops, with Undo (§6.3)       |
 
@@ -2360,7 +2402,6 @@ would add a third subscription — out of scope for MVP.
 | `tinykeys`                | Keyboard shortcuts                                         |
 | `@tanstack/react-virtual` | List virtualization                                        |
 | `@tiptap/core` + `@tiptap/starter-kit` | WYSIWYG compose (lazy-loaded)             |
-| `rrule`                   | Recurring event expansion                                  |
 | `vitest` + `@testing-library/preact` | Tests                                           |
 
 ---
@@ -2372,7 +2413,7 @@ For every PR:
 - [ ] New mutating code paths go through the `tx_log` dispatcher.
 - [ ] New ops have an inverse, an `apply` that is atomic, and a `describe`.
 - [ ] Mass ops produce *one* tx_log entry, not N.
-- [ ] No `.eml` or `.ics` file is mutated or deleted by the application.
+- [ ] No `.eml` file is mutated or deleted by the application.
 - [ ] No defensive `if account is None` / `if message is None` branches
   protecting against impossible states. Fail-fast at the boundary instead.
 - [ ] No new state stores. If you're tempted, ask why.
