@@ -923,17 +923,24 @@ IMAP's per-folder copies, and a REST fake is practical to test against
   recent first. Each batch is one log entry. Record the profile's
   `historyId` *before* starting, so nothing that changes during the walk
   is missed.
-- **Incremental**: poll `history.list?startHistoryId=…` every 5 s —
+- **Incremental**: poll `history.list?startHistoryId=…` every 5 s (2
+  quota units per call against 6,000 units/minute per user, so even 1 s
+  polling is affordable) —
   `messagesAdded`, `messagesDeleted`, `labelsAdded`, `labelsRemoved` map
   directly onto observations. Persist the last `historyId` in
   `account.sync_state`, in the same transaction as the observations. If
   Google answers 404 (history id too old), fall back to a full resync.
 - **Push (deferred)**: the API's only push is `users.watch` → Cloud
-  Pub/Sub (a pull subscription works without a public endpoint, but needs
-  a topic in the user's GCP project, the Pub/Sub scope, and renewal every
-  7 days). An IMAP IDLE connection used purely as a "something changed"
-  trigger for `history.list` is the lighter alternative. Either only
-  lowers latency; polling stays as the baseline.
+  Pub/Sub. No public endpoint is needed: Pub/Sub's REST
+  `subscriptions.pull` (without `returnImmediately`) waits a bounded time
+  for a message, i.e. a plain-HTTPS long-poll. Costs: a topic and
+  subscription in the user's GCP project with
+  `gmail-api-push@system.gserviceaccount.com` allowed to publish, the
+  `pubsub` OAuth scope, and renewing the watch (Google recommends daily;
+  it lapses after 7 days). A notification only says "something changed";
+  the reaction is the same `history.list` call. Polling stays as the
+  baseline, as Google also recommends, since notifications can be delayed
+  or dropped. No IMAP anywhere.
 - **Threading**: Gmail's `threadId`.
 - **Labels**: `labels.list`; each label becomes a `label` row.
 

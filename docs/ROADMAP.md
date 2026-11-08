@@ -78,7 +78,7 @@ Deferred:
   the implementation work). See SPEC §15.11. The polling baseline
   stays in place as the always-available fallback.
 - Generic IMAP/SMTP accounts (any non-Gmail, non-M365 server).
-- Gmail push: API notifications via Cloud Pub/Sub, or IMAP IDLE as a change trigger.
+- Gmail push: API notifications via Cloud Pub/Sub, pulled over REST (SPEC §8.1).
 - JMAP support.
 - Server-side filters/rules.
 - S/MIME and PGP signature verification (read-only).
