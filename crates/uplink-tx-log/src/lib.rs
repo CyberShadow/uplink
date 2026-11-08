@@ -1,26 +1,29 @@
-//! Op dispatcher, transaction log and undo (SPEC §6).
+//! The log: op dispatcher, observations, undo and replay (SPEC §6).
 //!
-//! Every user-initiated mutation of persistent state is an [`Op`] run
-//! through [`Dispatcher::dispatch`]. The op is applied and recorded in
-//! `tx_log` together with its inverse in one SQLite transaction; events are
-//! broadcast only after commit. Undo applies the recorded inverse as a new
-//! op, so the log is append-only and undoing an undo is a redo.
+//! Every change to uplink's state is recorded in `tx_log`, in commit order:
+//! user-initiated [`Op`]s run through [`Dispatcher::dispatch`], and
+//! [`Observation`]s of external state through [`Dispatcher::observe`].
+//! Each is applied and recorded in one SQLite transaction, and the entry is
+//! published to the hub only after commit. Ops record their inverse, so
+//! they can be undone; undo applies the inverse as a new op, so the log is
+//! append-only and undoing an undo is a redo. The log doubles as the event
+//! stream: clients resume from an entry id ([`LogReader::replay`]).
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result};
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, MutexGuard},
     time::{SystemTime, UNIX_EPOCH},
 };
-use uplink_protocol::{ServerEvent, TxLogEntry, TxLogId};
-use uplink_realtime::Hub;
-use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Transaction};
+use uplink_protocol::{LogEntry, ServerEvent, Source, TxLogId};
+use uplink_realtime::{Hub, Replay};
+use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 
 #[cfg(any(test, feature = "test-ops"))]
 pub mod sample;
 
-/// A state-mutating operation.
+/// A user-initiated change to uplink's state.
 pub trait Op: Serialize + DeserializeOwned + Send + 'static {
     /// Discriminator recorded in `tx_log`, e.g. `"mail.archive"`. Must be
     /// unique within a [`Registry`].
@@ -31,7 +34,7 @@ pub trait Op: Serialize + DeserializeOwned + Send + 'static {
     /// [`Conflict`] when the state the op expects is not what it finds.
     fn apply(self, tx: &Transaction) -> Result<Applied>;
 
-    /// Human-readable description for the transaction log UI.
+    /// Human-readable description for the log UI.
     fn describe(&self) -> String;
 }
 
@@ -39,8 +42,20 @@ pub trait Op: Serialize + DeserializeOwned + Send + 'static {
 pub struct Applied {
     /// The op that reverts this one.
     pub inverse: Inverse,
-    /// Broadcast once the transaction commits.
+    /// What changed, for clients.
     pub events: Vec<ServerEvent>,
+}
+
+/// A change to external state, observed by syncing an account.
+pub trait Observation: Serialize + Send + 'static {
+    /// Discriminator recorded in `tx_log`, e.g. `"mail.received"`.
+    const KIND: &'static str;
+
+    /// Records the observed state within `tx`, returning what changed.
+    fn apply(self, tx: &Transaction) -> Result<Vec<ServerEvent>>;
+
+    /// Human-readable description for the log UI.
+    fn describe(&self) -> String;
 }
 
 /// A serialized op, recorded as the inverse of another.
@@ -53,13 +68,13 @@ impl Inverse {
     pub fn of<O: Op>(op: &O) -> Self {
         Self {
             kind: O::KIND,
-            json: to_json(op),
+            json: to_json(O::KIND, op),
         }
     }
 }
 
-fn to_json<O: Op>(op: &O) -> String {
-    serde_json::to_string(op).unwrap_or_else(|e| panic!("{} op does not serialize: {e}", O::KIND))
+fn to_json(kind: &str, value: &impl Serialize) -> String {
+    serde_json::to_string(value).unwrap_or_else(|e| panic!("{kind} does not serialize: {e}"))
 }
 
 /// The op kinds an undo may instantiate from a recorded inverse.
@@ -81,23 +96,26 @@ impl Registry {
     }
 }
 
-/// An applied op, ready to be recorded.
+/// An applied op or observation, ready to be recorded.
 struct Executed {
     kind: &'static str,
     op_json: String,
     description: String,
-    applied: Applied,
+    /// `Some` exactly for ops.
+    inverse: Option<Inverse>,
+    events: Vec<ServerEvent>,
 }
 
 fn execute<O: Op>(tx: &Transaction, op: O) -> Result<Executed> {
-    let op_json = to_json(&op);
+    let op_json = to_json(O::KIND, &op);
     let description = op.describe();
     let applied = op.apply(tx)?;
     Ok(Executed {
         kind: O::KIND,
         op_json,
         description,
-        applied,
+        inverse: Some(applied.inverse),
+        events: applied.events,
     })
 }
 
@@ -118,6 +136,8 @@ pub struct Conflict(pub String);
 pub enum UndoError {
     #[error("tx_log entry {} does not exist", .0 .0)]
     NotFound(TxLogId),
+    #[error("tx_log entry {} is an observation, not a user op", .0 .0)]
+    NotUndoable(TxLogId),
     #[error("tx_log entry {} was already undone by entry {}", .id.0, .undone_by.0)]
     AlreadyUndone { id: TxLogId, undone_by: TxLogId },
     /// The inverse cannot be applied to the current state (SPEC §6.2).
@@ -139,9 +159,6 @@ struct Inner {
     hub: Arc<Hub>,
 }
 
-/// Recorded as the actor of user-initiated ops.
-const USER: &str = "user";
-
 impl Dispatcher {
     /// `conn` must be the migrated database from [`uplink_storage::open`].
     pub fn new(conn: Connection, registry: Registry, hub: Arc<Hub>) -> Self {
@@ -161,7 +178,39 @@ impl Dispatcher {
     /// Applies `op` and records it. Its inverse must be of a registered
     /// kind, so that the entry can be undone.
     pub async fn dispatch<O: Op>(&self, op: O) -> Result<TxLogId> {
-        self.on_writer(move |inner| inner.dispatch(op)).await
+        self.on_writer(move |inner| {
+            inner
+                .write(Source::User, |tx| Ok((execute(tx, op)?, None)))
+                .map(|entry| entry.id)
+        })
+        .await
+    }
+
+    /// Applies and records a change to external state observed by syncing
+    /// `account`.
+    pub async fn observe<O: Observation>(
+        &self,
+        account: String,
+        observation: O,
+    ) -> Result<TxLogId> {
+        self.on_writer(move |inner| {
+            inner
+                .write(Source::Account { id: account }, |tx| {
+                    let op_json = to_json(O::KIND, &observation);
+                    let description = observation.describe();
+                    let events = observation.apply(tx)?;
+                    let executed = Executed {
+                        kind: O::KIND,
+                        op_json,
+                        description,
+                        inverse: None,
+                        events,
+                    };
+                    Ok((executed, None))
+                })
+                .map(|entry| entry.id)
+        })
+        .await
     }
 
     /// Applies the inverse of entry `id`, recording it as a new entry that
@@ -187,129 +236,199 @@ impl Inner {
         self.conn.lock().expect("database connection poisoned")
     }
 
-    fn dispatch<O: Op>(&self, op: O) -> Result<TxLogId> {
+    /// Runs `execute` and records its result in one transaction, then
+    /// publishes the entry. `execute` also says which entry, if any, the
+    /// new one undoes.
+    fn write<E>(
+        &self,
+        source: Source,
+        execute: impl FnOnce(&Transaction) -> Result<(Executed, Option<TxLogId>), E>,
+    ) -> Result<LogEntry, E>
+    where
+        E: From<anyhow::Error>,
+    {
         let mut conn = self.lock();
-        let tx = conn.transaction()?;
-        let executed = execute(&tx, op)?;
-        let entry = self.record(&tx, &executed, None)?;
-        tx.commit()?;
-        let id = entry.id;
-        self.publish(
-            &conn,
-            executed.applied.events,
-            [ServerEvent::TxLogEntryAdded { entry }],
-        );
-        Ok(id)
+        let tx = conn.transaction().context("beginning transaction")?;
+        let (executed, undoes) = execute(&tx)?;
+        let entry = self.record(&tx, executed, source, undoes)?;
+        if let Some(undone) = undoes {
+            tx.execute(
+                "UPDATE tx_log SET undone_by = ?1 WHERE id = ?2",
+                [entry.id.0, undone.0],
+            )
+            .context("marking tx_log entry undone")?;
+        }
+        tx.commit().context("committing")?;
+        // Publish while still holding the writer, so that entries reach the
+        // hub in commit order.
+        self.hub.publish(entry.clone());
+        Ok(entry)
     }
 
     fn undo(&self, id: TxLogId) -> Result<TxLogId, UndoError> {
-        let mut conn = self.lock();
-        let tx = conn.transaction().context("beginning transaction")?;
-
-        let (inverse_type, inverse_json, undone_by): (String, String, Option<i64>) = tx
-            .query_row(
-                "SELECT inverse_type, inverse_json, undone_by FROM tx_log WHERE id = ?1",
-                [id.0],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()
-            .context("reading tx_log entry")?
-            .ok_or(UndoError::NotFound(id))?;
-        if let Some(by) = undone_by {
-            return Err(UndoError::AlreadyUndone {
-                id,
-                undone_by: TxLogId(by),
-            });
-        }
-
-        let execute = self
-            .registry
-            .ops
-            .get(inverse_type.as_str())
-            .with_context(|| format!("inverse op kind {inverse_type} is not registered"))?;
-        let executed = execute(&tx, &inverse_json).map_err(|e| match e.downcast::<Conflict>() {
-            Ok(conflict) => UndoError::Conflict { id, conflict },
-            Err(e) => UndoError::Failed(e),
-        })?;
-        let entry = self.record(&tx, &executed, Some(id))?;
-        let undo_id = entry.id;
-        tx.execute(
-            "UPDATE tx_log SET undone_by = ?1 WHERE id = ?2",
-            [undo_id.0, id.0],
-        )
-        .context("marking tx_log entry undone")?;
-        tx.commit().context("committing undo")?;
-
-        self.publish(
-            &conn,
-            executed.applied.events,
-            [
-                ServerEvent::TxLogEntryAdded { entry },
-                ServerEvent::TxLogEntryUndone {
+        let entry = self.write(Source::User, |tx| {
+            let (account, inverse, undone_by) = tx
+                .query_row(
+                    "SELECT account_id, inverse_type, inverse_json, undone_by
+                     FROM tx_log WHERE id = ?1",
+                    [id.0],
+                    |r| {
+                        Ok((
+                            r.get::<_, Option<String>>(0)?,
+                            Option::zip(
+                                r.get::<_, Option<String>>(1)?,
+                                r.get::<_, Option<String>>(2)?,
+                            ),
+                            r.get::<_, Option<i64>>(3)?,
+                        ))
+                    },
+                )
+                .optional()
+                .context("reading tx_log entry")?
+                .ok_or(UndoError::NotFound(id))?;
+            if account.is_some() {
+                return Err(UndoError::NotUndoable(id));
+            }
+            if let Some(by) = undone_by {
+                return Err(UndoError::AlreadyUndone {
                     id,
-                    undone_by: undo_id,
-                },
-            ],
-        );
-        Ok(undo_id)
+                    undone_by: TxLogId(by),
+                });
+            }
+            let (inverse_type, inverse_json) =
+                inverse.expect("the schema requires an inverse for user ops");
+            let execute = self
+                .registry
+                .ops
+                .get(inverse_type.as_str())
+                .with_context(|| format!("inverse op kind {inverse_type} is not registered"))?;
+            let executed =
+                execute(tx, &inverse_json).map_err(|e| match e.downcast::<Conflict>() {
+                    Ok(conflict) => UndoError::Conflict { id, conflict },
+                    Err(e) => UndoError::Failed(e),
+                })?;
+            Ok((executed, Some(id)))
+        })?;
+        Ok(entry.id)
     }
 
     fn record(
         &self,
         tx: &Transaction,
-        executed: &Executed,
+        executed: Executed,
+        source: Source,
         undoes: Option<TxLogId>,
-    ) -> Result<TxLogEntry> {
-        let inverse = &executed.applied.inverse;
-        ensure!(
-            self.registry.ops.contains_key(inverse.kind),
-            "{} op has an inverse of unregistered kind {}",
-            executed.kind,
-            inverse.kind
-        );
+    ) -> Result<LogEntry> {
+        if let Some(inverse) = &executed.inverse {
+            anyhow::ensure!(
+                self.registry.ops.contains_key(inverse.kind),
+                "{} op has an inverse of unregistered kind {}",
+                executed.kind,
+                inverse.kind
+            );
+        }
+        let account = match &source {
+            Source::User => None,
+            Source::Account { id } => Some(id.as_str()),
+        };
         let ts = now_ms();
+        let events_json = serde_json::to_string(&executed.events).expect("events serialize");
         let id = tx
             .query_row(
                 "INSERT INTO tx_log
-                   (ts, actor, description, op_type, op_json, inverse_type, inverse_json, undoes)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                   (ts, account_id, description, op_type, op_json,
+                    inverse_type, inverse_json, events_json, undoes)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                  RETURNING id",
                 params![
                     ts,
-                    USER,
+                    account,
                     executed.description,
                     executed.kind,
                     executed.op_json,
-                    inverse.kind,
-                    inverse.json,
+                    executed.inverse.as_ref().map(|i| i.kind),
+                    executed.inverse.as_ref().map(|i| &i.json),
+                    events_json,
                     undoes.map(|u| u.0),
                 ],
                 |r| r.get(0),
             )
             .context("recording tx_log entry")?;
-        Ok(TxLogEntry {
+        Ok(LogEntry {
             id: TxLogId(id),
             ts,
-            actor: USER.to_owned(),
-            description: executed.description.clone(),
+            source,
+            description: executed.description,
             op_type: executed.kind.to_owned(),
             undoes,
+            events: executed.events,
         })
     }
+}
 
-    /// Publishes the events of a committed transaction. Requiring the
-    /// connection guard keeps the writer locked, so that events are
-    /// published in commit order.
-    fn publish(
-        &self,
-        _writer: &MutexGuard<'_, Connection>,
-        events: Vec<ServerEvent>,
-        log_events: impl IntoIterator<Item = ServerEvent>,
-    ) {
-        for event in events.into_iter().chain(log_events) {
-            self.hub.publish(event);
+/// Reads the log for clients catching up (SPEC §5.3).
+pub struct LogReader {
+    conn: Mutex<Connection>,
+    max_replay: usize,
+}
+
+impl LogReader {
+    /// `conn` is a connection to the database written by the
+    /// [`Dispatcher`]. A client further than `max_replay` entries behind
+    /// must reload instead of being replayed.
+    pub fn new(conn: Connection, max_replay: usize) -> Self {
+        Self {
+            conn: Mutex::new(conn),
+            max_replay,
         }
     }
+
+    pub async fn replay(self: &Arc<Self>, since: Option<TxLogId>) -> Result<Replay> {
+        let reader = self.clone();
+        match tokio::task::spawn_blocking(move || reader.replay_blocking(since)).await {
+            Ok(r) => r,
+            Err(e) => std::panic::resume_unwind(e.into_panic()),
+        }
+    }
+
+    fn replay_blocking(&self, since: Option<TxLogId>) -> Result<Replay> {
+        let mut conn = self.conn.lock().expect("database connection poisoned");
+        // One read transaction, so head and entries are one snapshot.
+        let tx = conn.transaction()?;
+        let head =
+            TxLogId(tx.query_row("SELECT coalesce(max(id), 0) FROM tx_log", [], |r| r.get(0))?);
+        let entries = match since {
+            Some(since) if since <= head => {
+                let entries: Vec<LogEntry> = tx
+                    .prepare(
+                        "SELECT id, ts, account_id, description, op_type, undoes, events_json
+                         FROM tx_log WHERE id > ?1 ORDER BY id LIMIT ?2",
+                    )?
+                    .query_map(params![since.0, self.max_replay as i64 + 1], log_entry)?
+                    .collect::<Result<_, _>>()?;
+                (entries.len() <= self.max_replay).then_some(entries)
+            }
+            // Never connected, or a position this log never had.
+            _ => None,
+        };
+        Ok(Replay { head, entries })
+    }
+}
+
+fn log_entry(r: &Row) -> uplink_storage::rusqlite::Result<LogEntry> {
+    let events_json: String = r.get(6)?;
+    Ok(LogEntry {
+        id: TxLogId(r.get(0)?),
+        ts: r.get(1)?,
+        source: match r.get::<_, Option<String>>(2)? {
+            None => Source::User,
+            Some(id) => Source::Account { id },
+        },
+        description: r.get(3)?,
+        op_type: r.get(4)?,
+        undoes: r.get::<_, Option<i64>>(5)?.map(TxLogId),
+        events: serde_json::from_str(&events_json).expect("recorded events deserialize"),
+    })
 }
 
 fn now_ms() -> i64 {

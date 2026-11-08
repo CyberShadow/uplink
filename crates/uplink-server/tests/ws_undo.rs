@@ -12,27 +12,33 @@ use tokio_tungstenite::{
     WebSocketStream,
 };
 use uplink_protocol::{
-    ClientRequest, Cursor, ErrorCode, Resume, ServerEvent, ServerResponse, TxLogId, WsClientMsg,
-    WsServerMsg,
+    ClientRequest, ErrorCode, LogEntry, ServerResponse, Source, TxLogId, WsClientMsg, WsServerMsg,
 };
+use uplink_server::Log;
 use uplink_storage::rusqlite::Connection;
 use uplink_tx_log::{
-    sample::{self, SampleInsert},
-    Dispatcher, Registry,
+    sample::{self, SampleInsert, SampleObserved},
+    Registry,
 };
 
 type Ws = WebSocketStream<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>;
 
 struct Server {
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
     data_root: PathBuf,
     addr: SocketAddr,
-    dispatcher: Dispatcher,
+    log: Log,
 }
 
 /// A server whose database has the `sample` table and ops.
 async fn server() -> Server {
     let dir = tempfile::tempdir().unwrap();
+    setup(&dir);
+    start(dir).await
+}
+
+/// Writes a config and certificate, and creates the `sample` table.
+fn setup(dir: &tempfile::TempDir) {
     let cert = gen_cert("localhost");
     let cert_path = dir.path().join("cert.pem");
     let key_path = dir.path().join("key.pem");
@@ -41,20 +47,21 @@ async fn server() -> Server {
     let config_path = dir.path().join("uplink.yaml");
     write_config(&config_path, &cert_path, &key_path);
 
-    let data_root = dir.path().join("data");
-    uplink_storage::open(&data_root)
+    uplink_storage::open(&dir.path().join("data"))
         .unwrap()
         .execute_batch(sample::SCHEMA)
         .unwrap();
+}
 
+async fn start(dir: tempfile::TempDir) -> Server {
     let mut registry = Registry::new();
     sample::register(&mut registry);
-    let (addr, dispatcher) = start_server(&config_path, registry).await;
+    let (addr, log) = start_server(&dir.path().join("uplink.yaml"), registry).await;
     Server {
-        _dir: dir,
-        data_root,
+        data_root: dir.path().join("data"),
+        dir,
         addr,
-        dispatcher,
+        log,
     }
 }
 
@@ -127,21 +134,17 @@ async fn recv(ws: &mut Ws) -> WsServerMsg {
     }
 }
 
-async fn recv_event(ws: &mut Ws) -> (Cursor, ServerEvent) {
+async fn recv_entry(ws: &mut Ws) -> LogEntry {
     match recv(ws).await {
-        WsServerMsg::Event { cursor, body } => (cursor, body),
-        other => panic!("expected an event, got {other:?}"),
+        WsServerMsg::Entry { entry } => entry,
+        other => panic!("expected an entry, got {other:?}"),
     }
 }
 
-async fn hello(ws: &mut Ws, resume: Option<Resume>) -> (u64, Cursor, bool) {
-    send(ws, &WsClientMsg::Hello { resume }).await;
+async fn hello(ws: &mut Ws, since: Option<TxLogId>) -> (TxLogId, bool) {
+    send(ws, &WsClientMsg::Hello { since }).await;
     match recv(ws).await {
-        WsServerMsg::Welcome {
-            epoch,
-            cursor,
-            resumed,
-        } => (epoch, cursor, resumed),
+        WsServerMsg::Welcome { cursor, resumed } => (cursor, resumed),
         other => panic!("expected welcome, got {other:?}"),
     }
 }
@@ -168,118 +171,108 @@ fn undone(msg: WsServerMsg, request_id: u64) -> TxLogId {
     }
 }
 
-fn added(event: &ServerEvent) -> (TxLogId, Option<TxLogId>) {
-    match event {
-        ServerEvent::TxLogEntryAdded { entry } => (entry.id, entry.undoes),
-        other => panic!("expected tx_log_entry_added, got {other:?}"),
-    }
-}
-
 #[tokio::test]
 async fn dispatch_undo_redo_over_websocket() {
     let server = server().await;
     let mut ws = connect(server.addr).await;
-    let (epoch, base, resumed) = hello(&mut ws, None).await;
+    let (base, resumed) = hello(&mut ws, None).await;
+    assert_eq!(base, TxLogId(0));
     assert!(!resumed);
 
-    let mut events = vec![];
+    let mut entries = vec![];
 
     // Dispatch: one entry, echoed to the client.
     let op = server
+        .log
         .dispatcher
         .dispatch(SampleInsert { id: 1, x: 42 })
         .await
         .unwrap();
     assert_eq!(server.tx_log_count(), 1);
     assert_eq!(server.samples(), vec![(1, 42)]);
-    let e = recv_event(&mut ws).await;
-    assert_eq!(added(&e.1), (op, None));
-    events.push(e);
+    let e = recv_entry(&mut ws).await;
+    assert_eq!((e.id, e.source.clone(), e.undoes), (op, Source::User, None));
+    entries.push(e);
 
     // Undo: the row is gone; the undo is a new entry.
     let undo_id = undone(undo(&mut ws, 1, op).await, 1);
     assert_eq!(server.tx_log_count(), 2);
     assert_eq!(server.samples(), vec![]);
-    let e = recv_event(&mut ws).await;
-    assert_eq!(added(&e.1), (undo_id, Some(op)));
-    events.push(e);
-    let e = recv_event(&mut ws).await;
-    assert_eq!(
-        e.1,
-        ServerEvent::TxLogEntryUndone {
-            id: op,
-            undone_by: undo_id
-        }
-    );
-    events.push(e);
+    let e = recv_entry(&mut ws).await;
+    assert_eq!((e.id, e.undoes), (undo_id, Some(op)));
+    entries.push(e);
 
     // Undo of the undo: the row is back.
     let redo_id = undone(undo(&mut ws, 2, undo_id).await, 2);
     assert_eq!(server.tx_log_count(), 3);
     assert_eq!(server.samples(), vec![(1, 42)]);
-    let e = recv_event(&mut ws).await;
-    assert_eq!(added(&e.1), (redo_id, Some(undo_id)));
-    events.push(e);
-    let e = recv_event(&mut ws).await;
+    let e = recv_entry(&mut ws).await;
+    assert_eq!((e.id, e.undoes), (redo_id, Some(undo_id)));
+    entries.push(e);
+
+    // An observation shares the stream but can't be undone.
+    let observed = server
+        .log
+        .dispatcher
+        .observe("acct".into(), SampleObserved { id: 2, x: 7 })
+        .await
+        .unwrap();
+    let e = recv_entry(&mut ws).await;
     assert_eq!(
-        e.1,
-        ServerEvent::TxLogEntryUndone {
-            id: undo_id,
-            undone_by: redo_id
-        }
+        (e.id, e.source.clone()),
+        (observed, Source::Account { id: "acct".into() })
     );
-    events.push(e);
+    entries.push(e);
+    let failed = |msg: WsServerMsg, id: u64| match msg {
+        WsServerMsg::RequestFailed { request_id, error } if request_id == id => error.code,
+        other => panic!("expected failure of {id}, got {other:?}"),
+    };
+    assert_eq!(
+        failed(undo(&mut ws, 3, observed).await, 3),
+        ErrorCode::NotUndoable
+    );
 
     // The original entry can't be undone twice.
-    match undo(&mut ws, 3, op).await {
-        WsServerMsg::RequestFailed { request_id, error } => {
-            assert_eq!(request_id, 3);
-            assert_eq!(error.code, ErrorCode::AlreadyUndone);
-        }
-        other => panic!("expected failure, got {other:?}"),
-    }
-    match undo(&mut ws, 4, TxLogId(99)).await {
-        WsServerMsg::RequestFailed { error, .. } => assert_eq!(error.code, ErrorCode::NotFound),
-        other => panic!("expected failure, got {other:?}"),
-    }
-    assert_eq!(server.tx_log_count(), 3);
+    assert_eq!(
+        failed(undo(&mut ws, 4, op).await, 4),
+        ErrorCode::AlreadyUndone
+    );
+    assert_eq!(
+        failed(undo(&mut ws, 5, TxLogId(99)).await, 5),
+        ErrorCode::NotFound
+    );
+    assert_eq!(server.tx_log_count(), 4);
 
-    // Cursors are consecutive.
-    let cursors: Vec<Cursor> = events.iter().map(|e| e.0).collect();
-    assert_eq!(cursors, (base + 1..=base + 5).collect::<Vec<_>>());
+    // Entry ids are consecutive.
+    let ids: Vec<i64> = entries.iter().map(|e| e.id.0).collect();
+    assert_eq!(ids, vec![1, 2, 3, 4]);
 
     // A reconnecting client is replayed what it missed.
     drop(ws);
     let mut ws = connect(server.addr).await;
-    let (_, head, resumed) = hello(
-        &mut ws,
-        Some(Resume {
-            epoch,
-            cursor: base + 2,
-        }),
-    )
-    .await;
+    let (head, resumed) = hello(&mut ws, Some(TxLogId(2))).await;
     assert!(resumed);
-    assert_eq!(head, base + 5);
-    for expected in &events[2..] {
-        assert_eq!(&recv_event(&mut ws).await, expected);
+    assert_eq!(head, TxLogId(4));
+    for expected in &entries[2..] {
+        assert_eq!(&recv_entry(&mut ws).await, expected);
     }
+
+    // ... also by a fresh server on the same data.
+    let Server { dir, .. } = server;
+    let server = start(dir).await;
+    let mut ws = connect(server.addr).await;
+    let (head, resumed) = hello(&mut ws, Some(TxLogId(3))).await;
+    assert!(resumed);
+    assert_eq!(head, TxLogId(4));
+    assert_eq!(&recv_entry(&mut ws).await, &entries[3]);
 }
 
 #[tokio::test]
-async fn resume_from_another_epoch_requires_resync() {
+async fn resume_from_unknown_position_requires_reload() {
     let server = server().await;
     let mut ws = connect(server.addr).await;
-    let (epoch, cursor, _) = hello(&mut ws, None).await;
-    let mut ws = connect(server.addr).await;
-    let (_, _, resumed) = hello(
-        &mut ws,
-        Some(Resume {
-            epoch: epoch + 1,
-            cursor,
-        }),
-    )
-    .await;
+    let (cursor, resumed) = hello(&mut ws, Some(TxLogId(5))).await;
+    assert_eq!(cursor, TxLogId(0));
     assert!(!resumed);
 }
 

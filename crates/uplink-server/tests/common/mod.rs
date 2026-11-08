@@ -8,8 +8,8 @@ use sha2::{Digest, Sha256};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use uplink_config::Config;
-use uplink_server::{open_dispatcher, serve_with_listener};
-use uplink_tx_log::{Dispatcher, Registry};
+use uplink_server::{open_log, serve_with_listener, Log};
+use uplink_tx_log::Registry;
 
 // ── cert-generation helpers ───────────────────────────────────────────────────
 
@@ -145,21 +145,21 @@ pub fn write_config(config_path: &Path, cert_path: &Path, key_path: &Path) {
 }
 
 /// Starts a server for the config at `config_path` on a free port.
-pub async fn start_server(config_path: &Path, registry: Registry) -> (SocketAddr, Dispatcher) {
+pub async fn start_server(config_path: &Path, registry: Registry) -> (SocketAddr, Log) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind failed");
     let addr = listener.local_addr().unwrap();
 
     let config = Config::load(config_path).expect("config load failed");
-    let dispatcher = open_dispatcher(&config, registry).expect("opening database failed");
+    let log = open_log(&config, registry).expect("opening database failed");
     let cp = config_path.to_path_buf();
-    let d = dispatcher.clone();
+    let l = log.clone();
     tokio::spawn(async move {
-        serve_with_listener(config, cp, listener, d)
+        serve_with_listener(config, cp, listener, l)
             .await
             .expect("server failed");
     });
 
-    (addr, dispatcher)
+    (addr, log)
 }

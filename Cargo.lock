@@ -2008,6 +2008,7 @@ dependencies = [
 name = "uplink-realtime"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "axum",
  "serde_json",
  "tokio",

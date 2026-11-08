@@ -2,7 +2,7 @@
 //! tests (SPEC §14 M3). The table is not part of the production schema;
 //! tests create it with [`SCHEMA`].
 
-use crate::{Applied, Conflict, Inverse, Op, Registry};
+use crate::{Applied, Conflict, Inverse, Observation, Op, Registry};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use uplink_storage::rusqlite::OptionalExtension;
@@ -17,6 +17,13 @@ pub fn register(registry: &mut Registry) {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SampleInsert {
+    pub id: i64,
+    pub x: i64,
+}
+
+/// A sample row appearing externally.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SampleObserved {
     pub id: i64,
     pub x: i64,
 }
@@ -64,5 +71,21 @@ impl Op for SampleDelete {
 
     fn describe(&self) -> String {
         format!("delete sample {}", self.id)
+    }
+}
+
+impl Observation for SampleObserved {
+    const KIND: &'static str = "sample.observed";
+
+    fn apply(self, tx: &Transaction) -> Result<Vec<uplink_protocol::ServerEvent>> {
+        tx.execute(
+            "INSERT INTO sample (id, x) VALUES (?1, ?2)",
+            [self.id, self.x],
+        )?;
+        Ok(vec![])
+    }
+
+    fn describe(&self) -> String {
+        format!("observed sample {} = {}", self.id, self.x)
     }
 }

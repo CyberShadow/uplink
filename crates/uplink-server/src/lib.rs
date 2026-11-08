@@ -25,12 +25,14 @@ use tokio_rustls::TlsAcceptor;
 use tower::Service;
 use tracing::info;
 use uplink_config::{BasicAuthConfig, Config, ConfigChanged, ConfigSection, Watcher};
-use uplink_protocol::{ClientRequest, ErrorCode, ServerError, ServerResponse};
-use uplink_realtime::{Hub, RequestHandler};
-use uplink_tx_log::{Dispatcher, Registry, UndoError};
+use uplink_protocol::{ClientRequest, ErrorCode, ServerError, ServerResponse, TxLogId};
+use uplink_realtime::{Backend, Hub, Replay};
+use uplink_tx_log::{Dispatcher, LogReader, Registry, UndoError};
 
-/// Events kept for replay to reconnecting clients (SPEC §5.3).
+/// How far a session may lag the live stream before it is disconnected.
 const HUB_CAPACITY: usize = 4096;
+/// A reconnecting client further behind than this reloads instead.
+const MAX_REPLAY: usize = 4096;
 
 #[derive(Embed)]
 #[folder = "static/"]
@@ -39,7 +41,7 @@ struct StaticFiles;
 #[derive(Clone)]
 struct AppState {
     basic_auth: Arc<ArcSwap<BasicAuthConfig>>,
-    dispatcher: Dispatcher,
+    log: Log,
 }
 
 pub fn run() -> Result<()> {
@@ -59,7 +61,7 @@ async fn run_async() -> Result<()> {
 
     let config_path = parse_config_flag();
     let config = Config::load(&config_path)?;
-    let dispatcher = open_dispatcher(&config, Registry::new())?;
+    let log = open_log(&config, Registry::new())?;
 
     let bind: SocketAddr = config
         .server
@@ -70,18 +72,25 @@ async fn run_async() -> Result<()> {
     let listener = TcpListener::bind(&bind).await?;
     info!("listening on https://{}", bind);
 
-    serve_with_listener(config, config_path, listener, dispatcher).await
+    serve_with_listener(config, config_path, listener, log).await
 }
 
-/// Opens (and migrates) the database under the configured data root, and
-/// sets up the dispatcher for the op kinds in `registry`.
-pub fn open_dispatcher(config: &Config, registry: Registry) -> Result<Dispatcher> {
+/// The database: the only writer, and a reader for replay.
+#[derive(Clone)]
+pub struct Log {
+    pub dispatcher: Dispatcher,
+    pub reader: Arc<LogReader>,
+}
+
+/// Opens (and migrates) the database under the configured data root, with
+/// a dispatcher for the op kinds in `registry`.
+pub fn open_log(config: &Config, registry: Registry) -> Result<Log> {
     let conn = uplink_storage::open(&config.data.root)?;
-    Ok(Dispatcher::new(
-        conn,
-        registry,
-        Arc::new(Hub::new(HUB_CAPACITY)),
-    ))
+    let reader = uplink_storage::open_reader(&config.data.root)?;
+    Ok(Log {
+        dispatcher: Dispatcher::new(conn, registry, Arc::new(Hub::new(HUB_CAPACITY))),
+        reader: Arc::new(LogReader::new(reader, MAX_REPLAY)),
+    })
 }
 
 /// Start accepting connections on `listener` using `config`.
@@ -91,7 +100,7 @@ pub async fn serve_with_listener(
     config: Config,
     config_path: PathBuf,
     listener: TcpListener,
-    dispatcher: Dispatcher,
+    log: Log,
 ) -> Result<()> {
     let tls_server_config =
         build_tls_server_config_from_paths(&config.server.tls.cert, &config.server.tls.key)?;
@@ -103,7 +112,7 @@ pub async fn serve_with_listener(
 
     let state = AppState {
         basic_auth: basic_auth.clone(),
-        dispatcher,
+        log,
     };
 
     let (tx, rx) = tokio::sync::broadcast::channel::<ConfigChanged>(16);
@@ -301,18 +310,11 @@ async fn ws_handler(
     }
     ws.protocols([uplink_realtime::PROTOCOL])
         .on_upgrade(move |socket| async move {
-            let requests = Requests {
-                dispatcher: state.dispatcher,
-            };
-            uplink_realtime::run_session(socket, requests.dispatcher.hub(), &requests).await
+            uplink_realtime::run_session(socket, state.log.dispatcher.hub(), &state.log).await
         })
 }
 
-struct Requests {
-    dispatcher: Dispatcher,
-}
-
-impl RequestHandler for Requests {
+impl Backend for Log {
     async fn handle(&self, request: ClientRequest) -> Result<ServerResponse, ServerError> {
         match request {
             ClientRequest::Undo { tx_log_id } => self
@@ -323,11 +325,16 @@ impl RequestHandler for Requests {
                 .map_err(undo_error),
         }
     }
+
+    async fn replay(&self, since: Option<TxLogId>) -> Result<Replay> {
+        self.reader.replay(since).await
+    }
 }
 
 fn undo_error(e: UndoError) -> ServerError {
     let code = match &e {
         UndoError::NotFound(_) => ErrorCode::NotFound,
+        UndoError::NotUndoable(_) => ErrorCode::NotUndoable,
         UndoError::AlreadyUndone { .. } => ErrorCode::AlreadyUndone,
         UndoError::Conflict { .. } => ErrorCode::Conflict,
         UndoError::Failed(e) => {
@@ -462,13 +469,16 @@ mod tests {
     const TEST_PASS: &str = "testpass";
 
     /// These tests don't touch the database; they share one.
-    static DISPATCHER: std::sync::LazyLock<(tempfile::TempDir, Dispatcher)> =
-        std::sync::LazyLock::new(|| {
-            let dir = tempfile::tempdir().unwrap();
-            let conn = uplink_storage::open(dir.path()).unwrap();
-            let dispatcher = Dispatcher::new(conn, Registry::new(), Arc::new(Hub::new(16)));
-            (dir, dispatcher)
-        });
+    static LOG: std::sync::LazyLock<(tempfile::TempDir, Log)> = std::sync::LazyLock::new(|| {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = uplink_storage::open(dir.path()).unwrap();
+        let reader = uplink_storage::open_reader(dir.path()).unwrap();
+        let log = Log {
+            dispatcher: Dispatcher::new(conn, Registry::new(), Arc::new(Hub::new(16))),
+            reader: Arc::new(LogReader::new(reader, 16)),
+        };
+        (dir, log)
+    });
 
     fn test_state() -> AppState {
         AppState {
@@ -476,7 +486,7 @@ mod tests {
                 user: TEST_USER.to_string(),
                 password_bcrypt: TEST_BCRYPT.to_string(),
             }))),
-            dispatcher: DISPATCHER.1.clone(),
+            log: LOG.1.clone(),
         }
     }
 

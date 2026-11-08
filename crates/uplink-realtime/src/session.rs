@@ -2,7 +2,9 @@ use crate::hub::Hub;
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use std::{convert::Infallible, future::Future, time::Duration};
 use tokio::{sync::broadcast::error::RecvError, time::Instant};
-use uplink_protocol::{ClientRequest, ServerError, ServerResponse, WsClientMsg, WsServerMsg};
+use uplink_protocol::{
+    ClientRequest, LogEntry, ServerError, ServerResponse, TxLogId, WsClientMsg, WsServerMsg,
+};
 
 /// WebSocket subprotocol spoken by [`run_session`] (SPEC §5.1).
 pub const PROTOCOL: &str = "uplink.v1";
@@ -16,19 +18,33 @@ const CLOSE_HEARTBEAT_TIMEOUT: u16 = 4000;
 /// The session fell further behind the live stream than the hub buffers.
 /// The client should reconnect and resume.
 const CLOSE_LAGGED: u16 = 4001;
+const CLOSE_INTERNAL_ERROR: u16 = 1011;
 
-/// Executes client requests on behalf of sessions.
-pub trait RequestHandler: Send + Sync {
+/// What sessions need from the rest of the server.
+pub trait Backend: Send + Sync {
+    /// Executes a client request.
     fn handle(
         &self,
         request: ClientRequest,
     ) -> impl Future<Output = Result<ServerResponse, ServerError>> + Send;
+
+    /// Reads the log for a client saying hello with `since`.
+    fn replay(&self, since: Option<TxLogId>)
+        -> impl Future<Output = anyhow::Result<Replay>> + Send;
+}
+
+pub struct Replay {
+    /// The most recent entry.
+    pub head: TxLogId,
+    /// The entries after `since`, oldest first, if the client can resume
+    /// from it; `None` if it must reload.
+    pub entries: Option<Vec<LogEntry>>,
 }
 
 /// Speaks the uplink protocol on an upgraded WebSocket until either side
 /// ends the connection.
-pub async fn run_session(mut socket: WebSocket, hub: &Hub, handler: &impl RequestHandler) {
-    let Err(end) = session(&mut socket, hub, handler).await;
+pub async fn run_session(mut socket: WebSocket, hub: &Hub, backend: &impl Backend) {
+    let Err(end) = session(&mut socket, hub, backend).await;
     match end {
         End::ClientClosed => tracing::debug!("ws: client closed"),
         End::Transport(e) => tracing::debug!("ws: transport error: {e}"),
@@ -68,35 +84,35 @@ fn protocol_error(reason: impl Into<String>) -> End {
 async fn session(
     socket: &mut WebSocket,
     hub: &Hub,
-    handler: &impl RequestHandler,
+    backend: &impl Backend,
 ) -> Result<Infallible, End> {
     let mut deadline = Instant::now() + SILENCE_TIMEOUT;
 
-    let resume = match recv(socket, &mut deadline).await? {
-        WsClientMsg::Hello { resume } => resume,
+    let since = match recv(socket, &mut deadline).await? {
+        WsClientMsg::Hello { since } => since,
         other => return Err(protocol_error(format!("expected hello, got {other:?}"))),
     };
 
-    let mut sub = hub.subscribe(resume);
+    // Subscribe before reading the log: an entry committed meanwhile is
+    // then seen by both, and the live copy is skipped below, rather than by
+    // neither.
+    let mut live = hub.subscribe();
+    let replay = backend.replay(since).await.map_err(|e| End::Close {
+        code: CLOSE_INTERNAL_ERROR,
+        reason: format!("reading log: {e:#}"),
+    })?;
     send(
         socket,
         &WsServerMsg::Welcome {
-            epoch: hub.epoch(),
-            cursor: sub.cursor,
-            resumed: sub.replay.is_some(),
+            cursor: replay.head,
+            resumed: replay.entries.is_some(),
         },
     )
     .await?;
-    for p in sub.replay.take().into_iter().flatten() {
-        send(
-            socket,
-            &WsServerMsg::Event {
-                cursor: p.cursor,
-                body: p.event.clone(),
-            },
-        )
-        .await?;
+    for entry in replay.entries.into_iter().flatten() {
+        send(socket, &WsServerMsg::Entry { entry }).await?;
     }
+    let mut cursor = replay.head;
 
     loop {
         tokio::select! {
@@ -104,21 +120,22 @@ async fn session(
                 WsClientMsg::Ping { seq } => send(socket, &WsServerMsg::Pong { seq }).await?,
                 WsClientMsg::Hello { .. } => return Err(protocol_error("duplicate hello")),
                 WsClientMsg::Request { request_id, body } => {
-                    let reply = match handler.handle(body).await {
+                    let reply = match backend.handle(body).await {
                         Ok(body) => WsServerMsg::Response { request_id, body },
                         Err(error) => WsServerMsg::RequestFailed { request_id, error },
                     };
                     send(socket, &reply).await?;
                 }
             },
-            published = sub.live.recv() => match published {
-                Ok(p) => send(socket, &WsServerMsg::Event {
-                    cursor: p.cursor,
-                    body: p.event.clone(),
-                }).await?,
+            published = live.recv() => match published {
+                Ok(entry) if entry.id <= cursor => {}
+                Ok(entry) => {
+                    cursor = entry.id;
+                    send(socket, &WsServerMsg::Entry { entry: (*entry).clone() }).await?;
+                }
                 Err(RecvError::Lagged(n)) => return Err(End::Close {
                     code: CLOSE_LAGGED,
-                    reason: format!("lagged {n} events behind"),
+                    reason: format!("lagged {n} entries behind"),
                 }),
                 Err(RecvError::Closed) => unreachable!("hub outlives its sessions"),
             },

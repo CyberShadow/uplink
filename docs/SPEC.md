@@ -104,8 +104,8 @@ Don't litigate these in code review.
    and are *derived* and rebuildable from the on-disk blobs.
 5. **Real-time uses one channel: a JSON-over-WebSocket protocol uplink
    defines.** No SSE, no long-poll, no second port. Heartbeat is app-level
-   ping/pong at 25–30 s. Reconnection replays missed events from a server-
-   side cursor.
+   ping/pong at 25–30 s. The stream is the log itself (§6): reconnection
+   replays the entries after the last one the client saw.
 6. **No client-side persistence other than IndexedDB write-through for the
    currently-being-edited draft.** No client cache of mail metadata, no
    client cache of Matrix events. The SPA loads from the server on connect,
@@ -519,23 +519,27 @@ CREATE TABLE outbox (
   error          TEXT
 );
 
--- ── transaction log ─────────────────────────────────────────────────
+-- ── the log ─────────────────────────────────────────────────────────
+-- Every change to uplink's state, in commit order (§6). User ops carry
+-- their inverse; observations of external state (account_id set) have
+-- none. Doubles as the event stream (§5.3).
 CREATE TABLE tx_log (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   ts             INTEGER NOT NULL,          -- ms since epoch
-  actor          TEXT NOT NULL,             -- 'user' | account_id (for system ops)
+  account_id     TEXT,                      -- NULL: user op; else the account observed
   description    TEXT NOT NULL,             -- human string, e.g. 'archived 12 messages'
-  op_type        TEXT NOT NULL,             -- forward op kind
-  op_json        TEXT NOT NULL,             -- forward op payload
-  inverse_type   TEXT NOT NULL,             -- inverse op kind
-  inverse_json   TEXT NOT NULL,             -- inverse op payload (computed from pre-state)
-  undone_by      INTEGER REFERENCES tx_log(id), -- if non-null, this op was undone
-                                                -- by tx_log entry undone_by.
-  undoes         INTEGER REFERENCES tx_log(id)  -- if non-null, this op is an undo
-                                                -- of tx_log entry undoes.
+  op_type        TEXT NOT NULL,             -- op / observation kind
+  op_json        TEXT NOT NULL,             -- op / observation payload
+  inverse_type   TEXT,                      -- inverse op kind
+  inverse_json   TEXT,                      -- inverse op payload
+  events_json    TEXT NOT NULL,             -- JSON array of the ServerEvents produced
+  undone_by      INTEGER REFERENCES tx_log(id), -- set once this entry is undone
+  undoes         INTEGER REFERENCES tx_log(id), -- set if this entry is an undo
+  CHECK ((account_id IS NULL) = (inverse_type IS NOT NULL)),
+  CHECK ((inverse_type IS NULL) = (inverse_json IS NULL)),
+  CHECK (account_id IS NULL OR (undone_by IS NULL AND undoes IS NULL))
 );
 CREATE INDEX tx_log_by_ts ON tx_log(ts DESC);
-CREATE INDEX tx_log_open ON tx_log(undone_by) WHERE undone_by IS NULL;
 ```
 
 ### 4.4 Schema design notes
@@ -617,26 +621,33 @@ All messages use a tagged enum discriminator. In Rust:
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WsClientMsg {
     Ping { seq: u64 },
-    /// First message after connection — tells server where we last were.
-    Hello { resume: Option<Resume> },
+    /// First message after connection: the last entry the client saw,
+    /// if it wants to resume.
+    Hello { since: Option<TxLogId> },
     /// Request/response: the matching reply carries the same request_id.
     Request { request_id: u64, body: ClientRequest },
-    /// Fire-and-forget client-originated events (draft edits primarily).
-    Event { body: ClientEvent },
 }
-
-pub struct Resume { pub epoch: Epoch, pub cursor: Cursor }
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WsServerMsg {
     Pong { seq: u64 },
     /// Reply to Hello (see §5.3).
-    Welcome { epoch: Epoch, cursor: Cursor, resumed: bool },
+    Welcome { cursor: TxLogId, resumed: bool },
     Response { request_id: u64, body: ServerResponse },
     RequestFailed { request_id: u64, error: ServerError },
-    /// Server-pushed event. Each carries a monotonic cursor for replay.
-    Event { cursor: Cursor, body: ServerEvent },
+    /// A log entry, as committed; replayed or live.
+    Entry { entry: LogEntry },
+}
+
+pub struct LogEntry {
+    pub id: TxLogId,
+    pub ts: i64,
+    pub source: Source,          // User | Account { id }
+    pub description: String,
+    pub op_type: String,
+    pub undoes: Option<TxLogId>, // set on undo entries
+    pub events: Vec<ServerEvent>,
 }
 ```
 
@@ -644,25 +655,25 @@ Payloads nest under `body` rather than being `#[serde(flatten)]`ed: they
 are tagged enums themselves, and their `type` tag would collide with the
 envelope's.
 
-`ClientRequest`, `ClientEvent`, `ServerEvent`, `ServerResponse` are
+`ClientRequest`, `ServerEvent`, `ServerResponse` are
 themselves tagged enums; per-domain variants live in domain submodules
 (`protocol::mail::*`, `protocol::matrix::*`, …) and are re-exported.
 
-### 5.3 Replay buffer
+### 5.3 Replay
 
-The realtime crate keeps a ring buffer (4096 most recent events) keyed by
-cursor. Cursors are per-server-process and not persisted; each process
-also has an *epoch*, so a cursor is only meaningful together with the
-epoch it was issued under.
+Clients follow the log: the cursor is the id of the last entry received,
+and it means the same thing across server restarts. On
+`Hello { since: Some(id) }`, the server replies `Welcome { resumed: true }`
+followed by every entry after `id` read from SQLite, then live ones. It
+replies `Welcome { resumed: false, cursor }` instead when the client says
+`since: None`, is more than 4096 entries behind, or names an id the log
+never had; the client then discards its state, reloads, and adopts
+`cursor` as its position.
 
-On `Hello { resume: Some({ epoch, cursor }) }`, if the epoch matches and
-every event after `cursor` is still buffered, the server replies
-`Welcome { resumed: true }` followed by the missed events, then live ones.
-Otherwise — including after a server restart — it replies
-`Welcome { resumed: false, cursor }`: the client discards its state,
-reloads, and adopts `cursor` as its baseline. A session that falls further
-behind the live stream than the buffer holds is closed, and the client
-reconnects and resumes.
+The session subscribes to the hub's live fan-out *before* reading the log,
+and skips live entries it already replayed, so nothing committed in
+between is lost. A session that falls further behind the live fan-out
+than it buffers is closed; the client reconnects and resumes.
 
 ### 5.4 Event types (MVP)
 
@@ -678,7 +689,6 @@ reconnects and resumes.
 - **TODO**: `TodoAdded`, `TodoChanged`, `TodoRemoved`.
 - **Draft**: `DraftEdited { id, edit }` (§7).
 - **Outbox**: `OutboxItemChanged { id, state }`.
-- **TxLog**: `TxLogEntryAdded`, `TxLogEntryUndone`.
 - **Config**: `ConfigChanged { section }`.
 
 `ClientRequest` variants (MVP):
@@ -724,9 +734,10 @@ impl Dispatcher {
 
 The dispatcher owns the single write connection. `dispatch` begins a
 transaction, applies the op, inserts the tx_log row (forward and inverse
-kind + JSON), commits, then publishes the op's events and
-`TxLogEntryAdded` — while still holding the writer, so cursor order equals
-commit order.
+kind + JSON, and the events produced), commits, then publishes the entry
+— while still holding the writer, so publication order equals commit
+order. `observe(account, observation)` does the same for observations of
+external state, which record no inverse; `undo` refuses them.
 
 Key properties:
 
@@ -788,23 +799,23 @@ and undo would have to replay 50 entries to roll back one user gesture.
 
 ### 6.5 Which operations go through the dispatcher
 
-**Everything user-initiated that mutates persistent state.** `tx_log` is
-the record of user intent. Examples:
+**Every change to persistent state** is a log entry: user-initiated ops,
+and observations of external state. User op examples:
 
 - Marking message read/unread, archiving, labeling, deleting.
 - Editing a draft (§7), sending mail, sending a Matrix message (§6.7).
 - Creating, editing, completing a TODO.
 - Flagging a message for follow-up (creates a linked TODO).
 
-**Not** through the dispatcher:
+Observations (`Dispatcher::observe`, recorded with the observing
+account): new mail arriving, Matrix events streaming in, calendar deltas,
+and reconciler bookkeeping (§6.6). They have no inverse and cannot be
+undone. Bulk ingest (e.g. the first sync of a mailbox) records one entry
+per batch, not per message, and event payloads stay small (ids and
+changed fields, not bodies), since they are stored.
 
-- Background sync writes (new mail arriving, Matrix events streaming in,
-  calendar delta) and reconciler bookkeeping (§6.6). These are
-  *observations* of the external world, not user actions. They write to
-  storage via a dedicated ingest path that does *not* touch `tx_log`, and
-  publish their events to the hub. Clients receive one event stream
-  containing both.
-- Read-only queries (search, load message body, load room timeline).
+Not log entries: read-only queries (search, load message body, load room
+timeline).
 
 ### 6.6 Desired state and reconciliation
 
@@ -1288,8 +1299,8 @@ to the same origin.
 - `visibilitychange` listener that triggers immediate heartbeat on
   visible-after-hidden.
 - Outbound message queue, drained on connect.
-- Cursor tracking: every received `Event { cursor }` updates a local
-  cursor; on reconnect, `Hello { cursor }` is sent.
+- Cursor tracking: every received `Entry` updates the local cursor to its
+  id; on reconnect, `Hello { since: cursor }` is sent.
 - IndexedDB write-through for draft text (per §7).
 
 ### 12.4 Views

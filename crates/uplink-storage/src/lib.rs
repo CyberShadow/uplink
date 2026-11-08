@@ -2,7 +2,7 @@
 //! (SPEC §4).
 
 use anyhow::{ensure, Context, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
 
 pub use rusqlite;
@@ -49,6 +49,14 @@ pub fn open(data_root: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
+/// Opens a read-only connection to the database [`open`] created under
+/// `data_root`.
+pub fn open_reader(data_root: &Path) -> Result<Connection> {
+    let path = db_path(data_root);
+    Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("opening {} for reading", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,6 +80,17 @@ mod tests {
             .query_row("SELECT count(*) FROM tx_log", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn reader_cannot_write() {
+        let dir = tempfile::tempdir().unwrap();
+        drop(open(dir.path()).unwrap());
+        let reader = open_reader(dir.path()).unwrap();
+        reader
+            .query_row("SELECT count(*) FROM tx_log", [], |r| r.get::<_, i64>(0))
+            .unwrap();
+        reader.execute("DELETE FROM tx_log", []).unwrap_err();
     }
 
     #[test]
