@@ -8,6 +8,7 @@ import { RequestError } from '../connection'
 import type {
   Attachment,
   Account,
+  CalendarEvent,
   ClientRequest,
   Draft,
   OutboxItem,
@@ -69,6 +70,7 @@ export class FakeServer implements Requester, Blobs {
   readonly blobs = new Map<string, number>()
   private nextAttachment = 1
 
+  readonly calendar: CalendarEvent[] = []
   readonly todos: Todo[] = []
   private nextTodo = 1
   private matrixAccounts: MatrixAccount[] = []
@@ -140,6 +142,31 @@ export class FakeServer implements Requester, Blobs {
   /** Records a sync observation and delivers its entry to the store. */
   observe(account: string, events: ServerEvent[]) {
     this.commit({ type: 'account', id: account }, 'Synced', events)
+  }
+
+  /** Adds an event to `account`'s calendar, as syncing would, without
+   * saying so; {@link calendarSynced} does. Times are ISO strings. */
+  addEvent(account: string, subject: string, start: string, end: string, more: Partial<CalendarEvent> = {}): CalendarEvent {
+    const event: CalendarEvent = {
+      id: this.calendar.length + 1,
+      account,
+      subject,
+      location: '',
+      preview: '',
+      start: Date.parse(start),
+      end: Date.parse(end),
+      all_day: false,
+      recurring: false,
+      exception: false,
+      ...more,
+    }
+    this.calendar.push(event)
+    return event
+  }
+
+  /** Says that `account`'s calendar changed. */
+  calendarSynced(account: string) {
+    this.observe(account, [{ type: 'calendar_changed', account }])
   }
 
   /** Changes labels as the provider would, then observes it. */
@@ -438,6 +465,14 @@ export class FakeServer implements Requester, Blobs {
           as_of: this.head(),
           entries: this.sorted().filter((e) => e.message === body.message).map((e) => ({ ...e })),
           next: null,
+        }
+      case 'list_events':
+        return {
+          type: 'events',
+          as_of: this.head(),
+          events: this.calendar
+            .filter((e) => e.start < body.to && (e.end > body.from || e.start >= body.from))
+            .sort((a, b) => a.start - b.start),
         }
       case 'list_todos':
         return { type: 'todos', as_of: this.head(), todos: this.sortedTodos() }

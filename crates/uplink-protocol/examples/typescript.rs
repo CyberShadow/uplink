@@ -5,7 +5,7 @@
 //! The `protocol-ts` flake check fails if the checked-in file is stale.
 
 use ts_rs::{Config, TS};
-use uplink_protocol::{compose::*, mail::*, matrix::*, todos::*, *};
+use uplink_protocol::{calendar::*, compose::*, mail::*, matrix::*, todos::*, *};
 
 fn main() {
     // Ids and timestamps are i64, well within a double's exact range.
@@ -85,6 +85,9 @@ fn main() {
         Todo,
         TodoEdit,
         TodosChanged,
+        EventId,
+        CalendarEvent,
+        CalendarChanged,
     );
     print!("{out}");
 }

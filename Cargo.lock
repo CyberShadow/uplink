@@ -4587,6 +4587,24 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 [[package]]
 name = "uplink-calendar"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "mail-parser",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uplink-config",
+ "uplink-email",
+ "uplink-protocol",
+ "uplink-realtime",
+ "uplink-storage",
+ "uplink-tx-log",
+ "url",
+]
 
 [[package]]
 name = "uplink-cli"
@@ -4717,6 +4735,7 @@ dependencies = [
  "tokio-tungstenite",
  "tower",
  "tracing",
+ "uplink-calendar",
  "uplink-config",
  "uplink-email",
  "uplink-matrix",

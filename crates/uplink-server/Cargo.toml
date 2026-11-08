@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+uplink-calendar = { path = "../uplink-calendar" }
 uplink-config = { path = "../uplink-config" }
 uplink-protocol = { path = "../uplink-protocol" }
 uplink-realtime = { path = "../uplink-realtime" }

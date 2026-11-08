@@ -71,6 +71,7 @@ export class MatrixStore {
         case 'drafts_changed':
         case 'outbox_changed':
         case 'todos_changed':
+        case 'calendar_changed':
           break
       }
     }

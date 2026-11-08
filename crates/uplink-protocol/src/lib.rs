@@ -7,6 +7,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+pub mod calendar;
 pub mod compose;
 pub mod mail;
 pub mod matrix;
@@ -189,6 +190,12 @@ pub enum ClientRequest {
         room: RoomId,
         change: MembershipChange,
     },
+    /// The events overlapping `from`–`to` (ms since the Unix epoch), of
+    /// every account's calendar, by start.
+    ListEvents {
+        from: i64,
+        to: i64,
+    },
     /// All to-dos.
     ListTodos,
     /// Flagging a message for follow-up is creating a to-do of it.
@@ -261,6 +268,10 @@ pub enum ServerResponse {
         as_of: TxLogId,
         todos: Vec<todos::Todo>,
     },
+    Events {
+        as_of: TxLogId,
+        events: Vec<calendar::CalendarEvent>,
+    },
     History {
         as_of: TxLogId,
         entries: Vec<HistoryEntry>,
@@ -284,6 +295,7 @@ impl ServerResponse {
             | Self::Timeline { as_of, .. }
             | Self::MatrixOutbox { as_of, .. }
             | Self::Todos { as_of, .. }
+            | Self::Events { as_of, .. }
             | Self::History { as_of, .. } => Some(*as_of),
             // Message content does not change.
             Self::Message { .. } => None,
@@ -365,6 +377,7 @@ pub enum ServerEvent {
     TimelineAdded(matrix::TimelineAdded),
     MatrixOutboxChanged(matrix::MatrixOutboxChanged),
     TodosChanged(todos::TodosChanged),
+    CalendarChanged(calendar::CalendarChanged),
 }
 
 #[cfg(test)]

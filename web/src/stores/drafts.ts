@@ -74,6 +74,7 @@ export class DraftStore {
         case 'timeline_added':
         case 'matrix_outbox_changed':
         case 'todos_changed':
+        case 'calendar_changed':
           break
       }
     }

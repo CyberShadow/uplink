@@ -3,6 +3,7 @@
 import type { Blobs } from '../blobs'
 import type { Requester } from '../connection'
 import type { LogEntry } from '../generated/protocol'
+import { CalendarStore } from './calendar'
 import { DraftStore } from './drafts'
 import { HistoryStore } from './history'
 import { MailStore } from './mail'
@@ -17,6 +18,7 @@ export class Client {
   readonly matrix: MatrixStore
   readonly todos: TodoStore
   readonly history: HistoryStore
+  readonly calendar: CalendarStore
 
   constructor(server: Requester & Blobs) {
     this.ops = new Ops(server)
@@ -25,6 +27,7 @@ export class Client {
     this.matrix = new MatrixStore(server, this.ops)
     this.todos = new TodoStore(server, this.ops)
     this.history = new HistoryStore(server)
+    this.calendar = new CalendarStore(server)
   }
 
   /** Everything is void; load afresh. */
@@ -34,6 +37,7 @@ export class Client {
     this.matrix.reset()
     this.todos.reset()
     this.history.reset()
+    this.calendar.reset()
   }
 
   apply(entry: LogEntry) {
@@ -43,5 +47,6 @@ export class Client {
     this.matrix.apply(entry)
     this.todos.apply(entry)
     this.history.apply(entry)
+    this.calendar.apply(entry)
   }
 }

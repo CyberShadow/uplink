@@ -36,6 +36,7 @@ use uplink_protocol::{
 };
 use uplink_realtime::{Backend, Hub, Replay};
 use uplink_storage::seal::MasterKey;
+use uplink_calendar::service::Calendar;
 use uplink_todos::service::Todos;
 use uplink_tx_log::{Dispatcher, LogReader, Registry, UndoError};
 
@@ -103,10 +104,14 @@ pub fn start_syncs(config: &Config, services: &Services) -> Result<()> {
                 tokio::spawn(sync.run());
             }
             AccountConfig::M365(account) => {
+                // One Graph, so that both syncs refresh one token.
                 let graph = m365::api::Graph::of(account, key.clone(), http.clone());
+                let calendar =
+                    uplink_calendar::sync::task(account, graph.clone(), dispatcher.clone(), root)?;
                 let sync = m365::sync::task(account, graph, dispatcher.clone(), root)?;
                 info!(account = account.id, "starting Microsoft 365 sync");
                 tokio::spawn(sync.run());
+                tokio::spawn(calendar.run());
             }
             AccountConfig::Matrix(account) => {
                 let sync =
@@ -128,6 +133,7 @@ pub struct Services {
     pub mail: Mail,
     pub matrix: Matrix,
     pub todos: Todos,
+    pub calendar: Calendar,
 }
 
 /// Opens (and migrates) the database under the configured data root, with
@@ -173,6 +179,7 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
         .collect();
     Ok(Services {
         todos: Todos::new(dispatcher.clone(), uplink_storage::open_reader(root)?),
+        calendar: Calendar::new(uplink_storage::open_reader(root)?),
         matrix: Matrix::new(
             dispatcher.clone(),
             uplink_storage::open_reader(root)?,
@@ -587,6 +594,7 @@ impl Backend for Services {
                 self.matrix.change_membership(room, change).await
             }
             ClientRequest::ListTodos => self.todos.list().await,
+            ClientRequest::ListEvents { from, to } => self.calendar.list(from, to).await,
             ClientRequest::CreateTodo {
                 title,
                 notes,
@@ -745,6 +753,7 @@ mod tests {
                 ),
                 matrix: Matrix::new(dispatcher.clone(), reader(), vec![]),
                 todos: Todos::new(dispatcher.clone(), reader()),
+                calendar: Calendar::new(reader()),
                 reader: Arc::new(LogReader::new(reader(), 16)),
                 dispatcher,
             };
