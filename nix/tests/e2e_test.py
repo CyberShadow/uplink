@@ -6,14 +6,14 @@ def ui(step):
     return json.loads(machine.succeed(f"uplink-ui {step}"))
 
 
+def subject_of(id):
+    headers = gmail(token, "GET", f"/messages/{id}?format=metadata&metadataHeaders=Subject")["payload"]["headers"]
+    return next(h["value"] for h in headers if h["name"] == "Subject")
+
+
 def inbox_subjects():
     messages = gmail(token, "GET", "/messages?labelIds=INBOX").get("messages", [])
-    return {
-        header["value"]
-        for m in messages
-        for header in gmail(token, "GET", f"/messages/{m['id']}?format=metadata&metadataHeaders=Subject")["payload"]["headers"]
-        if header["name"] == "Subject"
-    }
+    return {subject_of(m["id"]) for m in messages}
 
 
 start_all()
@@ -51,5 +51,27 @@ with subtest("labelling in the UI labels in Gmail"):
 with subtest("search finds a word in a body, and its URL reloads"):
     result = ui("search")
     assert result == {"path": "search/quixot", "subjects": ["Lunch on Friday"]}, result
+
+with subtest("a reply written in the UI is sent after the delay, in the thread"):
+    ui("reply")
+
+    def sent():
+        messages = gmail(token, "GET", "/messages?labelIds=SENT").get("messages", [])
+        return messages and gmail(token, "GET", f"/messages/{messages[0]['id']}?format=raw")
+
+    message = eventually("the reply to reach Gmail", sent)
+    raw = base64.urlsafe_b64decode(message["raw"] + "==").decode()
+    assert "Subject: Re: Lunch on Friday" in raw, raw
+    assert "carol@example.net" in raw, raw
+    assert "<b>See you there!</b>" in raw or "<strong>See you there!</strong>" in raw, raw
+    lunch = next(
+        m for m in gmail(token, "GET", "/messages")["messages"]
+        if subject_of(m["id"]) == "Lunch on Friday"
+    )
+    assert message["threadId"] == lunch["threadId"], (message["threadId"], lunch)
+    eventually(
+        "the sent copy to be synced back, emptying the outbox",
+        lambda: machine.succeed(f"sqlite3 {STATE}/db/uplink.sqlite 'SELECT count(*) FROM mail_outbox'").strip() == "0",
+    )
 
 machine.copy_from_vm("/tmp/screenshots", "")

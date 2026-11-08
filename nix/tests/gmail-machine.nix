@@ -50,6 +50,7 @@ in
           };
         };
         master_key_file = "/var/lib/uplink/master.key";
+        send_delay_secs = 2;
         accounts = [
           {
             id = "alice-gmail";

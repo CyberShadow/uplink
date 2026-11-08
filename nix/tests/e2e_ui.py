@@ -90,7 +90,31 @@ def search(page):
     return {"path": page.url.split("/", 3)[3], "subjects": subjects(page)}
 
 
-STEPS = {f.__name__: f for f in [read, archive, undo, label, search]}
+def reply(page):
+    """Finds the (archived) lunch message, replies to it, and sends."""
+    page.keyboard.press("/")
+    page.keyboard.type("quixot")
+    page.keyboard.press("Enter")
+    expect(page.get_by_role("list", name="Messages").get_by_role("listitem")).to_have_count(1)
+    page.keyboard.press("Enter")
+    expect(page.get_by_role("article")).to_contain_text("quixotic")
+    page.keyboard.press("r")
+    expect(page.get_by_role("textbox", name="Subject")).to_have_value("Re: Lunch on Friday")
+    # Writing starts in the body, above the quote.
+    page.keyboard.type("Friday works. ")
+    page.keyboard.press("Control+b")
+    page.keyboard.type("See you there!")
+    expect(page.get_by_text("Saved")).to_be_visible()
+    page.screenshot(path=f"{SHOTS}/compose.png")
+    page.keyboard.press("Control+Enter")
+    expect(page.get_by_role("status")).to_contain_text("Sent 'Re: Lunch on Friday'")
+    page.goto(os.environ["UPLINK_URL"] + "/outbox")
+    expect(page.get_by_text("Loading…")).to_have_count(0)
+    page.screenshot(path=f"{SHOTS}/outbox.png")
+    return {"path": page.url.split("/", 3)[3]}
+
+
+STEPS = {f.__name__: f for f in [read, archive, undo, label, search, reply]}
 
 step = STEPS[sys.argv[1]]
 with sync_playwright() as p:
