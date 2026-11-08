@@ -2,3 +2,11 @@
 name = "uplink-storage"
 version = "0.1.0"
 edition = "2021"
+
+[dependencies]
+anyhow = "1"
+refinery = { version = "0.10", features = ["rusqlite"] }
+rusqlite = "0.41"
+
+[dev-dependencies]
+tempfile = "3"
