@@ -1772,11 +1772,26 @@ script (e.g. inject a message on the provider side, watch it arrive,
 archive it, check the provider's labels, undo).
 
 - **Gmail:** [vercel-labs/emulate](https://github.com/vercel-labs/emulate)'s
-  Google emulator — stateful Gmail REST (`messages` incl. `raw`, `import`,
-  `modify`, `send`; `history`; `labels`; `threads`) plus OAuth token and
-  refresh endpoints. Spike at M4 start: packaging it in Nix (Node ≥ 24,
-  pnpm 11, also published on npm), and fidelity gaps we depend on. Extend
-  upstream, or replace it with our own fake, if it falls short.
+  Google emulator (`packages.emulate`, from its npm release) — stateful
+  Gmail REST plus Google OAuth. Spiked 2026-11-08: raw MIME import/get
+  round-trips byte-exact; `modify`, `batchModify`, `send`, `labels`,
+  `history` (all four change types) behave; the authorization-code flow
+  (with PKCE) can be driven unattended by posting its sign-in form, so
+  the test runs the real `uplink oauth init`; errors are Google-shaped.
+  Known gaps, to fix upstream rather than work around:
+  `users.getProfile` is missing (uplink needs its `historyId` to start
+  syncing), and a too-old `startHistoryId` returns 200 instead of 404.
+  uplink's Google endpoints (auth, token, API base) are configurable,
+  defaulting to Google's.
+- **Real accounts.** A fake can diverge from the real service in
+  minutiae (error handling especially), so the provider-facing tests are
+  written once against endpoints passed in, and also run — manually, now
+  and then — against a dedicated real test account on the host (needs
+  network and credentials, so not part of `nix flake check`). Tests
+  arrange provider-side state through the provider's own API (e.g. Gmail
+  `messages.import` to deliver mail), which works in both modes, and
+  clean up after themselves. Divergences found this way are fixed in the
+  fake (upstream) or in uplink.
 - **M365 (Graph):** emulate's Microsoft emulator covers OAuth only, no
   mail. Look for prior art at M5 start; otherwise a small Graph fake of
   the endpoints uplink uses (delta, `$value`, sendMail, PATCH/move).
