@@ -21,6 +21,9 @@ enum Command {
     Serve,
     /// Print a new master key, for `master_key_file`.
     Keygen,
+    /// Print the bcrypt hash of a password read from standard input, for
+    /// `server.basic_auth.password_bcrypt`.
+    HashPassword,
     /// Manage accounts' OAuth authorization.
     Oauth {
         #[command(subcommand)]
@@ -51,6 +54,16 @@ async fn main() -> Result<()> {
         Command::Serve => uplink_server::serve(cli.config).await,
         Command::Keygen => {
             println!("{}", MasterKey::generate());
+            Ok(())
+        }
+        Command::HashPassword => {
+            let mut password = String::new();
+            std::io::stdin()
+                .read_line(&mut password)
+                .context("reading the password")?;
+            let password = password.trim_end_matches(['\r', '\n']);
+            anyhow::ensure!(!password.is_empty(), "no password on standard input");
+            println!("{}", bcrypt::hash(password, 12)?);
             Ok(())
         }
         Command::Oauth {
