@@ -17,10 +17,10 @@ import type {
   LogEntry,
   MessageContent,
   MessageId,
-  ServerResponse,
 } from '../generated/protocol'
 import type { Requester } from '../connection'
 import type { Ops } from './ops'
+import { query } from './query'
 
 export const PAGE = 100
 /** The server's limit on a page. */
@@ -109,6 +109,9 @@ export class MailStore {
         case 'draft_edited':
         case 'drafts_changed':
         case 'outbox_changed':
+        case 'rooms_changed':
+        case 'timeline_added':
+        case 'matrix_outbox_changed':
           // Not mail; no counts change.
           continue
       }
@@ -188,7 +191,7 @@ export class MailStore {
     this.accountsStale = false
     this.accountsLoading = true
     try {
-      const response = await this.query({ type: 'list_accounts' }, 'accounts')
+      const response = await query(this.server, { type: 'list_accounts' }, 'accounts')
       this.accounts.value = response.accounts
     } catch (error) {
       this.error.value = (error as Error).message
@@ -262,7 +265,7 @@ export class MailStore {
     this.listLoad = load
     let response
     try {
-      response = await this.query(request, 'entries')
+      response = await query(this.server, request, 'entries')
     } catch (error) {
       this.error.value = (error as Error).message
     }
@@ -376,22 +379,11 @@ export class MailStore {
   /** `null` if it could not be loaded; `error` says why. */
   async loadMessage(message: MessageId): Promise<MessageContent | null> {
     try {
-      const response = await this.query({ type: 'load_message', message }, 'message')
+      const response = await query(this.server, { type: 'load_message', message }, 'message')
       return response.message
     } catch (error) {
       this.error.value = (error as Error).message
       return null
     }
-  }
-
-  private async query<T extends ServerResponse['type']>(
-    request: ClientRequest,
-    type: T,
-  ): Promise<Extract<ServerResponse, { type: T }>> {
-    const response = await this.server.request(request)
-    if (response.type !== type) {
-      throw new Error(`expected ${type} in response to ${request.type}, got ${response.type}`)
-    }
-    return response as Extract<ServerResponse, { type: T }>
   }
 }

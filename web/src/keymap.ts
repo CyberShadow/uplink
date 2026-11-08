@@ -55,7 +55,7 @@ export const KEYMAP: Binding[] = [
   { action: 'star', keys: ['s'], label: 's', help: 'Star or unstar' },
   { action: 'label', keys: ['l'], label: 'l', help: 'Label' },
   { action: 'compose', keys: ['c'], label: 'c', help: 'Compose' },
-  { action: 'reply', keys: ['r'], label: 'r', help: 'Reply' },
+  { action: 'reply', keys: ['r'], label: 'r', help: 'Reply (in a room: write a message)' },
   { action: 'replyAll', keys: ['a'], label: 'a', help: 'Reply all' },
   { action: 'forward', keys: ['f'], label: 'f', help: 'Forward' },
   { action: 'send', keys: ['$mod+Enter'], label: 'Ctrl+Enter', help: 'Send (in compose)' },

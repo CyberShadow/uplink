@@ -23,7 +23,8 @@ async function start(path = '/') {
   history.replaceState(null, '', path)
   render(<App client={client} status={signal('open')} />)
   client.reset()
-  await screen.findByRole('list', { name: 'Messages' })
+  if (path.startsWith('/rooms/')) await screen.findByRole('list', { name: 'Timeline' })
+  else await screen.findByRole('list', { name: 'Messages' })
   return userEvent.setup()
 }
 
@@ -213,5 +214,57 @@ describe('compose', () => {
     expect(draft.content.body).toContain('<blockquote><p>Body of First</p></blockquote>')
     await user.keyboard('{Escape}')
     await screen.findByText('Body of First')
+  })
+})
+
+describe('matrix', () => {
+  it('lists rooms in the nav, and reading one marks it read', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    server.receive(room.id, { body: 'Hello there' })
+    const user = await start()
+    const nav = screen.getByRole('navigation')
+    const link = await within(nav).findByRole('link', { name: /^Lounge/ })
+    expect(link.textContent).toBe('Lounge1')
+    await user.click(link)
+    expect(location.pathname).toBe(`/rooms/${room.id}`)
+    expect(await screen.findByText('Hello there')).toBeTruthy()
+    await waitFor(() => expect(link.textContent).toBe('Lounge'))
+    expect(link.getAttribute('aria-current')).toBe('page')
+    // Reading quietly: no notice.
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('shows events it does not display otherwise as raw JSON', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge', true)
+    server.receive(room.id, {
+      kind: 'org.example.custom',
+      msgtype: null,
+      raw: JSON.stringify({ type: 'org.example.custom', content: { answer: 42 } }),
+    })
+    server.receive(room.id, { kind: 'm.room.encrypted', msgtype: null, encryption: 'undecryptable' })
+    await start(`/rooms/${room.id}`)
+    expect(await screen.findByText('org.example.custom')).toBeTruthy()
+    expect(screen.getByText(/"answer": 42/)).toBeTruthy()
+    expect(screen.getByText('Unable to decrypt this message.')).toBeTruthy()
+  })
+
+  it('sends with Enter, showing the message until it is synced back', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const user = await start(`/rooms/${room.id}`)
+    await user.keyboard('r')
+    const box = screen.getByRole('textbox', { name: 'Message Lounge' })
+    expect(document.activeElement).toBe(box)
+    await user.keyboard('First line{Shift>}{Enter}{/Shift}second line{Enter}')
+    expect(await screen.findByText('Waiting to send')).toBeTruthy()
+    expect(screen.getByText('First line second line')).toBeTruthy()
+    expect((box as HTMLTextAreaElement).value).toBe('')
+    expect(server.requests).toContainEqual({ type: 'send_matrix_message', room: room.id, body: 'First line\nsecond line' })
+
+    server.echo(server.matrixOutbox[0].id)
+    await waitFor(() => expect(screen.queryByText('Waiting to send')).toBeNull())
+    expect(screen.getByText('First line second line')).toBeTruthy()
   })
 })

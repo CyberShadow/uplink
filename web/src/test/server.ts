@@ -16,11 +16,20 @@ import type {
   LabelId,
   LabelState,
   LogEntry,
+  MatrixAccount,
+  MatrixOutboxItem,
+  Room,
+  RoomEvent,
+  RoomId,
   ServerEvent,
+  TimelinePage,
   ServerResponse,
 } from '../generated/protocol'
 import type { Client } from '../stores/client'
 import { apply } from '../compose/splice'
+
+/** The Matrix account's user. */
+export const ME = '@me:example.org'
 
 const SYSTEM = ['INBOX', 'UNREAD', 'STARRED', 'SENT', 'DRAFT', 'TRASH', 'SPAM']
 
@@ -43,6 +52,12 @@ export class FakeServer implements Requester {
   readonly drafts = new Map<string, Draft>()
   readonly outbox: OutboxItem[] = []
   private nextOutbox = 1
+
+  private matrixAccounts: MatrixAccount[] = []
+  readonly rooms: Room[] = []
+  readonly events = new Map<RoomId, RoomEvent[]>()
+  readonly matrixOutbox: MatrixOutboxItem[] = []
+  private nextRoomEvent = 1
 
   attach(client: Client) {
     this.client = client
@@ -102,6 +117,72 @@ export class FakeServer implements Requester {
     const change = this.setLabel(entry, label, desired)!
     const account = this.entries.find((e) => e.id === entry)!.account
     this.observe(account, [{ type: 'labels_changed', changes: [change] }])
+  }
+
+  /** Configures the Matrix account `mx`, of user {@link ME}. */
+  addMatrixAccount() {
+    this.matrixAccounts.push({ id: 'mx', mxid: ME, synced: true })
+  }
+
+  /** Adds a joined room of the Matrix account, as syncing would. */
+  addRoom(name: string, encrypted = false): Room {
+    const room: Room = {
+      id: this.rooms.length + 1,
+      account: 'mx',
+      room_id: `!${name.toLowerCase()}:example.org`,
+      name,
+      encrypted,
+      membership: 'joined',
+      unread: 0,
+      last_event_ts: null,
+      read_up_to: null,
+    }
+    this.rooms.push(room)
+    this.events.set(room.id, [])
+    this.observe('mx', [{ type: 'rooms_changed', rooms: [room.id] }])
+    return room
+  }
+
+  /** An event arrives in the room, as syncing would deliver it. */
+  receive(room: RoomId, event: Partial<RoomEvent>): RoomEvent {
+    const id = this.nextRoomEvent++
+    const full: RoomEvent = {
+      id,
+      event_id: `$${id}`,
+      sender: '@bob:example.org',
+      sender_name: 'Bob',
+      ts: 1_700_000_000_000 + id * 60_000,
+      kind: 'm.room.message',
+      msgtype: 'm.text',
+      body: null,
+      raw: '{}',
+      encryption: 'none',
+      ...event,
+    }
+    this.events.get(room)!.push(full)
+    this.observe('mx', [
+      { type: 'timeline_added', room, events: [id] },
+      { type: 'rooms_changed', rooms: [room] },
+    ])
+    return full
+  }
+
+  /** The homeserver sends an outbox item, and sync echoes it. */
+  echo(item: number) {
+    const index = this.matrixOutbox.findIndex((i) => i.id === item)
+    const [sent] = this.matrixOutbox.splice(index, 1)
+    this.receive(sent.room, { sender: ME, sender_name: 'Me', body: sent.body })
+    this.observe('mx', [{ type: 'matrix_outbox_changed', items: [item] }])
+  }
+
+  private matrixRooms(): Room[] {
+    return this.rooms.map((room) => {
+      const events = this.events.get(room.id)!
+      const unread = events.filter(
+        (e) => e.id > (room.read_up_to ?? 0) && e.kind === 'm.room.message' && e.sender !== ME,
+      ).length
+      return { ...room, unread, last_event_ts: events.at(-1)?.ts ?? null }
+    })
   }
 
   /** HTML bodies by message, for messages that have one. */
@@ -212,6 +293,29 @@ export class FakeServer implements Requester {
       }
       case 'cancel_send':
         return { type: 'dispatched', tx_log_id: this.cancelSend(body.item, 'Cancelled sending') }
+      case 'list_rooms':
+        return {
+          type: 'rooms',
+          as_of: this.head(),
+          accounts: [...this.matrixAccounts],
+          rooms: this.matrixRooms(),
+        }
+      case 'list_timeline':
+        return { type: 'timeline', as_of: this.head(), room: body.room, ...this.timeline(body.room, body.page, body.limit) }
+      case 'list_matrix_outbox':
+        return { type: 'matrix_outbox', as_of: this.head(), items: [...this.matrixOutbox] }
+      case 'send_matrix_message': {
+        const id = this.nextOutbox++
+        this.matrixOutbox.push({ id, room: body.room, body: body.body, state: 'queued', error: null, queued_at: Date.now() })
+        const response = this.dispatched(`Sent '${body.body}'`, [{ type: 'matrix_outbox_changed', items: [id] }])
+        this.undoable.set(this.head(), { revert: () => this.cancelMatrixSend(id, 'Undid it'), undone: false })
+        return response
+      }
+      case 'cancel_matrix_send':
+        return { type: 'dispatched', tx_log_id: this.cancelMatrixSend(body.item, 'Cancelled sending') }
+      case 'mark_room_read':
+        this.rooms.find((r) => r.id === body.room)!.read_up_to = body.event
+        return this.dispatched('Read', [{ type: 'rooms_changed', rooms: [body.room] }])
     }
   }
 
@@ -225,6 +329,29 @@ export class FakeServer implements Requester {
       },
       undone: false,
     })
+  }
+
+  private timeline(room: RoomId, page: TimelinePage, limit: number) {
+    const all = this.events.get(room)!
+    let events: RoomEvent[]
+    switch (page.type) {
+      case 'latest':
+        events = all.slice(-limit)
+        break
+      case 'before':
+        events = all.filter((e) => e.id < page.event).slice(-limit)
+        break
+      case 'after':
+        events = all.filter((e) => e.id > page.event).slice(0, limit)
+        break
+    }
+    const first = events[0]
+    return { events, more_before: first !== undefined && all[0].id < first.id }
+  }
+
+  private cancelMatrixSend(item: number, description: string): number {
+    this.matrixOutbox.splice(this.matrixOutbox.findIndex((i) => i.id === item), 1)
+    return this.commit({ type: 'user' }, description, [{ type: 'matrix_outbox_changed', items: [item] }])
   }
 
   private cancelSend(item: number, description: string): number {

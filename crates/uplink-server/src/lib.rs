@@ -27,9 +27,10 @@ use tower::Service;
 use tracing::info;
 use uplink_config::{
     AccountConfig, BasicAuthConfig, Config, ConfigChanged, ConfigSection, GmailAccountConfig,
-    Watcher,
+    MatrixAccountConfig, Watcher,
 };
 use uplink_email::{gmail::sync::Sync, query::ConfiguredAccount, service::Mail};
+use uplink_matrix::service::Matrix;
 use uplink_protocol::{ClientRequest, ErrorCode, ServerError, ServerResponse, TxLogId};
 use uplink_realtime::{Backend, Hub, Replay};
 use uplink_storage::seal::MasterKey;
@@ -70,31 +71,25 @@ pub async fn serve(config_path: PathBuf) -> Result<()> {
 
 /// Starts the sync task of every configured account.
 pub fn start_syncs(config: &Config, services: &Services) -> Result<()> {
-    let gmail: Vec<&GmailAccountConfig> = config
-        .accounts
-        .iter()
-        .filter_map(|account| match account {
-            AccountConfig::Gmail(gmail) => Some(gmail),
+    let mut gmail: Vec<&GmailAccountConfig> = vec![];
+    let mut matrix: Vec<&MatrixAccountConfig> = vec![];
+    for account in &config.accounts {
+        match account {
+            AccountConfig::Gmail(account) => gmail.push(account),
             AccountConfig::M365(m365) => {
-                tracing::warn!(account = m365.id, "M365 accounts are not supported yet");
-                None
+                tracing::warn!(account = m365.id, "M365 accounts are not supported yet")
             }
-            AccountConfig::Matrix(matrix) => {
-                tracing::warn!(account = matrix.id, "Matrix accounts are not supported yet");
-                None
-            }
-        })
-        .collect();
-    // The master key is needed only to unseal OAuth tokens.
-    if gmail.is_empty() {
+            AccountConfig::Matrix(account) => matrix.push(account),
+        }
+    }
+    // The master key is needed only to unseal accounts' secrets.
+    if gmail.is_empty() && matrix.is_empty() {
         return Ok(());
     }
-    let key = Arc::new(MasterKey::load(
-        config
-            .master_key_file
-            .as_ref()
-            .context("master_key_file is required with OAuth accounts")?,
-    )?);
+    let key =
+        Arc::new(MasterKey::load(config.master_key_file.as_ref().context(
+            "master_key_file is required with Gmail and Matrix accounts",
+        )?)?);
     let http = reqwest::Client::new();
     for account in gmail {
         let sync = Sync::new(
@@ -107,6 +102,16 @@ pub fn start_syncs(config: &Config, services: &Services) -> Result<()> {
         info!(account = account.id, "starting Gmail sync");
         tokio::spawn(sync.run());
     }
+    for account in matrix {
+        let sync = uplink_matrix::sync::Sync::new(
+            account,
+            key.clone(),
+            services.dispatcher.clone(),
+            &config.data.root,
+        );
+        info!(account = account.id, "starting Matrix sync");
+        tokio::spawn(sync.run());
+    }
     Ok(())
 }
 
@@ -117,6 +122,7 @@ pub struct Services {
     pub dispatcher: Dispatcher,
     pub reader: Arc<LogReader>,
     pub mail: Mail,
+    pub matrix: Matrix,
 }
 
 /// Opens (and migrates) the database under the configured data root, with
@@ -124,6 +130,7 @@ pub struct Services {
 pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
     uplink_email::mailbox::register(&mut registry);
     uplink_email::compose::register(&mut registry);
+    uplink_matrix::register(&mut registry);
     let root = &config.data.root;
     let dispatcher = Dispatcher::new(
         uplink_storage::open(root)?,
@@ -141,7 +148,23 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
             AccountConfig::M365(_) | AccountConfig::Matrix(_) => None,
         })
         .collect();
+    let matrix_accounts = config
+        .accounts
+        .iter()
+        .filter_map(|account| match account {
+            AccountConfig::Matrix(matrix) => Some(uplink_matrix::service::ConfiguredAccount {
+                id: matrix.id.clone(),
+                mxid: matrix.mxid.clone(),
+            }),
+            AccountConfig::Gmail(_) | AccountConfig::M365(_) => None,
+        })
+        .collect();
     Ok(Services {
+        matrix: Matrix::new(
+            dispatcher.clone(),
+            uplink_storage::open_reader(root)?,
+            matrix_accounts,
+        ),
         mail: Mail::new(
             dispatcher.clone(),
             uplink_storage::open_reader(root)?,
@@ -419,6 +442,16 @@ impl Backend for Services {
             ClientRequest::SendDraft { draft } => self.mail.send_draft(draft).await,
             ClientRequest::CancelSend { item } => self.mail.cancel_send(item).await,
             ClientRequest::ListOutbox => self.mail.list_outbox().await,
+            ClientRequest::ListRooms => self.matrix.list_rooms().await,
+            ClientRequest::ListTimeline { room, page, limit } => {
+                self.matrix.list_timeline(room, page, limit).await
+            }
+            ClientRequest::ListMatrixOutbox => self.matrix.list_outbox().await,
+            ClientRequest::SendMatrixMessage { room, body } => {
+                self.matrix.send_message(room, body).await
+            }
+            ClientRequest::CancelMatrixSend { item } => self.matrix.cancel_send(item).await,
+            ClientRequest::MarkRoomRead { room, event } => self.matrix.mark_read(room, event).await,
         }
     }
 
@@ -567,6 +600,7 @@ mod tests {
                     vec![],
                     Duration::from_secs(10),
                 ),
+                matrix: Matrix::new(dispatcher.clone(), reader(), vec![]),
                 reader: Arc::new(LogReader::new(reader(), 16)),
                 dispatcher,
             };

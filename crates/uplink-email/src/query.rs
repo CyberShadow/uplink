@@ -7,20 +7,13 @@ use uplink_protocol::{
     TxLogId,
 };
 use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
+use uplink_tx_log::as_of;
 
 /// A configured mail account.
 #[derive(Debug, Clone)]
 pub struct ConfiguredAccount {
     pub id: String,
     pub address: String,
-}
-
-pub fn as_of(tx: &Transaction) -> Result<TxLogId> {
-    Ok(TxLogId(tx.query_row(
-        "SELECT coalesce(max(id), 0) FROM tx_log",
-        [],
-        |r| r.get(0),
-    )?))
 }
 
 pub fn accounts(

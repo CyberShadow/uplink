@@ -2,3 +2,21 @@
 name = "uplink-matrix"
 version = "0.1.0"
 edition = "2021"
+
+[dependencies]
+uplink-config = { path = "../uplink-config" }
+uplink-protocol = { path = "../uplink-protocol" }
+uplink-storage = { path = "../uplink-storage" }
+uplink-tx-log = { path = "../uplink-tx-log" }
+anyhow = "1"
+base64 = "0.22"
+matrix-sdk = { version = "0.19.1", default-features = false, features = ["sqlite", "e2e-encryption", "rustls-aws-lc-rs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+uplink-realtime = { path = "../uplink-realtime" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process"] }

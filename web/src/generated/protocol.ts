@@ -20,13 +20,17 @@ export type WsServerMsg = { "type": "pong", seq: number, } | { "type": "welcome"
  */
 cursor: TxLogId, resumed: boolean, } | { "type": "response", request_id: number, body: ServerResponse, } | { "type": "request_failed", request_id: number, error: ServerError, } | { "type": "entry", entry: LogEntry, };
 
-export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": "list_accounts" } | { "type": "list_entries", label: LabelId, after: ListPosition | null, limit: number, } | { "type": "search", query: string, limit: number, } | { "type": "load_message", message: MessageId, } | { "type": "modify_labels", entries: Array<EntryId>, add: Array<LabelId>, remove: Array<LabelId>, } | { "type": "list_drafts" } | { "type": "create_draft", id: DraftId, account: string, content: DraftContent, in_reply_to: MessageId | null, } | { "type": "edit_draft", draft: DraftId, revision: number, splice: Splice, } | { "type": "delete_draft", draft: DraftId, } | { "type": "send_draft", draft: DraftId, } | { "type": "cancel_send", item: OutboxId, } | { "type": "list_outbox" };
+export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": "list_accounts" } | { "type": "list_entries", label: LabelId, after: ListPosition | null, limit: number, } | { "type": "search", query: string, limit: number, } | { "type": "load_message", message: MessageId, } | { "type": "modify_labels", entries: Array<EntryId>, add: Array<LabelId>, remove: Array<LabelId>, } | { "type": "list_drafts" } | { "type": "create_draft", id: DraftId, account: string, content: DraftContent, in_reply_to: MessageId | null, } | { "type": "edit_draft", draft: DraftId, revision: number, splice: Splice, } | { "type": "delete_draft", draft: DraftId, } | { "type": "send_draft", draft: DraftId, } | { "type": "cancel_send", item: OutboxId, } | { "type": "list_outbox" } | { "type": "list_rooms" } | { "type": "list_timeline", room: RoomId, page: TimelinePage, limit: number, } | { "type": "list_matrix_outbox" } | { "type": "send_matrix_message", room: RoomId, body: string, } | { "type": "cancel_matrix_send", item: MatrixOutboxId, } | { "type": "mark_room_read", room: RoomId, event: RoomEventId, };
 
 export type ServerResponse = { "type": "undone", tx_log_id: TxLogId, } | { "type": "dispatched", tx_log_id: TxLogId, } | { "type": "accounts", as_of: TxLogId, accounts: Array<Account>, } | { "type": "entries", as_of: TxLogId, entries: Array<Entry>, 
 /**
  * Where the next page starts, if there may be one.
  */
-next: ListPosition | null, } | { "type": "message", message: MessageContent, } | { "type": "drafts", as_of: TxLogId, drafts: Array<Draft>, } | { "type": "outbox", as_of: TxLogId, items: Array<OutboxItem>, };
+next: ListPosition | null, } | { "type": "message", message: MessageContent, } | { "type": "drafts", as_of: TxLogId, drafts: Array<Draft>, } | { "type": "outbox", as_of: TxLogId, items: Array<OutboxItem>, } | { "type": "rooms", as_of: TxLogId, accounts: Array<MatrixAccount>, rooms: Array<Room>, } | { "type": "timeline", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, 
+/**
+ * Whether there are earlier events than those listed.
+ */
+more_before: boolean, } | { "type": "matrix_outbox", as_of: TxLogId, items: Array<MatrixOutboxItem>, };
 
 export type ServerError = { code: ErrorCode, message: string, };
 
@@ -54,7 +58,7 @@ export type Source = { "type": "user" } | { "type": "account", id: string, };
  * rather than content, since they are stored in the log; clients query
  * what they display.
  */
-export type ServerEvent = { "type": "entries_added" } & EntriesAdded | { "type": "entries_removed" } & EntriesRemoved | { "type": "labels_changed" } & LabelsChanged | { "type": "label_list_changed" } & LabelListChanged | { "type": "draft_edited" } & DraftEdited | { "type": "drafts_changed" } & DraftsChanged | { "type": "outbox_changed" } & OutboxChanged;
+export type ServerEvent = { "type": "entries_added" } & EntriesAdded | { "type": "entries_removed" } & EntriesRemoved | { "type": "labels_changed" } & LabelsChanged | { "type": "label_list_changed" } & LabelListChanged | { "type": "draft_edited" } & DraftEdited | { "type": "drafts_changed" } & DraftsChanged | { "type": "outbox_changed" } & OutboxChanged | { "type": "rooms_changed" } & RoomsChanged | { "type": "timeline_added" } & TimelineAdded | { "type": "matrix_outbox_changed" } & MatrixOutboxChanged;
 
 export type MessageId = number;
 
@@ -200,3 +204,95 @@ export type DraftsChanged = { drafts: Array<DraftId>, };
  * Outbox items were added, removed or changed state.
  */
 export type OutboxChanged = { items: Array<OutboxId>, };
+
+/**
+ * A room of one account, as uplink numbers it.
+ */
+export type RoomId = number;
+
+/**
+ * A timeline event, as uplink numbers it: in the order sync delivered
+ * events, so also the timeline's order.
+ */
+export type RoomEventId = number;
+
+export type MatrixOutboxId = number;
+
+export type MatrixAccount = { id: string, mxid: string, 
+/**
+ * Whether the first sync has completed.
+ */
+synced: boolean, };
+
+export type Membership = "joined" | "invited" | "left";
+
+export type Room = { id: RoomId, account: string, 
+/**
+ * The Matrix room id, `!opaque:server`.
+ */
+room_id: string, name: string, encrypted: boolean, membership: Membership, 
+/**
+ * Messages from others after the read marker (counting those that
+ * could not be decrypted).
+ */
+unread: number, 
+/**
+ * The latest event's time, ms since the Unix epoch.
+ */
+last_event_ts: number | null, read_up_to: RoomEventId | null, };
+
+export type Encryption = "none" | "decrypted" | "undecryptable";
+
+export type RoomEvent = { id: RoomEventId, 
+/**
+ * The Matrix event id, `$opaque`.
+ */
+event_id: string, sender: string, sender_name: string | null, 
+/**
+ * `origin_server_ts`, ms since the Unix epoch.
+ */
+ts: number, 
+/**
+ * The event type, e.g. `m.room.message`.
+ */
+kind: string, 
+/**
+ * Of `m.room.message`: `m.text`, `m.notice`, `m.image`, ….
+ */
+msgtype: string | null, 
+/**
+ * Of `m.room.message`: the plain-text body.
+ */
+body: string | null, 
+/**
+ * The event as JSON, decrypted if it could be, for event types
+ * uplink does not display otherwise.
+ */
+raw: string, encryption: Encryption, };
+
+/**
+ * Which part of a room's timeline to list.
+ */
+export type TimelinePage = { "type": "latest" } | { "type": "before", event: RoomEventId, } | { "type": "after", event: RoomEventId, };
+
+export type MatrixOutboxItem = { id: MatrixOutboxId, room: RoomId, body: string, state: OutboxState, error: string | null, 
+/**
+ * Ms since the Unix epoch.
+ */
+queued_at: number, };
+
+/**
+ * Rooms appeared, or their name, membership, unread count or read
+ * marker changed.
+ */
+export type RoomsChanged = { rooms: Array<RoomId>, };
+
+/**
+ * Events were added to the end of a room's timeline.
+ */
+export type TimelineAdded = { room: RoomId, events: Array<RoomEventId>, };
+
+/**
+ * Matrix outbox items were added, removed or changed state.
+ */
+export type MatrixOutboxChanged = { items: Array<MatrixOutboxId>, };

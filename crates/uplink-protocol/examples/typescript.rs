@@ -5,7 +5,7 @@
 //! The `protocol-ts` flake check fails if the checked-in file is stale.
 
 use ts_rs::{Config, TS};
-use uplink_protocol::{compose::*, mail::*, *};
+use uplink_protocol::{compose::*, mail::*, matrix::*, *};
 
 fn main() {
     // Ids and timestamps are i64, well within a double's exact range.
@@ -59,6 +59,19 @@ fn main() {
         DraftEdited,
         DraftsChanged,
         OutboxChanged,
+        RoomId,
+        RoomEventId,
+        MatrixOutboxId,
+        MatrixAccount,
+        Membership,
+        Room,
+        Encryption,
+        RoomEvent,
+        TimelinePage,
+        MatrixOutboxItem,
+        RoomsChanged,
+        TimelineAdded,
+        MatrixOutboxChanged,
     );
     print!("{out}");
 }

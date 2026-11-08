@@ -10,6 +10,7 @@ import { Help } from './Help'
 import { Mail } from './Mail'
 import { Nav } from './Nav'
 import { NoticeBar } from './NoticeBar'
+import { RoomView } from './Room'
 import { composePath, Drafts, Outbox } from './Outgoing'
 import { SearchBox } from './SearchBox'
 import styles from './App.module.css'
@@ -17,9 +18,9 @@ import styles from './App.module.css'
 const Compose = lazy(() => import('./Compose'))
 
 export function App(props: { client: Client; status: ReadonlySignal<Status> }) {
-  const { ops, mail, drafts } = props.client
+  const { ops, mail, drafts, matrix } = props.client
   return (
-    <ServicesContext.Provider value={{ ops, mail, drafts, status: props.status }}>
+    <ServicesContext.Provider value={{ ops, mail, drafts, matrix, status: props.status }}>
       <LocationProvider>
         <Shell />
       </LocationProvider>
@@ -28,7 +29,7 @@ export function App(props: { client: Client; status: ReadonlySignal<Status> }) {
 }
 
 function Shell() {
-  const { mail, drafts, status } = useServices()
+  const { mail, drafts, matrix, status } = useServices()
   const { route, path } = useLocation()
   const [help, setHelp] = useState(false)
 
@@ -65,9 +66,9 @@ function Shell() {
       </header>
       <Nav />
       <main class={styles.content}>
-        {(mail.error.value ?? drafts.error.value) && (
+        {(mail.error.value ?? drafts.error.value ?? matrix.error.value) && (
           <div class={styles.error} role="alert">
-            {mail.error.value ?? drafts.error.value}
+            {mail.error.value ?? drafts.error.value ?? matrix.error.value}
           </div>
         )}
         <Router>
@@ -76,6 +77,7 @@ function Shell() {
           <Route path="/compose/:draft" component={Compose} />
           <Route path="/drafts" component={Drafts} />
           <Route path="/outbox" component={Outbox} />
+          <Route path="/rooms/:room" component={RoomView} />
           <Route default component={Home} />
         </Router>
       </main>
@@ -85,15 +87,17 @@ function Shell() {
   )
 }
 
-/** Shows the first account's Inbox. */
+/** Shows the first mail account's Inbox. */
 function Home() {
-  const { mail } = useServices()
+  const { mail, matrix } = useServices()
   const { route } = useLocation()
   const first = mail.accounts.value?.[0]?.id
   useEffect(() => {
     if (first) route(mailPath(first, 'INBOX'), true)
   }, [first, route])
-  return <p class={styles.placeholder}>{mail.accounts.value ? 'No accounts configured.' : 'Loading…'}</p>
+  const loaded = mail.accounts.value && matrix.accounts.value
+  const message = !loaded ? 'Loading…' : matrix.accounts.value!.length > 0 ? 'Pick a room.' : 'No accounts configured.'
+  return <p class={styles.placeholder}>{message}</p>
 }
 
 export function mailPath(account: string, label: string, entry?: number): string {

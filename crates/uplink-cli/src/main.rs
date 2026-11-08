@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use uplink_config::{AccountConfig, Config};
 use uplink_email::gmail::oauth;
+use uplink_matrix::client;
 use uplink_storage::seal::MasterKey;
 
 /// uplink — self-hosted personal communication hub.
@@ -29,6 +30,22 @@ enum Command {
     Oauth {
         #[command(subcommand)]
         command: OauthCommand,
+    },
+    /// Manage Matrix accounts.
+    Matrix {
+        #[command(subcommand)]
+        command: MatrixCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum MatrixCommand {
+    /// Log in as a new device of the account, and optionally verify it
+    /// with the account's recovery key (SPEC §9.4).
+    Pair {
+        /// The account's id in the configuration.
+        #[arg(long)]
+        account: String,
     },
 }
 
@@ -70,7 +87,55 @@ async fn main() -> Result<()> {
         Command::Oauth {
             command: OauthCommand::Init { account },
         } => oauth_init(&cli.config, &account).await,
+        Command::Matrix {
+            command: MatrixCommand::Pair { account },
+        } => matrix_pair(&cli.config, &account).await,
     }
+}
+
+async fn matrix_pair(config_path: &std::path::Path, id: &str) -> Result<()> {
+    let config = Config::load(config_path)?;
+    let account = config
+        .accounts
+        .iter()
+        .find_map(|account| match account {
+            AccountConfig::Matrix(matrix) if matrix.id == id => Some(matrix),
+            _ => None,
+        })
+        .with_context(|| format!("no Matrix account {id} in {}", config_path.display()))?;
+    let key = MasterKey::load(
+        config
+            .master_key_file
+            .as_ref()
+            .context("master_key_file is required with Matrix accounts")?,
+    )?;
+    println!(
+        "Pairing {} as {} on {}.",
+        account.id, account.mxid, account.homeserver
+    );
+    let password = rpassword::prompt_password("Password: ")?;
+    let device_name = format!("uplink ({})", account.id);
+    let client = client::login(account, &key, &password, &device_name).await?;
+    println!(
+        "Logged in as device {}; the session is sealed in {}.",
+        client.device_id().context("no device id")?,
+        client::session_path(account).display()
+    );
+    client::upload_keys(&client).await?;
+    println!(
+        "To verify the device, so that your other devices share keys with it, enter \
+         the account's recovery key or Secret Storage passphrase. Leave it empty to skip."
+    );
+    let recovery = rpassword::prompt_password("Recovery key or passphrase: ")?;
+    if recovery.trim().is_empty() {
+        println!("Skipped: the device is not verified.");
+    } else if client::import_secrets(&client, recovery.trim()).await? {
+        println!("Verified: the device is signed by your cross-signing identity.");
+    } else {
+        anyhow::bail!("imported the secrets, but the device is still not verified");
+    }
+    println!("Paired. Restart uplink to start syncing the account.");
+    Ok(())
 }
 
 async fn oauth_init(config_path: &std::path::Path, id: &str) -> Result<()> {

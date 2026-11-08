@@ -18,39 +18,12 @@ import type {
 import { RequestError, type Requester } from '../connection'
 import { ComposeSession } from '../compose/session'
 import { apply } from '../compose/splice'
+import { Loader, query, type Response } from './query'
 import type { Ops } from './ops'
 
 export const FIELDS: readonly DraftField[] = ['to', 'cc', 'bcc', 'subject', 'body']
 
 export type EditOutcome = 'applied' | 'conflict' | 'gone'
-
-/** A query's state: whether one is in flight, and whether the state it
- * loads went stale meanwhile (SPEC §12.6). */
-class Loader {
-  private loading = false
-  private stale = false
-
-  constructor(private readonly load: () => Promise<void>) {}
-
-  invalidate() {
-    // A query in flight reflects every entry received before its response.
-    if (this.loading) return
-    this.stale = true
-    this.pump()
-  }
-
-  private async pump() {
-    if (this.loading || !this.stale) return
-    this.stale = false
-    this.loading = true
-    try {
-      await this.load()
-    } finally {
-      this.loading = false
-    }
-    this.pump()
-  }
-}
 
 export class DraftStore {
   /** By id; `null` until loaded. */
@@ -94,6 +67,9 @@ export class DraftStore {
         case 'entries_removed':
         case 'labels_changed':
         case 'label_list_changed':
+        case 'rooms_changed':
+        case 'timeline_added':
+        case 'matrix_outbox_changed':
           break
       }
     }
@@ -167,13 +143,9 @@ export class DraftStore {
   private async query<T extends ServerResponse['type']>(
     request: ClientRequest,
     type: T,
-  ): Promise<Extract<ServerResponse, { type: T }> | null> {
+  ): Promise<Response<T> | null> {
     try {
-      const response = await this.server.request(request)
-      if (response.type !== type) {
-        throw new Error(`expected ${type} in response to ${request.type}, got ${response.type}`)
-      }
-      return response as Extract<ServerResponse, { type: T }>
+      return await query(this.server, request, type)
     } catch (error) {
       this.error.value = (error as Error).message
       return null

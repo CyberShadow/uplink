@@ -87,11 +87,7 @@ impl Server {
     }
 }
 
-async fn ws_connect(
-    addr: SocketAddr,
-    subprotocol: Option<&str>,
-    auth: bool,
-) -> Result<Ws, tokio_tungstenite::tungstenite::Error> {
+async fn ws_connect(addr: SocketAddr, subprotocol: Option<&str>, auth: bool) -> Result<Ws, u16> {
     let mut request = "wss://localhost/ws".into_client_request().unwrap();
     let headers = request.headers_mut();
     if let Some(p) = subprotocol {
@@ -105,7 +101,9 @@ async fn ws_connect(
         );
     }
     let (_, tls) = connect_tls(addr).await;
-    let (ws, _) = tokio_tungstenite::client_async(request, tls).await?;
+    let (ws, _) = tokio_tungstenite::client_async(request, tls)
+        .await
+        .map_err(http_status)?;
     Ok(ws)
 }
 
@@ -313,6 +311,7 @@ async fn malformed_message_closes_connection() {
     }
 }
 
+/// The status of a refused upgrade.
 fn http_status(err: tokio_tungstenite::tungstenite::Error) -> u16 {
     match err {
         tokio_tungstenite::tungstenite::Error::Http(response) => response.status().as_u16(),
@@ -323,21 +322,21 @@ fn http_status(err: tokio_tungstenite::tungstenite::Error) -> u16 {
 #[tokio::test]
 async fn upgrade_requires_subprotocol() {
     let server = server().await;
-    let err = ws_connect(server.addr, None, true).await.err().unwrap();
-    assert_eq!(http_status(err), 400);
-    let err = ws_connect(server.addr, Some("other"), true)
+    let status = ws_connect(server.addr, None, true).await.err().unwrap();
+    assert_eq!(status, 400);
+    let status = ws_connect(server.addr, Some("other"), true)
         .await
         .err()
         .unwrap();
-    assert_eq!(http_status(err), 400);
+    assert_eq!(status, 400);
 }
 
 #[tokio::test]
 async fn upgrade_requires_auth() {
     let server = server().await;
-    let err = ws_connect(server.addr, Some("uplink.v1"), false)
+    let status = ws_connect(server.addr, Some("uplink.v1"), false)
         .await
         .err()
         .unwrap();
-    assert_eq!(http_status(err), 401);
+    assert_eq!(status, 401);
 }

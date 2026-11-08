@@ -2,6 +2,7 @@ import { useLocation } from 'preact-iso'
 import type { Account, Label } from '../generated/protocol'
 import { useServices } from '../context'
 import { mailPath } from './App'
+import { roomPath } from './Room'
 import styles from './Nav.module.css'
 
 /** Gmail's system labels worth a place in the nav, in Gmail's order. */
@@ -31,7 +32,7 @@ export function labelName(label: Label): string {
 }
 
 export function Nav() {
-  const { mail, drafts } = useServices()
+  const { mail, drafts, matrix } = useServices()
   const { path } = useLocation()
   const link = (href: string, name: string, count: number) => {
     const current = path === href || path.startsWith(`${href}/`)
@@ -73,6 +74,37 @@ export function Nav() {
                 </li>
               )
             })}
+          </ul>
+        </section>
+      ))}
+      {matrix.accounts.value?.map((account) => (
+        <section key={account.id} aria-label={`Rooms of ${account.mxid}`}>
+          <h2 class={styles.account} title={account.id}>
+            {account.mxid}
+            {!account.synced && <span class={styles.syncing}> (syncing)</span>}
+          </h2>
+          <ul>
+            {matrix.rooms.value
+              ?.filter((room) => room.account === account.id)
+              .map((room) => {
+                const href = roomPath(room.id)
+                const current = path === href
+                return (
+                  <li key={room.id}>
+                    <a
+                      href={href}
+                      class={current ? styles.current : undefined}
+                      aria-current={current ? 'page' : undefined}
+                    >
+                      <span class={styles.name}>
+                        {room.name}
+                        {room.membership === 'invited' && <span class={styles.syncing}> (invited)</span>}
+                      </span>
+                      {room.unread > 0 && <span class={styles.count}>{room.unread}</span>}
+                    </a>
+                  </li>
+                )
+              })}
           </ul>
         </section>
       ))}

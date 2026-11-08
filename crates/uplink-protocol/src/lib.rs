@@ -9,9 +9,11 @@ use ts_rs::TS;
 
 pub mod compose;
 pub mod mail;
+pub mod matrix;
 
 use compose::{Draft, DraftContent, DraftId, OutboxId, Splice};
 use mail::{EntryId, LabelId, ListPosition, MessageId};
+use matrix::{MatrixOutboxId, RoomEventId, RoomId, TimelinePage};
 
 /// Id of a log entry. Entries are numbered from 1 in commit order, so an
 /// id also serves as a position in the event stream; 0 is the position
@@ -133,6 +135,31 @@ pub enum ClientRequest {
     },
     /// Outbox items not yet synced back from the provider.
     ListOutbox,
+    /// The configured Matrix accounts and their rooms.
+    ListRooms,
+    /// Up to `limit` events of the room's timeline, oldest first.
+    ListTimeline {
+        room: RoomId,
+        page: TimelinePage,
+        limit: u32,
+    },
+    /// Messages being sent, of all rooms.
+    ListMatrixOutbox,
+    /// Send a plain-text message to the room.
+    SendMatrixMessage {
+        room: RoomId,
+        body: String,
+    },
+    /// Take a queued or failed message out of the Matrix outbox.
+    CancelMatrixSend {
+        item: MatrixOutboxId,
+    },
+    /// Move the room's read marker to `event`: it and everything before
+    /// it are read.
+    MarkRoomRead {
+        room: RoomId,
+        event: RoomEventId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -169,6 +196,22 @@ pub enum ServerResponse {
         as_of: TxLogId,
         items: Vec<compose::OutboxItem>,
     },
+    Rooms {
+        as_of: TxLogId,
+        accounts: Vec<matrix::MatrixAccount>,
+        rooms: Vec<matrix::Room>,
+    },
+    Timeline {
+        as_of: TxLogId,
+        room: RoomId,
+        events: Vec<matrix::RoomEvent>,
+        /// Whether there are earlier events than those listed.
+        more_before: bool,
+    },
+    MatrixOutbox {
+        as_of: TxLogId,
+        items: Vec<matrix::MatrixOutboxItem>,
+    },
 }
 
 impl ServerResponse {
@@ -181,7 +224,10 @@ impl ServerResponse {
             Self::Accounts { as_of, .. }
             | Self::Entries { as_of, .. }
             | Self::Drafts { as_of, .. }
-            | Self::Outbox { as_of, .. } => Some(*as_of),
+            | Self::Outbox { as_of, .. }
+            | Self::Rooms { as_of, .. }
+            | Self::Timeline { as_of, .. }
+            | Self::MatrixOutbox { as_of, .. } => Some(*as_of),
             // Message content does not change.
             Self::Message { .. } => None,
         }
@@ -249,6 +295,9 @@ pub enum ServerEvent {
     DraftEdited(compose::DraftEdited),
     DraftsChanged(compose::DraftsChanged),
     OutboxChanged(compose::OutboxChanged),
+    RoomsChanged(matrix::RoomsChanged),
+    TimelineAdded(matrix::TimelineAdded),
+    MatrixOutboxChanged(matrix::MatrixOutboxChanged),
 }
 
 #[cfg(test)]

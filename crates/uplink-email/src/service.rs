@@ -7,18 +7,17 @@ use crate::{
     query::{self, ConfiguredAccount},
     store::{MailStore, VariantHash},
 };
-use std::{
-    path::Path,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{path::Path, sync::Arc, time::Duration};
 use uplink_protocol::{
     compose::{DraftContent, DraftId, OutboxId, Splice},
     mail::{EntryId, LabelId, ListPosition, MessageContent, MessageId},
     ErrorCode, ServerError, ServerResponse,
 };
 use uplink_storage::rusqlite::Connection;
-use uplink_tx_log::{Conflict, Dispatcher, Op};
+use uplink_tx_log::{
+    answer::{error, internal, Reader, Response},
+    Dispatcher,
+};
 
 /// The most entries a list or search request may ask for.
 pub const MAX_LIMIT: u32 = 500;
@@ -26,13 +25,11 @@ pub const MAX_LIMIT: u32 = 500;
 #[derive(Clone)]
 pub struct Mail {
     dispatcher: Dispatcher,
-    reader: Arc<Mutex<Connection>>,
+    reader: Reader,
     store: MailStore,
     accounts: Arc<Vec<ConfiguredAccount>>,
     send_delay: Duration,
 }
-
-type Response = Result<ServerResponse, ServerError>;
 
 impl Mail {
     /// `reader` is a read-only connection to the database `dispatcher`
@@ -46,7 +43,7 @@ impl Mail {
     ) -> Self {
         Self {
             dispatcher,
-            reader: Arc::new(Mutex::new(reader)),
+            reader: Reader::new(reader),
             store: MailStore::new(data_root),
             accounts: Arc::new(accounts),
             send_delay,
@@ -55,11 +52,12 @@ impl Mail {
 
     pub async fn list_accounts(&self) -> Response {
         let accounts = self.accounts.clone();
-        self.read(move |conn, _| {
-            let (as_of, accounts) = query::accounts(conn, &accounts).map_err(internal)?;
-            Ok(ServerResponse::Accounts { as_of, accounts })
-        })
-        .await
+        self.reader
+            .read(move |conn| {
+                let (as_of, accounts) = query::accounts(conn, &accounts).map_err(internal)?;
+                Ok(ServerResponse::Accounts { as_of, accounts })
+            })
+            .await
     }
 
     pub async fn list_entries(
@@ -69,18 +67,19 @@ impl Mail {
         limit: u32,
     ) -> Response {
         check_limit(limit)?;
-        self.read(move |conn, _| {
-            if query::label_accounts(conn, &[label]).map_err(internal)?[0].is_none() {
-                return Err(error(ErrorCode::NotFound, format!("no label {}", label.0)));
-            }
-            let page = query::entries(conn, label, after, limit).map_err(internal)?;
-            Ok(ServerResponse::Entries {
-                as_of: page.as_of,
-                entries: page.entries,
-                next: page.next,
+        self.reader
+            .read(move |conn| {
+                if query::label_accounts(conn, &[label]).map_err(internal)?[0].is_none() {
+                    return Err(error(ErrorCode::NotFound, format!("no label {}", label.0)));
+                }
+                let page = query::entries(conn, label, after, limit).map_err(internal)?;
+                Ok(ServerResponse::Entries {
+                    as_of: page.as_of,
+                    entries: page.entries,
+                    next: page.next,
+                })
             })
-        })
-        .await
+            .await
     }
 
     pub async fn search(&self, query: String, limit: u32) -> Response {
@@ -88,40 +87,45 @@ impl Mail {
         if query.split_whitespace().next().is_none() {
             return Err(error(ErrorCode::Invalid, "empty search query".into()));
         }
-        self.read(move |conn, _| {
-            let (as_of, entries) = query::search(conn, &query, limit).map_err(internal)?;
-            Ok(ServerResponse::Entries {
-                as_of,
-                entries,
-                next: None,
+        self.reader
+            .read(move |conn| {
+                let (as_of, entries) = query::search(conn, &query, limit).map_err(internal)?;
+                Ok(ServerResponse::Entries {
+                    as_of,
+                    entries,
+                    next: None,
+                })
             })
-        })
-        .await
+            .await
     }
 
     pub async fn load_message(&self, message: MessageId) -> Response {
-        self.read(move |conn, store| {
-            let (message_id, variant) = query::preferred_variant(conn, message)
-                .map_err(internal)?
-                .ok_or_else(|| error(ErrorCode::NotFound, format!("no message {}", message.0)))?;
-            let raw = store.get(&VariantHash(variant)).map_err(internal)?;
-            let parsed = parse(&raw);
-            Ok(ServerResponse::Message {
-                message: MessageContent {
-                    id: message,
-                    message_id,
-                    subject: parsed.subject,
-                    from_addr: parsed.from_addr,
-                    from_name: parsed.from_name,
-                    to_addrs: parsed.to_addrs,
-                    cc_addrs: parsed.cc_addrs,
-                    date_sent: parsed.date_sent,
-                    body_text: parsed.body_text,
-                    body_html: html_body(&raw),
-                },
+        let store = self.store.clone();
+        self.reader
+            .read(move |conn| {
+                let (message_id, variant) = query::preferred_variant(conn, message)
+                    .map_err(internal)?
+                    .ok_or_else(|| {
+                        error(ErrorCode::NotFound, format!("no message {}", message.0))
+                    })?;
+                let raw = store.get(&VariantHash(variant)).map_err(internal)?;
+                let parsed = parse(&raw);
+                Ok(ServerResponse::Message {
+                    message: MessageContent {
+                        id: message,
+                        message_id,
+                        subject: parsed.subject,
+                        from_addr: parsed.from_addr,
+                        from_name: parsed.from_name,
+                        to_addrs: parsed.to_addrs,
+                        cc_addrs: parsed.cc_addrs,
+                        date_sent: parsed.date_sent,
+                        body_text: parsed.body_text,
+                        body_html: html_body(&raw),
+                    },
+                })
             })
-        })
-        .await
+            .await
     }
 
     pub async fn modify_labels(
@@ -137,7 +141,8 @@ impl Mail {
             ));
         }
         let (entries, add, remove) = self
-            .read(move |conn, _| {
+            .reader
+            .read(move |conn| {
                 validate_modify_labels(conn, &entries, &add, &remove)?;
                 Ok((entries, add, remove))
             })
@@ -158,17 +163,18 @@ impl Mail {
                 added.chain(removed)
             })
             .collect();
-        self.dispatch(SetLabels { changes }).await
+        self.dispatcher.answer(SetLabels { changes }).await
     }
 
     pub async fn list_drafts(&self) -> Response {
-        self.read(move |conn, _| {
-            let tx = conn.transaction().map_err(|e| internal(e.into()))?;
-            let as_of = query::as_of(&tx).map_err(internal)?;
-            let drafts = compose::drafts(&tx).map_err(internal)?;
-            Ok(ServerResponse::Drafts { as_of, drafts })
-        })
-        .await
+        self.reader
+            .read(move |conn| {
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
+                let drafts = compose::drafts(&tx).map_err(internal)?;
+                Ok(ServerResponse::Drafts { as_of, drafts })
+            })
+            .await
     }
 
     pub async fn create_draft(
@@ -182,35 +188,40 @@ impl Mail {
             return Err(error(ErrorCode::NotFound, format!("no account {account}")));
         }
         if let Some(message) = in_reply_to {
-            self.read(move |conn, _| {
-                query::preferred_variant(conn, message)
-                    .map_err(internal)?
-                    .map(drop)
-                    .ok_or_else(|| error(ErrorCode::NotFound, format!("no message {}", message.0)))
-            })
-            .await?;
+            self.reader
+                .read(move |conn| {
+                    query::preferred_variant(conn, message)
+                        .map_err(internal)?
+                        .map(drop)
+                        .ok_or_else(|| {
+                            error(ErrorCode::NotFound, format!("no message {}", message.0))
+                        })
+                })
+                .await?;
         }
-        self.dispatch(PutDraft {
-            id,
-            account,
-            revision: 0,
-            content,
-            in_reply_to,
-        })
-        .await
+        self.dispatcher
+            .answer(PutDraft {
+                id,
+                account,
+                revision: 0,
+                content,
+                in_reply_to,
+            })
+            .await
     }
 
     pub async fn edit_draft(&self, draft: DraftId, revision: i64, splice: Splice) -> Response {
-        self.dispatch(EditDraft {
-            id: draft,
-            revision: Some(revision),
-            splice,
-        })
-        .await
+        self.dispatcher
+            .answer(EditDraft {
+                id: draft,
+                revision: Some(revision),
+                splice,
+            })
+            .await
     }
 
     pub async fn delete_draft(&self, draft: DraftId) -> Response {
-        self.dispatch(DeleteDraft { id: draft }).await
+        self.dispatcher.answer(DeleteDraft { id: draft }).await
     }
 
     /// Refuses drafts that could not be sent. A draft edited meanwhile in
@@ -218,64 +229,39 @@ impl Mail {
     /// outbox.
     pub async fn send_draft(&self, draft: DraftId) -> Response {
         let id = draft.clone();
-        self.read(move |conn, _| {
-            let tx = conn.transaction().map_err(|e| internal(e.into()))?;
-            let draft = compose::drafts(&tx)
-                .map_err(internal)?
-                .into_iter()
-                .find(|d| d.id == id)
-                .ok_or_else(|| error(ErrorCode::NotFound, format!("no draft {}", id.0)))?;
-            compose::check_sendable(&draft.content)
-                .map_err(|e| error(ErrorCode::Invalid, format!("{e:#}")))
-        })
-        .await?;
-        self.dispatch(SendDraft {
-            id: draft,
-            delay_ms: self.send_delay.as_millis().try_into().expect("delay fits"),
-        })
-        .await
+        self.reader
+            .read(move |conn| {
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                let draft = compose::drafts(&tx)
+                    .map_err(internal)?
+                    .into_iter()
+                    .find(|d| d.id == id)
+                    .ok_or_else(|| error(ErrorCode::NotFound, format!("no draft {}", id.0)))?;
+                compose::check_sendable(&draft.content)
+                    .map_err(|e| error(ErrorCode::Invalid, format!("{e:#}")))
+            })
+            .await?;
+        self.dispatcher
+            .answer(SendDraft {
+                id: draft,
+                delay_ms: self.send_delay.as_millis().try_into().expect("delay fits"),
+            })
+            .await
     }
 
     pub async fn cancel_send(&self, item: OutboxId) -> Response {
-        self.dispatch(CancelSend { item }).await
+        self.dispatcher.answer(CancelSend { item }).await
     }
 
     pub async fn list_outbox(&self) -> Response {
-        self.read(move |conn, _| {
-            let tx = conn.transaction().map_err(|e| internal(e.into()))?;
-            let as_of = query::as_of(&tx).map_err(internal)?;
-            let items = compose::outbox(&tx).map_err(internal)?;
-            Ok(ServerResponse::Outbox { as_of, items })
-        })
-        .await
-    }
-
-    async fn dispatch(&self, op: impl Op) -> Response {
-        let tx_log_id =
-            self.dispatcher
-                .dispatch(op)
-                .await
-                .map_err(|e| match e.downcast::<Conflict>() {
-                    Ok(conflict) => error(ErrorCode::Conflict, conflict.0),
-                    Err(e) => internal(e),
-                })?;
-        Ok(ServerResponse::Dispatched { tx_log_id })
-    }
-
-    async fn read<R: Send + 'static>(
-        &self,
-        f: impl FnOnce(&mut Connection, &MailStore) -> Result<R, ServerError> + Send + 'static,
-    ) -> Result<R, ServerError> {
-        let reader = self.reader.clone();
-        let store = self.store.clone();
-        match tokio::task::spawn_blocking(move || {
-            f(&mut reader.lock().expect("reader poisoned"), &store)
-        })
-        .await
-        {
-            Ok(r) => r,
-            Err(e) => std::panic::resume_unwind(e.into_panic()),
-        }
+        self.reader
+            .read(move |conn| {
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
+                let items = compose::outbox(&tx).map_err(internal)?;
+                Ok(ServerResponse::Outbox { as_of, items })
+            })
+            .await
     }
 }
 
@@ -323,13 +309,4 @@ fn check_limit(limit: u32) -> Result<(), ServerError> {
             format!("limit must be between 1 and {MAX_LIMIT}"),
         ))
     }
-}
-
-fn error(code: ErrorCode, message: String) -> ServerError {
-    ServerError { code, message }
-}
-
-fn internal(e: anyhow::Error) -> ServerError {
-    tracing::error!("request failed: {e:#}");
-    error(ErrorCode::Internal, format!("{e:#}"))
 }

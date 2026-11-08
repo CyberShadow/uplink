@@ -1,0 +1,91 @@
+.room {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.scroller {
+  display: flex;
+  flex-direction: column-reverse;
+  flex: 1;
+  overflow: auto;
+}
+
+.events {
+  list-style: none;
+  margin: 0;
+  padding: 8px 16px;
+}
+
+.event {
+  padding: 4px 0;
+}
+
+.sender {
+  font-weight: 600;
+}
+
+.time,
+.muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.raw {
+  margin: 4px 0;
+  padding: 8px;
+  overflow: auto;
+  background: var(--nav-bg);
+  font-size: 12px;
+}
+
+.pending .body {
+  color: var(--muted);
+}
+
+.cancel {
+  margin-left: 8px;
+}
+
+.composer {
+  display: flex;
+  gap: 8px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.composer textarea {
+  flex: 1;
+  resize: vertical;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+}
+
+.placeholder {
+  padding: 16px;
+  color: var(--muted);
+}

@@ -94,9 +94,18 @@
 
         # Provider fakes for integration tests.
         emulate = pkgs.callPackage ./nix/emulate { };
+        # Conduit insists on reading /etc/resolv.conf, which build sandboxes
+        # lack; with federation off, it never resolves anything.
+        conduit = pkgs.writeShellScriptBin "conduit" ''
+          export LD_PRELOAD=${pkgs.libredirect}/lib/libredirect.so
+          export NIX_REDIRECTS=/etc/resolv.conf=${pkgs.writeText "resolv.conf" "nameserver 127.0.0.1\n"}
+          exec ${pkgs.matrix-conduit}/bin/conduit "$@"
+        '';
         # Provider-facing Rust tests run against these (crates/*/tests).
         testEnv = {
           UPLINK_EMULATE = "${emulate}/bin/emulate";
+          # A Matrix homeserver, for crates/uplink-matrix/tests.
+          UPLINK_CONDUIT = "${conduit}/bin/conduit";
         };
 
       in {

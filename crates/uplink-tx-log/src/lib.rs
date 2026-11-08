@@ -20,6 +20,7 @@ use uplink_protocol::{LogEntry, ServerEvent, Source, TxLogId};
 use uplink_realtime::{Hub, Replay};
 use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 
+pub mod answer;
 #[cfg(any(test, feature = "test-ops"))]
 pub mod sample;
 
@@ -371,6 +372,16 @@ impl Inner {
             events: executed.events,
         })
     }
+}
+
+/// The last entry recorded, as seen by `tx`: the position a query run in
+/// `tx` reflects.
+pub fn as_of(tx: &Transaction) -> Result<TxLogId> {
+    Ok(TxLogId(tx.query_row(
+        "SELECT coalesce(max(id), 0) FROM tx_log",
+        [],
+        |r| r.get(0),
+    )?))
 }
 
 /// Reads the log for clients catching up (SPEC §5.3).
