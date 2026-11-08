@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use uplink_config::{AccountConfig, Config};
-use uplink_email::gmail::oauth;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use uplink_config::{AccountConfig, Config, M365AccountConfig};
+use uplink_email::{gmail::oauth as gmail_oauth, m365::oauth as m365_oauth};
 use uplink_matrix::client;
 use uplink_storage::seal::MasterKey;
 
@@ -165,35 +166,73 @@ async fn oauth_init(config_path: &std::path::Path, id: &str) -> Result<()> {
     let account = config
         .accounts
         .iter()
-        .find_map(|account| match account {
-            AccountConfig::Gmail(gmail) if gmail.id == id => Some(gmail),
-            _ => None,
-        })
-        .with_context(|| format!("no Gmail account {id} in {}", config_path.display()))?;
+        .find(|account| account.id() == id)
+        .with_context(|| format!("no account {id} in {}", config_path.display()))?;
     let key = MasterKey::load(
         config
             .master_key_file
             .as_ref()
             .context("master_key_file is required with OAuth accounts")?,
     )?;
-    oauth::authorize(
-        account,
-        &key,
-        |url| {
-            println!(
-                "Open this URL in a browser and sign in as {}:\n\n{url}\n",
-                account.address
-            );
-            println!(
-                "If the browser is on another machine, paste the URL it is redirected to here."
-            );
-        },
-        oauth::read_pasted_url(),
-    )
-    .await?;
+    let token_file = match account {
+        AccountConfig::Gmail(account) => {
+            gmail_oauth::authorize(
+                account,
+                &key,
+                |url| {
+                    println!(
+                        "Open this URL in a browser and sign in as {}:\n\n{url}\n",
+                        account.address
+                    );
+                    println!(
+                        "If the browser is on another machine, paste the URL it is redirected to here."
+                    );
+                },
+                gmail_oauth::read_pasted_url(),
+            )
+            .await?;
+            &account.oauth.token_file
+        }
+        AccountConfig::M365(account) => {
+            m365_init(account, &key).await?;
+            &account.oauth.token_file
+        }
+        AccountConfig::Matrix(_) => {
+            anyhow::bail!("{id} is a Matrix account: pair it with `uplink matrix pair {id}`")
+        }
+    };
     println!(
         "Authorized; the token is stored in {}.",
-        account.oauth.token_file.display()
+        token_file.display()
     );
     Ok(())
+}
+
+/// The Outlook client's redirect URI is a URN no browser follows, so the
+/// user copies the code out of it (SPEC §13.3).
+async fn m365_init(account: &M365AccountConfig, key: &MasterKey) -> Result<()> {
+    println!(
+        "Open this URL in a browser and sign in as {}:\n\n{}\n",
+        account.address,
+        m365_oauth::authorize_url(account)?
+    );
+    println!(
+        "The browser then fails to open a URL starting {}?code=…, or shows a\n\
+         page with the code. Paste that URL, the page's text with the code, or\n\
+         the code itself here (the browser's developer tools show the URL, in\n\
+         the Network tab, as the last request's Location).",
+        m365_oauth::REDIRECT_URI
+    );
+    let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    let code = loop {
+        let line = lines
+            .next_line()
+            .await?
+            .context("standard input closed before a code was pasted")?;
+        match m365_oauth::pasted_code(&line) {
+            Ok(code) => break code,
+            Err(e) => eprintln!("{e:#}; try again."),
+        }
+    };
+    m365_oauth::redeem(&reqwest::Client::new(), account, key, &code).await
 }

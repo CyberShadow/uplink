@@ -27,10 +27,9 @@ use tokio_rustls::TlsAcceptor;
 use tower::Service;
 use tracing::info;
 use uplink_config::{
-    AccountConfig, BasicAuthConfig, Config, ConfigChanged, ConfigSection, GmailAccountConfig,
-    MatrixAccountConfig, Watcher,
+    AccountConfig, BasicAuthConfig, Config, ConfigChanged, ConfigSection, Watcher,
 };
-use uplink_email::{gmail, query::ConfiguredAccount, service::Mail};
+use uplink_email::{gmail, m365, query::ConfiguredAccount, service::Mail};
 use uplink_matrix::service::Matrix;
 use uplink_protocol::{ClientRequest, ErrorCode, ServerError, ServerResponse, TxLogId};
 use uplink_realtime::{Backend, Hub, Replay};
@@ -75,46 +74,45 @@ pub async fn serve(config_path: PathBuf) -> Result<()> {
 
 /// Starts the sync task of every configured account.
 pub fn start_syncs(config: &Config, services: &Services) -> Result<()> {
-    let mut gmail: Vec<&GmailAccountConfig> = vec![];
-    let mut matrix: Vec<&MatrixAccountConfig> = vec![];
-    for account in &config.accounts {
-        match account {
-            AccountConfig::Gmail(account) => gmail.push(account),
-            AccountConfig::M365(m365) => {
-                tracing::warn!(account = m365.id, "M365 accounts are not supported yet")
-            }
-            AccountConfig::Matrix(account) => matrix.push(account),
-        }
-    }
     // The master key is needed only to unseal accounts' secrets.
-    if gmail.is_empty() && matrix.is_empty() {
+    if config.accounts.is_empty() {
         return Ok(());
     }
-    let key =
-        Arc::new(MasterKey::load(config.master_key_file.as_ref().context(
-            "master_key_file is required with Gmail and Matrix accounts",
-        )?)?);
+    let key = Arc::new(MasterKey::load(
+        config
+            .master_key_file
+            .as_ref()
+            .context("master_key_file is required with accounts")?,
+    )?);
     let http = reqwest::Client::new();
-    for account in gmail {
-        let sync = gmail::sync::task(
-            account,
-            key.clone(),
-            http.clone(),
-            services.dispatcher.clone(),
-            &config.data.root,
-        )?;
-        info!(account = account.id, "starting Gmail sync");
-        tokio::spawn(sync.run());
-    }
-    for account in matrix {
-        let sync = uplink_matrix::sync::Sync::new(
-            account,
-            key.clone(),
-            services.dispatcher.clone(),
-            &config.data.root,
-        );
-        info!(account = account.id, "starting Matrix sync");
-        tokio::spawn(sync.run());
+    let dispatcher = &services.dispatcher;
+    let root = &config.data.root;
+    for account in &config.accounts {
+        match account {
+            AccountConfig::Gmail(account) => {
+                let sync = gmail::sync::task(
+                    account,
+                    key.clone(),
+                    http.clone(),
+                    dispatcher.clone(),
+                    root,
+                )?;
+                info!(account = account.id, "starting Gmail sync");
+                tokio::spawn(sync.run());
+            }
+            AccountConfig::M365(account) => {
+                let sync =
+                    m365::sync::task(account, key.clone(), http.clone(), dispatcher.clone(), root)?;
+                info!(account = account.id, "starting Microsoft 365 sync");
+                tokio::spawn(sync.run());
+            }
+            AccountConfig::Matrix(account) => {
+                let sync =
+                    uplink_matrix::sync::Sync::new(account, key.clone(), dispatcher.clone(), root);
+                info!(account = account.id, "starting Matrix sync");
+                tokio::spawn(sync.run());
+            }
+        }
     }
     Ok(())
 }
@@ -151,7 +149,11 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
                 id: gmail.id.clone(),
                 address: gmail.address.clone(),
             }),
-            AccountConfig::M365(_) | AccountConfig::Matrix(_) => None,
+            AccountConfig::M365(m365) => Some(ConfiguredAccount {
+                id: m365.id.clone(),
+                address: m365.address.clone(),
+            }),
+            AccountConfig::Matrix(_) => None,
         })
         .collect();
     let matrix_accounts = config

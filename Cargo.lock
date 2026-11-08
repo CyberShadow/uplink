@@ -4595,6 +4595,7 @@ dependencies = [
  "anyhow",
  "bcrypt",
  "clap",
+ "reqwest",
  "rpassword",
  "tokio",
  "tracing-subscriber",

@@ -65,6 +65,16 @@ pub enum AccountConfig {
     Matrix(MatrixAccountConfig),
 }
 
+impl AccountConfig {
+    pub fn id(&self) -> &str {
+        match self {
+            AccountConfig::Gmail(account) => &account.id,
+            AccountConfig::M365(account) => &account.id,
+            AccountConfig::Matrix(account) => &account.id,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GmailAccountConfig {
