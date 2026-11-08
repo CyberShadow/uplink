@@ -23,6 +23,8 @@ import type {
   RoomId,
   ServerEvent,
   TimelinePage,
+  Todo,
+  TodoEdit,
   ServerResponse,
 } from '../generated/protocol'
 import type { Client } from '../stores/client'
@@ -53,6 +55,8 @@ export class FakeServer implements Requester {
   readonly outbox: OutboxItem[] = []
   private nextOutbox = 1
 
+  readonly todos: Todo[] = []
+  private nextTodo = 1
   private matrixAccounts: MatrixAccount[] = []
   readonly rooms: Room[] = []
   readonly events = new Map<RoomId, RoomEvent[]>()
@@ -313,6 +317,31 @@ export class FakeServer implements Requester {
       }
       case 'cancel_matrix_send':
         return { type: 'dispatched', tx_log_id: this.cancelMatrixSend(body.item, 'Cancelled sending') }
+      case 'list_message_entries':
+        return {
+          type: 'entries',
+          as_of: this.head(),
+          entries: this.sorted().filter((e) => e.message === body.message).map((e) => ({ ...e })),
+          next: null,
+        }
+      case 'list_todos':
+        return { type: 'todos', as_of: this.head(), todos: this.sortedTodos() }
+      case 'create_todo': {
+        const todo: Todo = {
+          id: this.nextTodo++,
+          title: body.title,
+          notes: body.notes,
+          due: body.due,
+          done_at: null,
+          message: body.message,
+          created_at: Date.now(),
+        }
+        return this.putTodo(todo, body.message === null ? `Added '${todo.title}'` : `Flagged '${todo.title}'`)
+      }
+      case 'edit_todo':
+        return { type: 'dispatched', tx_log_id: this.editTodo(body.todo, body.edit, `Edited '${body.todo}'`) }
+      case 'delete_todo':
+        return { type: 'dispatched', tx_log_id: this.deleteTodo(body.todo) }
       case 'mark_room_read':
         this.rooms.find((r) => r.id === body.room)!.read_up_to = body.event
         return this.dispatched('Read', [{ type: 'rooms_changed', rooms: [body.room] }])
@@ -329,6 +358,62 @@ export class FakeServer implements Requester {
       },
       undone: false,
     })
+  }
+
+  private sortedTodos(): Todo[] {
+    const key = (t: Todo) => [t.done_at === null ? 0 : 1, t.due ?? '9999', t.id] as const
+    return [...this.todos].sort((a, b) => {
+      const [ka, kb] = [key(a), key(b)]
+      return ka[0] - kb[0] || ka[1].localeCompare(kb[1]) || ka[2] - kb[2]
+    })
+  }
+
+  private putTodo(todo: Todo, description: string): ServerResponse {
+    this.todos.push(todo)
+    const response = this.dispatched(description, [{ type: 'todos_changed', todos: [todo.id] }])
+    this.undoable.set(this.head(), { revert: () => this.deleteTodo(todo.id, 'Undid it'), undone: false })
+    return response
+  }
+
+  private deleteTodo(id: number, description = 'Deleted'): number {
+    const [todo] = this.todos.splice(this.todos.findIndex((t) => t.id === id), 1)
+    const entry = this.commit({ type: 'user' }, description, [{ type: 'todos_changed', todos: [id] }])
+    this.undoable.set(entry, {
+      revert: () => {
+        this.todos.push(todo)
+        return this.commit({ type: 'user' }, 'Undid it', [{ type: 'todos_changed', todos: [id] }])
+      },
+      undone: false,
+    })
+    return entry
+  }
+
+  private editTodo(id: number, edit: TodoEdit, description: string): number {
+    const todo = this.todos.find((t) => t.id === id)!
+    const before = { ...todo }
+    switch (edit.field) {
+      case 'title':
+        todo.title = edit.title
+        break
+      case 'notes':
+        todo.notes = edit.notes
+        break
+      case 'due':
+        todo.due = edit.due
+        break
+      case 'done':
+        todo.done_at = edit.done ? Date.now() : null
+        break
+    }
+    const entry = this.commit({ type: 'user' }, description, [{ type: 'todos_changed', todos: [id] }])
+    this.undoable.set(entry, {
+      revert: () => {
+        Object.assign(todo, before)
+        return this.commit({ type: 'user' }, 'Undid it', [{ type: 'todos_changed', todos: [id] }])
+      },
+      undone: false,
+    })
+    return entry
   }
 
   private timeline(room: RoomId, page: TimelinePage, limit: number) {

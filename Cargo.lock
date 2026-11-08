@@ -4722,6 +4722,7 @@ dependencies = [
  "uplink-protocol",
  "uplink-realtime",
  "uplink-storage",
+ "uplink-todos",
  "uplink-tx-log",
 ]
 
@@ -4744,6 +4745,16 @@ dependencies = [
 [[package]]
 name = "uplink-todos"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "tempfile",
+ "tokio",
+ "uplink-protocol",
+ "uplink-realtime",
+ "uplink-storage",
+ "uplink-tx-log",
+]
 
 [[package]]
 name = "uplink-tx-log"

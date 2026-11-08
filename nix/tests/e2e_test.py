@@ -115,4 +115,12 @@ with subtest("a Matrix room shows messages, raw JSON for other events, and sends
     eventually("uplink's message to reach Bob", lambda: "Hello from uplink" in bodies())
     assert machine.succeed(f"sqlite3 {STATE}/db/uplink.sqlite 'SELECT count(*) FROM matrix_outbox'").strip() == "0"
 
+with subtest("flagging a message adds a to-do, which opens it"):
+    result = ui("todos")
+    assert sorted(result["todos"]) == sorted([result["flagged"], "Book the train"]), result
+    rows = machine.succeed(
+        f"sqlite3 {STATE}/db/uplink.sqlite 'SELECT title, message IS NOT NULL FROM todo ORDER BY id'"
+    ).splitlines()
+    assert rows == [f"{result['flagged']}|1", "Book the train|0"], rows
+
 machine.copy_from_vm("/tmp/screenshots", "")

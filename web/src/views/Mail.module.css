@@ -107,3 +107,9 @@
   margin: 0 0 8px;
   color: var(--muted);
 }
+
+.flag {
+  margin-right: 6px;
+  color: var(--accent);
+  text-decoration: none;
+}

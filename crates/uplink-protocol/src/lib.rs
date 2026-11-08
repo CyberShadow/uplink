@@ -10,10 +10,12 @@ use ts_rs::TS;
 pub mod compose;
 pub mod mail;
 pub mod matrix;
+pub mod todos;
 
 use compose::{Draft, DraftContent, DraftId, OutboxId, Splice};
 use mail::{EntryId, LabelId, ListPosition, MessageId};
 use matrix::{MatrixOutboxId, RoomEventId, RoomId, TimelinePage};
+use todos::{TodoEdit, TodoId};
 
 /// Id of a log entry. Entries are numbered from 1 in commit order, so an
 /// id also serves as a position in the event stream; 0 is the position
@@ -96,6 +98,10 @@ pub enum ClientRequest {
         query: String,
         limit: u32,
     },
+    /// The message's entries, in every account, newest first.
+    ListMessageEntries {
+        message: MessageId,
+    },
     LoadMessage {
         message: MessageId,
     },
@@ -160,6 +166,22 @@ pub enum ClientRequest {
         room: RoomId,
         event: RoomEventId,
     },
+    /// All to-dos.
+    ListTodos,
+    /// Flagging a message for follow-up is creating a to-do of it.
+    CreateTodo {
+        title: String,
+        notes: String,
+        due: Option<String>,
+        message: Option<MessageId>,
+    },
+    EditTodo {
+        todo: TodoId,
+        edit: TodoEdit,
+    },
+    DeleteTodo {
+        todo: TodoId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -212,6 +234,10 @@ pub enum ServerResponse {
         as_of: TxLogId,
         items: Vec<matrix::MatrixOutboxItem>,
     },
+    Todos {
+        as_of: TxLogId,
+        todos: Vec<todos::Todo>,
+    },
 }
 
 impl ServerResponse {
@@ -227,7 +253,8 @@ impl ServerResponse {
             | Self::Outbox { as_of, .. }
             | Self::Rooms { as_of, .. }
             | Self::Timeline { as_of, .. }
-            | Self::MatrixOutbox { as_of, .. } => Some(*as_of),
+            | Self::MatrixOutbox { as_of, .. }
+            | Self::Todos { as_of, .. } => Some(*as_of),
             // Message content does not change.
             Self::Message { .. } => None,
         }
@@ -298,6 +325,7 @@ pub enum ServerEvent {
     RoomsChanged(matrix::RoomsChanged),
     TimelineAdded(matrix::TimelineAdded),
     MatrixOutboxChanged(matrix::MatrixOutboxChanged),
+    TodosChanged(todos::TodosChanged),
 }
 
 #[cfg(test)]

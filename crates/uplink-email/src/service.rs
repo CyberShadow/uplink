@@ -99,6 +99,23 @@ impl Mail {
             .await
     }
 
+    pub async fn list_message_entries(&self, message: MessageId) -> Response {
+        self.reader
+            .read(move |conn| {
+                let (as_of, entries) = query::message_entries(conn, message)
+                    .map_err(internal)?
+                    .ok_or_else(|| {
+                        error(ErrorCode::NotFound, format!("no message {}", message.0))
+                    })?;
+                Ok(ServerResponse::Entries {
+                    as_of,
+                    entries,
+                    next: None,
+                })
+            })
+            .await
+    }
+
     pub async fn load_message(&self, message: MessageId) -> Response {
         let store = self.store.clone();
         self.reader

@@ -10,6 +10,7 @@ import { HtmlBody } from './HtmlBody'
 import { LabelPicker } from './LabelPicker'
 import { labelName } from './Nav'
 import { composePath } from './Outgoing'
+import { messagePath } from './Todos'
 import styles from './Mail.module.css'
 
 // Route params; preact-iso's own `query` prop is the URL's query string.
@@ -18,30 +19,44 @@ interface Props {
   label?: string
   terms?: string
   entry?: string
+  message?: string
 }
 
-/** A label's or a search's list, or one of its messages. */
+/** A label's or a search's list, or one of its messages; or a message by
+ * itself, as a to-do links to it. */
 export function Mail(props: Props) {
-  const { mail } = useServices()
+  const { mail, todos } = useServices()
   const { route } = useLocation()
   const [picking, setPicking] = useState(false)
 
-  const { account, label, terms } = props
+  const { account, label, terms, message } = props
   const view: View = useMemo(
     () =>
-      terms !== undefined
-        ? { kind: 'search', query: terms }
-        : { kind: 'label', account: account!, label: label! },
-    [account, label, terms],
+      message !== undefined
+        ? { kind: 'message', message: Number(message) }
+        : terms !== undefined
+          ? { kind: 'search', query: terms }
+          : { kind: 'label', account: account!, label: label! },
+    [account, label, terms, message],
   )
   useEffect(() => mail.show(view), [mail, view])
 
-  const pathFor = (entry?: number) =>
-    view.kind === 'label' ? mailPath(view.account, view.label, entry) : searchPath(view.query, entry)
+  const pathFor = (entry?: number) => {
+    switch (view.kind) {
+      case 'label':
+        return mailPath(view.account, view.label, entry)
+      case 'search':
+        return searchPath(view.query, entry)
+      case 'message':
+        return messagePath(view.message)
+    }
+  }
 
   const list = mail.list.value
   const entries = list?.entries ?? []
-  const openId = props.entry === undefined ? null : Number(props.entry)
+  // A message by itself is open as soon as one of its entries is in.
+  const openId =
+    view.kind === 'message' ? (entries[0]?.id ?? null) : props.entry === undefined ? null : Number(props.entry)
   const opened = openId === null ? undefined : entries.find((e) => e.id === openId)
   const targets = openId === null ? mail.targets.value : opened ? [opened] : []
 
@@ -62,7 +77,8 @@ export function Mail(props: Props) {
   const ifTargets = (action: (targets: Entry[]) => void) => () => {
     if (targets.length > 0) action(targets)
   }
-  const backToList = () => route(pathFor())
+  // A message by itself has no list: back is where it was opened from.
+  const backToList = view.kind === 'message' ? () => history.back() : () => route(pathFor())
 
   const common = {
     archive: ifTargets((t) => {
@@ -76,6 +92,11 @@ export function Mail(props: Props) {
     }),
     star: ifTargets((t) => mail.toggleStar(t)),
     label: ifTargets(() => setPicking(true)),
+    flag: ifTargets((t) => {
+      for (const entry of new Map(t.map((e) => [e.message, e])).values()) {
+        todos.toggleFlag(entry.message, entry.subject ?? '(no subject)')
+      }
+    }),
   }
   useKeymap(
     openId === null
@@ -117,6 +138,7 @@ export function Mail(props: Props) {
 
 function MessageList(props: { mail: MailStore; open: (entry: Entry) => void }) {
   const { mail } = props
+  const { todos } = useServices()
   const list = mail.list.value
   const focused = useRef<HTMLLIElement>(null)
   useEffect(() => {
@@ -136,6 +158,7 @@ function MessageList(props: { mail: MailStore; open: (entry: Entry) => void }) {
     >
       {list.entries.map((entry) => {
         const isFocused = entry.id === mail.focus.value
+        const isFlagged = todos.flagged.value.has(entry.message)
         const isSelected = mail.selected.value.has(entry.id)
         return (
           <li
@@ -165,6 +188,7 @@ function MessageList(props: { mail: MailStore; open: (entry: Entry) => void }) {
             />
             <span class={styles.from}>{sender(entry)}</span>
             <span class={styles.summary}>
+              {isFlagged && <Flag />}
               <LabelChips mail={mail} entry={entry} />
               <span class={styles.subject}>{entry.subject ?? '(no subject)'}</span>
               <span class={styles.snippet}> — {entry.snippet}</span>
@@ -181,7 +205,7 @@ function MessageList(props: { mail: MailStore; open: (entry: Entry) => void }) {
 
 function MessageView(props: { mail: MailStore; entry: Entry }) {
   const { mail, entry } = props
-  const { drafts } = useServices()
+  const { drafts, todos } = useServices()
   const { route } = useLocation()
   // `null` if it failed to load.
   const [content, setContent] = useState<MessageContent | null | undefined>(undefined)
@@ -214,7 +238,8 @@ function MessageView(props: { mail: MailStore; entry: Entry }) {
   return (
     <article class={styles.message}>
       <h1 class={styles.messageSubject}>
-        {entry.subject ?? '(no subject)'} <LabelChips mail={mail} entry={entry} />
+        {entry.subject ?? '(no subject)'} {todos.flagged.value.has(entry.message) && <Flag />}
+        <LabelChips mail={mail} entry={entry} />
       </h1>
       {content === undefined ? (
         <p class={styles.placeholder}>Loading…</p>
@@ -270,6 +295,14 @@ function LabelChips(props: { mail: MailStore; entry: Entry }) {
         ),
       )}
     </>
+  )
+}
+
+function Flag() {
+  return (
+    <a href="/todos" class={styles.flag} title="Flagged: a to-do follows it up" onClick={(e) => e.stopPropagation()}>
+      ⚑
+    </a>
   )
 }
 

@@ -29,11 +29,18 @@ const MAX_PAGE = 500
 export type View =
   | { kind: 'label'; account: string; label: string }
   | { kind: 'search'; query: string }
+  /** A message's entries, in every account. */
+  | { kind: 'message'; message: MessageId }
 
 export function sameView(a: View, b: View): boolean {
-  return a.kind === 'label'
-    ? b.kind === 'label' && a.account === b.account && a.label === b.label
-    : b.kind === 'search' && a.query === b.query
+  switch (a.kind) {
+    case 'label':
+      return b.kind === 'label' && a.account === b.account && a.label === b.label
+    case 'search':
+      return b.kind === 'search' && a.query === b.query
+    case 'message':
+      return b.kind === 'message' && a.message === b.message
+  }
 }
 
 export interface List {
@@ -112,6 +119,7 @@ export class MailStore {
         case 'rooms_changed':
         case 'timeline_added':
         case 'matrix_outbox_changed':
+        case 'todos_changed':
           // Not mail; no counts change.
           continue
       }
@@ -291,6 +299,9 @@ export class MailStore {
     const after = load === 'reload' ? null : list.next
     if (list.view.kind === 'search') {
       return { type: 'search', query: list.view.query, limit }
+    }
+    if (list.view.kind === 'message') {
+      return { type: 'list_message_entries', message: list.view.message }
     }
     const label = this.labelOf(list.view)
     return label ? { type: 'list_entries', label: label.id, after, limit } : null

@@ -19,6 +19,10 @@ export type Action =
   | 'markUnread'
   | 'star'
   | 'label'
+  | 'flag'
+  | 'done'
+  | 'delete'
+  | 'add'
   | 'compose'
   | 'reply'
   | 'replyAll'
@@ -29,6 +33,7 @@ export type Action =
   | 'goStarred'
   | 'goSent'
   | 'goDrafts'
+  | 'goTodos'
   | 'search'
   | 'help'
 
@@ -54,6 +59,10 @@ export const KEYMAP: Binding[] = [
   { action: 'markUnread', keys: ['Shift+u'], label: 'Shift+u', help: 'Mark as unread' },
   { action: 'star', keys: ['s'], label: 's', help: 'Star or unstar' },
   { action: 'label', keys: ['l'], label: 'l', help: 'Label' },
+  { action: 'flag', keys: ['Shift+t'], label: 'Shift+t', help: 'Flag for follow-up (adds a to-do), or unflag' },
+  { action: 'done', keys: ['e'], label: 'e', help: 'Mark done, or not done (in to-dos)' },
+  { action: 'delete', keys: ['[Shift]+#'], label: '#', help: 'Delete (in to-dos)' },
+  { action: 'add', keys: ['a'], label: 'a', help: 'Add a to-do (in to-dos)' },
   { action: 'compose', keys: ['c'], label: 'c', help: 'Compose' },
   { action: 'reply', keys: ['r'], label: 'r', help: 'Reply (in a room: write a message)' },
   { action: 'replyAll', keys: ['a'], label: 'a', help: 'Reply all' },
@@ -64,6 +73,7 @@ export const KEYMAP: Binding[] = [
   { action: 'goStarred', keys: ['g s'], label: 'g s', help: 'Go to Starred' },
   { action: 'goSent', keys: ['g t'], label: 'g t', help: 'Go to Sent' },
   { action: 'goDrafts', keys: ['g d'], label: 'g d', help: 'Go to Drafts' },
+  { action: 'goTodos', keys: ['g k'], label: 'g k', help: 'Go to To-dos' },
   { action: 'search', keys: ['/'], label: '/', help: 'Search' },
   { action: 'help', keys: ['[Shift]+?'], label: '?', help: 'Keyboard shortcuts' },
 ]

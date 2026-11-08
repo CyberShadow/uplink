@@ -2,3 +2,15 @@
 name = "uplink-todos"
 version = "0.1.0"
 edition = "2021"
+
+[dependencies]
+uplink-protocol = { path = "../uplink-protocol" }
+uplink-storage = { path = "../uplink-storage" }
+uplink-tx-log = { path = "../uplink-tx-log" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["rt", "macros"] }
+uplink-realtime = { path = "../uplink-realtime" }

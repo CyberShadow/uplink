@@ -133,7 +133,30 @@ def matrix(page):
     return {"path": page.url.split("/", 3)[3]}
 
 
-STEPS = {f.__name__: f for f in [read, archive, undo, label, search, reply, matrix]}
+def todos(page):
+    """Flags the first message, then adds a to-do of its own in To-dos."""
+    first = subjects(page)[0]
+    page.keyboard.press("Shift+T")
+    rows = page.get_by_role("list", name="Messages").get_by_role("listitem")
+    expect(rows.first.get_by_title("Flagged", exact=False)).to_be_visible()
+    page.keyboard.press("g")
+    page.keyboard.press("k")
+    items = page.get_by_role("list", name="To-do list").get_by_role("listitem")
+    expect(items).to_have_count(1)
+    page.keyboard.press("a")
+    page.keyboard.type("Book the train")
+    page.keyboard.press("Enter")
+    page.keyboard.press("Escape")
+    expect(items).to_have_count(2)
+    page.screenshot(path=f"{SHOTS}/todos.png")
+    titles = [item.locator("[class*=title]").inner_text() for item in items.all()]
+    # The flagged one opens its message.
+    page.keyboard.press("Enter")
+    expect(page.get_by_role("heading", name=first)).to_be_visible()
+    return {"flagged": first, "todos": titles}
+
+
+STEPS = {f.__name__: f for f in [read, archive, undo, label, search, reply, matrix, todos]}
 
 step = STEPS[sys.argv[1]]
 with sync_playwright() as p:

@@ -34,6 +34,7 @@ use uplink_matrix::service::Matrix;
 use uplink_protocol::{ClientRequest, ErrorCode, ServerError, ServerResponse, TxLogId};
 use uplink_realtime::{Backend, Hub, Replay};
 use uplink_storage::seal::MasterKey;
+use uplink_todos::service::Todos;
 use uplink_tx_log::{Dispatcher, LogReader, Registry, UndoError};
 
 /// How far a session may lag the live stream before it is disconnected.
@@ -123,6 +124,7 @@ pub struct Services {
     pub reader: Arc<LogReader>,
     pub mail: Mail,
     pub matrix: Matrix,
+    pub todos: Todos,
 }
 
 /// Opens (and migrates) the database under the configured data root, with
@@ -131,6 +133,7 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
     uplink_email::mailbox::register(&mut registry);
     uplink_email::compose::register(&mut registry);
     uplink_matrix::register(&mut registry);
+    uplink_todos::register(&mut registry);
     let root = &config.data.root;
     let dispatcher = Dispatcher::new(
         uplink_storage::open(root)?,
@@ -160,6 +163,7 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
         })
         .collect();
     Ok(Services {
+        todos: Todos::new(dispatcher.clone(), uplink_storage::open_reader(root)?),
         matrix: Matrix::new(
             dispatcher.clone(),
             uplink_storage::open_reader(root)?,
@@ -416,6 +420,9 @@ impl Backend for Services {
                 limit,
             } => self.mail.list_entries(label, after, limit).await,
             ClientRequest::Search { query, limit } => self.mail.search(query, limit).await,
+            ClientRequest::ListMessageEntries { message } => {
+                self.mail.list_message_entries(message).await
+            }
             ClientRequest::LoadMessage { message } => self.mail.load_message(message).await,
             ClientRequest::ModifyLabels {
                 entries,
@@ -452,6 +459,15 @@ impl Backend for Services {
             }
             ClientRequest::CancelMatrixSend { item } => self.matrix.cancel_send(item).await,
             ClientRequest::MarkRoomRead { room, event } => self.matrix.mark_read(room, event).await,
+            ClientRequest::ListTodos => self.todos.list().await,
+            ClientRequest::CreateTodo {
+                title,
+                notes,
+                due,
+                message,
+            } => self.todos.create(title, notes, due, message).await,
+            ClientRequest::EditTodo { todo, edit } => self.todos.edit(todo, edit).await,
+            ClientRequest::DeleteTodo { todo } => self.todos.delete(todo).await,
         }
     }
 
@@ -601,6 +617,7 @@ mod tests {
                     Duration::from_secs(10),
                 ),
                 matrix: Matrix::new(dispatcher.clone(), reader(), vec![]),
+                todos: Todos::new(dispatcher.clone(), reader()),
                 reader: Arc::new(LogReader::new(reader(), 16)),
                 dispatcher,
             };

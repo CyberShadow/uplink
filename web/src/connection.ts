@@ -66,6 +66,8 @@ function isResendable(body: ClientRequest): boolean {
     case 'list_rooms':
     case 'list_timeline':
     case 'list_matrix_outbox':
+    case 'list_message_entries':
+    case 'list_todos':
     case 'create_draft':
     case 'edit_draft':
       return true
@@ -77,6 +79,9 @@ function isResendable(body: ClientRequest): boolean {
     case 'send_matrix_message':
     case 'cancel_matrix_send':
     case 'mark_room_read':
+    case 'create_todo':
+    case 'edit_todo':
+    case 'delete_todo':
       return false
   }
 }

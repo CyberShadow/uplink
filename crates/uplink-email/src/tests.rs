@@ -816,6 +816,53 @@ pub(crate) mod service {
         );
     }
 
+    #[tokio::test]
+    async fn message_entries_of_every_account() {
+        let db = Db::new();
+        let mail = mail_with(&db).await;
+        let store = db.store();
+        // A copy of message 2 in account b.
+        db.observe(
+            "b",
+            observed(
+                labels(&["INBOX", "UNREAD"]),
+                vec![new_entry(
+                    &store,
+                    "b2",
+                    &["INBOX"],
+                    &raw(
+                        "2@x",
+                        "Sender <s@x>",
+                        DATE,
+                        "Subject 2",
+                        "body number2 common",
+                    ),
+                )],
+                vec![],
+                &[],
+            ),
+        )
+        .await;
+        let message = message_of(&db, "m2");
+        let ServerResponse::Entries { entries, next, .. } =
+            mail.list_message_entries(message).await.unwrap()
+        else {
+            panic!()
+        };
+        let mut accounts: Vec<_> = entries.iter().map(|e| e.account.as_str()).collect();
+        accounts.sort();
+        assert_eq!(accounts, ["a", "b"]);
+        assert!(entries.iter().all(|e| e.message == message));
+        assert_eq!(next, None);
+        assert_eq!(
+            mail.list_message_entries(uplink_protocol::mail::MessageId(999))
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::NotFound
+        );
+    }
+
     fn message_of(db: &Db, external_id: &str) -> uplink_protocol::mail::MessageId {
         uplink_protocol::mail::MessageId(
             db.reader()

@@ -70,6 +70,7 @@ export class DraftStore {
         case 'rooms_changed':
         case 'timeline_added':
         case 'matrix_outbox_changed':
+        case 'todos_changed':
           break
       }
     }

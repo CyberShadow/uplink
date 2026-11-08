@@ -10,7 +10,8 @@ makes every action undoable. See `docs/VISION.md` for the goals and
 and marked read/unread, with undo, and written (drafts saved as you type,
 synced across tabs), replied to, forwarded and sent, with undo-send.
 Matrix rooms (end-to-end encrypted ones too) can be read and written to,
-in plain text. Microsoft 365, calendar and tasks are in progress
+in plain text. To-dos can be kept, and messages flagged for follow-up
+(which adds a to-do). Microsoft 365 and calendar are in progress
 (SPEC §14).
 
 ## Try it

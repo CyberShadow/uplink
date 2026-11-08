@@ -6,18 +6,21 @@ import { DraftStore } from './drafts'
 import { MailStore } from './mail'
 import { MatrixStore } from './matrix'
 import { Ops } from './ops'
+import { TodoStore } from './todos'
 
 export class Client {
   readonly ops: Ops
   readonly mail: MailStore
   readonly drafts: DraftStore
   readonly matrix: MatrixStore
+  readonly todos: TodoStore
 
   constructor(server: Requester) {
     this.ops = new Ops(server)
     this.mail = new MailStore(server, this.ops)
     this.drafts = new DraftStore(server, this.ops)
     this.matrix = new MatrixStore(server, this.ops)
+    this.todos = new TodoStore(server, this.ops)
   }
 
   /** Everything is void; load afresh. */
@@ -25,6 +28,7 @@ export class Client {
     this.mail.reset()
     this.drafts.reset()
     this.matrix.reset()
+    this.todos.reset()
   }
 
   apply(entry: LogEntry) {
@@ -32,5 +36,6 @@ export class Client {
     this.mail.apply(entry)
     this.drafts.apply(entry)
     this.matrix.apply(entry)
+    this.todos.apply(entry)
   }
 }

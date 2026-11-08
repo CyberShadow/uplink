@@ -6,12 +6,14 @@ import type { DraftStore } from './stores/drafts'
 import type { MailStore } from './stores/mail'
 import type { MatrixStore } from './stores/matrix'
 import type { Ops } from './stores/ops'
+import type { TodoStore } from './stores/todos'
 
 export interface Services {
   ops: Ops
   mail: MailStore
   drafts: DraftStore
   matrix: MatrixStore
+  todos: TodoStore
   status: ReadonlySignal<Status>
 }
 

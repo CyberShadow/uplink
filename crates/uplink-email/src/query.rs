@@ -150,6 +150,29 @@ pub fn search(conn: &mut Connection, query: &str, limit: u32) -> Result<(TxLogId
     Ok((as_of, with_labels(&tx, entries)?))
 }
 
+/// The message's entries, in every account, newest first; `None` if there
+/// is no such message.
+pub fn message_entries(
+    conn: &mut Connection,
+    message: MessageId,
+) -> Result<Option<(TxLogId, Vec<Entry>)>> {
+    let tx = conn.transaction()?;
+    let as_of = as_of(&tx)?;
+    if preferred_variant(&tx, message)?.is_none() {
+        return Ok(None);
+    }
+    let entries = tx
+        .prepare(&format!(
+            "SELECT {ENTRY_COLUMNS}
+             FROM mail_entry e JOIN message m ON m.id = e.message
+             WHERE e.message = ?1
+             ORDER BY e.received_at DESC, e.id DESC"
+        ))?
+        .query_map([message.0], entry_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some((as_of, with_labels(&tx, entries)?)))
+}
+
 fn entry_row(r: &Row) -> uplink_storage::rusqlite::Result<Entry> {
     Ok(Entry {
         id: EntryId(r.get(0)?),

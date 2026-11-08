@@ -13,14 +13,15 @@ import { NoticeBar } from './NoticeBar'
 import { RoomView } from './Room'
 import { composePath, Drafts, Outbox } from './Outgoing'
 import { SearchBox } from './SearchBox'
+import { Todos } from './Todos'
 import styles from './App.module.css'
 
 const Compose = lazy(() => import('./Compose'))
 
 export function App(props: { client: Client; status: ReadonlySignal<Status> }) {
-  const { ops, mail, drafts, matrix } = props.client
+  const { ops, mail, drafts, matrix, todos } = props.client
   return (
-    <ServicesContext.Provider value={{ ops, mail, drafts, matrix, status: props.status }}>
+    <ServicesContext.Provider value={{ ops, mail, drafts, matrix, todos, status: props.status }}>
       <LocationProvider>
         <Shell />
       </LocationProvider>
@@ -29,7 +30,7 @@ export function App(props: { client: Client; status: ReadonlySignal<Status> }) {
 }
 
 function Shell() {
-  const { mail, drafts, matrix, status } = useServices()
+  const { mail, drafts, matrix, todos, status } = useServices()
   const { route, path } = useLocation()
   const [help, setHelp] = useState(false)
 
@@ -47,6 +48,7 @@ function Shell() {
     goStarred: go('STARRED'),
     goSent: go('SENT'),
     goDrafts: () => route('/drafts'),
+    goTodos: () => route('/todos'),
     compose: async () => {
       const id = account()
       if (!id) return
@@ -57,6 +59,7 @@ function Shell() {
     help: () => setHelp((shown) => !shown),
   })
 
+  const error = mail.error.value ?? drafts.error.value ?? matrix.error.value ?? todos.error.value
   return (
     <div class={styles.shell}>
       <header class={styles.header}>
@@ -66,14 +69,16 @@ function Shell() {
       </header>
       <Nav />
       <main class={styles.content}>
-        {(mail.error.value ?? drafts.error.value ?? matrix.error.value) && (
+        {error && (
           <div class={styles.error} role="alert">
-            {mail.error.value ?? drafts.error.value ?? matrix.error.value}
+            {error}
           </div>
         )}
         <Router>
           <Route path="/mail/:account/:label/:entry?" component={Mail} />
           <Route path="/search/:terms/:entry?" component={Mail} />
+          <Route path="/message/:message" component={Mail} />
+          <Route path="/todos" component={Todos} />
           <Route path="/compose/:draft" component={Compose} />
           <Route path="/drafts" component={Drafts} />
           <Route path="/outbox" component={Outbox} />

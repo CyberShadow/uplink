@@ -24,6 +24,7 @@ async function start(path = '/') {
   render(<App client={client} status={signal('open')} />)
   client.reset()
   if (path.startsWith('/rooms/')) await screen.findByRole('list', { name: 'Timeline' })
+  else if (path === '/todos') await screen.findByRole('region', { name: 'To-dos' })
   else await screen.findByRole('list', { name: 'Messages' })
   return userEvent.setup()
 }
@@ -266,5 +267,62 @@ describe('matrix', () => {
     server.echo(server.matrixOutbox[0].id)
     await waitFor(() => expect(screen.queryByText('Waiting to send')).toBeNull())
     expect(screen.getByText('First line second line')).toBeTruthy()
+  })
+})
+
+describe('to-dos', () => {
+  const todoTitles = () =>
+    within(screen.getByRole('list', { name: 'To-do list' }))
+      .getAllByRole('listitem')
+      .map((item) => item.querySelector('[class*=title]')!.textContent)
+  const navCount = () => screen.getByRole('link', { name: /^To-dos/ }).textContent
+
+  it('flags a message with Shift+t, which a to-do then follows up', async () => {
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('{Shift>}t{/Shift}')
+    await waitFor(() => expect(within(rows()[0]).getByTitle(/^Flagged/)).toBeTruthy())
+    expect(navCount()).toBe('To-dos1')
+
+    await user.keyboard('gk')
+    expect(location.pathname).toBe('/todos')
+    await waitFor(() => expect(todoTitles()).toEqual(['First']))
+    // The to-do opens the message, by itself; back is back to the to-dos.
+    await user.keyboard('{Enter}')
+    expect(location.pathname).toMatch(/^\/message\/\d+$/)
+    await screen.findByText('Body of First')
+    expect(screen.getByRole('heading', { name: /First/ }).querySelector('[title^=Flagged]')).toBeTruthy()
+    // Unflagging marks the to-do done.
+    await user.keyboard('{Shift>}t{/Shift}')
+    await waitFor(() => expect(screen.getByRole('heading', { name: /First/ }).querySelector('[title^=Flagged]')).toBeNull())
+    await user.keyboard('u')
+    await screen.findByRole('region', { name: 'To-dos' })
+    await waitFor(() => expect(server.todos[0].done_at).not.toBeNull())
+    expect(navCount()).toBe('To-dos')
+  })
+
+  it('adds with a, finishes with e, deletes with #, and renames with Enter', async () => {
+    const user = await start('/todos')
+    await screen.findByText('Nothing to do.')
+    await user.keyboard('a')
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'New to-do' }))
+    await user.keyboard('Call Bob{Enter}Pay rent{Enter}{Escape}')
+    await waitFor(() => expect(todoTitles()).toEqual(['Call Bob', 'Pay rent']))
+    expect(screen.getByRole('textbox', { name: 'New to-do' })).toHaveProperty('value', '')
+
+    await user.keyboard('e')
+    await waitFor(() => expect(todoTitles()).toEqual(['Pay rent', 'Call Bob']))
+    expect(screen.getAllByRole('checkbox', { name: 'Done' }).map((c) => (c as HTMLInputElement).checked)).toEqual([
+      false,
+      true,
+    ])
+
+    await user.keyboard('{Enter}')
+    const title = screen.getByRole('textbox', { name: 'Title' })
+    expect(document.activeElement).toBe(title)
+    await user.keyboard('Pay the rent{Enter}')
+    await waitFor(() => expect(todoTitles()).toEqual(['Pay the rent', 'Call Bob']))
+
+    await user.keyboard('j#')
+    await waitFor(() => expect(todoTitles()).toEqual(['Pay the rent']))
   })
 })

@@ -142,7 +142,7 @@ uplink/
 │   ├── uplink-email/                # Gmail API, M365 Graph mail; send
 │   ├── uplink-matrix/               # matrix-rust-sdk wrapper
 │   ├── uplink-calendar/             # M365 Graph calendar (read-only)
-│   ├── uplink-todos/                # TodoBackend trait + local impl
+│   ├── uplink-todos/                # local to-dos and their ops
 │   ├── uplink-server/               # axum, TLS, basic auth, routes
 │   └── uplink-cli/                  # `uplink matrix pair`, `uplink migrate`
 ├── web/                             # Preact SPA (Vite)
@@ -495,19 +495,21 @@ CREATE TABLE calendar_event (
 );
 CREATE INDEX calendar_event_by_account_start ON calendar_event(account_id, start_ts);
 
--- ── TODOs (local-only MVP) ───────────────────────────────────────────
+-- ── TODOs (local-only MVP; as built, V0005) ──────────────────────────
+-- Ids are never reused (AUTOINCREMENT): log entries refer to them.
 CREATE TABLE todo (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  title         TEXT NOT NULL,
-  body          TEXT,
-  due_ts        INTEGER,
-  done_at       INTEGER,                    -- null if not done
-  -- link back to source message, if created via flag-for-followup
-  source_message_id TEXT REFERENCES message(id),
-  created_at    INTEGER NOT NULL,
-  updated_at    INTEGER NOT NULL
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  title       TEXT NOT NULL,
+  notes       TEXT NOT NULL,
+  due         TEXT,                  -- a date, YYYY-MM-DD; no time of day
+  done_at     INTEGER,               -- unix ms; NULL while open
+  -- The message it was flagged from (§11.2). Message rows are never
+  -- deleted (entries are), so the link holds.
+  message     INTEGER REFERENCES message(id),
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
 );
-CREATE INDEX todo_by_done_due ON todo(done_at, due_ts);
+CREATE INDEX todo_by_message ON todo(message) WHERE message IS NOT NULL;
 
 -- ── drafts (local-only MVP) ──────────────────────────────────────────
 -- Edited only through draft ops (§7); history lives in tx_log.
@@ -717,7 +719,8 @@ than it buffers is closed; the client reconnects and resumes.
   (appended to the timeline), `MatrixOutboxChanged { items }`.
 - **Calendar**: `CalendarEventAdded`, `CalendarEventRemoved`,
   `CalendarEventChanged`.
-- **TODO**: `TodoAdded`, `TodoChanged`, `TodoRemoved`.
+- **To-dos**: `TodosChanged { todos }` (added, edited or deleted; the
+  client lists them again, as it does drafts).
 - **Draft**: `DraftEdited { draft, revision, splice }` (§7.2), and
   `DraftsChanged { drafts }` when drafts are created or deleted.
 - **Outbox**: `OutboxChanged { items }` (added, removed or changed state).
@@ -1302,32 +1305,42 @@ trait already accommodates write ops; we just don't implement them.
 
 ## 11. TODOs
 
-### 11.1 Trait
+### 11.1 Local, in the tx log
 
-```rust
-#[async_trait]
-pub trait TodoBackend: Send + Sync {
-    async fn list(&self) -> Result<Vec<TodoRow>>;
-    async fn create(&self, t: TodoCreate) -> Result<TodoRow>;
-    async fn update(&self, id: i64, patch: TodoPatch) -> Result<TodoRow>;
-    async fn delete(&self, id: i64) -> Result<()>;
-}
-```
+To-dos live in uplink's `todo` table (§4.3) and change only through ops
+(`crates/uplink-todos`), so each change is a log entry with an inverse:
+`todo.create` ↔ `todo.delete`, `todo.delete` ↔ `todo.put` (restoring the
+row as it was, under its id), and `todo.edit`, which sets one field
+(title, notes, due date, done). An edit's inverse carries the value the
+edit made and is refused as a conflict if the field has changed since,
+like a draft edit's (§7.2), so undo never clobbers a later change.
 
-### 11.2 Local-SQLite impl
+No `TodoBackend` trait: there is one store. Were a provider's tasks
+(Microsoft To Do, say) added, they would sync into this table the way
+mail syncs into `message`, with ops queueing the remote changes (§6.6);
+an interface over "where to-dos are" would hide exactly that.
 
-The only MVP implementation: writes to the `todo` table directly. CRUD
-operations go through the dispatcher as `TodoCreate` / `TodoUpdate` /
-`TodoDelete` ops with the obvious inverses.
+Requests: `ListTodos` (open ones first by due date, undated last, then
+done ones, most recently done first), `CreateTodo { title, notes, due,
+message }` (titles are non-empty, due dates real dates, the message
+must exist), `EditTodo { todo, edit }`, `DeleteTodo { todo }`.
 
-### 11.3 Flag-for-followup integration
+### 11.2 Flag for follow-up
 
-When the user invokes "flag this message for follow-up" on a `message`, the
-op is a *composite*: `MailFlagAndCreateTodo { message_id, todo: TodoCreate }`.
-Single tx_log entry. Inverse undoes both the flag and deletes the todo.
+A message is flagged exactly while it has an open to-do linked to it:
+flagging is `todo.create` with `message` set (titled with the subject),
+unflagging marks that to-do done. Each is one op, so undoing a flag
+removes the to-do and with it the flag, in one gesture, with no
+composite op.
 
-This composite-op pattern is the recommended way to handle any cross-domain
-user action in MVP — don't fan out into multiple ops, keep undo atomic.
+The flag is uplink's own: it is not mirrored to Gmail (Gmail has no
+flag; a star already means something else) nor, later, to M365's
+follow-up flag. Mirroring M365's would be a reconciled desired state
+(§6.6) derived from the to-do, if wanted.
+
+A to-do flagged from a message opens it at `/message/:message`, the
+message by itself (its entry in each account that has it; the first is
+shown), and back is back to where it was opened from.
 
 ---
 
@@ -1381,12 +1394,13 @@ src/views/
 ├── Compose.tsx            # TipTap-backed, lazily loaded
 ├── Outgoing.tsx           # drafts and the mail outbox
 ├── Room.tsx               # a Matrix room: timeline and composer
+├── Todos.tsx              # the to-do list
 ├── SearchBox.tsx
 ├── NoticeBar.tsx          # the last op, with Undo
 └── Help.tsx               # keyboard shortcuts
 ```
 
-Planned: calendar, to-dos, the transaction log.
+Planned: calendar, the transaction log.
 
 ### 12.5 Keyboard shortcuts
 
@@ -1413,6 +1427,11 @@ uplink's own drafts; Gmail's DRAFT label is listed as "Gmail drafts".
 trash/spam ops. Opening a message marks it read, as Gmail does, without
 an undo notice. In a Matrix room (M7), `r` goes to the message box, where
 `Enter` sends, `Shift+Enter` breaks the line and `Esc` leaves.
+`Shift+t` flags the targets for follow-up, or unflags them (M9; ⚑ marks
+flagged messages); `gk` goes to the to-dos, where `j`/`k` move, `a`
+focuses the box that adds one, `e` marks done or not, `#` deletes, and
+`o`/`Enter` opens a flagged to-do's message, or renames any other (as
+double-clicking its title does).
 
 - **No `z` for undo.** Undo lives in the transaction log view and as an
   optional toast immediately after each mutating op. `z` overloads
@@ -1716,6 +1735,12 @@ master event.
 message; clicking the message link from the todo view opens the message;
 undoing the flag removes both the todo and the message flag in one
 gesture.
+
+**State:** done, as §11 describes: no trait and no composite op, since
+the flag is the open linked to-do. Unit tests cover ordering, undo of
+each op (and refusal once changed since) and request checks; the web
+tests flag, open and unflag from the keyboard; the `e2e` VM test flags a
+message and adds a to-do in Chromium, and checks the rows.
 
 ### M10. Polish
 
@@ -2036,6 +2061,7 @@ visible. Routes (handled by `preact-iso`):
 | `/mail/:account/:label/:entry`         | Message view (thread view once threads exist) |
 | `/search/:terms`                       | Search results                         |
 | `/search/:terms/:entry`                | Message view, within the results       |
+| `/message/:message`                    | A message by itself (from a to-do)     |
 | `/compose/:draft`                      | Compose (new or continued draft)       |
 | `/drafts`, `/outbox`                   | Drafts; mail being sent                |
 | `/rooms/:room`                         | Room timeline (uplink's room id)       |
