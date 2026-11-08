@@ -86,7 +86,7 @@ def gmail(token, method, path, body=None):
     data = "" if body is None else f"-H 'Content-Type: application/json' -d {shlex.quote(json.dumps(body))}"
     out = machine.succeed(
         f"curl -sf -X {method} -H 'Authorization: Bearer {token}' {data} "
-        f"{GOOGLE}/gmail/v1/users/me{path}"
+        f"{shlex.quote(GOOGLE + '/gmail/v1/users/me' + path)}"
     )
     return json.loads(out) if out.strip() else None
 

@@ -34,6 +34,7 @@ import { apply } from '../compose/splice'
 export const ME = '@me:example.org'
 
 const SYSTEM = ['INBOX', 'UNREAD', 'STARRED', 'SENT', 'DRAFT', 'TRASH', 'SPAM']
+const HIDING = ['TRASH', 'SPAM']
 
 interface Undoable {
   /** Applies the inverse, recording it as an entry; returns the entry. */
@@ -212,7 +213,8 @@ export class FakeServer implements Requester {
       case 'list_accounts':
         return { type: 'accounts', as_of: this.head(), accounts: this.listAccounts() }
       case 'list_entries': {
-        const all = this.sorted().filter((e) => e.labels.includes(body.label))
+        const showsHidden = HIDING.includes(this.labelById(body.label).external_id)
+        const all = this.sorted().filter((e) => e.labels.includes(body.label) && (showsHidden || !this.hidden(e)))
         const start = body.after
           ? all.findIndex((e) => e.id === body.after!.entry) + 1
           : 0
@@ -228,8 +230,8 @@ export class FakeServer implements Requester {
       }
       case 'search': {
         const query = body.query.toLowerCase()
-        const found = this.sorted().filter((e) =>
-          `${e.subject} ${e.snippet}`.toLowerCase().includes(query),
+        const found = this.sorted().filter(
+          (e) => !this.hidden(e) && `${e.subject} ${e.snippet}`.toLowerCase().includes(query),
         )
         return { type: 'entries', as_of: this.head(), entries: found.slice(0, body.limit), next: null }
       }
@@ -525,6 +527,15 @@ export class FakeServer implements Requester {
     return [...this.entries].sort((a, b) => b.received_at - a.received_at || b.id - a.id)
   }
 
+  private labelById(id: LabelId): Label {
+    return this.accounts.flatMap((a) => a.labels).find((l) => l.id === id)!
+  }
+
+  /** In Trash or Spam: listed only there, and not found by search. */
+  private hidden(entry: Entry): boolean {
+    return entry.labels.some((id) => HIDING.includes(this.labelById(id).external_id))
+  }
+
   private listAccounts(): Account[] {
     return this.accounts.map((account) => {
       const unread = this.labelId(account.id, 'UNREAD')
@@ -533,7 +544,8 @@ export class FakeServer implements Requester {
         address: account.address,
         synced: true,
         labels: account.labels.map((label) => {
-          const having = this.entries.filter((e) => e.labels.includes(label.id))
+          const showsHidden = HIDING.includes(label.external_id)
+          const having = this.entries.filter((e) => e.labels.includes(label.id) && (showsHidden || !this.hidden(e)))
           return {
             ...label,
             total: having.length,

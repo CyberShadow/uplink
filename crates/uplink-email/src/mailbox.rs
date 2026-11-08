@@ -592,6 +592,8 @@ fn describe_label_change(external_id: &str, name: &str, desired: bool, count: us
         ("STARRED", false) => format!("unstarred {n}"),
         ("TRASH", true) => format!("moved {n} to Trash"),
         ("TRASH", false) => format!("restored {n} from Trash"),
+        ("SPAM", true) => format!("reported {n} as spam"),
+        ("SPAM", false) => format!("marked {n} not spam"),
         (_, true) => format!("labelled {n} '{name}'"),
         (_, false) => format!("removed label '{name}' from {n}"),
     }

@@ -130,4 +130,15 @@ with subtest("the history lists the user's ops, and undoes any of them"):
     assert result["undid"] in result["undone"], result
     assert any(d.startswith("Archived") for d in result["undone"]), result
 
+with subtest("# moves a message to Trash in Gmail"):
+    result = ui("trash")
+    assert result["trash"] == [result["trashed"]], result
+
+    def trashed():
+        messages = gmail(token, "GET", "/messages?labelIds=TRASH&includeSpamTrash=true").get("messages", [])
+        return [subject_of(m["id"]) for m in messages] == [result["trashed"]]
+
+    eventually("the message to be in Gmail's Trash", trashed)
+    assert result["trashed"] not in inbox_subjects()
+
 machine.copy_from_vm("/tmp/screenshots", "")

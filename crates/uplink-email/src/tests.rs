@@ -166,7 +166,7 @@ pub(crate) fn observed(
 }
 
 const DATE: &str = "Tue, 3 Nov 2026 10:00:00 +0000";
-const ALL: &[&str] = &["INBOX", "UNREAD", "STARRED", "Label_1"];
+const ALL: &[&str] = &["INBOX", "UNREAD", "STARRED", "TRASH", "SPAM", "Label_1"];
 
 fn row(entry: &str, label: &str, desired: bool, observed: bool) -> (String, String, bool, bool) {
     (entry.to_owned(), label.to_owned(), desired, observed)
@@ -814,6 +814,52 @@ pub(crate) mod service {
                 .code,
             ErrorCode::NotFound
         );
+    }
+
+    #[tokio::test]
+    async fn trash_and_spam_hide_entries_elsewhere() {
+        let db = Db::new();
+        let mail = mail_with(&db).await;
+        let (inbox, trash, spam, label) = (
+            db.label("a", "INBOX"),
+            db.label("a", "TRASH"),
+            db.label("a", "SPAM"),
+            db.label("a", "Label_1"),
+        );
+        let (m1, m2, m3) = (db.entry("m1"), db.entry("m2"), db.entry("m3"));
+        mail.modify_labels(vec![m1, m2], vec![label], vec![])
+            .await
+            .unwrap();
+        mail.modify_labels(vec![m1], vec![trash], vec![])
+            .await
+            .unwrap();
+        mail.modify_labels(vec![m3], vec![spam], vec![])
+            .await
+            .unwrap();
+        let list = |label| mail.list_entries(label, None, 10);
+        assert_eq!(
+            subjects(&list(inbox).await.unwrap()),
+            ["Subject 5", "Subject 4", "Subject 2"]
+        );
+        assert_eq!(subjects(&list(label).await.unwrap()), ["Subject 2"]);
+        assert_eq!(subjects(&list(trash).await.unwrap()), ["Subject 1"]);
+        assert_eq!(subjects(&list(spam).await.unwrap()), ["Subject 3"]);
+        assert_eq!(
+            subjects(&mail.search("common".into(), 10).await.unwrap()),
+            ["Subject 5", "Subject 4", "Subject 2"]
+        );
+        let ServerResponse::Accounts { accounts, .. } = mail.list_accounts().await.unwrap() else {
+            panic!()
+        };
+        let counts = |id: LabelId| {
+            let l = accounts[0].labels.iter().find(|l| l.id == id).unwrap();
+            (l.total, l.unread)
+        };
+        // m1 and m3 were the unread ones besides m5.
+        assert_eq!(counts(inbox), (3, 1));
+        assert_eq!(counts(label), (1, 0));
+        assert_eq!(counts(trash), (1, 1));
+        assert_eq!(counts(spam), (1, 1));
     }
 
     #[tokio::test]

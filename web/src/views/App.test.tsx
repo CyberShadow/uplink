@@ -146,6 +146,35 @@ describe('mail', () => {
     expect(rows()[0].className).toMatch(/unread/)
   })
 
+  it('trashes with #, which hides the message from every other list', async () => {
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('l')
+    await user.keyboard('proj{Enter}')
+    await user.keyboard('#')
+    await waitFor(() => expect(subjects()).toEqual(['Second', 'Third']))
+    await user.click(screen.getByRole('link', { name: /^Projects/ }))
+    await screen.findByText('No messages.')
+    await user.click(screen.getByRole('link', { name: /^Trash/ }))
+    await waitFor(() => expect(subjects()).toEqual(['First']))
+
+    await user.click(within(screen.getByRole('status')).getByRole('button', { name: 'Undo' }))
+    await screen.findByText('No messages.')
+    await user.keyboard('gi')
+    await waitFor(() => expect(subjects()).toEqual(['First', 'Second', 'Third']))
+  })
+
+  it('reports spam with !, and in Spam, ! moves it back to the Inbox', async () => {
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('!')
+    await waitFor(() => expect(subjects()).toEqual(['Second', 'Third']))
+    await user.click(screen.getByRole('link', { name: /^Spam/ }))
+    await waitFor(() => expect(subjects()).toEqual(['First']))
+    await user.keyboard('!')
+    await screen.findByText('No messages.')
+    await user.keyboard('gi')
+    await waitFor(() => expect(subjects()).toEqual(['First', 'Second', 'Third']))
+  })
+
   it('searches from the box that / focuses', async () => {
     const user = await start('/mail/work/INBOX')
     await user.keyboard('/')

@@ -9,6 +9,17 @@ use uplink_protocol::{
 use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 use uplink_tx_log::as_of;
 
+/// SQL: whether the entry with id `entry` is in Trash or Spam, which, as
+/// in Gmail, hides it from every list but theirs, from the other labels'
+/// counts, and from search.
+fn hidden(entry: &str) -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM entry_label hl JOIN label h ON h.id = hl.label
+                 WHERE hl.entry = {entry} AND hl.desired
+                   AND h.external_id IN ('TRASH', 'SPAM'))"
+    )
+}
+
 /// A configured mail account.
 #[derive(Debug, Clone)]
 pub struct ConfiguredAccount {
@@ -33,12 +44,13 @@ pub fn accounts(
             .optional()?
             .unwrap_or(false);
         let labels = tx
-            .prepare(
+            .prepare(&format!(
                 "SELECT l.id, l.external_id, l.name, l.system,
                         count(el.entry),
                         count(unread.entry)
                  FROM label l
                  LEFT JOIN entry_label el ON el.label = l.id AND el.desired
+                   AND (l.external_id IN ('TRASH', 'SPAM') OR NOT {})
                  LEFT JOIN entry_label unread
                    ON unread.entry = el.entry AND unread.desired
                   AND unread.label = (SELECT id FROM label
@@ -47,7 +59,8 @@ pub fn accounts(
                  WHERE l.account_id = ?1
                  GROUP BY l.id
                  ORDER BY NOT l.system, l.name",
-            )?
+                hidden("el.entry")
+            ))?
             .query_map([&account.id], |r| {
                 Ok(Label {
                     id: LabelId(r.get(0)?),
@@ -94,13 +107,22 @@ pub fn entries(
         received_at: i64::MAX,
         entry: EntryId(i64::MAX),
     });
+    let external_id: String = tx.query_row(
+        "SELECT external_id FROM label WHERE id = ?1",
+        [label.0],
+        |r| r.get(0),
+    )?;
+    let unhidden = match external_id.as_str() {
+        "TRASH" | "SPAM" => String::new(),
+        _ => format!("AND NOT {}", hidden("e.id")),
+    };
     let entries = tx
         .prepare(&format!(
             "SELECT {ENTRY_COLUMNS}
              FROM entry_label el
              JOIN mail_entry e ON e.id = el.entry
              JOIN message m ON m.id = e.message
-             WHERE el.label = ?1 AND el.desired
+             WHERE el.label = ?1 AND el.desired {unhidden}
                AND (e.received_at, e.id) < (?2, ?3)
              ORDER BY e.received_at DESC, e.id DESC
              LIMIT ?4"
@@ -128,6 +150,7 @@ pub fn entries(
 /// Entries of messages matching `query`, newest first. Each word of the
 /// query must match, as a prefix of a word in the message.
 pub fn search(conn: &mut Connection, query: &str, limit: u32) -> Result<(TxLogId, Vec<Entry>)> {
+    let hidden = hidden("e.id");
     let fts_query = query
         .split_whitespace()
         .map(|word| format!("\"{}\"*", word.replace('"', "\"\"")))
@@ -141,7 +164,7 @@ pub fn search(conn: &mut Connection, query: &str, limit: u32) -> Result<(TxLogId
              FROM message_fts f
              JOIN mail_entry e ON e.message = f.rowid
              JOIN message m ON m.id = e.message
-             WHERE message_fts MATCH ?1
+             WHERE message_fts MATCH ?1 AND NOT {hidden}
              ORDER BY e.received_at DESC, e.id DESC
              LIMIT ?2"
         ))?

@@ -1049,6 +1049,13 @@ IMAP's per-folder copies, and a REST fake is practical to test against
   or dropped. No IMAP anywhere.
 - **Threading**: Gmail's `threadId`.
 - **Labels**: `labels.list`; each label becomes a `label` row.
+- **Trash and Spam** are labels like any other (the listing includes
+  them, `includeSpamTrash`), but, as in Gmail, an entry with either is
+  shown only in Trash or Spam: other labels' lists and counts, and
+  search, leave it out. Trashing (`#`) adds TRASH and leaves INBOX, so
+  undo is just removing TRASH; reporting spam (`!`) adds SPAM, and `!` on
+  spam removes it and adds INBOX, as Gmail's "Not spam" does. Both go to
+  Gmail through `batchModify`, which takes TRASH and SPAM.
 
 ### 8.2 Gmail — send
 
@@ -1432,8 +1439,8 @@ Implemented: `j k o Enter u x *a *n e s l Shift+i Shift+u gi gs gt gd /
 ?` (M4), `c r a f` (M6), and in compose `Ctrl+Enter` send and `Esc` close
 (the draft stays; these work from within its fields). `gd` goes to
 uplink's own drafts; Gmail's DRAFT label is listed as "Gmail drafts".
-`ga` waits for an All Mail view (lists are of a label), `#` and `!` for
-trash/spam ops. Opening a message marks it read, as Gmail does, without
+`ga` waits for an All Mail view (lists are of a label). `#` moves to
+Trash and `!` reports spam, or not spam (§8.1; M10). Opening a message marks it read, as Gmail does, without
 an undo notice. In a Matrix room (M7), `r` goes to the message box, where
 `Enter` sends, `Shift+Enter` breaks the line and `Esc` leaves.
 `Shift+t` flags the targets for follow-up, or unflags them (M9; ⚑ marks
@@ -1768,7 +1775,8 @@ shows the last 100 user actions with working Undo buttons.
 
 **State:** in progress. Done: the history view (§6.3); light and dark
 themes following the system (`color-scheme`, so native controls follow
-too; HTML mail keeps its white paper).
+too; HTML mail keeps its white paper); `#` and `!` with Gmail's hiding
+of Trash and Spam (§8.1).
 
 ### Why this ordering
 

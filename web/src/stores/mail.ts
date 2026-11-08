@@ -25,6 +25,8 @@ import { query } from './query'
 export const PAGE = 100
 /** The server's limit on a page. */
 const MAX_PAGE = 500
+/** Labels whose entries no other list shows, nor search (SPEC §8.1). */
+const HIDING = new Set(['TRASH', 'SPAM'])
 
 export type View =
   | { kind: 'label'; account: string; label: string }
@@ -136,9 +138,15 @@ export class MailStore {
     for (const change of changes) {
       byEntry.set(change.entry, [...(byEntry.get(change.entry) ?? []), change])
     }
+    // Trash and Spam hide entries from every other list, and from search.
+    const hides = list.view.kind !== 'message' && !(shown && HIDING.has(shown.external_id))
+    const hiding = (label: LabelId) => HIDING.has(this.labels.value.get(label)!.external_id)
     const present = new Set(list.entries.map((e) => e.id))
-    if (shown && changes.some((c) => c.label === shown.id && c.desired && !present.has(c.entry))) {
-      // An entry joined the list on show; only the server knows where.
+    const joins = (c: (typeof changes)[number]) =>
+      (!!shown && c.label === shown.id && c.desired) || (hides && hiding(c.label) && !c.desired)
+    if (changes.some((c) => !present.has(c.entry) && joins(c))) {
+      // An entry may have joined the list on show; only the server knows
+      // whether, and where.
       this.invalidateList()
     }
     this.updateList((entries) =>
@@ -151,6 +159,7 @@ export class MailStore {
           else labels.delete(change.label)
         }
         if (shown && !labels.has(shown.id)) return []
+        if (hides && [...labels].some(hiding)) return []
         return [{ ...entry, labels: [...labels] }]
       }),
     )
@@ -339,6 +348,21 @@ export class MailStore {
       add: [],
       remove: [this.systemLabel(account, 'INBOX').id],
     }))
+  }
+
+  /** Moves the entries to Trash, which hides them elsewhere. */
+  trash(entries: Entry[]) {
+    return this.modify(entries, (account) => ({ add: [this.systemLabel(account, 'TRASH').id], remove: [] }))
+  }
+
+  /** Reports the entries as spam, or, if all are spam already, moves them
+   * back to the Inbox, as Gmail's "Not spam" does. */
+  toggleSpam(entries: Entry[]) {
+    const spam = entries.every((e) => e.labels.includes(this.systemLabel(e.account, 'SPAM').id))
+    return this.modify(entries, (account) => {
+      const label = this.systemLabel(account, 'SPAM').id
+      return spam ? { add: [this.systemLabel(account, 'INBOX').id], remove: [label] } : { add: [label], remove: [] }
+    })
   }
 
   /** `quiet` leaves the notice alone, as when opening a message reads it. */

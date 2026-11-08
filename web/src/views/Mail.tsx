@@ -90,6 +90,14 @@ export function Mail(props: Props) {
       mail.markRead(t, false)
       if (openId !== null) backToList()
     }),
+    delete: ifTargets((t) => {
+      mail.trash(t)
+      if (openId !== null) backToList()
+    }),
+    spam: ifTargets((t) => {
+      mail.toggleSpam(t)
+      if (openId !== null) backToList()
+    }),
     star: ifTargets((t) => mail.toggleStar(t)),
     label: ifTargets(() => setPicking(true)),
     flag: ifTargets((t) => {

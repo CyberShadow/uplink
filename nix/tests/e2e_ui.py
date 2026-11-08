@@ -178,7 +178,20 @@ def history(page):
     }
 
 
-STEPS = {f.__name__: f for f in [read, archive, undo, label, search, reply, matrix, todos, history]}
+def trash(page):
+    """Moves the first message to Trash with #, then shows the Trash."""
+    first = subjects(page)[0]
+    before = len(subjects(page))
+    page.keyboard.press("#")
+    rows = page.get_by_role("list", name="Messages").get_by_role("listitem")
+    expect(rows).to_have_count(before - 1)
+    expect(page.get_by_role("status")).to_contain_text("Moved 1 message to Trash")
+    page.get_by_role("navigation").get_by_role("link", name="Trash").click()
+    expect(rows).to_have_count(1)
+    return {"trashed": first, "trash": subjects(page)}
+
+
+STEPS = {f.__name__: f for f in [read, archive, undo, label, search, reply, matrix, todos, history, trash]}
 
 step = STEPS[sys.argv[1]]
 with sync_playwright() as p:
