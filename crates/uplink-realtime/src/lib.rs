@@ -1,7 +1,7 @@
-pub fn placeholder() {}
+//! Broadcast hub and WebSocket session protocol (SPEC §5).
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn placeholder() {}
-}
+mod hub;
+mod session;
+
+pub use hub::{Hub, Published, Subscription};
+pub use session::{run_session, RequestHandler, PROTOCOL};
