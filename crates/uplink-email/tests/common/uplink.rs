@@ -173,6 +173,18 @@ impl Uplink {
             .unwrap()
     }
 
+    /// The length of the log, once it stops growing.
+    pub async fn settled(&self) -> i64 {
+        let mut len = self.log_len();
+        loop {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            match self.log_len() {
+                now if now == len => return len,
+                now => len = now,
+            }
+        }
+    }
+
     pub async fn arrived(&self, tag: &str) -> EntryId {
         eventually(&format!("{tag} to arrive"), || async { self.entry(tag) }).await
     }
