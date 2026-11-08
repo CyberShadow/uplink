@@ -1,7 +1,7 @@
 From 659e5d2c0a1a547ae27308595d63a8bd04104d91 Mon Sep 17 00:00:00 2001
 From: Claude Code <noreply@anthropic.com>
 Date: Sun, 8 Nov 2026 11:15:45 +0000
-Subject: [PATCH] feat(google): add Gmail users.getProfile and history
+Subject: [PATCH 1/2] feat(google): add Gmail users.getProfile and history
  retention limit
 
 users.getProfile returns emailAddress, messagesTotal, threadsTotal and the

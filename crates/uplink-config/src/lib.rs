@@ -63,6 +63,30 @@ pub struct GmailAccountConfig {
     pub id: String,
     pub address: String,
     pub oauth: GmailOAuthConfig,
+    /// Where Google's services are; tests point these at a fake.
+    #[serde(default)]
+    pub endpoints: GoogleEndpoints,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GoogleEndpoints {
+    /// OAuth authorization endpoint.
+    pub auth: String,
+    /// OAuth token endpoint.
+    pub token: String,
+    /// Base URL of the Gmail API, below which `/gmail/v1/...` lives.
+    pub api: String,
+}
+
+impl Default for GoogleEndpoints {
+    fn default() -> Self {
+        Self {
+            auth: "https://accounts.google.com/o/oauth2/v2/auth".into(),
+            token: "https://oauth2.googleapis.com/token".into(),
+            api: "https://gmail.googleapis.com".into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

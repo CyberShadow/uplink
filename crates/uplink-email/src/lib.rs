@@ -1,9 +1,11 @@
 //! Email: the mail store, mailbox state and its log entries, queries, and
 //! the provider sync tasks (SPEC §8).
 
+pub mod gmail;
 pub mod mailbox;
 pub mod parse;
 pub mod query;
+pub mod seal;
 pub mod service;
 pub mod store;
 

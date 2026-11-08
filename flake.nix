@@ -88,6 +88,10 @@
 
         # Provider fakes for integration tests.
         emulate = pkgs.callPackage ./nix/emulate { };
+        # Provider-facing Rust tests run against these (crates/*/tests).
+        testEnv = {
+          UPLINK_EMULATE = "${emulate}/bin/emulate";
+        };
 
       in {
         # ── packages ───────────────────────────────────────────────────────
@@ -100,7 +104,7 @@
         };
 
         # ── dev shell ──────────────────────────────────────────────────────
-        devShells.default = craneLib.devShell {
+        devShells.default = craneLib.devShell (testEnv // {
           checks = self.checks.${system};
           packages = [
             pkgs.nodejs
@@ -113,11 +117,11 @@
           shellHook = ''
             echo "uplink dev — rustc $(rustc --version), node $(node --version)"
           '';
-        };
+        });
 
         # ── checks (nix flake check) ───────────────────────────────────────
         checks = {
-          backend-test = craneLib.cargoTest (commonArgs // {
+          backend-test = craneLib.cargoTest (commonArgs // testEnv // {
             inherit cargoArtifacts;
           });
 

@@ -1,0 +1,107 @@
+From cbf0c14effddf45d07c09dd9e50ff08a3552b4b7 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Sun, 8 Nov 2026 12:19:40 +0000
+Subject: [PATCH 2/2] fix(google): accept loopback redirects on any port
+
+Google lets installed apps redirect to a loopback IP address on whatever
+port they listen on (RFC 8252 section 7.3), so a registered
+http://127.0.0.1 redirect must match http://127.0.0.1:<port>.
+---
+ .../google/src/__tests__/oauth-auth.test.ts   | 31 +++++++++++++++++++
+ .../@emulators/google/src/routes/oauth.ts     | 23 +++++++++++++-
+ skills/google/SKILL.md                        |  2 +-
+ 3 files changed, 54 insertions(+), 2 deletions(-)
+
+diff --git a/packages/@emulators/google/src/__tests__/oauth-auth.test.ts b/packages/@emulators/google/src/__tests__/oauth-auth.test.ts
+index c824fc4..4918b35 100644
+--- a/packages/@emulators/google/src/__tests__/oauth-auth.test.ts
++++ b/packages/@emulators/google/src/__tests__/oauth-auth.test.ts
+@@ -364,3 +364,34 @@ describe.each([undefined, false])("Google permissive OAuth compatibility (strict
+     for (const path of resourcePaths) expect((await request(path)).status).toBe(401);
+   });
+ });
++
++describe("Google loopback redirects", () => {
++  it("match a registered loopback redirect on any port", async () => {
++    const { matchesGoogleRedirectUri } = await import("../routes/oauth.js");
++    const registered = ["http://127.0.0.1/", "http://[::1]/cb", "https://app.example.com/cb"];
++    expect(matchesGoogleRedirectUri("http://127.0.0.1:43123/", registered)).toBe(true);
++    expect(matchesGoogleRedirectUri("http://[::1]:8080/cb", registered)).toBe(true);
++    expect(matchesGoogleRedirectUri("http://127.0.0.1:43123/other", registered)).toBe(false);
++    expect(matchesGoogleRedirectUri("http://localhost:43123/", registered)).toBe(false);
++    expect(matchesGoogleRedirectUri("https://app.example.com:8443/cb", registered)).toBe(false);
++    expect(matchesGoogleRedirectUri("https://app.example.com/cb", registered)).toBe(true);
++  });
++
++  it("are accepted by the authorization page", async () => {
++    const store = new Store();
++    const app = new Hono<AppEnv>();
++    googlePlugin.register(app, store, new WebhookDispatcher(), base);
++    seedFromConfig(store, base, { oauth_clients: [{ ...client, redirect_uris: ["http://127.0.0.1"] }] });
++    const page = (redirect: string) =>
++      app.request(
++        `${base}/o/oauth2/v2/auth?${new URLSearchParams({
++          client_id: client.client_id,
++          redirect_uri: redirect,
++          response_type: "code",
++          scope: "openid",
++        })}`,
++      );
++    expect((await page("http://127.0.0.1:43123/")).status).toBe(200);
++    expect((await page("http://127.0.0.1:43123/elsewhere")).status).toBe(400);
++  });
++});
+diff --git a/packages/@emulators/google/src/routes/oauth.ts b/packages/@emulators/google/src/routes/oauth.ts
+index f2864d6..1e5f5e3 100644
+--- a/packages/@emulators/google/src/routes/oauth.ts
++++ b/packages/@emulators/google/src/routes/oauth.ts
+@@ -17,6 +17,27 @@ import { getGoogleStore } from "../store.js";
+ import type { GoogleUser } from "../entities.js";
+ import { getRefreshTokens, issueAccessToken, revokeToken } from "../oauth-tokens.js";
+ 
++/**
++ * Like Google for installed apps (and RFC 8252 section 7.3), a loopback IP
++ * redirect matches a registered loopback redirect on any port, since native
++ * apps listen on whatever port is free.
++ */
++export function matchesGoogleRedirectUri(incoming: string, registered: string[]): boolean {
++  if (matchesRedirectUri(incoming, registered)) return true;
++  const withoutPort = (uri: string): string | null => {
++    try {
++      const url = new URL(uri);
++      if (url.protocol !== "http:" || (url.hostname !== "127.0.0.1" && url.hostname !== "[::1]")) return null;
++      url.port = "";
++      return url.toString();
++    } catch {
++      return null;
++    }
++  };
++  const loopback = withoutPort(incoming);
++  return loopback !== null && registered.some((uri) => withoutPort(uri) === loopback);
++}
++
+ // RSA key pair generated at module load for signing ID tokens.
+ const keyPairPromise = generateKeyPair("RS256");
+ const KID = "emulate-google-1";
+@@ -149,7 +170,7 @@ export function oauthRoutes({ app, store, baseUrl, tokenMap }: RouteContext): vo
+           400,
+         );
+       }
+-      if (redirect_uri && !matchesRedirectUri(redirect_uri, client.redirect_uris)) {
++      if (redirect_uri && !matchesGoogleRedirectUri(redirect_uri, client.redirect_uris)) {
+         return c.html(
+           renderErrorPage(
+             "Redirect URI mismatch",
+diff --git a/skills/google/SKILL.md b/skills/google/SKILL.md
+index 235ea94..011d688 100644
+--- a/skills/google/SKILL.md
++++ b/skills/google/SKILL.md
+@@ -179,7 +179,7 @@ google:
+       data: "# Hello World"
+ ```
+ 
+-When no OAuth clients are configured, the emulator accepts any `client_id`. With clients configured, strict validation is enforced for `client_id`, `client_secret`, and `redirect_uri`.
++When no OAuth clients are configured, the emulator accepts any `client_id`. With clients configured, strict validation is enforced for `client_id`, `client_secret`, and `redirect_uri`. As Google does for installed apps, a loopback redirect (`http://127.0.0.1` or `http://[::1]`) matches a registered loopback redirect on any port.
+ 
+ Google authentication is permissive by default for local bearer-token workflows. Set `google.strict_scopes: true` in seed config to require emulator-issued, unexpired access tokens on Gmail, Calendar, Drive, and userinfo routes. Invalid credentials return `401 UNAUTHENTICATED`; missing method scopes return `403` with `insufficientPermissions`. Strict mode distinguishes read, write, send, settings, and metadata scopes, and userinfo includes only granted identity claims. Revoking an access or refresh token invalidates the linked access and refresh credentials. Discovery, signing keys, and the sign-in page remain public. This mode checks method scopes; resource-specific grants such as `drive.file` and Gmail add-on scopes are not modeled.
+ 
