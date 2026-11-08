@@ -30,6 +30,8 @@ const HIDING = new Set(['TRASH', 'SPAM'])
 
 export type View =
   | { kind: 'label'; account: string; label: string }
+  /** The account's mail outside Trash and Spam. */
+  | { kind: 'all'; account: string }
   | { kind: 'search'; query: string }
   /** A message's entries, in every account. */
   | { kind: 'message'; message: MessageId }
@@ -38,6 +40,8 @@ export function sameView(a: View, b: View): boolean {
   switch (a.kind) {
     case 'label':
       return b.kind === 'label' && a.account === b.account && a.label === b.label
+    case 'all':
+      return b.kind === 'all' && a.account === b.account
     case 'search':
       return b.kind === 'search' && a.query === b.query
     case 'message':
@@ -312,8 +316,11 @@ export class MailStore {
     if (list.view.kind === 'message') {
       return { type: 'list_message_entries', message: list.view.message }
     }
+    if (list.view.kind === 'all') {
+      return { type: 'list_entries', list: { type: 'all_mail', account: list.view.account }, after, limit }
+    }
     const label = this.labelOf(list.view)
-    return label ? { type: 'list_entries', label: label.id, after, limit } : null
+    return label ? { type: 'list_entries', list: { type: 'label', label: label.id }, after, limit } : null
   }
 
   // ── focus and selection ─────────────────────────────────────────────────

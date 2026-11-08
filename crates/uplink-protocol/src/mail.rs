@@ -63,6 +63,16 @@ pub struct Entry {
     pub labels: Vec<LabelId>,
 }
 
+/// What a message list is of.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EntryList {
+    /// The entries with the label.
+    Label { label: LabelId },
+    /// The account's entries outside Trash and Spam: Gmail's All Mail.
+    AllMail { account: String },
+}
+
 /// Where a page of a message list ends; lists run newest first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]

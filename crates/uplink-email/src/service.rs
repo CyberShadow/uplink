@@ -10,7 +10,7 @@ use crate::{
 use std::{path::Path, sync::Arc, time::Duration};
 use uplink_protocol::{
     compose::{DraftContent, DraftId, OutboxId, Splice},
-    mail::{EntryId, LabelId, ListPosition, MessageContent, MessageId},
+    mail::{EntryId, EntryList, LabelId, ListPosition, MessageContent, MessageId},
     ErrorCode, ServerError, ServerResponse,
 };
 use uplink_storage::rusqlite::Connection;
@@ -62,17 +62,24 @@ impl Mail {
 
     pub async fn list_entries(
         &self,
-        label: LabelId,
+        list: EntryList,
         after: Option<ListPosition>,
         limit: u32,
     ) -> Response {
         check_limit(limit)?;
+        if let EntryList::AllMail { account } = &list {
+            if !self.accounts.iter().any(|a| a.id == *account) {
+                return Err(error(ErrorCode::NotFound, format!("no account {account}")));
+            }
+        }
         self.reader
             .read(move |conn| {
-                if query::label_accounts(conn, &[label]).map_err(internal)?[0].is_none() {
-                    return Err(error(ErrorCode::NotFound, format!("no label {}", label.0)));
+                if let EntryList::Label { label } = list {
+                    if query::label_accounts(conn, &[label]).map_err(internal)?[0].is_none() {
+                        return Err(error(ErrorCode::NotFound, format!("no label {}", label.0)));
+                    }
                 }
-                let page = query::entries(conn, label, after, limit).map_err(internal)?;
+                let page = query::entries(conn, &list, after, limit).map_err(internal)?;
                 Ok(ServerResponse::Entries {
                     as_of: page.as_of,
                     entries: page.entries,

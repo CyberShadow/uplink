@@ -643,7 +643,10 @@ async fn unknown_labels_are_refused() {
 pub(crate) mod service {
     use super::*;
     use crate::{query::ConfiguredAccount, service::Mail};
-    use uplink_protocol::{mail::ListPosition, ErrorCode, ServerResponse};
+    use uplink_protocol::{
+        mail::{EntryList, ListPosition},
+        ErrorCode, ServerResponse,
+    };
 
     pub(crate) async fn mail_with(db: &Db) -> Mail {
         let store = db.store();
@@ -732,7 +735,10 @@ pub(crate) mod service {
         let db = Db::new();
         let mail = mail_with(&db).await;
         let inbox = db.label("a", "INBOX");
-        let first = mail.list_entries(inbox, None, 2).await.unwrap();
+        let first = mail
+            .list_entries(EntryList::Label { label: inbox }, None, 2)
+            .await
+            .unwrap();
         assert_eq!(subjects(&first), ["Subject 5", "Subject 4"]);
         let ServerResponse::Entries {
             next: Some(next), ..
@@ -747,7 +753,10 @@ pub(crate) mod service {
                 entry: db.entry("m4")
             }
         );
-        let rest = mail.list_entries(inbox, Some(next), 10).await.unwrap();
+        let rest = mail
+            .list_entries(EntryList::Label { label: inbox }, Some(next), 10)
+            .await
+            .unwrap();
         assert_eq!(subjects(&rest), ["Subject 3", "Subject 2", "Subject 1"]);
         let ServerResponse::Entries {
             next: None,
@@ -760,14 +769,23 @@ pub(crate) mod service {
         assert_eq!(entries[0].labels, [inbox, db.label("a", "UNREAD")]);
         assert_eq!(entries[0].snippet, "body number3 common");
         assert_eq!(
-            mail.list_entries(LabelId(999), None, 2)
-                .await
-                .unwrap_err()
-                .code,
+            mail.list_entries(
+                EntryList::Label {
+                    label: LabelId(999)
+                },
+                None,
+                2
+            )
+            .await
+            .unwrap_err()
+            .code,
             ErrorCode::NotFound
         );
         assert_eq!(
-            mail.list_entries(inbox, None, 0).await.unwrap_err().code,
+            mail.list_entries(EntryList::Label { label: inbox }, None, 0)
+                .await
+                .unwrap_err()
+                .code,
             ErrorCode::Invalid
         );
     }
@@ -836,7 +854,7 @@ pub(crate) mod service {
         mail.modify_labels(vec![m3], vec![spam], vec![])
             .await
             .unwrap();
-        let list = |label| mail.list_entries(label, None, 10);
+        let list = |label| mail.list_entries(EntryList::Label { label }, None, 10);
         assert_eq!(
             subjects(&list(inbox).await.unwrap()),
             ["Subject 5", "Subject 4", "Subject 2"]
@@ -844,6 +862,21 @@ pub(crate) mod service {
         assert_eq!(subjects(&list(label).await.unwrap()), ["Subject 2"]);
         assert_eq!(subjects(&list(trash).await.unwrap()), ["Subject 1"]);
         assert_eq!(subjects(&list(spam).await.unwrap()), ["Subject 3"]);
+        let all_mail = |account: &str| {
+            mail.list_entries(
+                EntryList::AllMail {
+                    account: account.into(),
+                },
+                None,
+                10,
+            )
+        };
+        assert_eq!(
+            subjects(&all_mail("a").await.unwrap()),
+            ["Subject 5", "Subject 4", "Subject 2"]
+        );
+        assert!(subjects(&all_mail("b").await.unwrap()).is_empty());
+        assert_eq!(all_mail("c").await.unwrap_err().code, ErrorCode::NotFound);
         assert_eq!(
             subjects(&mail.search("common".into(), 10).await.unwrap()),
             ["Subject 5", "Subject 4", "Subject 2"]

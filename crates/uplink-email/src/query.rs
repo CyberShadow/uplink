@@ -3,10 +3,10 @@
 
 use anyhow::{Context, Result};
 use uplink_protocol::{
-    mail::{Entry, EntryId, Label, LabelId, ListPosition, MessageId},
+    mail::{Entry, EntryId, EntryList, Label, LabelId, ListPosition, MessageId},
     TxLogId,
 };
-use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
+use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Row, ToSql, Transaction};
 use uplink_tx_log::as_of;
 
 /// SQL: whether the entry with id `entry` is in Trash or Spam, which, as
@@ -92,10 +92,10 @@ pub struct Page {
     pub next: Option<ListPosition>,
 }
 
-/// Entries labelled `label`, newest first, after `after`.
+/// The list's entries, newest first, after `after`.
 pub fn entries(
     conn: &mut Connection,
-    label: LabelId,
+    list: &EntryList,
     after: Option<ListPosition>,
     limit: u32,
 ) -> Result<Page> {
@@ -107,28 +107,43 @@ pub fn entries(
         received_at: i64::MAX,
         entry: EntryId(i64::MAX),
     });
-    let external_id: String = tx.query_row(
-        "SELECT external_id FROM label WHERE id = ?1",
-        [label.0],
-        |r| r.get(0),
-    )?;
-    let unhidden = match external_id.as_str() {
-        "TRASH" | "SPAM" => String::new(),
-        _ => format!("AND NOT {}", hidden("e.id")),
+    let unhidden = format!("NOT {}", hidden("e.id"));
+    // `?1` is what the list is of.
+    let (key, from, condition): (Box<dyn ToSql>, &str, String) = match list {
+        EntryList::Label { label } => {
+            let external_id: String = tx.query_row(
+                "SELECT external_id FROM label WHERE id = ?1",
+                [label.0],
+                |r| r.get(0),
+            )?;
+            let condition = match external_id.as_str() {
+                "TRASH" | "SPAM" => "el.label = ?1 AND el.desired".to_owned(),
+                _ => format!("el.label = ?1 AND el.desired AND {unhidden}"),
+            };
+            (
+                Box::new(label.0),
+                "entry_label el JOIN mail_entry e ON e.id = el.entry",
+                condition,
+            )
+        }
+        EntryList::AllMail { account } => (
+            Box::new(account.clone()),
+            "mail_entry e",
+            format!("e.account_id = ?1 AND {unhidden}"),
+        ),
     };
     let entries = tx
         .prepare(&format!(
             "SELECT {ENTRY_COLUMNS}
-             FROM entry_label el
-             JOIN mail_entry e ON e.id = el.entry
+             FROM {from}
              JOIN message m ON m.id = e.message
-             WHERE el.label = ?1 AND el.desired {unhidden}
+             WHERE {condition}
                AND (e.received_at, e.id) < (?2, ?3)
              ORDER BY e.received_at DESC, e.id DESC
              LIMIT ?4"
         ))?
         .query_map(
-            params![label.0, after.received_at, after.entry.0, limit],
+            params![key, after.received_at, after.entry.0, limit],
             entry_row,
         )?
         .collect::<Result<Vec<_>, _>>()?;

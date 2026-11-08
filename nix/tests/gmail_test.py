@@ -17,7 +17,7 @@ def label_ids():
 
 
 def entries(label):
-    page = ws({"type": "list_entries", "label": label, "after": None, "limit": 100})
+    page = ws({"type": "list_entries", "list": {"type": "label", "label": label}, "after": None, "limit": 100})
     return {entry["subject"]: entry for entry in page["entries"]}
 
 

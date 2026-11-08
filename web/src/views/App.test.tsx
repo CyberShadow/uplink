@@ -163,6 +163,21 @@ describe('mail', () => {
     await waitFor(() => expect(subjects()).toEqual(['First', 'Second', 'Third']))
   })
 
+  it('lists All Mail with g a: archived mail too, but not trash', async () => {
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('e')
+    await waitFor(() => expect(subjects()).toEqual(['Second', 'Third']))
+    await user.keyboard('#')
+    await waitFor(() => expect(subjects()).toEqual(['Third']))
+    await user.keyboard('ga')
+    expect(location.pathname).toBe('/all/work')
+    await waitFor(() => expect(subjects()).toEqual(['First', 'Third']))
+    expect(screen.getByRole('link', { name: 'All Mail' }).getAttribute('aria-current')).toBe('page')
+    await user.keyboard('{Enter}')
+    expect(location.pathname).toMatch(/^\/all\/work\/\d+$/)
+    await screen.findByText('Body of First')
+  })
+
   it('reports spam with !, and in Spam, ! moves it back to the Inbox', async () => {
     const user = await start('/mail/work/INBOX')
     await user.keyboard('!')

@@ -5,7 +5,7 @@ import { useServices } from '../context'
 import { keepFocus, useKeymap } from '../keymap'
 import type { MailStore, View } from '../stores/mail'
 import { respond, type Response } from '../compose/reply'
-import { mailPath, searchPath } from './App'
+import { allMailPath, mailPath, searchPath } from './App'
 import { HtmlBody } from './HtmlBody'
 import { LabelPicker } from './LabelPicker'
 import { labelName } from './Nav'
@@ -36,7 +36,9 @@ export function Mail(props: Props) {
         ? { kind: 'message', message: Number(message) }
         : terms !== undefined
           ? { kind: 'search', query: terms }
-          : { kind: 'label', account: account!, label: label! },
+          : label === undefined
+            ? { kind: 'all', account: account! }
+            : { kind: 'label', account: account!, label },
     [account, label, terms, message],
   )
   useEffect(() => mail.show(view), [mail, view])
@@ -45,6 +47,8 @@ export function Mail(props: Props) {
     switch (view.kind) {
       case 'label':
         return mailPath(view.account, view.label, entry)
+      case 'all':
+        return allMailPath(view.account, entry)
       case 'search':
         return searchPath(view.query, entry)
       case 'message':

@@ -434,11 +434,9 @@ impl Backend for Services {
                 })
             }
             ClientRequest::ListAccounts => self.mail.list_accounts().await,
-            ClientRequest::ListEntries {
-                label,
-                after,
-                limit,
-            } => self.mail.list_entries(label, after, limit).await,
+            ClientRequest::ListEntries { list, after, limit } => {
+                self.mail.list_entries(list, after, limit).await
+            }
             ClientRequest::Search { query, limit } => self.mail.search(query, limit).await,
             ClientRequest::ListMessageEntries { message } => {
                 self.mail.list_message_entries(message).await

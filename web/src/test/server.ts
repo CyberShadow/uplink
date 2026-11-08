@@ -213,8 +213,13 @@ export class FakeServer implements Requester {
       case 'list_accounts':
         return { type: 'accounts', as_of: this.head(), accounts: this.listAccounts() }
       case 'list_entries': {
-        const showsHidden = HIDING.includes(this.labelById(body.label).external_id)
-        const all = this.sorted().filter((e) => e.labels.includes(body.label) && (showsHidden || !this.hidden(e)))
+        const list = body.list
+        const all = this.sorted().filter((e) =>
+          list.type === 'label'
+            ? e.labels.includes(list.label) &&
+              (HIDING.includes(this.labelById(list.label).external_id) || !this.hidden(e))
+            : e.account === list.account && !this.hidden(e),
+        )
         const start = body.after
           ? all.findIndex((e) => e.id === body.after!.entry) + 1
           : 0

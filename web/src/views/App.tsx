@@ -37,7 +37,7 @@ function Shell() {
 
   /** The account on show, or else the first. */
   const account = () => {
-    const shown = path.match(/^\/mail\/([^/]+)/)?.[1]
+    const shown = path.match(/^\/(?:mail|all)\/([^/]+)/)?.[1]
     return shown ? decodeURIComponent(shown) : mail.accounts.value?.[0]?.id
   }
   const go = (label: string) => () => {
@@ -48,6 +48,10 @@ function Shell() {
     goInbox: go('INBOX'),
     goStarred: go('STARRED'),
     goSent: go('SENT'),
+    goAll: () => {
+      const id = account()
+      if (id) route(allMailPath(id))
+    },
     goDrafts: () => route('/drafts'),
     goTodos: () => route('/todos'),
     goHistory: () => route('/history'),
@@ -78,6 +82,7 @@ function Shell() {
         )}
         <Router>
           <Route path="/mail/:account/:label/:entry?" component={Mail} />
+          <Route path="/all/:account/:entry?" component={Mail} />
           <Route path="/search/:terms/:entry?" component={Mail} />
           <Route path="/message/:message" component={Mail} />
           <Route path="/todos" component={Todos} />
@@ -110,6 +115,11 @@ function Home() {
 
 export function mailPath(account: string, label: string, entry?: number): string {
   const base = `/mail/${encodeURIComponent(account)}/${encodeURIComponent(label)}`
+  return entry === undefined ? base : `${base}/${entry}`
+}
+
+export function allMailPath(account: string, entry?: number): string {
+  const base = `/all/${encodeURIComponent(account)}`
   return entry === undefined ? base : `${base}/${entry}`
 }
 

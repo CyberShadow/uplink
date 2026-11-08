@@ -13,7 +13,7 @@ pub mod matrix;
 pub mod todos;
 
 use compose::{Draft, DraftContent, DraftId, OutboxId, Splice};
-use mail::{EntryId, LabelId, ListPosition, MessageId};
+use mail::{EntryId, EntryList, LabelId, ListPosition, MessageId};
 use matrix::{MatrixOutboxId, RoomEventId, RoomId, TimelinePage};
 use todos::{TodoEdit, TodoId};
 
@@ -93,9 +93,9 @@ pub enum ClientRequest {
     },
     /// The configured mail accounts and their labels.
     ListAccounts,
-    /// Entries carrying `label`, newest first, starting after `after`.
+    /// A page of the list, newest first, starting after `after`.
     ListEntries {
-        label: LabelId,
+        list: EntryList,
         after: Option<ListPosition>,
         limit: u32,
     },

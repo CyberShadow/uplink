@@ -1,7 +1,7 @@
 import { useLocation } from 'preact-iso'
 import type { Account, Label } from '../generated/protocol'
 import { useServices } from '../context'
-import { mailPath } from './App'
+import { allMailPath, mailPath } from './App'
 import { roomPath } from './Room'
 import styles from './Nav.module.css'
 
@@ -17,14 +17,16 @@ const SYSTEM: Record<string, string> = {
   TRASH: 'Trash',
 }
 
-export function navLabels(account: Account): Label[] {
+/** The account's system labels worth listing, then its own; All Mail goes
+ * between them. */
+export function navLabels(account: Account): { system: Label[]; user: Label[] } {
   const system = Object.keys(SYSTEM).flatMap(
     (id) => account.labels.filter((l) => l.system && l.external_id === id),
   )
   const user = account.labels
     .filter((l) => !l.system)
     .sort((a, b) => a.name.localeCompare(b.name))
-  return [...system, ...user]
+  return { system, user }
 }
 
 export function labelName(label: Label): string {
@@ -37,7 +39,7 @@ export function Nav() {
   const link = (href: string, name: string, count: number) => {
     const current = path === href || path.startsWith(`${href}/`)
     return (
-      <li>
+      <li key={href}>
         <a href={href} class={current ? styles.current : undefined} aria-current={current ? 'page' : undefined}>
           <span>{name}</span>
           {count > 0 && <span class={styles.count}>{count}</span>}
@@ -45,6 +47,8 @@ export function Nav() {
       </li>
     )
   }
+  const labelLink = (account: Account, label: Label) =>
+    link(mailPath(account.id, label.external_id), labelName(label), label.unread)
   return (
     <nav class={styles.nav}>
       <ul>
@@ -60,22 +64,9 @@ export function Nav() {
             {!account.synced && <span class={styles.syncing}> (syncing)</span>}
           </h2>
           <ul>
-            {navLabels(account).map((label) => {
-              const href = mailPath(account.id, label.external_id)
-              const current = path === href || path.startsWith(`${href}/`)
-              return (
-                <li key={label.id}>
-                  <a
-                    href={href}
-                    class={current ? styles.current : undefined}
-                    aria-current={current ? 'page' : undefined}
-                  >
-                    <span>{labelName(label)}</span>
-                    {label.unread > 0 && <span class={styles.count}>{label.unread}</span>}
-                  </a>
-                </li>
-              )
-            })}
+            {navLabels(account).system.map((label) => labelLink(account, label))}
+            {link(allMailPath(account.id), 'All Mail', 0)}
+            {navLabels(account).user.map((label) => labelLink(account, label))}
           </ul>
         </section>
       ))}

@@ -20,7 +20,7 @@ export type WsServerMsg = { "type": "pong", seq: number, } | { "type": "welcome"
  */
 cursor: TxLogId, resumed: boolean, } | { "type": "response", request_id: number, body: ServerResponse, } | { "type": "request_failed", request_id: number, error: ServerError, } | { "type": "entry", entry: LogEntry, };
 
-export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": "list_history", before: TxLogId | null, limit: number, } | { "type": "list_accounts" } | { "type": "list_entries", label: LabelId, after: ListPosition | null, limit: number, } | { "type": "search", query: string, limit: number, } | { "type": "list_message_entries", message: MessageId, } | { "type": "load_message", message: MessageId, } | { "type": "modify_labels", entries: Array<EntryId>, add: Array<LabelId>, remove: Array<LabelId>, } | { "type": "list_drafts" } | { "type": "create_draft", id: DraftId, account: string, content: DraftContent, in_reply_to: MessageId | null, } | { "type": "edit_draft", draft: DraftId, revision: number, splice: Splice, } | { "type": "delete_draft", draft: DraftId, } | { "type": "send_draft", draft: DraftId, } | { "type": "cancel_send", item: OutboxId, } | { "type": "list_outbox" } | { "type": "list_rooms" } | { "type": "list_timeline", room: RoomId, page: TimelinePage, limit: number, } | { "type": "list_matrix_outbox" } | { "type": "send_matrix_message", room: RoomId, body: string, } | { "type": "cancel_matrix_send", item: MatrixOutboxId, } | { "type": "mark_room_read", room: RoomId, event: RoomEventId, } | { "type": "list_todos" } | { "type": "create_todo", title: string, notes: string, due: string | null, message: MessageId | null, } | { "type": "edit_todo", todo: TodoId, edit: TodoEdit, } | { "type": "delete_todo", todo: TodoId, };
+export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": "list_history", before: TxLogId | null, limit: number, } | { "type": "list_accounts" } | { "type": "list_entries", list: EntryList, after: ListPosition | null, limit: number, } | { "type": "search", query: string, limit: number, } | { "type": "list_message_entries", message: MessageId, } | { "type": "load_message", message: MessageId, } | { "type": "modify_labels", entries: Array<EntryId>, add: Array<LabelId>, remove: Array<LabelId>, } | { "type": "list_drafts" } | { "type": "create_draft", id: DraftId, account: string, content: DraftContent, in_reply_to: MessageId | null, } | { "type": "edit_draft", draft: DraftId, revision: number, splice: Splice, } | { "type": "delete_draft", draft: DraftId, } | { "type": "send_draft", draft: DraftId, } | { "type": "cancel_send", item: OutboxId, } | { "type": "list_outbox" } | { "type": "list_rooms" } | { "type": "list_timeline", room: RoomId, page: TimelinePage, limit: number, } | { "type": "list_matrix_outbox" } | { "type": "send_matrix_message", room: RoomId, body: string, } | { "type": "cancel_matrix_send", item: MatrixOutboxId, } | { "type": "mark_room_read", room: RoomId, event: RoomEventId, } | { "type": "list_todos" } | { "type": "create_todo", title: string, notes: string, due: string | null, message: MessageId | null, } | { "type": "edit_todo", todo: TodoId, edit: TodoEdit, } | { "type": "delete_todo", todo: TodoId, };
 
 export type ServerResponse = { "type": "undone", tx_log_id: TxLogId, } | { "type": "dispatched", tx_log_id: TxLogId, } | { "type": "accounts", as_of: TxLogId, accounts: Array<Account>, } | { "type": "entries", as_of: TxLogId, entries: Array<Entry>, 
 /**
@@ -54,6 +54,11 @@ undoes: TxLogId | null,
  * What the entry changed, for clients to apply to their state.
  */
 events: Array<ServerEvent>, };
+
+/**
+ * What a message list is of.
+ */
+export type EntryList = { "type": "label", label: LabelId, } | { "type": "all_mail", account: string, };
 
 /**
  * A user's op as the history lists it.

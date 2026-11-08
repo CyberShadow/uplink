@@ -35,6 +35,7 @@ export type Action =
   | 'goStarred'
   | 'goSent'
   | 'goDrafts'
+  | 'goAll'
   | 'goTodos'
   | 'goHistory'
   | 'search'
@@ -78,6 +79,7 @@ export const KEYMAP: Binding[] = [
   { action: 'goStarred', keys: ['g s'], label: 'g s', help: 'Go to Starred' },
   { action: 'goSent', keys: ['g t'], label: 'g t', help: 'Go to Sent' },
   { action: 'goDrafts', keys: ['g d'], label: 'g d', help: 'Go to Drafts' },
+  { action: 'goAll', keys: ['g a'], label: 'g a', help: 'Go to All Mail' },
   { action: 'goTodos', keys: ['g k'], label: 'g k', help: 'Go to To-dos' },
   { action: 'goHistory', keys: ['g h'], label: 'g h', help: 'Go to History (undo anything)' },
   { action: 'search', keys: ['/'], label: '/', help: 'Search' },

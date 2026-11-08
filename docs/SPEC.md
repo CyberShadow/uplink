@@ -729,7 +729,8 @@ than it buffers is closed; the client reconnects and resumes.
 `ClientRequest` variants (MVP):
 
 - `ListAccounts` — mail accounts with their labels and counts.
-- `ListEntries { label, after, limit }` — a page of a label, newest first.
+- `ListEntries { list, after, limit }` — a page of a list, newest first:
+  of a label, or an account's All Mail (§8.1).
 - `Search { query, limit }` — FTS5 cross-account search.
 - `LoadMessage { message }` — headers, the text body, and the sanitized
   HTML body if there is one (§8.9).
@@ -1056,6 +1057,8 @@ IMAP's per-folder copies, and a REST fake is practical to test against
   undo is just removing TRASH; reporting spam (`!`) adds SPAM, and `!` on
   spam removes it and adds INBOX, as Gmail's "Not spam" does. Both go to
   Gmail through `batchModify`, which takes TRASH and SPAM.
+- **All Mail** is not a label: it is every entry of the account outside
+  Trash and Spam (`/all/:account`, `ga`).
 
 ### 8.2 Gmail — send
 
@@ -1439,7 +1442,7 @@ Implemented: `j k o Enter u x *a *n e s l Shift+i Shift+u gi gs gt gd /
 ?` (M4), `c r a f` (M6), and in compose `Ctrl+Enter` send and `Esc` close
 (the draft stays; these work from within its fields). `gd` goes to
 uplink's own drafts; Gmail's DRAFT label is listed as "Gmail drafts".
-`ga` waits for an All Mail view (lists are of a label). `#` moves to
+`ga` goes to All Mail. `#` moves to
 Trash and `!` reports spam, or not spam (§8.1; M10). Opening a message marks it read, as Gmail does, without
 an undo notice. In a Matrix room (M7), `r` goes to the message box, where
 `Enter` sends, `Shift+Enter` breaks the line and `Esc` leaves.
@@ -1776,7 +1779,7 @@ shows the last 100 user actions with working Undo buttons.
 **State:** in progress. Done: the history view (§6.3); light and dark
 themes following the system (`color-scheme`, so native controls follow
 too; HTML mail keeps its white paper); `#` and `!` with Gmail's hiding
-of Trash and Spam (§8.1).
+of Trash and Spam, and All Mail (`ga`) (§8.1).
 
 ### Why this ordering
 
@@ -2082,6 +2085,7 @@ visible. Routes (handled by `preact-iso`):
 | `/`                                    | Home / dashboard                       |
 | `/mail/:account/:label`                | Message list (of a label, by provider id, e.g. `INBOX`) |
 | `/mail/:account/:label/:entry`         | Message view (thread view once threads exist) |
+| `/all/:account`, `/all/:account/:entry` | All Mail, and a message in it          |
 | `/search/:terms`                       | Search results                         |
 | `/search/:terms/:entry`                | Message view, within the results       |
 | `/message/:message`                    | A message by itself (from a to-do)     |
