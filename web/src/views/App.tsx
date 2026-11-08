@@ -78,7 +78,7 @@ function Home() {
   const first = mail.accounts.value?.[0]?.id
   useEffect(() => {
     if (first) route(mailPath(first, 'INBOX'), true)
-  }, [first])
+  }, [first, route])
   return <p class={styles.placeholder}>{mail.accounts.value ? 'No accounts configured.' : 'Loading…'}</p>
 }
 

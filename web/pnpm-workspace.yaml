@@ -1,0 +1,4 @@
+allowBuilds:
+  # Its install script only checks for the platform binary, which comes as
+  # an optional dependency anyway.
+  esbuild: false

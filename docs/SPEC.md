@@ -1784,7 +1784,8 @@ flake is the source of truth.
 | `backend-lint`         | `cargo clippy --workspace -- -D warnings` + `cargo fmt --check` |
 | `protocol-ts`          | `web/src/generated/protocol.ts` matches `uplink-protocol`     |
 | `frontend-test`        | `pnpm test` (vitest + jsdom + `@testing-library/preact`)      |
-| `frontend-lint`        | `pnpm lint` + `tsc --noEmit`                                  |
+| `frontend-lint`        | `pnpm lint` (eslint: typescript-eslint, hooks rules)          |
+| `frontend-build`       | `tsc` + `vite build` (the SPA the binary embeds)              |
 | `integration-gmail`    | NixOS VM test: uplink service + Gmail emulator                |
 | `integration-m365`     | NixOS VM test: uplink service + Graph fake                    |
 | `integration-matrix`   | NixOS VM test: uplink service + a real homeserver             |

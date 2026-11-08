@@ -15,7 +15,7 @@ export function NoticeBar() {
       if (mail.notice.value === notice) mail.notice.value = null
     }, SHOWN_MS)
     return () => clearTimeout(hide)
-  }, [notice])
+  }, [mail, notice])
 
   if (!notice) return null
   return (

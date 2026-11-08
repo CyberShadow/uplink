@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'preact/hooks'
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import type { Entry, Label, MessageContent } from '../generated/protocol'
 import { useServices } from '../context'
@@ -23,11 +23,15 @@ export function Mail(props: Props) {
   const { route } = useLocation()
   const [picking, setPicking] = useState(false)
 
-  const view: View =
-    props.terms !== undefined
-      ? { kind: 'search', query: props.terms }
-      : { kind: 'label', account: props.account!, label: props.label! }
-  useEffect(() => mail.show(view), [props.account, props.label, props.terms])
+  const { account, label, terms } = props
+  const view: View = useMemo(
+    () =>
+      terms !== undefined
+        ? { kind: 'search', query: terms }
+        : { kind: 'label', account: account!, label: label! },
+    [account, label, terms],
+  )
+  useEffect(() => mail.show(view), [mail, view])
 
   const pathFor = (entry?: number) =>
     view.kind === 'label' ? mailPath(view.account, view.label, entry) : searchPath(view.query, entry)
@@ -40,7 +44,7 @@ export function Mail(props: Props) {
 
   useEffect(() => {
     if (openId !== null) mail.focus.value = openId
-  }, [openId])
+  }, [mail, openId])
 
   const open = (entry: Entry) => {
     mail.focus.value = entry.id
@@ -177,20 +181,21 @@ function MessageView(props: { mail: MailStore; entry: Entry }) {
   // `null` if it failed to load.
   const [content, setContent] = useState<MessageContent | null | undefined>(undefined)
 
+  const message = entry.message
   useEffect(() => {
     let current = true
     setContent(undefined)
-    mail.loadMessage(entry).then((loaded) => current && setContent(loaded))
+    mail.loadMessage(message).then((loaded) => current && setContent(loaded))
     return () => {
       current = false
     }
-  }, [entry.message])
+  }, [mail, message])
 
   // Opening a message reads it.
   const unread = isUnread(mail, entry)
   useEffect(() => {
     if (unread) mail.markRead([entry], true, true)
-  }, [entry.id])
+  }, [mail, entry, unread])
 
   return (
     <article class={styles.message}>

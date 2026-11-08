@@ -26,9 +26,6 @@
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
         # ── web (SPA) ──────────────────────────────────────────────────────
-        # pnpm_9 (9.x) produces a JSON-based v10 store that fetchPnpmDeps
-        # handles correctly; pnpm_10/11 produces a SQLite v11 store that
-        # is not fully supported by the fixup phase yet.
         # When web/pnpm-lock.yaml changes, get the new hash with
         #   nix build .#uplinkWebDeps --rebuild 2>&1 | grep got:
         # (--rebuild: the output for the old hash satisfies a plain build).
@@ -36,8 +33,8 @@
           pname = "uplink-web-deps";
           src = ./web;
           fetcherVersion = 3;
-          pnpm = pkgs.pnpm_9;
-          hash = "sha256-QXPucwoeu36OMVznwoDDXiP/p7DWjVhTP87H9dPGXlc=";
+          pnpm = pkgs.pnpm_11;
+          hash = "sha256-8SfZMImpHmQwRzCgA5HuQ+4XcgI9uMplREUNO2YeZWY=";
         };
 
         # A derivation running `script` in web/ with its dependencies.
@@ -45,7 +42,7 @@
           inherit pname;
           version = "0.1.0";
           src = ./web;
-          nativeBuildInputs = [ pkgs.nodejs pkgs.pnpm_9 pkgs.pnpmConfigHook ];
+          nativeBuildInputs = [ pkgs.nodejs pkgs.pnpm_11 pkgs.pnpmConfigHook ];
           pnpmDeps = uplinkWebDeps;
           buildPhase = script;
           installPhase = "true";
@@ -117,7 +114,7 @@
           checks = self.checks.${system};
           packages = [
             pkgs.nodejs
-            pkgs.pnpm_9
+            pkgs.pnpm_11
             pkgs.openssl
             pkgs.sqlite
             pkgs.pkg-config
@@ -159,6 +156,11 @@
 
           # Type-checks and bundles the SPA.
           frontend-build = uplinkWeb;
+
+          frontend-lint = webDerivation "uplink-web-lint" ''
+            pnpm lint
+            mkdir $out
+          '';
 
           frontend-test = webDerivation "uplink-web-test" ''
             pnpm test

@@ -16,6 +16,7 @@ import type {
   ListPosition,
   LogEntry,
   MessageContent,
+  MessageId,
   ServerResponse,
   TxLogId,
 } from '../generated/protocol'
@@ -399,9 +400,9 @@ export class MailStore {
   // ── messages ────────────────────────────────────────────────────────────
 
   /** `null` if it could not be loaded; `error` says why. */
-  async loadMessage(entry: Entry): Promise<MessageContent | null> {
+  async loadMessage(message: MessageId): Promise<MessageContent | null> {
     try {
-      const response = await this.query({ type: 'load_message', message: entry.message }, 'message')
+      const response = await this.query({ type: 'load_message', message }, 'message')
       return response.message
     } catch (error) {
       this.error.value = (error as Error).message
