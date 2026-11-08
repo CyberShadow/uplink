@@ -1,7 +1,7 @@
 //! The parts of the Gmail REST API uplink uses (SPEC §8.1).
 
 use super::oauth::Credentials;
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use base64::{
     alphabet,
     engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig},
@@ -112,6 +112,21 @@ pub struct BatchModify<'a> {
     pub remove_label_ids: &'a [String],
 }
 
+/// Why `messages.send` did not succeed.
+#[derive(Debug, thiserror::Error)]
+pub enum SendError {
+    /// The message was not sent, but may be on a later attempt.
+    #[error("{0:#}")]
+    NotSent(anyhow::Error),
+    /// Gmail refused the message.
+    #[error("{0}")]
+    Rejected(String),
+    /// The request failed after it went out: the message may have been
+    /// sent.
+    #[error("{0:#}; it may have been sent")]
+    Unknown(anyhow::Error),
+}
+
 #[derive(Clone, Copy)]
 pub enum Format {
     Minimal,
@@ -180,6 +195,60 @@ impl Gmail {
         Ok(())
     }
 
+    /// Sends the RFC 5322 message `raw`, in thread `thread_id` if given.
+    pub async fn send_message(&self, raw: &[u8], thread_id: Option<&str>) -> Result<(), SendError> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Send<'a> {
+            raw: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            thread_id: Option<&'a str>,
+        }
+        let body = Send {
+            raw: BASE64URL.encode(raw),
+            thread_id,
+        };
+        let url = format!("{}/messages/send", self.base);
+        for retry in [false, true] {
+            let token = self
+                .credentials
+                .access_token()
+                .await
+                .map_err(SendError::NotSent)?;
+            let response = match self
+                .http
+                .post(&url)
+                .bearer_auth(token)
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(response) => response,
+                Err(e) if e.is_connect() => return Err(SendError::NotSent(e.into())),
+                Err(e) => return Err(SendError::Unknown(e.into())),
+            };
+            let status = response.status();
+            if status.is_success() {
+                return Ok(());
+            }
+            if status == StatusCode::UNAUTHORIZED && !retry {
+                self.credentials.invalidate().await;
+                continue;
+            }
+            let body = response.text().await.unwrap_or_default();
+            if status.is_server_error()
+                || status == StatusCode::TOO_MANY_REQUESTS
+                || status == StatusCode::UNAUTHORIZED
+            {
+                return Err(SendError::NotSent(anyhow!(
+                    "Gmail answered {status}: {body}"
+                )));
+            }
+            return Err(SendError::Rejected(error_message(&body).unwrap_or(body)));
+        }
+        unreachable!("the second attempt returns")
+    }
+
     /// `None` on 404.
     async fn get<T: DeserializeOwned>(
         &self,
@@ -237,4 +306,19 @@ async fn check(response: reqwest::Response) -> Result<reqwest::Response> {
     let url = response.url().path().to_owned();
     let body = response.text().await.unwrap_or_default();
     bail!("{url} failed with {status}: {body}")
+}
+
+/// The message of a Google API error response.
+fn error_message(body: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Response {
+        error: Error,
+    }
+    #[derive(Deserialize)]
+    struct Error {
+        message: String,
+    }
+    serde_json::from_str::<Response>(body)
+        .ok()
+        .map(|r| r.error.message)
 }

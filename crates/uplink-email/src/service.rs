@@ -1,6 +1,7 @@
 //! Answers the mail requests of the WebSocket protocol (SPEC §5.4).
 
 use crate::{
+    compose::{self, CancelSend, DeleteDraft, EditDraft, PutDraft, SendDraft},
     mailbox::{LabelChange, SetLabels},
     parse::parse,
     query::{self, ConfiguredAccount},
@@ -9,13 +10,15 @@ use crate::{
 use std::{
     path::Path,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 use uplink_protocol::{
+    compose::{DraftContent, DraftId, OutboxId, Splice},
     mail::{EntryId, LabelId, ListPosition, MessageContent, MessageId},
     ErrorCode, ServerError, ServerResponse,
 };
 use uplink_storage::rusqlite::Connection;
-use uplink_tx_log::{Conflict, Dispatcher};
+use uplink_tx_log::{Conflict, Dispatcher, Op};
 
 /// The most entries a list or search request may ask for.
 pub const MAX_LIMIT: u32 = 500;
@@ -26,6 +29,7 @@ pub struct Mail {
     reader: Arc<Mutex<Connection>>,
     store: MailStore,
     accounts: Arc<Vec<ConfiguredAccount>>,
+    send_delay: Duration,
 }
 
 type Response = Result<ServerResponse, ServerError>;
@@ -38,12 +42,14 @@ impl Mail {
         reader: Connection,
         data_root: &Path,
         accounts: Vec<ConfiguredAccount>,
+        send_delay: Duration,
     ) -> Self {
         Self {
             dispatcher,
             reader: Arc::new(Mutex::new(reader)),
             store: MailStore::new(data_root),
             accounts: Arc::new(accounts),
+            send_delay,
         }
     }
 
@@ -151,14 +157,107 @@ impl Mail {
                 added.chain(removed)
             })
             .collect();
-        let tx_log_id = self
-            .dispatcher
-            .dispatch(SetLabels { changes })
-            .await
-            .map_err(|e| match e.downcast::<Conflict>() {
-                Ok(conflict) => error(ErrorCode::Conflict, conflict.0),
-                Err(e) => internal(e),
-            })?;
+        self.dispatch(SetLabels { changes }).await
+    }
+
+    pub async fn list_drafts(&self) -> Response {
+        self.read(move |conn, _| {
+            let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+            let as_of = query::as_of(&tx).map_err(internal)?;
+            let drafts = compose::drafts(&tx).map_err(internal)?;
+            Ok(ServerResponse::Drafts { as_of, drafts })
+        })
+        .await
+    }
+
+    pub async fn create_draft(
+        &self,
+        id: DraftId,
+        account: String,
+        content: DraftContent,
+        in_reply_to: Option<MessageId>,
+    ) -> Response {
+        if !self.accounts.iter().any(|a| a.id == account) {
+            return Err(error(ErrorCode::NotFound, format!("no account {account}")));
+        }
+        if let Some(message) = in_reply_to {
+            self.read(move |conn, _| {
+                query::preferred_variant(conn, message)
+                    .map_err(internal)?
+                    .map(drop)
+                    .ok_or_else(|| error(ErrorCode::NotFound, format!("no message {}", message.0)))
+            })
+            .await?;
+        }
+        self.dispatch(PutDraft {
+            id,
+            account,
+            revision: 0,
+            content,
+            in_reply_to,
+        })
+        .await
+    }
+
+    pub async fn edit_draft(&self, draft: DraftId, revision: i64, splice: Splice) -> Response {
+        self.dispatch(EditDraft {
+            id: draft,
+            revision: Some(revision),
+            splice,
+        })
+        .await
+    }
+
+    pub async fn delete_draft(&self, draft: DraftId) -> Response {
+        self.dispatch(DeleteDraft { id: draft }).await
+    }
+
+    /// Refuses drafts that could not be sent. A draft edited meanwhile in
+    /// another tab may still turn out unsendable; it then fails in the
+    /// outbox.
+    pub async fn send_draft(&self, draft: DraftId) -> Response {
+        let id = draft.clone();
+        self.read(move |conn, _| {
+            let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+            let draft = compose::drafts(&tx)
+                .map_err(internal)?
+                .into_iter()
+                .find(|d| d.id == id)
+                .ok_or_else(|| error(ErrorCode::NotFound, format!("no draft {}", id.0)))?;
+            compose::check_sendable(&draft.content)
+                .map_err(|e| error(ErrorCode::Invalid, format!("{e:#}")))
+        })
+        .await?;
+        self.dispatch(SendDraft {
+            id: draft,
+            delay_ms: self.send_delay.as_millis().try_into().expect("delay fits"),
+        })
+        .await
+    }
+
+    pub async fn cancel_send(&self, item: OutboxId) -> Response {
+        self.dispatch(CancelSend { item }).await
+    }
+
+    pub async fn list_outbox(&self) -> Response {
+        self.read(move |conn, _| {
+            let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+            let as_of = query::as_of(&tx).map_err(internal)?;
+            let items = compose::outbox(&tx).map_err(internal)?;
+            Ok(ServerResponse::Outbox { as_of, items })
+        })
+        .await
+    }
+
+    async fn dispatch(&self, op: impl Op) -> Response {
+        let tx_log_id =
+            self.dispatcher
+                .dispatch(op)
+                .await
+                .map_err(|e| match e.downcast::<Conflict>() {
+                    Ok(conflict) => error(ErrorCode::Conflict, conflict.0),
+                    Err(e) => internal(e),
+                })?;
         Ok(ServerResponse::Dispatched { tx_log_id })
     }
 

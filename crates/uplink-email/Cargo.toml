@@ -4,10 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+ammonia = "4.2.4"
 anyhow = "1.0.104"
 base64 = "0.22"
 chacha20poly1305 = "0.11.0"
 futures-util = "0.3.34"
+mail-builder = "2.0.1"
 mail-parser = "0.11.9"
 rand = "0.10.3"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "form", "query"] }

@@ -13,6 +13,14 @@ pub struct Config {
     pub master_key_file: Option<PathBuf>,
     #[serde(default)]
     pub accounts: Vec<AccountConfig>,
+    /// How long sent mail waits in the outbox, during which sending can be
+    /// undone (SPEC §6.7).
+    #[serde(default = "default_send_delay_secs")]
+    pub send_delay_secs: u32,
+}
+
+fn default_send_delay_secs() -> u32 {
+    10
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -143,6 +151,8 @@ pub enum ConfigSection {
     Bind,
     /// Restart required: the database is opened once at startup.
     Data,
+    /// Restart required.
+    SendDelay,
 }
 
 #[derive(Debug, Clone)]
@@ -158,6 +168,9 @@ pub fn diff_config_sections(old: &Config, new: &Config) -> Vec<ConfigSection> {
     }
     if old.data != new.data {
         changed.push(ConfigSection::Data);
+    }
+    if old.send_delay_secs != new.send_delay_secs {
+        changed.push(ConfigSection::SendDelay);
     }
     if old.server.tls != new.server.tls {
         changed.push(ConfigSection::Tls);
@@ -541,6 +554,7 @@ data:
             data: DataConfig {
                 root: PathBuf::from("/tmp/uplink"),
             },
+            send_delay_secs: 10,
             master_key_file: None,
             accounts: vec![],
         }

@@ -19,6 +19,7 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
@@ -121,6 +122,7 @@ pub struct Services {
 /// a dispatcher for the domains' op kinds plus those in `registry`.
 pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
     uplink_email::mailbox::register(&mut registry);
+    uplink_email::compose::register(&mut registry);
     let root = &config.data.root;
     let dispatcher = Dispatcher::new(
         uplink_storage::open(root)?,
@@ -144,6 +146,7 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
             uplink_storage::open_reader(root)?,
             root,
             mail_accounts,
+            Duration::from_secs(config.send_delay_secs.into()),
         ),
         reader: Arc::new(LogReader::new(
             uplink_storage::open_reader(root)?,
@@ -297,6 +300,9 @@ async fn handle_config_changed(
         ConfigSection::Data => {
             tracing::warn!("config: data changed — restart required (ignored)");
         }
+        ConfigSection::SendDelay => {
+            tracing::warn!("config: send_delay_secs changed — restart required (ignored)");
+        }
     }
 }
 
@@ -392,6 +398,26 @@ impl Backend for Services {
                 add,
                 remove,
             } => self.mail.modify_labels(entries, add, remove).await,
+            ClientRequest::ListDrafts => self.mail.list_drafts().await,
+            ClientRequest::CreateDraft {
+                id,
+                account,
+                content,
+                in_reply_to,
+            } => {
+                self.mail
+                    .create_draft(id, account, content, in_reply_to)
+                    .await
+            }
+            ClientRequest::EditDraft {
+                draft,
+                revision,
+                splice,
+            } => self.mail.edit_draft(draft, revision, splice).await,
+            ClientRequest::DeleteDraft { draft } => self.mail.delete_draft(draft).await,
+            ClientRequest::SendDraft { draft } => self.mail.send_draft(draft).await,
+            ClientRequest::CancelSend { item } => self.mail.cancel_send(item).await,
+            ClientRequest::ListOutbox => self.mail.list_outbox().await,
         }
     }
 
@@ -533,7 +559,13 @@ mod tests {
             let reader = || uplink_storage::open_reader(dir.path()).unwrap();
             let dispatcher = Dispatcher::new(conn, Registry::new(), Arc::new(Hub::new(16)));
             let services = Services {
-                mail: Mail::new(dispatcher.clone(), reader(), dir.path(), vec![]),
+                mail: Mail::new(
+                    dispatcher.clone(),
+                    reader(),
+                    dir.path(),
+                    vec![],
+                    Duration::from_secs(10),
+                ),
                 reader: Arc::new(LogReader::new(reader(), 16)),
                 dispatcher,
             };

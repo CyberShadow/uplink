@@ -20,13 +20,13 @@ export type WsServerMsg = { "type": "pong", seq: number, } | { "type": "welcome"
  */
 cursor: TxLogId, resumed: boolean, } | { "type": "response", request_id: number, body: ServerResponse, } | { "type": "request_failed", request_id: number, error: ServerError, } | { "type": "entry", entry: LogEntry, };
 
-export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": "list_accounts" } | { "type": "list_entries", label: LabelId, after: ListPosition | null, limit: number, } | { "type": "search", query: string, limit: number, } | { "type": "load_message", message: MessageId, } | { "type": "modify_labels", entries: Array<EntryId>, add: Array<LabelId>, remove: Array<LabelId>, };
+export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": "list_accounts" } | { "type": "list_entries", label: LabelId, after: ListPosition | null, limit: number, } | { "type": "search", query: string, limit: number, } | { "type": "load_message", message: MessageId, } | { "type": "modify_labels", entries: Array<EntryId>, add: Array<LabelId>, remove: Array<LabelId>, } | { "type": "list_drafts" } | { "type": "create_draft", id: DraftId, account: string, content: DraftContent, in_reply_to: MessageId | null, } | { "type": "edit_draft", draft: DraftId, revision: number, splice: Splice, } | { "type": "delete_draft", draft: DraftId, } | { "type": "send_draft", draft: DraftId, } | { "type": "cancel_send", item: OutboxId, } | { "type": "list_outbox" };
 
 export type ServerResponse = { "type": "undone", tx_log_id: TxLogId, } | { "type": "dispatched", tx_log_id: TxLogId, } | { "type": "accounts", as_of: TxLogId, accounts: Array<Account>, } | { "type": "entries", as_of: TxLogId, entries: Array<Entry>, 
 /**
  * Where the next page starts, if there may be one.
  */
-next: ListPosition | null, } | { "type": "message", message: MessageContent, };
+next: ListPosition | null, } | { "type": "message", message: MessageContent, } | { "type": "drafts", as_of: TxLogId, drafts: Array<Draft>, } | { "type": "outbox", as_of: TxLogId, items: Array<OutboxItem>, };
 
 export type ServerError = { code: ErrorCode, message: string, };
 
@@ -54,7 +54,7 @@ export type Source = { "type": "user" } | { "type": "account", id: string, };
  * rather than content, since they are stored in the log; clients query
  * what they display.
  */
-export type ServerEvent = { "type": "entries_added" } & EntriesAdded | { "type": "entries_removed" } & EntriesRemoved | { "type": "labels_changed" } & LabelsChanged | { "type": "label_list_changed" } & LabelListChanged;
+export type ServerEvent = { "type": "entries_added" } & EntriesAdded | { "type": "entries_removed" } & EntriesRemoved | { "type": "labels_changed" } & LabelsChanged | { "type": "label_list_changed" } & LabelListChanged | { "type": "draft_edited" } & DraftEdited | { "type": "drafts_changed" } & DraftsChanged | { "type": "outbox_changed" } & OutboxChanged;
 
 export type MessageId = number;
 
@@ -125,3 +125,73 @@ export type LabelState = { entry: EntryId, label: LabelId, desired: boolean, obs
  * An account's labels were created, renamed or deleted.
  */
 export type LabelListChanged = { account: string, };
+
+/**
+ * Chosen by the client creating the draft (a UUID), so that it can be
+ * edited before the server has answered.
+ */
+export type DraftId = string;
+
+export type OutboxId = number;
+
+export type DraftContent = { 
+/**
+ * Address lists as typed, e.g. `Bob <bob@example.com>, carol@example.com`.
+ */
+to: string, cc: string, bcc: string, subject: string, 
+/**
+ * HTML, as the editor produces it.
+ */
+body: string, };
+
+export type Draft = { id: DraftId, 
+/**
+ * The account it is sent from.
+ */
+account: string, 
+/**
+ * Number of edits applied since creation.
+ */
+revision: number, content: DraftContent, 
+/**
+ * The message this replies to.
+ */
+in_reply_to: MessageId | null, 
+/**
+ * Ms since the Unix epoch.
+ */
+updated_at: number, };
+
+export type DraftField = "to" | "cc" | "bcc" | "subject" | "body";
+
+/**
+ * Replaces `delete` at `offset` of `field` with `insert`.
+ */
+export type Splice = { field: DraftField, 
+/**
+ * In UTF-16 code units.
+ */
+offset: number, delete: string, insert: string, };
+
+export type OutboxState = "queued" | "sending" | "sent" | "failed";
+
+export type OutboxItem = { id: OutboxId, account: string, draft: Draft, state: OutboxState, error: string | null, 
+/**
+ * When it is sent, ms since the Unix epoch.
+ */
+not_before: number, };
+
+/**
+ * A draft's text changed by `splice`, making its revision `revision`.
+ */
+export type DraftEdited = { draft: DraftId, revision: number, splice: Splice, };
+
+/**
+ * Drafts were created or deleted.
+ */
+export type DraftsChanged = { drafts: Array<DraftId>, };
+
+/**
+ * Outbox items were added, removed or changed state.
+ */
+export type OutboxChanged = { items: Array<OutboxId>, };

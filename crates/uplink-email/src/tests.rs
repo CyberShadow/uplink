@@ -27,6 +27,7 @@ impl Db {
         let dir = tempfile::tempdir().unwrap();
         let mut registry = Registry::new();
         mailbox::register(&mut registry);
+        crate::compose::register(&mut registry);
         let hub = Arc::new(Hub::new(64));
         let dispatcher = Dispatcher::new(
             uplink_storage::open(dir.path()).unwrap(),
@@ -639,12 +640,12 @@ async fn unknown_labels_are_refused() {
     assert_eq!(db.query::<i64>("SELECT count(*) FROM message"), [0]);
 }
 
-mod service {
+pub(crate) mod service {
     use super::*;
     use crate::{query::ConfiguredAccount, service::Mail};
     use uplink_protocol::{mail::ListPosition, ErrorCode, ServerResponse};
 
-    async fn mail_with(db: &Db) -> Mail {
+    pub(crate) async fn mail_with(db: &Db) -> Mail {
         let store = db.store();
         db.observe(
             "a",
@@ -696,6 +697,7 @@ mod service {
                     address: "b@x".into(),
                 },
             ],
+            std::time::Duration::from_secs(10),
         )
     }
 

@@ -7,14 +7,17 @@
 //! never be recorded over a push and revert it.
 
 use super::{
-    api::{BatchModify, Format, Gmail, Message},
+    api::{BatchModify, Format, Gmail, Message, SendError},
     oauth::Credentials,
 };
 use crate::{
+    compose::{
+        self, build_message, now_ms, Due, ReplyContext, SendFailed, SendStarted, SendSucceeded,
+    },
     mailbox::{EntryLabels, LabelChange, LabelsPushed, MailboxObserved, NewEntry, ObservedLabel},
     parse::parse,
     seal::MasterKey,
-    store::MailStore,
+    store::{MailStore, VariantHash},
 };
 use anyhow::{Context, Result};
 use futures_util::{stream, StreamExt, TryStreamExt};
@@ -31,8 +34,8 @@ use uplink_protocol::{
     mail::{EntryId, LabelId},
     LogEntry, Source,
 };
-use uplink_storage::rusqlite::{Connection, OptionalExtension};
-use uplink_tx_log::{Dispatcher, Observation};
+use uplink_storage::rusqlite::{params, Connection, OptionalExtension};
+use uplink_tx_log::{Conflict, Dispatcher, Observation};
 
 pub const KIND: &str = "gmail";
 /// How often to poll for changes (SPEC §8.1).
@@ -53,6 +56,8 @@ struct SyncState {
 
 pub struct Sync {
     pub account: String,
+    /// The account's address, which mail is sent from.
+    pub address: String,
     pub gmail: Gmail,
     pub dispatcher: Dispatcher,
     /// A reader connection of the task's own.
@@ -73,6 +78,7 @@ impl Sync {
         let credentials = Credentials::new(http.clone(), account.clone(), key);
         Ok(Self {
             account: account.id.clone(),
+            address: account.address.clone(),
             gmail: Gmail::new(http, &account.endpoints.api, credentials),
             dispatcher,
             reader: uplink_storage::open_reader(data_root)?,
@@ -87,6 +93,7 @@ impl Sync {
             wake: self.dispatcher.hub().subscribe(),
             reader: Arc::new(Mutex::new(self.reader)),
             account: self.account,
+            address: self.address,
             gmail: self.gmail,
             dispatcher: self.dispatcher,
             store: self.store,
@@ -99,6 +106,7 @@ impl Sync {
 
 struct Task {
     account: String,
+    address: String,
     gmail: Gmail,
     dispatcher: Dispatcher,
     store: MailStore,
@@ -110,11 +118,19 @@ struct Task {
 impl Task {
     async fn run(mut self) {
         let mut backoff = Duration::from_secs(1);
+        let mut recovered = false;
         loop {
-            match self.step().await {
-                Ok(()) => {
+            let step = async {
+                if !recovered {
+                    self.recover().await?;
+                    recovered = true;
+                }
+                self.step().await
+            };
+            match step.await {
+                Ok(next_due) => {
                     backoff = Duration::from_secs(1);
-                    self.wait().await;
+                    self.wait(next_due).await;
                 }
                 Err(e) => {
                     tracing::warn!(account = self.account, "sync failed: {e:#}");
@@ -125,7 +141,8 @@ impl Task {
         }
     }
 
-    async fn step(&self) -> Result<()> {
+    /// Syncs, pushes and sends; returns when the next queued mail is due.
+    async fn step(&self) -> Result<Option<i64>> {
         let synced = match self.sync_state().await? {
             Some(state) => self.poll(&state.history_id).await?,
             None => false,
@@ -133,12 +150,19 @@ impl Task {
         if !synced {
             self.full_sync().await?;
         }
-        self.push().await
+        self.push().await?;
+        self.send_due().await
     }
 
-    /// Until the poll interval passes or the user changes something.
-    async fn wait(&mut self) {
-        let deadline = tokio::time::sleep(self.poll_interval);
+    /// Until the poll interval passes, mail is due (unix ms), or the user
+    /// changes something.
+    async fn wait(&mut self, next_due: Option<i64>) {
+        let mut interval = self.poll_interval;
+        if let Some(due) = next_due {
+            let until_due = Duration::from_millis((due - now_ms()).max(0).try_into().expect("≥ 0"));
+            interval = interval.min(until_due);
+        }
+        let deadline = tokio::time::sleep(interval);
         tokio::pin!(deadline);
         loop {
             tokio::select! {
@@ -151,6 +175,108 @@ impl Task {
                 },
             }
         }
+    }
+
+    /// Fails the mail a previous run of the task was interrupted sending.
+    async fn recover(&self) -> Result<()> {
+        let account = self.account.clone();
+        let interrupted = self
+            .read(move |conn| compose::interrupted(conn, &account))
+            .await?;
+        for item in interrupted {
+            self.observe(SendFailed {
+                item,
+                error: Some("interrupted while sending: it may have been sent".into()),
+            })
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Sends the queued mail that is due; returns when the next is due.
+    async fn send_due(&self) -> Result<Option<i64>> {
+        let account = self.account.clone();
+        let (due, next) = self
+            .read(move |conn| compose::due(conn, &account, now_ms()))
+            .await?;
+        for due in due {
+            match self.observe(SendStarted { item: due.item }).await {
+                // Cancelled meanwhile.
+                Err(e) if e.is::<Conflict>() => continue,
+                result => result?,
+            }
+            let item = due.item;
+            match self.send(due).await {
+                Ok((variant, size_bytes, parsed)) => {
+                    self.observe(SendSucceeded {
+                        item,
+                        variant,
+                        size_bytes,
+                        parsed,
+                    })
+                    .await?
+                }
+                Err(SendError::NotSent(e)) => {
+                    self.observe(SendFailed { item, error: None }).await?;
+                    return Err(e.context("sending mail"));
+                }
+                Err(e) => {
+                    self.observe(SendFailed {
+                        item,
+                        error: Some(e.to_string()),
+                    })
+                    .await?
+                }
+            }
+        }
+        Ok(next)
+    }
+
+    /// Sends a claimed item, and stores the message as sent.
+    async fn send(&self, due: Due) -> Result<(VariantHash, i64, crate::parse::Parsed), SendError> {
+        let account = self.account.clone();
+        let store = self.store.clone();
+        let in_reply_to = due.draft.in_reply_to;
+        // The message replied to: its headers, and its thread here.
+        let (reply, thread_id) = self
+            .read(move |conn| {
+                let Some(message) = in_reply_to else {
+                    return Ok((ReplyContext::default(), None));
+                };
+                let (message_id, variant) = crate::query::preferred_variant(conn, message)?
+                    .context("the message replied to is gone")?;
+                let raw = store.get(&VariantHash(variant))?;
+                let thread_id: Option<String> = conn
+                    .query_row(
+                        "SELECT thread_id FROM mail_entry WHERE message = ?1 AND account_id = ?2
+                         ORDER BY id LIMIT 1",
+                        params![message.0, account],
+                        |r| r.get(0),
+                    )
+                    .optional()?
+                    .flatten();
+                Ok((ReplyContext::of(&message_id, &raw), thread_id))
+            })
+            .await
+            .map_err(|e| SendError::Rejected(format!("{e:#}")))?;
+        let raw = build_message(
+            &self.address,
+            &due.draft.content,
+            &due.message_id,
+            &reply,
+            now_ms() / 1000,
+        )
+        .map_err(|e| SendError::Rejected(format!("{e:#}")))?;
+        self.gmail.send_message(&raw, thread_id.as_deref()).await?;
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || -> Result<_> {
+            Ok((store.put(&raw)?, raw.len().try_into()?, parse(&raw)))
+        })
+        .await
+        .expect("storing does not panic")
+        // Sent, but the copy could not be stored: the provider's copy
+        // will be, once synced.
+        .map_err(|e| SendError::Unknown(e.context("storing sent mail")))
     }
 
     /// Records changes since `from`; `false` if history from there is no

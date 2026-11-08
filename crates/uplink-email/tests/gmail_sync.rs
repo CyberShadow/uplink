@@ -5,6 +5,7 @@ mod common;
 use common::{eventually, message, Provider};
 use std::{sync::Arc, time::Duration};
 use uplink_email::{
+    compose,
     gmail::{api::Gmail, oauth::Credentials, sync::Sync},
     mailbox,
     query::ConfiguredAccount,
@@ -12,12 +13,15 @@ use uplink_email::{
     store::MailStore,
 };
 use uplink_protocol::{
-    mail::{EntryId, LabelId},
+    compose::{DraftContent, DraftId, OutboxState},
+    mail::{EntryId, LabelId, MessageId},
     ServerResponse,
 };
 use uplink_realtime::Hub;
 use uplink_storage::rusqlite::{Connection, OptionalExtension};
 use uplink_tx_log::{Dispatcher, Registry};
+
+const SEND_DELAY: Duration = Duration::from_millis(500);
 
 struct Uplink {
     dir: tempfile::TempDir,
@@ -30,6 +34,7 @@ impl Uplink {
         let dir = tempfile::tempdir().unwrap();
         let mut registry = Registry::new();
         mailbox::register(&mut registry);
+        compose::register(&mut registry);
         let dispatcher = Dispatcher::new(
             uplink_storage::open(dir.path()).unwrap(),
             registry,
@@ -43,6 +48,7 @@ impl Uplink {
                 id: "test".into(),
                 address: "alice@example.com".into(),
             }],
+            SEND_DELAY,
         );
         Self {
             dir,
@@ -62,6 +68,7 @@ impl Uplink {
         tokio::spawn(
             Sync {
                 account: "test".into(),
+                address: provider.account.address.clone(),
                 gmail: Gmail::new(http, &provider.account.endpoints.api, credentials),
                 dispatcher: self.dispatcher.clone(),
                 reader: self.reader(),
@@ -110,6 +117,59 @@ impl Uplink {
                 )
                 .unwrap(),
         )
+    }
+
+    async fn outbox(&self) -> Vec<(i64, OutboxState)> {
+        let ServerResponse::Outbox { items, .. } = self.mail.list_outbox().await.unwrap() else {
+            panic!()
+        };
+        items.into_iter().map(|i| (i.id.0, i.state)).collect()
+    }
+
+    fn message_of(&self, entry: EntryId) -> (MessageId, String, Option<String>) {
+        self.reader()
+            .query_row(
+                "SELECT m.id, m.message_id, e.thread_id FROM mail_entry e
+                 JOIN message m ON m.id = e.message WHERE e.id = ?1",
+                [entry.0],
+                |r| Ok((MessageId(r.get(0)?), r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+    }
+
+    fn external_id(&self, entry: EntryId) -> String {
+        self.reader()
+            .query_row(
+                "SELECT external_id FROM mail_entry WHERE id = ?1",
+                [entry.0],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    /// Creates a draft to `to` and sends it.
+    async fn send(&self, to: &str, subject: &str, in_reply_to: Option<MessageId>) -> i64 {
+        let id = DraftId(subject.into());
+        self.mail
+            .create_draft(
+                id.clone(),
+                "test".into(),
+                DraftContent {
+                    to: to.into(),
+                    cc: String::new(),
+                    bcc: String::new(),
+                    subject: subject.into(),
+                    body: "<p>Sent by the <b>uplink</b> tests.</p>".into(),
+                },
+                in_reply_to,
+            )
+            .await
+            .unwrap();
+        let ServerResponse::Dispatched { tx_log_id } = self.mail.send_draft(id).await.unwrap()
+        else {
+            panic!()
+        };
+        tx_log_id.0
     }
 
     fn log_len(&self) -> i64 {
@@ -253,4 +313,62 @@ async fn resyncs_fully_once_history_expired() {
         ]
     );
     sync.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sends_mail_after_the_delay_unless_undone() {
+    let uplink = Uplink::new();
+    let provider = Provider::start(uplink.dir.path(), None).await;
+    let me = provider.account.address.clone();
+    provider.deliver(&message("original", "lunch?")).await;
+    let sync = uplink.start_sync(&provider);
+    let original_entry = uplink.arrived("original").await;
+    let (original_message, _, original_thread) = uplink.message_of(original_entry);
+
+    // A reply, to ourselves so that it arrives: queued for the delay, then
+    // sent in the original's thread, and synced back as the same message.
+    let nonce = common::nonce();
+    let reply = format!("reply {nonce}");
+    uplink.send(&me, &reply, Some(original_message)).await;
+    assert!(matches!(
+        &uplink.outbox().await[..],
+        [(_, OutboxState::Queued)]
+    ));
+    let reply_entry = uplink.arrived("reply").await;
+    let (_, reply_message_id, reply_thread) = uplink.message_of(reply_entry);
+    provider.clean_up_later(uplink.external_id(reply_entry));
+    assert_eq!(reply_thread, original_thread);
+    let outbox_message_id: Option<String> = uplink
+        .reader()
+        .query_row("SELECT message_id FROM mail_outbox", [], |r| r.get(0))
+        .optional()
+        .unwrap();
+    // Gone from the outbox once synced back; until then, it's the same
+    // message.
+    assert!(outbox_message_id.is_none_or(|id| id == reply_message_id));
+    eventually("the outbox to empty", || async {
+        uplink.outbox().await.is_empty().then_some(())
+    })
+    .await;
+    let labels = uplink.labels(reply_entry);
+    assert!(label_set(&labels).contains(&"SENT"), "{labels:?}");
+
+    // Undone within the delay: back to drafts, and never sent.
+    let undone = format!("undone {nonce}");
+    let sent = uplink.send(&me, &undone, None).await;
+    uplink
+        .dispatcher
+        .undo(uplink_protocol::TxLogId(sent))
+        .await
+        .unwrap();
+    let ServerResponse::Drafts { drafts, .. } = uplink.mail.list_drafts().await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(drafts[0].content.subject, undone);
+    tokio::time::sleep(SEND_DELAY * 3).await;
+    assert!(uplink.outbox().await.is_empty());
+    assert!(uplink.entry("undone").is_none());
+
+    sync.abort();
+    provider.clean_up().await;
 }

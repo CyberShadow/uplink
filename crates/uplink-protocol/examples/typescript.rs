@@ -5,7 +5,7 @@
 //! The `protocol-ts` flake check fails if the checked-in file is stale.
 
 use ts_rs::{Config, TS};
-use uplink_protocol::{mail::*, *};
+use uplink_protocol::{compose::*, mail::*, *};
 
 fn main() {
     // Ids and timestamps are i64, well within a double's exact range.
@@ -48,6 +48,17 @@ fn main() {
         LabelsChanged,
         LabelState,
         LabelListChanged,
+        DraftId,
+        OutboxId,
+        DraftContent,
+        Draft,
+        DraftField,
+        Splice,
+        OutboxState,
+        OutboxItem,
+        DraftEdited,
+        DraftsChanged,
+        OutboxChanged,
     );
     print!("{out}");
 }

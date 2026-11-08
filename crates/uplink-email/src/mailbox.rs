@@ -8,6 +8,7 @@
 //! what it pushed.
 
 use crate::{
+    compose,
     parse::{self, Parsed},
     store::VariantHash,
 };
@@ -128,9 +129,11 @@ impl Observation for MailboxObserved {
         let mut label_changes = vec![];
 
         let mut added = vec![];
+        let mut synced_back = vec![];
         for new in self.added {
             let labels = resolve(&new.labels)?;
             let entry = insert_entry(tx, account, new)?;
+            synced_back.extend(compose::entry_synced(tx, account, entry)?);
             for label in labels {
                 set_label_row(tx, entry, label, true, true)?;
                 label_changes.push(LabelState {
@@ -146,6 +149,7 @@ impl Observation for MailboxObserved {
             description.push(format!("received {}", messages(added.len())));
             events.push(ServerEvent::EntriesAdded(EntriesAdded { entries: added }));
         }
+        events.extend(synced_back);
 
         let mut relabelled = 0;
         for update in self.updated {
@@ -300,15 +304,7 @@ fn insert_entry(tx: &Transaction, account: &str, new: NewEntry) -> Result<EntryI
         .optional()?;
     let message = match known {
         Some(message) => MessageId(message),
-        None => {
-            let message = message_for_variant(tx, &new.variant, &new.parsed)?;
-            tx.execute(
-                "INSERT INTO message_variant (sha256, message, source, size_bytes)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![new.variant.0, message.0, account, new.size_bytes],
-            )?;
-            message
-        }
+        None => insert_variant(tx, account, &new.variant, new.size_bytes, &new.parsed)?,
     };
     let id = tx
         .query_row(
@@ -328,6 +324,24 @@ fn insert_entry(tx: &Transaction, account: &str, new: NewEntry) -> Result<EntryI
         )
         .with_context(|| format!("recording entry {} of account {account}", new.external_id))?;
     Ok(EntryId(id))
+}
+
+/// Records a variant new to uplink, first seen in account `source`;
+/// returns the logical message it belongs to.
+pub(crate) fn insert_variant(
+    tx: &Transaction,
+    source: &str,
+    hash: &VariantHash,
+    size_bytes: i64,
+    parsed: &Parsed,
+) -> Result<MessageId> {
+    let message = message_for_variant(tx, hash, parsed)?;
+    tx.execute(
+        "INSERT INTO message_variant (sha256, message, source, size_bytes)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![hash.0, message.0, source, size_bytes],
+    )?;
+    Ok(message)
 }
 
 /// The logical message a new variant belongs to, created if need be

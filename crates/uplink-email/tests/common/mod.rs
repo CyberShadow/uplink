@@ -196,6 +196,11 @@ impl Provider {
             .await;
     }
 
+    /// Has `clean_up` remove message `id` too.
+    pub fn clean_up_later(&self, id: String) {
+        self.delivered.lock().unwrap().push(id);
+    }
+
     /// Moves what the tests delivered to the trash, so a real account
     /// stays as it was.
     pub async fn clean_up(&self) {
@@ -340,11 +345,16 @@ async fn authorize(
     authorized.unwrap();
 }
 
-/// A message unique to the test run, findable by `tag`.
-pub fn message(tag: &str, body: &str) -> Vec<u8> {
+/// Random, to tell the test run's messages apart from others'.
+pub fn nonce() -> String {
     let mut nonce = [0u8; 8];
     rand::fill(&mut nonce);
-    let nonce: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
+    nonce.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A message unique to the test run, findable by `tag`.
+pub fn message(tag: &str, body: &str) -> Vec<u8> {
+    let nonce = nonce();
     format!(
         "Message-ID: <{tag}.{nonce}@uplink.test>\r\nFrom: Tester <tester@uplink.test>\r\n\
          To: alice@example.com\r\nDate: Tue, 3 Nov 2026 10:00:00 +0000\r\n\

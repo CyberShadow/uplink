@@ -1,0 +1,750 @@
+//! Drafts and the mail outbox, and the log entries that change them
+//! (SPEC §6.7, §7).
+//!
+//! A draft is edited by splices, each based on the revision it was
+//! computed against, so a stale edit from another tab is refused rather
+//! than applied in the wrong place. Sending moves the draft into the
+//! outbox, from which the account's sync task sends it once the send delay
+//! has passed; until it claims the item, the send can be undone, which
+//! returns the draft.
+
+use crate::{mailbox::insert_variant, parse::Parsed, store::VariantHash};
+use anyhow::{bail, ensure, Context, Result};
+use mail_builder::{
+    headers::{address::Address, message_id::MessageId as MessageIdHeader},
+    MessageBuilder,
+};
+use mail_parser::{HeaderName, MessageParser};
+use serde::{Deserialize, Serialize};
+use std::time::{SystemTime, UNIX_EPOCH};
+use uplink_protocol::{
+    compose::{
+        Draft, DraftContent, DraftEdited, DraftField, DraftId, DraftsChanged, OutboxChanged,
+        OutboxId, OutboxItem, OutboxState, Splice,
+    },
+    mail::{EntryId, MessageId},
+    ServerEvent,
+};
+use uplink_storage::rusqlite::{params, OptionalExtension, Row, Transaction};
+use uplink_tx_log::{Applied, Conflict, Inverse, Observation, Observed, Op, Registry};
+
+pub fn register(registry: &mut Registry) {
+    registry.register::<PutDraft>();
+    registry.register::<DeleteDraft>();
+    registry.register::<EditDraft>();
+    registry.register::<SendDraft>();
+    registry.register::<CancelSend>();
+}
+
+// ── drafts ────────────────────────────────────────────────────────────────
+
+const DRAFT_COLUMNS: &str = "id, account_id, revision, to_addrs, cc_addrs, bcc_addrs, subject,
+                             body_html, in_reply_to, updated_at";
+
+pub(crate) fn draft_row(r: &Row) -> uplink_storage::rusqlite::Result<Draft> {
+    Ok(Draft {
+        id: DraftId(r.get(0)?),
+        account: r.get(1)?,
+        revision: r.get(2)?,
+        content: DraftContent {
+            to: r.get(3)?,
+            cc: r.get(4)?,
+            bcc: r.get(5)?,
+            subject: r.get(6)?,
+            body: r.get(7)?,
+        },
+        in_reply_to: r.get::<_, Option<i64>>(8)?.map(MessageId),
+        updated_at: r.get(9)?,
+    })
+}
+
+pub(crate) fn drafts(tx: &Transaction) -> Result<Vec<Draft>> {
+    Ok(tx
+        .prepare(&format!(
+            "SELECT {DRAFT_COLUMNS} FROM draft ORDER BY updated_at DESC, id"
+        ))?
+        .query_map([], draft_row)?
+        .collect::<Result<_, _>>()?)
+}
+
+fn draft(tx: &Transaction, id: &DraftId) -> Result<Option<Draft>> {
+    Ok(tx
+        .query_row(
+            &format!("SELECT {DRAFT_COLUMNS} FROM draft WHERE id = ?1"),
+            [&id.0],
+            draft_row,
+        )
+        .optional()?)
+}
+
+fn existing_draft(tx: &Transaction, id: &DraftId) -> Result<Draft> {
+    draft(tx, id)?.ok_or_else(|| Conflict("the draft no longer exists".into()).into())
+}
+
+fn insert_draft(tx: &Transaction, draft: &Draft) -> Result<()> {
+    let c = &draft.content;
+    let inserted = tx.execute(
+        &format!(
+            "INSERT INTO draft ({DRAFT_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT (id) DO NOTHING"
+        ),
+        params![
+            draft.id.0,
+            draft.account,
+            draft.revision,
+            c.to,
+            c.cc,
+            c.bcc,
+            c.subject,
+            c.body,
+            draft.in_reply_to.map(|m| m.0),
+            draft.updated_at,
+        ],
+    )?;
+    if inserted == 0 {
+        bail!(Conflict(format!("draft {} exists already", draft.id.0)));
+    }
+    Ok(())
+}
+
+fn delete_draft(tx: &Transaction, id: &DraftId) -> Result<Draft> {
+    let draft = existing_draft(tx, id)?;
+    tx.execute("DELETE FROM draft WHERE id = ?1", [&id.0])?;
+    Ok(draft)
+}
+
+fn drafts_changed(id: &DraftId) -> ServerEvent {
+    ServerEvent::DraftsChanged(DraftsChanged {
+        drafts: vec![id.clone()],
+    })
+}
+
+/// How a draft is named in descriptions.
+fn title(content: &DraftContent) -> String {
+    match content.subject.trim() {
+        "" => "(no subject)".to_owned(),
+        subject => format!("'{subject}'"),
+    }
+}
+
+/// Creates a draft, or restores a deleted one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PutDraft {
+    pub id: DraftId,
+    pub account: String,
+    pub revision: i64,
+    pub content: DraftContent,
+    pub in_reply_to: Option<MessageId>,
+}
+
+impl PutDraft {
+    fn of(draft: Draft) -> Self {
+        Self {
+            id: draft.id,
+            account: draft.account,
+            revision: draft.revision,
+            content: draft.content,
+            in_reply_to: draft.in_reply_to,
+        }
+    }
+}
+
+impl Op for PutDraft {
+    const KIND: &'static str = "draft.put";
+
+    fn apply(self, tx: &Transaction) -> Result<Applied> {
+        let description = format!("Saved draft {}", title(&self.content));
+        let draft = Draft {
+            id: self.id,
+            account: self.account,
+            revision: self.revision,
+            content: self.content,
+            in_reply_to: self.in_reply_to,
+            updated_at: now_ms(),
+        };
+        insert_draft(tx, &draft)?;
+        Ok(Applied {
+            description,
+            inverse: Inverse::of(&DeleteDraft {
+                id: draft.id.clone(),
+            }),
+            events: vec![drafts_changed(&draft.id)],
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteDraft {
+    pub id: DraftId,
+}
+
+impl Op for DeleteDraft {
+    const KIND: &'static str = "draft.delete";
+
+    fn apply(self, tx: &Transaction) -> Result<Applied> {
+        let draft = delete_draft(tx, &self.id)?;
+        Ok(Applied {
+            description: format!("Discarded draft {}", title(&draft.content)),
+            inverse: Inverse::of(&PutDraft::of(draft)),
+            events: vec![drafts_changed(&self.id)],
+        })
+    }
+}
+
+/// Applies `splice` to a draft at `revision`. Inverses, which undo applies
+/// to whatever revision the draft has reached, have no revision; they
+/// check only that the text they remove is where they expect it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EditDraft {
+    pub id: DraftId,
+    pub revision: Option<i64>,
+    pub splice: Splice,
+}
+
+impl Op for EditDraft {
+    const KIND: &'static str = "draft.edit";
+
+    fn apply(self, tx: &Transaction) -> Result<Applied> {
+        let draft = existing_draft(tx, &self.id)?;
+        if let Some(revision) = self.revision {
+            if revision != draft.revision {
+                bail!(Conflict(format!(
+                    "the draft is at revision {}, not {revision}",
+                    draft.revision
+                )));
+            }
+        }
+        let splice = &self.splice;
+        let column = match splice.field {
+            DraftField::To => "to_addrs",
+            DraftField::Cc => "cc_addrs",
+            DraftField::Bcc => "bcc_addrs",
+            DraftField::Subject => "subject",
+            DraftField::Body => "body_html",
+        };
+        let c = &draft.content;
+        let text = match splice.field {
+            DraftField::To => &c.to,
+            DraftField::Cc => &c.cc,
+            DraftField::Bcc => &c.bcc,
+            DraftField::Subject => &c.subject,
+            DraftField::Body => &c.body,
+        };
+        let edited = apply_splice(text, splice)
+            .ok_or_else(|| Conflict("the draft's text changed".into()))?;
+        let revision = draft.revision + 1;
+        tx.execute(
+            &format!(
+                "UPDATE draft SET {column} = ?1, revision = ?2, updated_at = ?3 WHERE id = ?4"
+            ),
+            params![edited, revision, now_ms(), self.id.0],
+        )?;
+        let subject = match splice.field {
+            DraftField::Subject => &edited,
+            _ => &c.subject,
+        };
+        Ok(Applied {
+            description: format!(
+                "Edited draft {}",
+                title(&DraftContent {
+                    subject: subject.clone(),
+                    ..c.clone()
+                })
+            ),
+            inverse: Inverse::of(&EditDraft {
+                id: self.id.clone(),
+                revision: None,
+                splice: Splice {
+                    field: splice.field,
+                    offset: splice.offset,
+                    delete: splice.insert.clone(),
+                    insert: splice.delete.clone(),
+                },
+            }),
+            events: vec![ServerEvent::DraftEdited(DraftEdited {
+                draft: self.id,
+                revision,
+                splice: self.splice,
+            })],
+        })
+    }
+}
+
+/// `text` with `splice` applied, if what it deletes is at its offset.
+fn apply_splice(text: &str, splice: &Splice) -> Option<String> {
+    let start = byte_offset(text, splice.offset)?;
+    let end = start + splice.delete.len();
+    if !text[start..].starts_with(&splice.delete) {
+        return None;
+    }
+    Some([&text[..start], &splice.insert, &text[end..]].concat())
+}
+
+/// The byte offset of `units` UTF-16 code units into `text`; `None` past
+/// the end or inside a surrogate pair.
+fn byte_offset(text: &str, units: u32) -> Option<usize> {
+    let units = units as usize;
+    let mut counted = 0;
+    for (i, c) in text.char_indices() {
+        if counted == units {
+            return Some(i);
+        }
+        counted += c.len_utf16();
+        if counted > units {
+            return None;
+        }
+    }
+    (counted == units).then_some(text.len())
+}
+
+// ── outbox ────────────────────────────────────────────────────────────────
+
+const OUTBOX_COLUMNS: &str = "id, account_id, draft, state, error, not_before";
+
+fn outbox_row(r: &Row) -> uplink_storage::rusqlite::Result<OutboxItem> {
+    let draft: String = r.get(2)?;
+    let state: String = r.get(3)?;
+    Ok(OutboxItem {
+        id: OutboxId(r.get(0)?),
+        account: r.get(1)?,
+        draft: serde_json::from_str(&draft).expect("outbox drafts deserialize"),
+        state: match state.as_str() {
+            "queued" => OutboxState::Queued,
+            "sending" => OutboxState::Sending,
+            "sent" => OutboxState::Sent,
+            "failed" => OutboxState::Failed,
+            _ => unreachable!("the schema allows no outbox state {state}"),
+        },
+        error: r.get(4)?,
+        not_before: r.get(5)?,
+    })
+}
+
+pub(crate) fn outbox(tx: &Transaction) -> Result<Vec<OutboxItem>> {
+    Ok(tx
+        .prepare(&format!(
+            "SELECT {OUTBOX_COLUMNS} FROM mail_outbox ORDER BY not_before, id"
+        ))?
+        .query_map([], outbox_row)?
+        .collect::<Result<_, _>>()?)
+}
+
+fn outbox_item(tx: &Transaction, id: OutboxId) -> Result<Option<OutboxItem>> {
+    Ok(tx
+        .query_row(
+            &format!("SELECT {OUTBOX_COLUMNS} FROM mail_outbox WHERE id = ?1"),
+            [id.0],
+            outbox_row,
+        )
+        .optional()?)
+}
+
+fn outbox_changed(id: OutboxId) -> ServerEvent {
+    ServerEvent::OutboxChanged(OutboxChanged { items: vec![id] })
+}
+
+/// Moves a draft into the outbox, to be sent `delay_ms` from now.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SendDraft {
+    pub id: DraftId,
+    pub delay_ms: i64,
+}
+
+impl Op for SendDraft {
+    const KIND: &'static str = "mail.send";
+
+    fn apply(self, tx: &Transaction) -> Result<Applied> {
+        let draft = delete_draft(tx, &self.id)?;
+        let message_id = new_message_id(&draft.account);
+        let item = OutboxId(tx.query_row(
+            "INSERT INTO mail_outbox
+               (account_id, draft, message_id, delay_ms, not_before, state)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'queued')
+             RETURNING id",
+            params![
+                draft.account,
+                serde_json::to_string(&draft)?,
+                message_id,
+                self.delay_ms,
+                now_ms() + self.delay_ms,
+            ],
+            |r| r.get(0),
+        )?);
+        Ok(Applied {
+            description: format!("Sent {}", title(&draft.content)),
+            inverse: Inverse::of(&CancelSend { item }),
+            events: vec![drafts_changed(&self.id), outbox_changed(item)],
+        })
+    }
+}
+
+/// A Message-ID for mail sent from the account: random, so unique.
+fn new_message_id(account: &str) -> String {
+    let random: [u8; 16] = rand::random();
+    let random: String = random.iter().map(|b| format!("{b:02x}")).collect();
+    format!("{random}@{account}.uplink")
+}
+
+/// Takes a queued or failed item out of the outbox, restoring its draft.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancelSend {
+    pub item: OutboxId,
+}
+
+impl Op for CancelSend {
+    const KIND: &'static str = "mail.cancel_send";
+
+    fn apply(self, tx: &Transaction) -> Result<Applied> {
+        let item =
+            outbox_item(tx, self.item)?.ok_or_else(|| Conflict("the message was sent".into()))?;
+        match item.state {
+            OutboxState::Queued | OutboxState::Failed => {}
+            OutboxState::Sending => bail!(Conflict("the message is being sent".into())),
+            OutboxState::Sent => bail!(Conflict("the message was sent".into())),
+        }
+        let delay_ms: i64 = tx.query_row(
+            "DELETE FROM mail_outbox WHERE id = ?1 RETURNING delay_ms",
+            [self.item.0],
+            |r| r.get(0),
+        )?;
+        insert_draft(tx, &item.draft)?;
+        Ok(Applied {
+            description: format!("Cancelled sending {}", title(&item.draft.content)),
+            inverse: Inverse::of(&SendDraft {
+                id: item.draft.id.clone(),
+                delay_ms,
+            }),
+            events: vec![drafts_changed(&item.draft.id), outbox_changed(self.item)],
+        })
+    }
+}
+
+/// An outbox item due to be sent.
+#[derive(Debug, Clone)]
+pub struct Due {
+    pub item: OutboxId,
+    pub draft: Draft,
+    pub message_id: String,
+}
+
+/// The account's queued items whose time has come, and when the next
+/// one comes due.
+pub(crate) fn due(
+    conn: &uplink_storage::rusqlite::Connection,
+    account: &str,
+    now: i64,
+) -> Result<(Vec<Due>, Option<i64>)> {
+    let due = conn
+        .prepare(
+            "SELECT id, draft, message_id FROM mail_outbox
+             WHERE account_id = ?1 AND state = 'queued' AND not_before <= ?2
+             ORDER BY not_before, id",
+        )?
+        .query_map(params![account, now], |r| {
+            let draft: String = r.get(1)?;
+            Ok(Due {
+                item: OutboxId(r.get(0)?),
+                draft: serde_json::from_str(&draft).expect("outbox drafts deserialize"),
+                message_id: r.get(2)?,
+            })
+        })?
+        .collect::<Result<_, _>>()?;
+    let next = conn.query_row(
+        "SELECT min(not_before) FROM mail_outbox
+         WHERE account_id = ?1 AND state = 'queued' AND not_before > ?2",
+        params![account, now],
+        |r| r.get(0),
+    )?;
+    Ok((due, next))
+}
+
+/// Items the account's sync task claimed but did not finish: it was
+/// interrupted, and they may or may not have gone out.
+pub(crate) fn interrupted(
+    conn: &uplink_storage::rusqlite::Connection,
+    account: &str,
+) -> Result<Vec<OutboxId>> {
+    Ok(conn
+        .prepare("SELECT id FROM mail_outbox WHERE account_id = ?1 AND state = 'sending'")?
+        .query_map([account], |r| Ok(OutboxId(r.get(0)?)))?
+        .collect::<Result<_, _>>()?)
+}
+
+/// The sync task is about to hand an item to the provider: from now on,
+/// it can no longer be cancelled. Refused with a [`Conflict`] if the item
+/// is no longer queued.
+#[derive(Debug, Serialize)]
+pub struct SendStarted {
+    pub item: OutboxId,
+}
+
+impl Observation for SendStarted {
+    const KIND: &'static str = "mail.send_started";
+
+    fn apply(self, _account: &str, tx: &Transaction) -> Result<Observed> {
+        let item = outbox_item(tx, self.item)?
+            .filter(|i| i.state == OutboxState::Queued)
+            .ok_or_else(|| Conflict("no longer queued".into()))?;
+        set_state(tx, self.item, "sending", None)?;
+        Ok(Observed {
+            description: format!("Sending {}", title(&item.draft.content)),
+            events: vec![outbox_changed(self.item)],
+        })
+    }
+}
+
+/// The provider accepted an item. The message as sent is now in the mail
+/// store; recording it creates the logical message, which the provider's
+/// copy joins once synced (SPEC §8.6).
+#[derive(Debug, Serialize)]
+pub struct SendSucceeded {
+    pub item: OutboxId,
+    pub variant: VariantHash,
+    pub size_bytes: i64,
+    #[serde(skip)]
+    pub parsed: Parsed,
+}
+
+impl Observation for SendSucceeded {
+    const KIND: &'static str = "mail.send_succeeded";
+
+    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
+        let item = outbox_item(tx, self.item)?.context("the outbox item is gone")?;
+        ensure!(
+            item.state == OutboxState::Sending,
+            "{:?} is not being sent",
+            self.item
+        );
+        let known: Option<i64> = tx
+            .query_row(
+                "SELECT message FROM message_variant WHERE sha256 = ?1",
+                [&self.variant.0],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let message = match known {
+            Some(message) => MessageId(message),
+            None => insert_variant(tx, account, &self.variant, self.size_bytes, &self.parsed)?,
+        };
+        tx.execute(
+            "UPDATE mail_outbox SET state = 'sent', message = ?1 WHERE id = ?2",
+            params![message.0, self.item.0],
+        )?;
+        // The provider's copy may have been synced already.
+        let mut events = vec![outbox_changed(self.item)];
+        events.extend(synced_back(tx, account, message)?);
+        Ok(Observed {
+            description: format!("Sent {}", title(&item.draft.content)),
+            events,
+        })
+    }
+}
+
+/// Sending an item failed. With an `error`, it was not sent and will not
+/// be retried; without, it goes back to the queue to be retried.
+#[derive(Debug, Serialize)]
+pub struct SendFailed {
+    pub item: OutboxId,
+    pub error: Option<String>,
+}
+
+impl Observation for SendFailed {
+    const KIND: &'static str = "mail.send_failed";
+
+    fn apply(self, _account: &str, tx: &Transaction) -> Result<Observed> {
+        let item = outbox_item(tx, self.item)?.context("the outbox item is gone")?;
+        ensure!(
+            item.state == OutboxState::Sending,
+            "{:?} is not being sent",
+            self.item
+        );
+        let title = title(&item.draft.content);
+        let description = match &self.error {
+            Some(error) => {
+                set_state(tx, self.item, "failed", Some(error))?;
+                format!("Failed to send {title}: {error}")
+            }
+            None => {
+                set_state(tx, self.item, "queued", None)?;
+                format!("Failed to send {title}; will retry")
+            }
+        };
+        Ok(Observed {
+            description,
+            events: vec![outbox_changed(self.item)],
+        })
+    }
+}
+
+fn set_state(tx: &Transaction, item: OutboxId, state: &str, error: Option<&str>) -> Result<()> {
+    tx.execute(
+        "UPDATE mail_outbox SET state = ?1, error = ?2 WHERE id = ?3",
+        params![state, error, item.0],
+    )?;
+    Ok(())
+}
+
+/// Removes the account's sent items whose provider copy has been synced:
+/// they are mail like any other now.
+fn synced_back(tx: &Transaction, account: &str, message: MessageId) -> Result<Option<ServerEvent>> {
+    let items: Vec<OutboxId> = tx
+        .prepare(
+            "DELETE FROM mail_outbox
+             WHERE account_id = ?1 AND message = ?2 AND state = 'sent'
+               AND EXISTS (SELECT 1 FROM mail_entry WHERE account_id = ?1 AND message = ?2)
+             RETURNING id",
+        )?
+        .query_map(params![account, message.0], |r| Ok(OutboxId(r.get(0)?)))?
+        .collect::<Result<_, _>>()?;
+    Ok((!items.is_empty()).then_some(ServerEvent::OutboxChanged(OutboxChanged { items })))
+}
+
+/// After an entry was recorded: its message may be one sent from the
+/// account.
+pub(crate) fn entry_synced(
+    tx: &Transaction,
+    account: &str,
+    entry: EntryId,
+) -> Result<Option<ServerEvent>> {
+    let message: i64 = tx.query_row(
+        "SELECT message FROM mail_entry WHERE id = ?1",
+        [entry.0],
+        |r| r.get(0),
+    )?;
+    synced_back(tx, account, MessageId(message))
+}
+
+// ── outgoing messages ─────────────────────────────────────────────────────
+
+/// Parses an address list as typed: comma-separated, each `addr` or
+/// `Name <addr>`.
+pub fn parse_addresses(list: &str) -> Result<Vec<Recipient>> {
+    if list.trim().is_empty() {
+        return Ok(vec![]);
+    }
+    let header = format!("To: {}\r\n\r\n", list.replace(['\r', '\n'], " "));
+    let message = MessageParser::new()
+        .with_address_headers()
+        .parse(header.as_bytes())
+        .context("unparseable addresses")?;
+    let mut addresses = vec![];
+    for address in message.to().into_iter().flat_map(|a| a.iter()) {
+        let addr = address.address().unwrap_or_default();
+        let at = addr.find('@');
+        ensure!(
+            at.is_some_and(|at| at > 0 && at + 1 < addr.len())
+                && !addr.contains(char::is_whitespace),
+            "not an address: {}",
+            address.name().unwrap_or(addr)
+        );
+        addresses.push((address.name().map(str::to_owned), addr.to_owned()));
+    }
+    Ok(addresses)
+}
+
+type Recipient = (Option<String>, String);
+
+/// The draft's To, Cc and Bcc recipients; fails unless there is one.
+fn recipients(draft: &DraftContent) -> Result<[Vec<Recipient>; 3]> {
+    let lists = [
+        parse_addresses(&draft.to).context("To")?,
+        parse_addresses(&draft.cc).context("Cc")?,
+        parse_addresses(&draft.bcc).context("Bcc")?,
+    ];
+    ensure!(
+        lists.iter().any(|l| !l.is_empty()),
+        "the message has no recipients"
+    );
+    Ok(lists)
+}
+
+/// Fails, saying why, if `draft` could not be sent.
+pub fn check_sendable(draft: &DraftContent) -> Result<()> {
+    recipients(draft).map(drop)
+}
+
+/// What a reply needs from the message it replies to.
+#[derive(Debug, Clone, Default)]
+pub struct ReplyContext {
+    pub in_reply_to: Option<String>,
+    pub references: Vec<String>,
+}
+
+impl ReplyContext {
+    /// For a reply to the message `raw` with Message-ID `message_id`.
+    pub fn of(message_id: &str, raw: &[u8]) -> Self {
+        let mut references: Vec<String> = MessageParser::new()
+            .with_message_ids()
+            .parse_headers(raw)
+            .and_then(|m| {
+                m.header(HeaderName::References).map(|v| {
+                    v.as_text_list()
+                        .map(|l| l.iter().map(|r| r.to_string()).collect())
+                        .unwrap_or_default()
+                })
+            })
+            .unwrap_or_default();
+        references.push(message_id.to_owned());
+        Self {
+            in_reply_to: Some(message_id.to_owned()),
+            references,
+        }
+    }
+}
+
+/// The RFC 5322 message for `draft`, from `from`, dated `date` (unix
+/// seconds). The HTML is sanitized, and a plain-text part derived from it.
+pub fn build_message(
+    from: &str,
+    draft: &DraftContent,
+    message_id: &str,
+    reply: &ReplyContext,
+    date: i64,
+) -> Result<Vec<u8>> {
+    let [to, cc, bcc] = recipients(draft)?.map(|list| {
+        list.into_iter()
+            .map(|(name, addr)| Address::new_address(name, addr))
+            .collect::<Vec<_>>()
+    });
+    let html = ammonia::clean(&draft.body);
+    let text = mail_parser::decoders::html::html_to_text(&html);
+    let mut message = MessageBuilder::new()
+        .from(Address::new_address(None::<&str>, from.to_owned()))
+        .subject(draft.subject.clone())
+        .message_id(message_id.to_owned())
+        .date(date)
+        .html_body(html)
+        .text_body(text);
+    if !to.is_empty() {
+        message = message.to(Address::new_list(to));
+    }
+    if !cc.is_empty() {
+        message = message.cc(Address::new_list(cc));
+    }
+    if !bcc.is_empty() {
+        message = message.bcc(Address::new_list(bcc));
+    }
+    if let Some(in_reply_to) = &reply.in_reply_to {
+        message = message
+            .in_reply_to(in_reply_to.clone())
+            .references(MessageIdHeader::new_list(reply.references.iter().cloned()));
+    }
+    Ok(message.write_to_vec()?)
+}
+
+pub(crate) fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock before 1970")
+        .as_millis()
+        .try_into()
+        .expect("timestamp fits in i64")
+}
+
+#[cfg(test)]
+mod tests;

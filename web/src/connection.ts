@@ -51,17 +51,26 @@ interface Pending {
   reject(error: Error): void
 }
 
-/** Queries can be sent again on a new connection; ops can't, since one
- * may have been applied before the connection dropped. */
-function isQuery(body: ClientRequest): boolean {
+/** Queries can be sent again on a new connection, and so can ops that
+ * refuse to apply twice: creating a draft (its id exists) and editing one
+ * (its revision moved on). Other ops can't, since one may have been
+ * applied before the connection dropped. */
+function isResendable(body: ClientRequest): boolean {
   switch (body.type) {
     case 'list_accounts':
     case 'list_entries':
     case 'search':
     case 'load_message':
+    case 'list_drafts':
+    case 'list_outbox':
+    case 'create_draft':
+    case 'edit_draft':
       return true
     case 'undo':
     case 'modify_labels':
+    case 'delete_draft':
+    case 'send_draft':
+    case 'cancel_send':
       return false
   }
 }
@@ -174,7 +183,7 @@ export class Connection implements Requester {
     this.welcomed = false
     clearInterval(this.heartbeat)
     for (const [id, pending] of this.sent) {
-      if (isQuery(pending.body)) {
+      if (isResendable(pending.body)) {
         this.queued.set(id, pending)
       } else {
         pending.reject(new ConnectionLost())

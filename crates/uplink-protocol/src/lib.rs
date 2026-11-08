@@ -7,8 +7,10 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+pub mod compose;
 pub mod mail;
 
+use compose::{Draft, DraftContent, DraftId, OutboxId, Splice};
 use mail::{EntryId, LabelId, ListPosition, MessageId};
 
 /// Id of a log entry. Entries are numbered from 1 in commit order, so an
@@ -102,6 +104,35 @@ pub enum ClientRequest {
         add: Vec<LabelId>,
         remove: Vec<LabelId>,
     },
+    /// All drafts.
+    ListDrafts,
+    /// Create a draft, with revision 0.
+    CreateDraft {
+        id: DraftId,
+        account: String,
+        content: DraftContent,
+        in_reply_to: Option<MessageId>,
+    },
+    /// Apply `splice` to the draft at `revision`; refused with `conflict`
+    /// if the draft is at another revision.
+    EditDraft {
+        draft: DraftId,
+        revision: i64,
+        splice: Splice,
+    },
+    DeleteDraft {
+        draft: DraftId,
+    },
+    /// Move the draft to the outbox, to be sent after the send delay.
+    SendDraft {
+        draft: DraftId,
+    },
+    /// Take a queued or failed item out of the outbox, back into drafts.
+    CancelSend {
+        item: OutboxId,
+    },
+    /// Outbox items not yet synced back from the provider.
+    ListOutbox,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -130,6 +161,14 @@ pub enum ServerResponse {
     Message {
         message: mail::MessageContent,
     },
+    Drafts {
+        as_of: TxLogId,
+        drafts: Vec<Draft>,
+    },
+    Outbox {
+        as_of: TxLogId,
+        items: Vec<compose::OutboxItem>,
+    },
 }
 
 impl ServerResponse {
@@ -139,7 +178,10 @@ impl ServerResponse {
     pub fn position(&self) -> Option<TxLogId> {
         match self {
             Self::Undone { tx_log_id } | Self::Dispatched { tx_log_id } => Some(*tx_log_id),
-            Self::Accounts { as_of, .. } | Self::Entries { as_of, .. } => Some(*as_of),
+            Self::Accounts { as_of, .. }
+            | Self::Entries { as_of, .. }
+            | Self::Drafts { as_of, .. }
+            | Self::Outbox { as_of, .. } => Some(*as_of),
             // Message content does not change.
             Self::Message { .. } => None,
         }
@@ -204,6 +246,9 @@ pub enum ServerEvent {
     EntriesRemoved(mail::EntriesRemoved),
     LabelsChanged(mail::LabelsChanged),
     LabelListChanged(mail::LabelListChanged),
+    DraftEdited(compose::DraftEdited),
+    DraftsChanged(compose::DraftsChanged),
+    OutboxChanged(compose::OutboxChanged),
 }
 
 #[cfg(test)]

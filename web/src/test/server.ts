@@ -161,6 +161,14 @@ export class FakeServer implements Requester {
         this.undoable.set(id, { changes, undone: false })
         return { type: 'undone', tx_log_id: id }
       }
+      case 'list_drafts':
+      case 'create_draft':
+      case 'edit_draft':
+      case 'delete_draft':
+      case 'send_draft':
+      case 'cancel_send':
+      case 'list_outbox':
+        throw new Error(`${body.type} is not implemented`)
     }
   }
 
