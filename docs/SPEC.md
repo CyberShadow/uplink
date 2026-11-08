@@ -97,10 +97,12 @@ Don't litigate these in code review.
    plaintext at rest (encryption of OAuth secrets is at-rest, with the key
    in a sibling file — see §13). Client receives already-decrypted, already-
    resolved, ready-to-render payloads.
-3. **Every state-mutating operation is dispatched through the tx_log.**
-   Single chokepoint. Every dispatch records an op + inverse before applying.
-   Mass operations are a *single* tx_log entry with a batch inverse. Undo is
-   itself an op (append-only log).
+3. **Every user-initiated, reversible state mutation is dispatched through
+   the tx_log.** Single chokepoint. Every dispatch applies an op and records
+   it with its inverse in one transaction. Mass operations are a *single*
+   tx_log entry with a batch inverse. Undo is itself an op (append-only
+   log). Actions with irreversible external effects (sending mail or a
+   Matrix message) are not ops and cannot be undone — see §6.5.
 4. **Raw `.eml` files and raw `.ics` blobs are sacred.** Content-addressed by
    SHA-256(raw bytes), never modified, never deleted by the application, no
    attachment extraction. Indexes (search, threading, labels) live in SQLite
@@ -329,14 +331,15 @@ level. With `~1 M` messages that's ~4 K files per dir, fine for ext4/btrfs.
 - `foreign_keys = ON`.
 - `temp_store = MEMORY`.
 - `cache_size = -64000` (64 MiB).
-- One write connection, N read connections via a `tokio-rusqlite` pool.
+- One write connection, owned by the op dispatcher and used from the tokio
+  blocking pool; read connections added as queries need them.
 - All writes serialized through the op dispatcher; read connections run in
   the tokio blocking pool.
 
 **Why rusqlite over sqlx**: no compile-time DB schema dependency (sqlx
 verifies queries against a live DB at build time, which is brittle for an
 embedded DB with migrations and FTS5). `rusqlite` has first-class FTS5
-support and integrates cleanly with `tokio-rusqlite`'s spawn_blocking model.
+support and works directly from `spawn_blocking`.
 For a single-writer embedded DB, sqlx's pool semantics buy nothing.
 
 **Migrations**: `refinery` crate. Forward-only, embedded SQL files in
@@ -515,9 +518,10 @@ CREATE TABLE tx_log (
   ts             INTEGER NOT NULL,          -- ms since epoch
   actor          TEXT NOT NULL,             -- 'user' | account_id (for system ops)
   description    TEXT NOT NULL,             -- human string, e.g. 'archived 12 messages'
-  op_type        TEXT NOT NULL,             -- discriminator
+  op_type        TEXT NOT NULL,             -- forward op kind
   op_json        TEXT NOT NULL,             -- forward op payload
-  inverse_json   TEXT NOT NULL,             -- inverse op payload (recorded BEFORE apply)
+  inverse_type   TEXT NOT NULL,             -- inverse op kind
+  inverse_json   TEXT NOT NULL,             -- inverse op payload (computed from pre-state)
   undone_by      INTEGER REFERENCES tx_log(id), -- if non-null, this op was undone
                                                 -- by tx_log entry undone_by.
   undoes         INTEGER REFERENCES tx_log(id)  -- if non-null, this op is an undo
@@ -589,50 +593,38 @@ show new messages instantly while indexing catches up.
 All messages use a tagged enum discriminator. In Rust:
 
 ```rust
-// crates/uplink-protocol/src/ws.rs
+// crates/uplink-protocol/src/lib.rs
 
-#[derive(Serialize, Deserialize, TS)]
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-#[ts(export)]
 pub enum WsClientMsg {
     Ping { seq: u64 },
     /// First message after connection — tells server where we last were.
-    Hello { cursor: Option<u64> },
-    /// Request/response: the matching response carries the same request_id.
-    Request {
-        request_id: u64,
-        #[serde(flatten)]
-        body: ClientRequest,
-    },
+    Hello { resume: Option<Resume> },
+    /// Request/response: the matching reply carries the same request_id.
+    Request { request_id: u64, body: ClientRequest },
     /// Fire-and-forget client-originated events (draft edits primarily).
-    Event {
-        #[serde(flatten)]
-        body: ClientEvent,
-    },
+    Event { body: ClientEvent },
 }
 
-#[derive(Serialize, Deserialize, TS)]
+pub struct Resume { pub epoch: Epoch, pub cursor: Cursor }
+
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-#[ts(export)]
 pub enum WsServerMsg {
     Pong { seq: u64 },
-    /// Server's reply to a Hello. Carries the assigned cursor and any
-    /// initial state the client needs.
-    Welcome { cursor: u64, accounts: Vec<AccountSummary> },
-    /// Response to a Request.
-    Response {
-        request_id: u64,
-        #[serde(flatten)]
-        body: Result<ServerResponse, ServerError>,
-    },
+    /// Reply to Hello (see §5.3).
+    Welcome { epoch: Epoch, cursor: Cursor, resumed: bool },
+    Response { request_id: u64, body: ServerResponse },
+    RequestFailed { request_id: u64, error: ServerError },
     /// Server-pushed event. Each carries a monotonic cursor for replay.
-    Event {
-        cursor: u64,
-        #[serde(flatten)]
-        body: ServerEvent,
-    },
+    Event { cursor: Cursor, body: ServerEvent },
 }
 ```
+
+Payloads nest under `body` rather than being `#[serde(flatten)]`ed: they
+are tagged enums themselves, and their `type` tag would collide with the
+envelope's.
 
 `ClientRequest`, `ClientEvent`, `ServerEvent`, `ServerResponse` are
 themselves tagged enums; per-domain variants live in domain submodules
@@ -640,15 +632,19 @@ themselves tagged enums; per-domain variants live in domain submodules
 
 ### 5.3 Replay buffer
 
-The realtime crate keeps a ring buffer (e.g. 4096 most recent events) keyed
-by cursor. On `Hello { cursor: Some(c) }`, the server replays events with
-cursor `>c`. If `c` is older than the ring buffer's tail, server responds
-with `Welcome { cursor }` carrying a "you must resync" marker and the
-client refetches via REST.
+The realtime crate keeps a ring buffer (4096 most recent events) keyed by
+cursor. Cursors are per-server-process and not persisted; each process
+also has an *epoch*, so a cursor is only meaningful together with the
+epoch it was issued under.
 
-The cursor is a per-server-process monotonic u64 — *not* persisted across
-restarts. After a server restart, all clients full-resync. This is fine for
-single-user.
+On `Hello { resume: Some({ epoch, cursor }) }`, if the epoch matches and
+every event after `cursor` is still buffered, the server replies
+`Welcome { resumed: true }` followed by the missed events, then live ones.
+Otherwise — including after a server restart — it replies
+`Welcome { resumed: false, cursor }`: the client discards its state,
+reloads, and adopts `cursor` as its baseline. A session that falls further
+behind the live stream than the buffer holds is closed, and the client
+reconnects and resumes.
 
 ### 5.4 Event types (MVP)
 
@@ -685,53 +681,37 @@ single-user.
 
 ### 6.1 The dispatcher
 
-A single function with this shape:
-
 ```rust
-pub trait Op: Sized {
-    /// JSON discriminator key. e.g. "mail.archive" / "matrix.send_message".
+// crates/uplink-tx-log/src/lib.rs
+
+pub trait Op: Serialize + DeserializeOwned + Send + 'static {
+    /// Discriminator recorded in tx_log, e.g. "mail.archive".
     const KIND: &'static str;
 
-    /// Apply self atomically. Compute the inverse from pre-state. Return
-    /// (inverse, broadcast_events). On error, the transaction rolls back.
-    fn apply(
-        self,
-        tx: &mut rusqlite::Transaction,
-    ) -> Result<(InverseOp, Vec<ServerEvent>)>;
+    /// Apply within `tx`, computing the inverse from pre-state. On error,
+    /// the transaction rolls back.
+    fn apply(self, tx: &Transaction) -> Result<Applied>;
 
     /// Human description for the tx_log UI.
     fn describe(&self) -> String;
 }
 
-pub fn dispatch<O: Op + Serialize>(
-    ctx: &Ctx,
-    op: O,
-) -> Result<TxLogId> {
-    let db = ctx.db.write().lock();
-    let mut tx = db.transaction()?;
+pub struct Applied {
+    pub inverse: Inverse,          // Inverse::of(&some_op)
+    pub events: Vec<ServerEvent>,  // broadcast after commit
+}
 
-    let op_json = serde_json::to_string(&op)?;
-    let description = op.describe();
-
-    let (inverse, events) = op.apply(&mut tx)?;
-    let inverse_json = serde_json::to_string(&inverse.body)?;
-
-    let id = tx.query_row(
-        "INSERT INTO tx_log (ts, actor, description, op_type, op_json, inverse_json)
-         VALUES (?, ?, ?, ?, ?, ?)
-         RETURNING id",
-        params![now_ms(), "user", description, O::KIND, op_json, inverse_json],
-        |r| r.get::<_, i64>(0),
-    )?;
-    tx.commit()?;
-
-    // After commit, broadcast events and the new tx_log entry.
-    for ev in events { ctx.hub.broadcast(ev); }
-    ctx.hub.broadcast(ServerEvent::TxLogEntryAdded { id, .. });
-
-    Ok(TxLogId(id))
+impl Dispatcher {
+    pub async fn dispatch<O: Op>(&self, op: O) -> Result<TxLogId>;
+    pub async fn undo(&self, id: TxLogId) -> Result<TxLogId, UndoError>;
 }
 ```
+
+The dispatcher owns the single write connection. `dispatch` begins a
+transaction, applies the op, inserts the tx_log row (forward and inverse
+kind + JSON), commits, then publishes the op's events and
+`TxLogEntryAdded` — while still holding the writer, so cursor order equals
+commit order.
 
 Key properties:
 
@@ -746,30 +726,17 @@ Key properties:
 - **Op author writes the inverse.** No automatic introspection. Op-specific
   knowledge of which fields changed is encoded in `apply`.
 
-### 6.2 InverseOp
+### 6.2 Inverses
 
-```rust
-pub struct InverseOp {
-    pub kind: String,        // "mail.archive.inverse" etc.
-    pub body: InverseBody,   // tagged enum, serializable
-}
+An inverse is itself an op: `Inverse::of(&op)` records its kind and JSON.
+Op kinds are registered in a `Registry` by the crates that define them
+(tx-log sits below the domain crates, so it cannot name their types).
+Dispatch rejects an op whose inverse kind is unregistered, so every
+recorded entry can be undone.
 
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum InverseBody {
-    MailFlagsRestore { entries: Vec<(MessageId, Flags, Vec<LabelId>)> },
-    MatrixSendRedact { event_id: String, room_id: String },
-    TodoRecreate { todo: TodoRow },
-    TodoSetDone { id: i64, done_at: Option<i64> },
-    DraftSetFields { id: DraftId, version: u64, fields: DraftFields },
-    // ...
-}
-```
-
-Notably, **the inverse of "send a Matrix message" is "redact the message"**
-(not "delete it locally"). Inverses must be operations that themselves make
-sense in the external world. This is exactly the property that makes undo
-useful: it has the same blast radius as the original op.
+Inverses act on uplink's state and on provider state that can be put back
+(labels, flags, todos). There are no inverses for irreversible external
+actions; those are not ops at all (§6.5).
 
 ### 6.3 Undo
 
@@ -777,10 +744,10 @@ The `Undo { tx_log_id }` request:
 
 1. Look up tx_log entry by id.
 2. If `entry.undone_by IS NOT NULL`, error: already undone.
-3. Construct an `Op` from `entry.inverse_json` (a `KIND` lookup over a
-   registry).
-4. Dispatch it. Inside its `apply`, it sets `tx_log[entry_id].undone_by =
-   new_id` *and* the new entry has `undoes = entry_id`.
+3. Construct an `Op` from `entry.inverse_json` (an `inverse_type` lookup
+   in the registry).
+4. Apply and record it like any op, with `undoes = entry_id`, and set
+   `tx_log[entry_id].undone_by = new_id` — all in one transaction.
 
 Redo of an undo is just "undo the undo entry". This means the user can
 toggle back and forth.
@@ -800,7 +767,6 @@ and undo would have to replay 50 entries to roll back one user gesture.
 **Everything user-initiated that mutates persistent state.** Examples:
 
 - Marking message read/unread, archiving, labeling, deleting.
-- Sending a Matrix message.
 - Creating, editing, completing a TODO.
 - Flagging a message for follow-up (creates a linked TODO).
 
@@ -813,6 +779,12 @@ and undo would have to replay 50 entries to roll back one user gesture.
   ingest path that does *not* touch `tx_log`.
 - Read-only queries (search, load message body, load room timeline).
 - Draft edits (different sync mechanism — see §7).
+- Actions with irreversible external effects: sending mail, sending a
+  Matrix message. Once out, they cannot be taken back, so they are not
+  undoable and not recorded in tx_log. They are performed directly; their
+  local effects (the sent copy, the local echo) arrive like any other
+  observation of the external world. A best-effort "undo" (e.g. Matrix
+  redaction) may come later as an explicit action of its own.
 
 ### 6.6 Why drafts aren't tx_log ops
 
@@ -1111,8 +1083,7 @@ let resp = room.send(content).await?;
 // resp.event_id is the canonical id
 ```
 
-Send is a tx_log op (`MatrixSendMessage`). Its inverse is
-`MatrixRedactEvent { event_id, room_id }`. On dispatch:
+Send is not a tx_log op and cannot be undone (§6.5). On send:
 
 1. Insert a placeholder `matrix_event` row marked `pending = 1` (an extra
    column not shown above; flag for "local echo").
@@ -1557,7 +1528,7 @@ which account each message is from; the delta-link survives restart.
 - Local-only drafts with CAS protocol.
 - Gmail API send.
 - Graph sendMail.
-- Tx_log op for send (inverse: nothing in MVP — once it's out, it's out).
+- Send is not a tx_log op (§6.5).
 
 **Done when:** composing a reply, switching tabs mid-edit, and having the
 draft survive a network drop all work; clicking send actually transmits;
@@ -1570,13 +1541,13 @@ trip.
 - Account pair CLI subcommand (Secret Storage import).
 - matrix-rust-sdk sync loop.
 - Plain-text receive into `matrix_event`.
-- Plain-text send via dispatch op (inverse: redact).
+- Plain-text send (not a tx_log op; §6.5).
 - Room list + timeline UI.
 - Unknown event types rendered as raw JSON.
 
 **Done when:** sending a `m.text` to a room from uplink appears in
 another Matrix client; sending one from the other client appears in
-uplink; undoing the send produces a visible redaction event; an unknown
+uplink; an unknown
 event type (e.g. a sticker received from another client) appears in
 uplink's timeline as raw JSON rather than crashing or vanishing.
 
@@ -1626,10 +1597,6 @@ shows the last 100 user actions with working Undo buttons.
 - Gmail (M4) precedes M365 (M5) because IMAP+IDLE is more straightforward
   than the OAuth-impersonation dance, so we hit fewer category errors at
   the start.
-- Matrix (M7) precedes Calendar (M8) because Matrix exercises the
-  irreversible-op codepath (redact-as-inverse) which is the more complex
-  half of the tx_log story; getting that right early prevents revising
-  the Op trait late.
 - Send (M6) sits before Matrix (M7) because compose is the most user-
   visible piece of the UI and pulls hard on the draft sync infrastructure,
   validating both before we add a second mode.
@@ -1738,16 +1705,14 @@ fragmentation is pathological). `mail/` and `calendar/` should remain CoW
 so reflink copies on snapshot don't double storage. Document this in
 README install steps.
 
-### 15.9 Inverse semantics for irreversible external actions
+### 15.9 Irreversible external actions
 
-Sending a Matrix message is *de facto* irreversible (redact is best-
-effort; recipients may have already cached the plaintext). For Gmail/M365
-send, the op has no inverse — once it's out, it's out. The tx_log entry
-records the send (preserving the audit trail) and the Undo button in the
-log UI is rendered **disabled** (not clickable; not a clickable no-op)
-with a tooltip "cannot un-send mail". The alternative — don't log
-irreversible ops at all — loses the audit trail; we prefer the trail plus
-a disabled Undo control.
+**Decision**: sending mail (Gmail API, Graph) and sending Matrix messages
+are not undoable and are not tx_log ops (§6.5). Redacting a Matrix message
+is best-effort at most (recipients may already have the plaintext), and
+mail cannot be recalled at all. Logging them without an inverse would keep
+an audit trail, at the cost of a second kind of tx_log entry; not worth it
+for MVP.
 
 ### 15.10 Test infrastructure
 
@@ -1937,7 +1902,6 @@ would add a third subscription — out of scope for MVP.
 | `tower`/`tower-http`      | Middleware (basic auth, tracing, static files)             |
 | `rustls` + `tokio-rustls` | TLS, with `Arc<ServerConfig>` hot-swap                     |
 | `rusqlite`                | SQLite                                                     |
-| `tokio-rusqlite`          | Async wrapper                                              |
 | `refinery`                | Migrations                                                 |
 | `serde`/`serde_json`      | Serde                                                      |
 | `serde_jcs`               | RFC 8785 canonical JSON for draft hashing                  |
