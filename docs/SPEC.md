@@ -1968,8 +1968,8 @@ message, check calendar, mark a todo done) feels usable without thinking;
 search returns relevant cross-account hits in < 100 ms; the tx_log view
 shows the last 100 user actions with working Undo buttons.
 
-**State:** done, but for what waits on other milestones: "check
-calendar" in the daily loop is M8's, now done. Done: the history view (§6.3);
+**State:** done (the daily loop's "check calendar" came with M8). Done:
+the history view (§6.3);
 light and dark themes following the system (`color-scheme`, so native
 controls follow too; HTML mail keeps its white paper); `#` and `!` with
 Gmail's hiding of Trash and Spam, and All Mail (`ga`) (§8.1); the rest
