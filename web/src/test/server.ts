@@ -18,6 +18,7 @@ import type {
   LogEntry,
   MatrixAccount,
   MatrixOutboxItem,
+  Membership,
   Room,
   RoomEvent,
   RoomId,
@@ -132,17 +133,19 @@ export class FakeServer implements Requester {
   }
 
   /** Adds a joined room of the Matrix account, as syncing would. */
-  addRoom(name: string, encrypted = false): Room {
+  addRoom(name: string, encrypted = false, membership: Membership = 'joined'): Room {
     const room: Room = {
       id: this.rooms.length + 1,
       account: 'mx',
       room_id: `!${name.toLowerCase()}:example.org`,
       name,
       encrypted,
-      membership: 'joined',
+      membership,
       unread: 0,
       last_event_ts: null,
       read_up_to: null,
+      pending: null,
+      membership_error: null,
     }
     this.rooms.push(room)
     this.events.set(room.id, [])
@@ -182,8 +185,17 @@ export class FakeServer implements Requester {
     this.observe('mx', [{ type: 'matrix_outbox_changed', items: [item] }])
   }
 
+  /** The sync task does as asked: the room's pending change takes effect. */
+  settleMembership(room: RoomId) {
+    const row = this.rooms.find((r) => r.id === room)!
+    row.membership = row.pending === 'join' ? 'joined' : 'left'
+    row.pending = null
+    this.observe('mx', [{ type: 'rooms_changed', rooms: [room] }])
+  }
+
   private matrixRooms(): Room[] {
-    return this.rooms.map((room) => {
+    const listed = this.rooms.filter((room) => room.membership !== 'left' || room.pending === 'join')
+    return listed.map((room) => {
       const events = this.events.get(room.id)!
       const unread = events.filter(
         (e) => e.id > (room.read_up_to ?? 0) && e.kind === 'm.room.message' && e.sender !== ME,
@@ -372,6 +384,21 @@ export class FakeServer implements Requester {
       case 'mark_room_read':
         this.rooms.find((r) => r.id === body.room)!.read_up_to = body.event
         return this.dispatched('Read', [{ type: 'rooms_changed', rooms: [body.room] }])
+      case 'change_membership': {
+        const room = this.rooms.find((r) => r.id === body.room)!
+        room.pending = body.change
+        const response = this.dispatched(body.change === 'join' ? 'Joined' : 'Left', [
+          { type: 'rooms_changed', rooms: [room.id] },
+        ])
+        this.undoable.set(this.head(), {
+          revert: () => {
+            room.pending = null
+            return this.commit({ type: 'user' }, 'Undid it', [{ type: 'rooms_changed', rooms: [room.id] }])
+          },
+          undone: false,
+        })
+        return response
+      }
     }
   }
 

@@ -80,6 +80,7 @@ function isResendable(body: ClientRequest): boolean {
     case 'send_matrix_message':
     case 'cancel_matrix_send':
     case 'mark_room_read':
+    case 'change_membership':
     case 'create_todo':
     case 'edit_todo':
     case 'delete_todo':

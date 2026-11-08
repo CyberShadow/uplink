@@ -13,6 +13,17 @@
   border-bottom: 1px solid var(--line);
 }
 
+.leave {
+  margin-left: auto;
+}
+
+.error {
+  margin: 0;
+  padding: 6px 16px;
+  background: var(--error-bg);
+  color: var(--error-fg);
+}
+
 .header h1 {
   margin: 0;
   font-size: 18px;

@@ -8,6 +8,7 @@ import type {
   MatrixAccount,
   MatrixOutboxId,
   MatrixOutboxItem,
+  MembershipChange,
   Room,
   RoomEvent,
   RoomEventId,
@@ -91,6 +92,10 @@ export class MatrixStore {
 
   cancelSend(item: MatrixOutboxId) {
     return this.ops.dispatch({ type: 'cancel_matrix_send', item })
+  }
+
+  changeMembership(room: RoomId, change: MembershipChange) {
+    return this.ops.dispatch({ type: 'change_membership', room, change })
   }
 
   /** Quietly: reading a room is not news. */

@@ -477,6 +477,9 @@ impl Backend for Services {
             }
             ClientRequest::CancelMatrixSend { item } => self.matrix.cancel_send(item).await,
             ClientRequest::MarkRoomRead { room, event } => self.matrix.mark_read(room, event).await,
+            ClientRequest::ChangeMembership { room, change } => {
+                self.matrix.change_membership(room, change).await
+            }
             ClientRequest::ListTodos => self.todos.list().await,
             ClientRequest::CreateTodo {
                 title,

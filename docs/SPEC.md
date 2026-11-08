@@ -450,6 +450,8 @@ CREATE TABLE matrix_room (
   membership   TEXT NOT NULL,        -- 'joined' | 'invited' | 'left'
   read_up_to   INTEGER REFERENCES matrix_event(id), -- desired read marker
   read_pushed  INTEGER REFERENCES matrix_event(id), -- last receipt sent/seen
+  desired      TEXT,                 -- 'joined' | 'left' asked for (§9.7)
+  membership_error TEXT,             -- the homeserver's last refusal
   UNIQUE (account_id, room_id)
 );
 CREATE TABLE matrix_event (
@@ -746,7 +748,8 @@ than it buffers is closed; the client reconnects and resumes.
   label, mark read and star; `CreateDraft`, `EditDraft { draft, revision,
   splice }`, `DeleteDraft`, `SendDraft`, `CancelSend { item }` (§6.7, §7);
   `SendMatrixMessage { room, body }`, `CancelMatrixSend { item }`,
-  `MarkRoomRead { room, event }` (§9).
+  `MarkRoomRead { room, event }`, `ChangeMembership { room, change }`
+  (§9).
 
 Query responses carry `as_of`, the last log entry they reflect; `Undone`
 and `Dispatched` reflect the log up to their own entry. The session sends
@@ -1282,11 +1285,30 @@ done once per device, ever; device verification UI is out of scope.
 - No formatted_body rendering. ROADMAP item, deferred.
 - No reactions, edits, threads, replies — also deferred. These arrive in
   `matrix_event.raw_json` and render as raw JSON in the timeline.
-- No invitations, room creation or leaving: rooms one is invited to are
-  listed, and joining is done in another client.
+- No room creation, no inviting others, and no joining rooms one is not
+  invited to (by id or alias); invitations are joined or declined, and
+  rooms left (§9.7).
 - No backfill and no retrying undecryptable events (§9.2).
 - No SPA-side device management or verification UI.
 - No moderation UI (kick/ban/redact).
+
+### 9.7 Joining and leaving
+
+Membership is desired state (§6.6). `ChangeMembership { room, change }`
+(join an invitation; leave a room, or decline an invitation) records
+`matrix_room.desired`; the account's sender loop asks the homeserver
+(`join_room_by_id`, `Room::leave`) and records the outcome as an
+observation: the membership, or the refusal in `membership_error`. Sync
+also clears `desired` once it sees that membership, however it came
+about. Rooms left are not listed, unless being joined again.
+
+Undo goes back to how the room was, as far as possible: a change not yet
+made is cancelled; one made is reversed (a joined room is left; a room
+left is joined again, which the homeserver refuses unless the room lets
+one in). The inverse decides which when it is applied, since that is
+when it is known, and is refused if the membership changed otherwise;
+its own inverse redoes. `tests/conduit.rs` joins an invitation, undoes
+(leaves) and redoes (joins again), and declines another.
 
 ---
 
@@ -1779,7 +1801,8 @@ shows the last 100 user actions with working Undo buttons.
 **State:** in progress. Done: the history view (§6.3); light and dark
 themes following the system (`color-scheme`, so native controls follow
 too; HTML mail keeps its white paper); `#` and `!` with Gmail's hiding
-of Trash and Spam, and All Mail (`ga`) (§8.1).
+of Trash and Spam, and All Mail (`ga`) (§8.1); joining and leaving
+Matrix rooms (§9.7).
 
 ### Why this ordering
 

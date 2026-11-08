@@ -1,12 +1,16 @@
 //! Answers the Matrix requests of the WebSocket protocol (SPEC §5.4).
 
 use crate::{
+    membership::ChangeMembership,
     outbox::{self, CancelMessage, SendMessage},
     rooms::{self, MarkRead},
 };
 use std::sync::Arc;
 use uplink_protocol::{
-    matrix::{MatrixAccount, MatrixOutboxId, Membership, RoomEventId, RoomId, TimelinePage},
+    matrix::{
+        MatrixAccount, MatrixOutboxId, Membership, MembershipChange, RoomEventId, RoomId,
+        TimelinePage,
+    },
     ErrorCode, ServerResponse,
 };
 use uplink_storage::rusqlite::Connection;
@@ -145,6 +149,43 @@ impl Matrix {
 
     pub async fn cancel_send(&self, item: MatrixOutboxId) -> Response {
         self.dispatcher.answer(CancelMessage { item }).await
+    }
+
+    /// Joining only rooms one is invited to; leaving joined rooms, or
+    /// declining invitations.
+    pub async fn change_membership(&self, room: RoomId, change: MembershipChange) -> Response {
+        let accounts = self.accounts.clone();
+        self.reader
+            .read(move |conn| {
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                let account = rooms::room_account(&tx, room)
+                    .map_err(internal)?
+                    .ok_or_else(|| no_room(room))?;
+                let configured = accounts
+                    .iter()
+                    .find(|a| a.id == account)
+                    .ok_or_else(|| no_room(room))?;
+                let listed = rooms::rooms(&tx, &account, &configured.mxid)
+                    .map_err(internal)?
+                    .into_iter()
+                    .find(|r| r.id == room)
+                    .ok_or_else(|| no_room(room))?;
+                let allowed = match change {
+                    MembershipChange::Join => listed.membership == Membership::Invited,
+                    MembershipChange::Leave => listed.membership != Membership::Left,
+                };
+                if !allowed {
+                    return Err(error(
+                        ErrorCode::Invalid,
+                        format!("cannot {change:?} room {} as it is", room.0),
+                    ));
+                }
+                Ok(())
+            })
+            .await?;
+        self.dispatcher
+            .answer(ChangeMembership { room, change })
+            .await
     }
 
     pub async fn mark_read(&self, room: RoomId, event: RoomEventId) -> Response {

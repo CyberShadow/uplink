@@ -2,6 +2,7 @@
 //! read marker, and plain-text messages sent through an outbox.
 
 pub mod client;
+pub mod membership;
 pub mod outbox;
 pub mod rooms;
 pub mod service;
@@ -16,4 +17,6 @@ pub fn register(registry: &mut Registry) {
     registry.register::<rooms::MarkRead>();
     registry.register::<outbox::SendMessage>();
     registry.register::<outbox::CancelMessage>();
+    registry.register::<membership::ChangeMembership>();
+    registry.register::<membership::RevertMembership>();
 }

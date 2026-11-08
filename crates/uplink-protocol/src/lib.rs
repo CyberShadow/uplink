@@ -14,7 +14,7 @@ pub mod todos;
 
 use compose::{Draft, DraftContent, DraftId, OutboxId, Splice};
 use mail::{EntryId, EntryList, LabelId, ListPosition, MessageId};
-use matrix::{MatrixOutboxId, RoomEventId, RoomId, TimelinePage};
+use matrix::{MatrixOutboxId, MembershipChange, RoomEventId, RoomId, TimelinePage};
 use todos::{TodoEdit, TodoId};
 
 /// Id of a log entry. Entries are numbered from 1 in commit order, so an
@@ -171,6 +171,11 @@ pub enum ClientRequest {
     MarkRoomRead {
         room: RoomId,
         event: RoomEventId,
+    },
+    /// Join a room one is invited to, or leave or decline one (SPEC §9.7).
+    ChangeMembership {
+        room: RoomId,
+        change: MembershipChange,
     },
     /// All to-dos.
     ListTodos,

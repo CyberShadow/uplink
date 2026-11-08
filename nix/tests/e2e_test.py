@@ -100,10 +100,8 @@ with subtest("a reply written in the UI is sent after the delay, in the thread")
         lambda: machine.succeed(f"sqlite3 {STATE}/db/uplink.sqlite 'SELECT count(*) FROM mail_outbox'").strip() == "0",
     )
 
-with subtest("a Matrix room shows messages, raw JSON for other events, and sends"):
+with subtest("a Matrix invitation is joined from the UI; the room shows messages, raw JSON, and sends"):
     room = matrix(bob, "POST", "/createRoom", {"name": "Planning", "invite": ["@alice:localhost"]})["room_id"]
-    # Alice joins from another device; uplink has no invitation UI.
-    matrix(alice, "POST", f"/join/{room}", {})
     matrix(bob, "PUT", f"/rooms/{room}/send/m.room.message/1", {"msgtype": "m.text", "body": "Hi from Bob"})
     matrix(bob, "PUT", f"/rooms/{room}/send/org.example.custom/2", {"answer": 42})
     ui("matrix")

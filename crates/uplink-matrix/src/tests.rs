@@ -282,3 +282,140 @@ async fn messages_go_only_to_known_rooms() {
         .unwrap_err();
     assert_eq!(refused.code, uplink_protocol::ErrorCode::Invalid);
 }
+
+mod membership {
+    use super::*;
+    use crate::membership::MembershipChanged;
+    use uplink_protocol::{matrix::MembershipChange, ErrorCode};
+
+    impl Db {
+        /// Syncs the room with `membership`, and no events.
+        async fn sync_membership(&self, membership: Membership) {
+            self.observe(Synced {
+                next_batch: "next".into(),
+                rooms: vec![ObservedRoom {
+                    room_id: ROOM.into(),
+                    name: "Room".into(),
+                    encrypted: false,
+                    membership,
+                    events: vec![],
+                    own_receipts: vec![],
+                }],
+            })
+            .await
+            .unwrap();
+        }
+
+        async fn change(&self, change: MembershipChange) -> TxLogId {
+            let room = self.room().await.id;
+            match self.matrix.change_membership(room, change).await.unwrap() {
+                ServerResponse::Dispatched { tx_log_id } => tx_log_id,
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+
+        /// The homeserver did as asked, or refused.
+        async fn reconcile(&self, change: MembershipChange, refused: Option<&str>) {
+            let room = self.room().await.id;
+            self.observe(MembershipChanged {
+                room,
+                change,
+                refused: refused.map(Into::into),
+            })
+            .await
+            .unwrap();
+        }
+
+        async fn state(&self) -> (Membership, Option<MembershipChange>) {
+            let room = self.room().await;
+            (room.membership, room.pending)
+        }
+    }
+
+    #[tokio::test]
+    async fn joining_an_invitation_is_undone_by_cancelling_or_leaving() {
+        let db = Db::new();
+        db.sync_membership(Membership::Invited).await;
+        let join = db.change(MembershipChange::Join).await;
+        assert_eq!(
+            db.state().await,
+            (Membership::Invited, Some(MembershipChange::Join))
+        );
+        // Not joined yet: undo cancels; redo asks again.
+        let cancel = db.dispatcher.undo(join).await.unwrap();
+        assert_eq!(db.state().await, (Membership::Invited, None));
+        let redo = db.dispatcher.undo(cancel).await.unwrap();
+        assert_eq!(
+            db.state().await,
+            (Membership::Invited, Some(MembershipChange::Join))
+        );
+
+        // Declining instead.
+        db.dispatcher.undo(redo).await.unwrap();
+        db.change(MembershipChange::Leave).await;
+        assert_eq!(
+            db.state().await,
+            (Membership::Invited, Some(MembershipChange::Leave))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_change_that_took_effect_is_reversed() {
+        let db = Db::new();
+        db.sync_membership(Membership::Invited).await;
+        let join = db.change(MembershipChange::Join).await;
+        db.reconcile(MembershipChange::Join, None).await;
+        assert_eq!(db.state().await, (Membership::Joined, None));
+        let leave = db.dispatcher.undo(join).await.unwrap();
+        assert_eq!(
+            db.state().await,
+            (Membership::Joined, Some(MembershipChange::Leave))
+        );
+        // Left: the room is listed no more, unless joining it again.
+        db.reconcile(MembershipChange::Leave, None).await;
+        let ServerResponse::Rooms { rooms, .. } = db.matrix.list_rooms().await.unwrap() else {
+            panic!()
+        };
+        assert!(rooms.is_empty());
+        db.dispatcher.undo(leave).await.unwrap();
+        assert_eq!(
+            db.state().await,
+            (Membership::Left, Some(MembershipChange::Join))
+        );
+        // The sync's view settles it as well as the sync task's report.
+        db.sync_membership(Membership::Joined).await;
+        assert_eq!(db.state().await, (Membership::Joined, None));
+    }
+
+    #[tokio::test]
+    async fn refusals_are_kept_and_other_changes_conflict() {
+        let db = Db::new();
+        db.sync_membership(Membership::Invited).await;
+        let join = db.change(MembershipChange::Join).await;
+        let code = db
+            .matrix
+            .change_membership(db.room().await.id, MembershipChange::Leave)
+            .await
+            .unwrap_err()
+            .code;
+        assert_eq!(code, ErrorCode::Conflict, "a change is pending");
+        db.reconcile(MembershipChange::Join, Some("M_FORBIDDEN"))
+            .await;
+        let room = db.room().await;
+        assert_eq!((room.membership, room.pending), (Membership::Invited, None));
+        assert_eq!(room.membership_error.as_deref(), Some("M_FORBIDDEN"));
+
+        // Refused: there is nothing to undo.
+        let refused = db.dispatcher.undo(join).await.unwrap_err();
+        assert!(matches!(refused, UndoError::Conflict { .. }), "{refused}");
+        db.sync_membership(Membership::Joined).await;
+        assert_eq!(
+            db.matrix
+                .change_membership(db.room().await.id, MembershipChange::Join)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Invalid
+        );
+    }
+}

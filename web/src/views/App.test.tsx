@@ -281,6 +281,32 @@ describe('matrix', () => {
     expect(screen.queryByRole('status')).toBeNull()
   })
 
+  it('joins an invitation, and leaves the room, with undo in between', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Party', false, 'invited')
+    const user = await start(`/rooms/${room.id}`)
+    const nav = screen.getByRole('navigation')
+    expect(within(nav).getByRole('link', { name: /^Party/ }).textContent).toBe('Party (invited)')
+    expect(screen.queryByRole('textbox', { name: /message/i })).toBeNull()
+
+    await user.click(screen.getByRole('button', { name: 'Join' }))
+    await screen.findByText('Joining…')
+    // Changed one's mind before it took effect.
+    await user.click(within(screen.getByRole('status')).getByRole('button', { name: 'Undo' }))
+    await screen.findByRole('button', { name: 'Join' })
+
+    await user.click(screen.getByRole('button', { name: 'Join' }))
+    server.settleMembership(room.id)
+    await screen.findByRole('button', { name: 'Leave' })
+    expect(within(nav).getByRole('link', { name: /^Party/ }).textContent).toBe('Party')
+
+    await user.click(screen.getByRole('button', { name: 'Leave' }))
+    await screen.findByText('Leaving…')
+    server.settleMembership(room.id)
+    await screen.findByText('No such room.')
+    expect(within(nav).queryByRole('link', { name: /^Party/ })).toBeNull()
+  })
+
   it('shows events it does not display otherwise as raw JSON', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge', true)

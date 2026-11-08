@@ -36,6 +36,14 @@ pub enum Membership {
     Left,
 }
 
+/// Joining a room one is invited to, or leaving (or declining) one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum MembershipChange {
+    Join,
+    Leave,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Room {
@@ -52,6 +60,10 @@ pub struct Room {
     /// The latest event's time, ms since the Unix epoch.
     pub last_event_ts: Option<i64>,
     pub read_up_to: Option<RoomEventId>,
+    /// A change the user asked for that has yet to take effect.
+    pub pending: Option<MembershipChange>,
+    /// Why the homeserver refused the last change asked for.
+    pub membership_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

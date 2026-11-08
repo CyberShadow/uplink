@@ -524,3 +524,93 @@ async fn pairing_with_the_recovery_key_verifies_the_device() {
     )
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn invitations_are_joined_or_declined_and_undone() {
+    use matrix_sdk::ruma::api::client::room::{create_room::v3::Request as CreateRoom, Visibility};
+    use uplink_protocol::matrix::MembershipChange;
+
+    let dir = tempfile::tempdir().unwrap();
+    let homeserver = Homeserver::start(dir.path()).await;
+    let bob = homeserver.register(dir.path(), "bob").await;
+    homeserver.register(dir.path(), "alice").await;
+    let _bob_received = sync_messages(&bob);
+    let uplink = Uplink::new(&homeserver);
+    let _sync = uplink.pair_and_sync().await;
+    let alice = matrix_sdk::ruma::user_id!("@alice:localhost");
+    let invite = |name: &'static str, public: bool| {
+        let bob = bob.clone();
+        async move {
+            let mut request = CreateRoom::new();
+            request.name = Some(name.into());
+            request.invite = vec![alice.to_owned()];
+            if public {
+                request.visibility = Visibility::Public;
+                request.preset = Some(
+                    matrix_sdk::ruma::api::client::room::create_room::v3::RoomPreset::PublicChat,
+                );
+            }
+            bob.create_room(request).await.unwrap().room_id().to_owned()
+        }
+    };
+    let change = |room, change| {
+        let matrix = uplink.matrix.clone();
+        async move {
+            match matrix.change_membership(room, change).await.unwrap() {
+                ServerResponse::Dispatched { tx_log_id } => tx_log_id,
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    };
+    let membership = |room_id: OwnedRoomId, wanted: Option<Membership>| {
+        let uplink = &uplink;
+        async move {
+            eventually(&format!("{room_id} to be {wanted:?}"), || async {
+                let room = uplink.room(&room_id).await;
+                (room.as_ref().map(|r| (r.membership, r.pending)) == wanted.map(|m| (m, None)))
+                    .then_some(room)
+            })
+            .await
+        }
+    };
+
+    let lounge = invite("Lounge", true).await;
+    let room = membership(lounge.clone(), Some(Membership::Invited))
+        .await
+        .unwrap();
+    let join = change(room.id, MembershipChange::Join).await;
+    membership(lounge.clone(), Some(Membership::Joined)).await;
+    let bob_room = bob.get_room(&lounge).unwrap();
+    eventually("bob to see alice join", || async {
+        (bob_room.joined_members_count() == 2).then_some(())
+    })
+    .await;
+    bob_room
+        .send(
+            matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain("welcome"),
+        )
+        .await
+        .unwrap();
+    eventually("the message in the joined room", || async {
+        uplink
+            .timeline(&room)
+            .await
+            .iter()
+            .any(|e| e.body.as_deref() == Some("welcome"))
+            .then_some(())
+    })
+    .await;
+
+    // Undoing the join leaves; undoing that joins again.
+    let leave = uplink.dispatcher.undo(join).await.unwrap();
+    membership(lounge.clone(), None).await;
+    uplink.dispatcher.undo(leave).await.unwrap();
+    membership(lounge.clone(), Some(Membership::Joined)).await;
+
+    let private = invite("Private", false).await;
+    let room = membership(private.clone(), Some(Membership::Invited))
+        .await
+        .unwrap();
+    change(room.id, MembershipChange::Leave).await;
+    membership(private, None).await;
+}

@@ -19,7 +19,10 @@ use uplink_protocol::{
 use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 use uplink_tx_log::{Applied, Inverse, Observation, Observed, Op};
 
-use crate::outbox;
+use crate::{
+    membership::{parse_desired, parse_membership},
+    outbox,
+};
 
 pub const ACCOUNT_KIND: &str = "matrix";
 
@@ -200,8 +203,10 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
             let changed =
                 name != room.name || encrypted != room.encrypted || old_membership != membership;
             if changed {
+                // A membership asked for is had, however it came about.
                 tx.execute(
-                    "UPDATE matrix_room SET name = ?1, encrypted = ?2, membership = ?3
+                    "UPDATE matrix_room SET name = ?1, encrypted = ?2, membership = ?3,
+                       desired = CASE WHEN desired = ?3 THEN NULL ELSE desired END
                      WHERE id = ?4",
                     params![room.name, room.encrypted, membership, id],
                 )?;
@@ -389,7 +394,8 @@ pub fn sync_state(conn: &Connection, account: &str) -> Result<Option<SyncState>>
         .transpose()
 }
 
-/// The rooms of `account`, but those left, most recently active first.
+/// The rooms of `account`, but those left (unless joining them again),
+/// most recently active first.
 /// `mxid` is the account's user: its own messages are never unread.
 /// Undecryptable events count as unread messages, which they nearly
 /// always are.
@@ -402,28 +408,24 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
                        AND e.type IN ('m.room.message', 'm.room.encrypted')
                        AND e.sender != ?2),
                     (SELECT max(ts) FROM matrix_event e WHERE e.room = r.id),
-                    r.read_up_to
+                    r.read_up_to, r.desired, r.membership_error
              FROM matrix_room r
-             WHERE r.account_id = ?1 AND r.membership != 'left'
+             WHERE r.account_id = ?1 AND (r.membership != 'left' OR r.desired = 'joined')
              ORDER BY 8 DESC NULLS LAST, r.id",
         )?
         .query_map([account, mxid], |r| {
-            let membership: String = r.get(5)?;
             Ok(Room {
                 id: RoomId(r.get(0)?),
                 account: r.get(1)?,
                 room_id: r.get(2)?,
                 name: r.get(3)?,
                 encrypted: r.get(4)?,
-                membership: match membership.as_str() {
-                    "joined" => Membership::Joined,
-                    "invited" => Membership::Invited,
-                    "left" => Membership::Left,
-                    _ => unreachable!("the schema allows no membership {membership}"),
-                },
+                membership: parse_membership(&r.get::<_, String>(5)?),
                 unread: r.get(6)?,
                 last_event_ts: r.get(7)?,
                 read_up_to: r.get::<_, Option<i64>>(8)?.map(RoomEventId),
+                pending: parse_desired(r.get::<_, Option<String>>(9)?.as_deref()),
+                membership_error: r.get(10)?,
             })
         })?
         .collect::<Result<_, _>>()?)

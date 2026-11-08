@@ -9,6 +9,7 @@
 
 use crate::{
     client,
+    membership::{self, MembershipChanged},
     outbox::{self, SendFailed, SendStarted, SendSucceeded},
     rooms::{self, ObservedEvent, ObservedRoom, ReceiptSent, Synced},
 };
@@ -37,7 +38,7 @@ use std::{
 use tokio::sync::broadcast::{self, error::RecvError};
 use uplink_config::MatrixAccountConfig;
 use uplink_protocol::{
-    matrix::{Encryption, Membership},
+    matrix::{Encryption, Membership, MembershipChange},
     LogEntry, Source,
 };
 use uplink_storage::{rusqlite::Connection, seal::MasterKey};
@@ -348,8 +349,42 @@ impl Sender {
     }
 
     async fn step(&self) -> Result<()> {
+        self.change_memberships().await?;
         self.send_due().await?;
         self.push_receipts().await
+    }
+
+    /// Joins and leaves the rooms the user asked to.
+    async fn change_memberships(&self) -> Result<()> {
+        let account = self.account.clone();
+        let wanted = read(&self.reader, move |conn| membership::wanted(conn, &account)).await?;
+        for wanted in wanted {
+            let room_id = <&RoomId>::try_from(wanted.room_id.as_str())?;
+            let done = match wanted.change {
+                MembershipChange::Join => self.client.join_room_by_id(room_id).await.map(drop),
+                MembershipChange::Leave => {
+                    self.client
+                        .get_room(room_id)
+                        .with_context(|| format!("room {room_id} is not in the client"))?
+                        .leave()
+                        .await
+                }
+            };
+            let refused = match &done {
+                Ok(()) => None,
+                Err(e) => match refusal(e) {
+                    Some(refused) => Some(refused),
+                    None => return done.context("changing a room's membership"),
+                },
+            };
+            self.observe(MembershipChanged {
+                room: wanted.room,
+                change: wanted.change,
+                refused,
+            })
+            .await?;
+        }
+        Ok(())
     }
 
     /// Until the user changes something, or the interval passes.

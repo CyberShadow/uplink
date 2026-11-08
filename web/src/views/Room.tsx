@@ -3,7 +3,7 @@
 // message types uplink does not display, as their raw JSON.
 
 import { useEffect, useRef, useState } from 'preact/hooks'
-import type { MatrixOutboxItem, Room, RoomEvent } from '../generated/protocol'
+import type { MatrixOutboxItem, MembershipChange, Room, RoomEvent } from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus, useKeymap } from '../keymap'
 import styles from './Room.module.css'
@@ -39,8 +39,13 @@ function Timeline(props: { room: Room }) {
       <header class={styles.header}>
         <h1>{room.name}</h1>
         {room.encrypted && <span class={styles.muted}>encrypted</span>}
-        {room.membership === 'invited' && <span class={styles.muted}>invited</span>}
+        <MembershipControls room={room} />
       </header>
+      {room.membership_error !== null && (
+        <p class={styles.error} role="alert">
+          The homeserver refused: {room.membership_error}
+        </p>
+      )}
       {/* Reversed, so that it stays scrolled to the latest event. */}
       <div class={styles.scroller}>
         <ol class={styles.events} aria-label="Timeline">
@@ -61,6 +66,38 @@ function Timeline(props: { room: Room }) {
       {room.membership === 'joined' && <Composer room={room} textarea={composer} />}
     </section>
   )
+}
+
+/** Where the account stands in the room, and the buttons to change it. */
+function MembershipControls(props: { room: Room }) {
+  const { room } = props
+  const { matrix } = useServices()
+  const change = (change: MembershipChange) => () => matrix.changeMembership(room.id, change)
+  if (room.pending !== null) {
+    return <span class={styles.muted}>{room.pending === 'join' ? 'Joining…' : 'Leaving…'}</span>
+  }
+  switch (room.membership) {
+    case 'invited':
+      return (
+        <>
+          <span class={styles.muted}>invited</span>
+          <button type="button" onMouseDown={keepFocus} onClick={change('join')}>
+            Join
+          </button>
+          <button type="button" onMouseDown={keepFocus} onClick={change('leave')}>
+            Decline
+          </button>
+        </>
+      )
+    case 'joined':
+      return (
+        <button type="button" class={styles.leave} onMouseDown={keepFocus} onClick={change('leave')}>
+          Leave
+        </button>
+      )
+    case 'left':
+      return <span class={styles.muted}>left</span>
+  }
 }
 
 /** Marks the room read up to its latest event, while the tab is visible. */

@@ -74,7 +74,8 @@ client only you use, Google does not require verification, though the
 consent screen keeps warning that the app is unverified.
 
 uplink asks for the `gmail.modify` scope: read mail, change labels and
-send (it never deletes mail).
+send. It never deletes mail itself: `#` moves it to Trash, which Gmail
+empties after 30 days.
 
 ## Connecting a Matrix account
 
@@ -90,6 +91,8 @@ Secret Storage passphrase): with it, uplink's device is verified, so your
 other devices share encrypted rooms' keys with it. Leave it empty to
 skip. A running uplink starts syncing the account within a minute.
 Messages are plain text; other events show as their raw JSON.
+Invitations are joined or declined, and rooms left, from the room's
+header.
 
 ## Running on NixOS
 

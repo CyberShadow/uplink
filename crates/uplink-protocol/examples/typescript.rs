@@ -66,6 +66,7 @@ fn main() {
         MatrixOutboxId,
         MatrixAccount,
         Membership,
+        MembershipChange,
         Room,
         Encryption,
         RoomEvent,

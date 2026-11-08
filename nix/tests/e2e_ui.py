@@ -118,8 +118,11 @@ def reply(page):
 
 
 def matrix(page):
-    """Opens the Planning room, reads Bob's message, and answers."""
+    """Joins the Planning room it is invited to, reads Bob's message, and
+    answers."""
     page.get_by_role("navigation").get_by_role("link", name="Planning").click()
+    page.get_by_role("button", name="Join").click()
+    expect(page.get_by_role("button", name="Leave")).to_be_visible(timeout=15000)
     timeline = page.get_by_role("list", name="Timeline")
     expect(timeline).to_contain_text("Hi from Bob")
     expect(timeline).to_contain_text("org.example.custom")
