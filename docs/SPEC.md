@@ -64,8 +64,8 @@ Appendices:
                         │     │           │          │      │      │
                         │     ▼           ▼          ▼      ▼      │
                         │  Gmail        M365      Matrix   local   │
-                        │ IMAP+IDLE    Graph    matrix-     todo   │
-                        │   API send   delta    rust-sdk    /draft │
+                        │  REST API    Graph    matrix-     todo   │
+                        │  history     delta    rust-sdk    /draft │
                         │             ICS read                     │
                         │     │           │          │      │      │
                         │     └─────┬─────┴──────────┴──────┘      │
@@ -85,8 +85,8 @@ Don't litigate these in code review.
 
 1. **Single Rust binary, single port, single tokio runtime.** No daemon split,
    no sidecar, no separate sync worker. axum + tokio handles every connection:
-   HTTP for the SPA, WebSocket for live data, plus async tasks for IMAP IDLE
-   and the matrix-rust-sdk sync loop.
+   HTTP for the SPA, WebSocket for live data, plus async tasks for provider
+   sync and reconciliation and the matrix-rust-sdk sync loop.
 2. **Server is the trust boundary.** All credentials, all OAuth refresh
    tokens, all Matrix decryption keys, all message bodies live server-side in
    plaintext at rest (encryption of OAuth secrets is at-rest, with the key
@@ -140,7 +140,7 @@ uplink/
 │   ├── uplink-storage/              # rusqlite + migrations + .eml store
 │   ├── uplink-tx-log/               # op dispatcher, Op trait, undo
 │   ├── uplink-realtime/             # WebSocket protocol + broadcast hub
-│   ├── uplink-email/                # Gmail+IMAP, M365 Graph mail; send
+│   ├── uplink-email/                # Gmail API, M365 Graph mail; send
 │   ├── uplink-matrix/               # matrix-rust-sdk wrapper
 │   ├── uplink-calendar/             # M365 Graph calendar (read-only)
 │   ├── uplink-todos/                # TodoBackend trait + local impl
@@ -237,8 +237,8 @@ accounts:
     address: alice@gmail.com
     # OAuth2: user brings their own Google Cloud project (Desktop app
     # OAuth client). Paste client_id + client_secret here.
-    # Required scopes: https://mail.google.com/, gmail.send,
-    #                  gmail.compose, openid email
+    # Required scope: https://www.googleapis.com/auth/gmail.modify
+    # (read, label, send; no permanent delete)
     oauth:
       client_id:     "1234.apps.googleusercontent.com"
       client_secret: "GOCSPX-xxxxxxxxxx"
@@ -352,7 +352,7 @@ CREATE TABLE account (
   kind          TEXT NOT NULL,              -- 'gmail' | 'm365' | 'matrix'
   address       TEXT NOT NULL,              -- email or mxid
   sync_state    TEXT NOT NULL DEFAULT '{}', -- per-kind JSON state blob
-                                            -- (IMAP UIDVALIDITY+UIDNEXT,
+                                            -- (Gmail historyId,
                                             --  Graph deltaLink, ...)
   enabled       INTEGER NOT NULL DEFAULT 1,
   created_at    INTEGER NOT NULL
@@ -580,7 +580,7 @@ CREATE INDEX tx_log_by_ts ON tx_log(ts DESC);
 
 ### 4.5 Body-text extraction for FTS
 
-The IMAP/Graph fetch path writes the `.eml`, then enqueues a parse job
+The Gmail/Graph fetch path writes the `.eml`, then enqueues a parse job
 that:
 
 1. Parses MIME with `mail-parser` (stalwartlabs).
@@ -823,7 +823,7 @@ Ops record what the user wants; they do not call providers. State that
 mirrors a provider (labels, flags) is stored twice: *desired* (set by
 ops) and *observed* (set by sync). Each account runs a reconciler task
 that, after every commit touching its state, pushes the differences —
-IMAP `STORE`/`COPY`, Graph `PATCH`/`move` — and retries with backoff on
+Gmail `messages.batchModify`, Graph `PATCH`/`move` — and retries with backoff on
 failure. The UI shows desired state immediately, so actions feel instant
 and survive a provider outage.
 
@@ -912,22 +912,30 @@ re-sent; any that come back stale are rebased as above.
 
 ### 8.1 Gmail — receive
 
-- **Transport**: IMAP+XOAUTH2 against `imap.gmail.com:993` (TLS).
-  Library: `async-imap`. SASL XOAUTH2 mechanism with an OAuth access token
-  refreshed from `oauth2` crate.
-- **Idle**: subscribe to INBOX (and all labels we want streaming for) using
-  `IDLE`. Reconnect on `BYE` / network drop with exponential backoff. Run
-  one IDLE per Gmail label we follow (INBOX + a configured allowlist;
-  default just INBOX).
-- **Initial sync**: on first launch, `UID FETCH 1:* (UID FLAGS INTERNALDATE
-  RFC822.HEADER X-GM-LABELS X-GM-MSGID X-GM-THRID)` to walk the entire
-  mailbox metadata-first; then fetch bodies of the most-recent N messages
-  fully and lazy-load the rest.
-- **Incremental**: on each IDLE event, fetch the new UIDs. Persist
-  `UIDVALIDITY` and last seen `UIDNEXT` in `account.sync_state`.
-- **Threading**: use Gmail's `X-GM-THRID` directly.
-- **Labels**: use Gmail's `X-GM-LABELS`. Each label becomes a `label` row;
-  membership goes in `message_label`.
+All Gmail access goes through the Gmail REST API (`reqwest`, no SDK). Its
+model — one message with many labels, `threadId`, a `historyId` change
+feed — matches uplink's (desired/observed labels, §6.6) far better than
+IMAP's per-folder copies, and a REST fake is practical to test against
+(§15.10).
+
+- **Initial sync**: `messages.list` (all mail, newest first) for ids, then
+  `messages.get?format=raw` for content, stored as variants (§4.4), most
+  recent first. Each batch is one log entry. Record the profile's
+  `historyId` *before* starting, so nothing that changes during the walk
+  is missed.
+- **Incremental**: poll `history.list?startHistoryId=…` every 5 s —
+  `messagesAdded`, `messagesDeleted`, `labelsAdded`, `labelsRemoved` map
+  directly onto observations. Persist the last `historyId` in
+  `account.sync_state`, in the same transaction as the observations. If
+  Google answers 404 (history id too old), fall back to a full resync.
+- **Push (deferred)**: the API's only push is `users.watch` → Cloud
+  Pub/Sub (a pull subscription works without a public endpoint, but needs
+  a topic in the user's GCP project, the Pub/Sub scope, and renewal every
+  7 days). An IMAP IDLE connection used purely as a "something changed"
+  trigger for `history.list` is the lighter alternative. Either only
+  lowers latency; polling stays as the baseline.
+- **Threading**: Gmail's `threadId`.
+- **Labels**: `labels.list`; each label becomes a `label` row.
 
 ### 8.2 Gmail — send
 
@@ -1023,9 +1031,9 @@ move on.
 - **OAuth refresh fails** (revoked token, password changed): set
   `account.enabled = 0`, broadcast `AccountListChanged` with an error flag,
   surface in UI as "Reauthenticate <account>".
-- **IMAP disconnects**: reconnect with backoff (1s, 2s, 4s, 8s, 16s, 30s,
-  60s cap). Log warning at 5 m of continuous failure.
-- **Graph 429**: respect `Retry-After`. Backoff in the same units.
+- **Provider requests fail** (network, 5xx): retry with backoff (1s, 2s,
+  4s, 8s, 16s, 30s, 60s cap). Log warning at 5 m of continuous failure.
+- **Gmail / Graph 429**: respect `Retry-After`. Backoff in the same units.
 
 ---
 
@@ -1366,13 +1374,16 @@ operator and `fail2ban` on the system handles brute-force concerns.
 
 - Prerequisite: the user creates their own Google Cloud project (Desktop
   app OAuth client) and copies `client_id` + `client_secret` into the
-  YAML. See §15.2.
+  YAML. See §15.2. The OAuth consent screen must be set to *In
+  production* (unverified is fine for personal use): in *Testing*,
+  Google expires refresh tokens after 7 days.
 - One-time setup: `uplink oauth init --account=alice-gmail`. The CLI
-  prints an authorization URL with PKCE, the user opens it in a browser,
-  Google issues an authorization code, the user pastes the code back into
-  the CLI, the CLI exchanges code for refresh+access token, seals the
-  refresh token (see §13.4), writes it to
-  `accounts/alice-gmail.token`.
+  prints an authorization URL with PKCE and a loopback redirect
+  (`http://127.0.0.1:<port>/`; Google no longer supports copy-paste
+  "out-of-band" codes). If the browser is on another machine, the user
+  pastes the URL it was redirected to back into the CLI. The CLI exchanges
+  the code for refresh+access token, seals the refresh token (see §13.4),
+  writes it to `accounts/alice-gmail.token`.
 - Runtime: server reads sealed token at startup, unseals with `master_key`,
   uses `oauth2` crate to refresh on each access-token expiry.
 
@@ -1504,18 +1515,20 @@ echoed both events with monotonic cursors.
 
 ### M4. Gmail receive
 
-- IMAP+XOAUTH2 connect + IDLE.
-- Initial UID walk + metadata insert.
-- Body fetch + .eml persist + FTS body extract.
+- Gmail API initial sync + `history.list` polling (§8.1).
+- Message variants + .eml persist + FTS body extract.
 - Frontend mail-list view with selection + keyboard nav.
 - First real ops: mark read/unread, archive, label — with the Gmail
-  reconciler pushing them over IMAP (§6.6).
+  reconciler pushing them via the API (§6.6).
+- NixOS VM integration test against the Gmail emulator (§15.10).
 
-**Done when:** archiving a message in uplink archives it in Gmail, and
-undoing the archive brings it back; a freshly-paired Gmail account streams new messages into
-the UI within ~5 s of arrival on IMAP; FTS search returns hits across
-subject/body/from; a power-loss simulation (kill + restart server) doesn't
-lose any persisted messages.
+**Done when**, in the VM test: a message delivered to the emulated Gmail
+account appears in the UI's stream within one poll interval; archiving
+it in uplink archives it in Gmail, and undoing the archive brings it
+back; a label change made on the Gmail side shows up in uplink; FTS
+search returns hits across subject/body/from; killing and restarting the
+server loses no persisted messages and resumes from the stored
+`historyId`.
 
 ### M5. M365 receive
 
@@ -1599,7 +1612,7 @@ shows the last 100 user actions with working Undo buttons.
 - M3 (tx_log/undo) precedes any data ingest because it's the central
   plumbing every downstream op uses. Building Gmail first and retro-fitting
   undo creates rework.
-- Gmail (M4) precedes M365 (M5) because IMAP+IDLE is more straightforward
+- Gmail (M4) precedes M365 (M5) because the Gmail API is more straightforward
   than the OAuth-impersonation dance, so we hit fewer category errors at
   the start.
 - Send (M6) sits before Matrix (M7) because compose is the most user-
@@ -1627,10 +1640,9 @@ preact/compat works for our compose needs. Fallbacks (in order): Lexical
 
 ### 15.2 Gmail GCP project ownership
 
-Gmail API + IMAP+XOAUTH2 require a Google Cloud project with OAuth client
+The Gmail API requires a Google Cloud project with OAuth client
 credentials registered in Google Cloud Console. There is no
-fully-decentralised path — Google rejects plaintext IMAP passwords and
-OAuth requires a registered client. Two patterns are viable:
+fully-decentralised path — OAuth requires a registered client. Two patterns are viable:
 
 1. **BYO (MVP).** The user creates a one-off GCP project (~10 minutes in
    the Cloud Console), marks it as a Desktop/installed app, and pastes
@@ -1730,9 +1742,9 @@ flake is the source of truth.
 | `backend-lint`         | `cargo clippy --workspace -- -D warnings` + `cargo fmt --check` |
 | `frontend-test`        | `pnpm test` (vitest + jsdom + `@testing-library/preact`)      |
 | `frontend-lint`        | `pnpm lint` + `tsc --noEmit`                                  |
-| `integration-mail`     | Backend talks to an embedded IMAP/SMTP server fixture         |
-| `integration-matrix`   | Backend talks to a minimal homeserver fixture                 |
-| `integration-graph`    | Backend talks to `wiremock-rs` recording of Graph             |
+| `integration-gmail`    | NixOS VM test: uplink service + Gmail emulator                |
+| `integration-m365`     | NixOS VM test: uplink service + Graph fake                    |
+| `integration-matrix`   | NixOS VM test: uplink service + a real homeserver             |
 | `e2e` *(future)*       | Reserved name; not wired in MVP                               |
 
 **Unit / property tests**
@@ -1744,19 +1756,26 @@ flake is the source of truth.
 - Op-trait tests assert apply → inverse → apply round-trips for every
   Op variant.
 
-**Integration fixtures (in-process, no Docker)**
+**Integration tests (NixOS VM tests, `pkgs.testers.nixosTest`)**
 
-- **IMAP+SMTP:** GreenMail (well-packaged in nixpkgs as a Java jar)
-  launched as a flake-built test fixture; backend connects to
-  `localhost:<random_port>`. Stalwart-mail is the Rust alternative and
-  becomes preferable if we hit GreenMail compatibility limits — pick
-  during the M1 spike.
+Each runs the full stack as close to production as possible: uplink as a
+systemd service with its real config, TLS and data directory, next to
+fakes of the providers, driven over the WebSocket protocol by the test
+script (e.g. inject a message on the provider side, watch it arrive,
+archive it, check the provider's labels, undo).
+
+- **Gmail:** [vercel-labs/emulate](https://github.com/vercel-labs/emulate)'s
+  Google emulator — stateful Gmail REST (`messages` incl. `raw`, `import`,
+  `modify`, `send`; `history`; `labels`; `threads`) plus OAuth token and
+  refresh endpoints. Spike at M4 start: packaging it in Nix (Node ≥ 24,
+  pnpm 11, also published on npm), and fidelity gaps we depend on. Extend
+  upstream, or replace it with our own fake, if it falls short.
+- **M365 (Graph):** emulate's Microsoft emulator covers OAuth only, no
+  mail. Look for prior art at M5 start; otherwise a small Graph fake of
+  the endpoints uplink uses (delta, `$value`, sendMail, PATCH/move).
 - **Matrix:** Conduit (single-binary Rust homeserver, ships in nixpkgs).
-  A test fixture provisions the homeserver, registers two users, and
-  exposes their access tokens to tests. Synapse is the heavier fallback.
-- **Graph / Gmail API:** `wiremock-rs` (preferred over `mockito` because
-  it handles streaming/chunked responses, which Graph uses). Worth a 1-h
-  spike at M4 start to confirm coverage of multi-call expectations.
+  The test provisions it, registers two users, and gives uplink one.
+  Synapse is the heavier fallback.
 
 **Frontend testing — no Playwright in MVP**
 
@@ -1912,7 +1931,6 @@ would add a third subscription — out of scope for MVP.
 | `mail-builder`            | Outbound MIME assembly                                     |
 | `html2text`               | HTML→plaintext for FTS body extraction                     |
 | `ammonia`                 | Server-side HTML sanitizer                                 |
-| `async-imap`              | IMAP+XOAUTH2 with IDLE                                     |
 | `reqwest` + `oauth2`      | HTTPS + OAuth                                              |
 | `matrix-sdk`              | Matrix client with E2EE                                    |
 | `notify`                  | inotify config reload                                      |
@@ -1922,7 +1940,6 @@ would add a third subscription — out of scope for MVP.
 | `ulid`                    | ULID for draft ids                                         |
 | `tracing`+`tracing-subscriber` | Structured logging                                    |
 | `anyhow`/`thiserror`      | Errors                                                     |
-| `wiremock`                | Test HTTP fakes                                            |
 | `rstest`                  | Parameterized tests                                        |
 
 | Web pkg                   | Use                                                        |

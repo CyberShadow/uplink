@@ -66,7 +66,7 @@ Deferred:
 ## Email — receiving
 
 MVP:
-- Gmail via IMAP+XOAUTH2 with IDLE.
+- Gmail via the Gmail API, polling `history.list` (see SPEC §8.1).
 - M365 via Graph (mail) with delta-link polling every 30 s (no push;
   see SPEC §8.3 and §15.11 — IMAP is not available via Outlook
   impersonation, EWS Streaming deferred).
@@ -78,7 +78,7 @@ Deferred:
   the implementation work). See SPEC §15.11. The polling baseline
   stays in place as the always-available fallback.
 - Generic IMAP/SMTP accounts (any non-Gmail, non-M365 server).
-- Gmail API push notifications (Cloud Pub/Sub).
+- Gmail push: API notifications via Cloud Pub/Sub, or IMAP IDLE as a change trigger.
 - JMAP support.
 - Server-side filters/rules.
 - S/MIME and PGP signature verification (read-only).
