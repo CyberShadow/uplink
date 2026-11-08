@@ -28,6 +28,7 @@ tokio-rustls = "0.26"
 tower = "0.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uplink-email = { version = "0.1.0", path = "../uplink-email" }
 
 [dev-dependencies]
 uplink-tx-log = { path = "../uplink-tx-log", features = ["test-ops"] }

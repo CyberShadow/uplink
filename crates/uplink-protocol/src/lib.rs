@@ -6,6 +6,10 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod mail;
+
+use mail::{EntryId, LabelId, ListPosition, MessageId};
+
 /// Id of a log entry. Entries are numbered from 1 in commit order, so an
 /// id also serves as a position in the event stream; 0 is the position
 /// before the first entry.
@@ -71,14 +75,60 @@ pub enum WsServerMsg {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ClientRequest {
     /// Undo a log entry. Undoing an undo entry is a redo.
-    Undo { tx_log_id: TxLogId },
+    Undo {
+        tx_log_id: TxLogId,
+    },
+    /// The configured mail accounts and their labels.
+    ListAccounts,
+    /// Entries carrying `label`, newest first, starting after `after`.
+    ListEntries {
+        label: LabelId,
+        after: Option<ListPosition>,
+        limit: u32,
+    },
+    /// Full-text search across all accounts, newest first.
+    Search {
+        query: String,
+        limit: u32,
+    },
+    LoadMessage {
+        message: MessageId,
+    },
+    /// Add and remove labels on entries, all of the labels' account.
+    /// Archiving is removing `INBOX`; marking read, removing `UNREAD`.
+    ModifyLabels {
+        entries: Vec<EntryId>,
+        add: Vec<LabelId>,
+        remove: Vec<LabelId>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ServerResponse {
     /// The undo was recorded as the log entry `tx_log_id`.
-    Undone { tx_log_id: TxLogId },
+    Undone {
+        tx_log_id: TxLogId,
+    },
+    /// The op was recorded as the log entry `tx_log_id`.
+    Dispatched {
+        tx_log_id: TxLogId,
+    },
+    /// Query results reflect the log up to and including entry `as_of`;
+    /// events of later entries apply on top.
+    Accounts {
+        as_of: TxLogId,
+        accounts: Vec<mail::Account>,
+    },
+    Entries {
+        as_of: TxLogId,
+        entries: Vec<mail::Entry>,
+        /// Where the next page starts, if there may be one.
+        next: Option<ListPosition>,
+    },
+    Message {
+        message: mail::MessageContent,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -97,6 +147,8 @@ pub enum ErrorCode {
     AlreadyUndone,
     /// The current state is not what the request expects (SPEC §6.2).
     Conflict,
+    /// The request is malformed, e.g. names a label of another account.
+    Invalid,
     Internal,
 }
 
@@ -127,11 +179,17 @@ pub enum Source {
     Account { id: String },
 }
 
-/// A change to state that clients mirror. Domain variants arrive with the
-/// domains (SPEC §5.4).
+/// A change to state that clients mirror (SPEC §5.4). Events carry ids
+/// rather than content, since they are stored in the log; clients query
+/// what they display.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ServerEvent {}
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ServerEvent {
+    EntriesAdded(mail::EntriesAdded),
+    EntriesRemoved(mail::EntriesRemoved),
+    LabelsChanged(mail::LabelsChanged),
+    LabelListChanged(mail::LabelListChanged),
+}
 
 #[cfg(test)]
 mod tests {
@@ -155,6 +213,20 @@ mod tests {
                 },
             }
         );
+    }
+
+    #[test]
+    fn event_shape() {
+        let event = ServerEvent::EntriesAdded(mail::EntriesAdded {
+            entries: vec![EntryId(1)],
+        });
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json, json!({ "type": "entries_added", "entries": [1] }));
+        assert_eq!(serde_json::from_value::<ServerEvent>(json).unwrap(), event);
+        assert!(serde_json::from_value::<ServerEvent>(
+            json!({ "type": "entries_added", "entries": [1], "x": 2 })
+        )
+        .is_err());
     }
 
     #[test]

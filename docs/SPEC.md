@@ -346,89 +346,86 @@ mismatch).
 ### 4.3 Schema (initial migration sketch)
 
 ```sql
--- ── accounts (server-side reflection of config) ─────────────────────
+-- ── mail (migrations/V0002__mail.sql) ────────────────────────────────
+-- An account, as far as sync is concerned. Created by its first
+-- observation; configuration (address, credentials) stays in the YAML.
 CREATE TABLE account (
-  id            TEXT PRIMARY KEY,           -- from YAML
-  kind          TEXT NOT NULL,              -- 'gmail' | 'm365' | 'matrix'
-  address       TEXT NOT NULL,              -- email or mxid
-  sync_state    TEXT NOT NULL DEFAULT '{}', -- per-kind JSON state blob
-                                            -- (Gmail historyId,
-                                            --  Graph deltaLink, ...)
-  enabled       INTEGER NOT NULL DEFAULT 1,
-  created_at    INTEGER NOT NULL
+  id          TEXT PRIMARY KEY,
+  kind        TEXT NOT NULL,       -- 'gmail' | 'm365' | 'matrix'
+  sync_state  TEXT                 -- per-kind JSON; NULL until the first
+                                   -- full sync has completed
 );
 
--- ── messages (mail) ─────────────────────────────────────────────────
--- A logical message is identified by its Message-ID, globally across
--- accounts. Each distinct copy of it (as built locally on send, as stored
--- by each provider, as delivered via a mailing list, ...) is a *variant*:
--- its own raw .eml, content-addressed. See §4.4 for identity rules.
+-- A logical message, identified by its Message-ID across accounts.
 CREATE TABLE message (
-  id              INTEGER PRIMARY KEY,
-  message_id      TEXT NOT NULL UNIQUE,     -- RFC 5322 Message-ID, or a
-                                            -- synthetic one (§4.4)
-  preferred_variant TEXT NOT NULL,          -- variant shown by default
-  -- header fields of the preferred variant, for listing and search:
-  subject         TEXT,
-  from_addr       TEXT,                     -- canonicalized addr
-  from_name       TEXT,
-  to_addrs        TEXT,                     -- JSON array
-  cc_addrs        TEXT,
-  date_sent       INTEGER                   -- unix seconds (Date: header)
+  id                INTEGER PRIMARY KEY,
+  message_id        TEXT NOT NULL UNIQUE,   -- RFC 5322, or synthetic (§4.4)
+  preferred_variant TEXT NOT NULL,          -- sha256 of the variant shown
+  -- Of the preferred variant, for listing and for the merge check:
+  subject           TEXT,
+  from_addr         TEXT,
+  from_name         TEXT,
+  to_addrs          TEXT NOT NULL,          -- JSON array of addresses
+  cc_addrs          TEXT NOT NULL,
+  date_sent         INTEGER,                -- Date:, unix seconds
+  senders           TEXT NOT NULL,          -- JSON array: addresses a variant
+                                            -- may name as its sender (§4.4)
+  snippet           TEXT NOT NULL           -- start of the body text
 );
 
+-- One distinct copy of a message, stored at mail/<sha[0:2]>/<sha>.eml.
 CREATE TABLE message_variant (
-  sha256          TEXT PRIMARY KEY,         -- of the raw bytes, hex
-  message         INTEGER NOT NULL REFERENCES message(id),
-  source          TEXT NOT NULL,            -- account id, or 'local'
-  date_received   INTEGER NOT NULL,         -- unix seconds
-  size_bytes      INTEGER NOT NULL,
-  raw_path        TEXT NOT NULL             -- mail/ab/abcd....eml
+  sha256        TEXT PRIMARY KEY,
+  message       INTEGER NOT NULL REFERENCES message(id),
+  source        TEXT NOT NULL,     -- account id it was first fetched from
+  size_bytes    INTEGER NOT NULL
 );
 CREATE INDEX message_variant_by_message ON message_variant(message);
 
--- A logical message as it exists in one account. Flags are kept as
--- desired (what the user asked for) and observed (what the provider last
--- reported); the account's reconciler pushes differences (§6.6).
-CREATE TABLE message_account (
-  message         INTEGER NOT NULL REFERENCES message(id),
-  account_id      TEXT NOT NULL REFERENCES account(id),
-  external_id     TEXT NOT NULL,            -- X-GM-MSGID / Graph message id
-  thread_id       TEXT,                     -- X-GM-THRID / conversationId
-  flags           INTEGER NOT NULL,         -- desired; bitfield (seen, flagged, ...)
-  observed_flags  INTEGER NOT NULL,
-  PRIMARY KEY (message, account_id)
+-- A message as it exists in an account (a Gmail message, a Graph item).
+-- An account may hold several copies of one logical message.
+CREATE TABLE mail_entry (
+  id           INTEGER PRIMARY KEY,
+  account_id   TEXT NOT NULL REFERENCES account(id),
+  external_id  TEXT NOT NULL,      -- Gmail message id / Graph message id
+  message      INTEGER NOT NULL REFERENCES message(id),
+  variant      TEXT NOT NULL REFERENCES message_variant(sha256),
+  thread_id    TEXT,               -- Gmail threadId / Graph conversationId
+  received_at  INTEGER NOT NULL,   -- unix ms (Gmail internalDate)
+  UNIQUE (account_id, external_id)
 );
-CREATE INDEX message_account_by_thread ON message_account(account_id, thread_id);
+CREATE INDEX mail_entry_by_message ON mail_entry(message);
+CREATE INDEX mail_entry_by_thread ON mail_entry(account_id, thread_id);
 
--- FTS5 over extracted plain text, one row per logical message, keyed by
--- message.id. Self-contained (not an external-content table): body_text
--- has no column to live in elsewhere.
+CREATE TABLE label (
+  id           INTEGER PRIMARY KEY,
+  account_id   TEXT NOT NULL REFERENCES account(id),
+  external_id  TEXT NOT NULL,      -- Gmail label id ('INBOX', 'Label_1')
+  name         TEXT NOT NULL,
+  system       INTEGER NOT NULL,   -- provider-defined (0/1)
+  UNIQUE (account_id, external_id)
+);
+
+-- Label membership of an entry, desired (set by ops) and observed (set by
+-- sync); the account's reconciler pushes differences (§6.6). Read and
+-- starred state are labels too (UNREAD, STARRED). Rows with both 0 are
+-- deleted.
+CREATE TABLE entry_label (
+  entry     INTEGER NOT NULL REFERENCES mail_entry(id) ON DELETE CASCADE,
+  label     INTEGER NOT NULL REFERENCES label(id) ON DELETE CASCADE,
+  desired   INTEGER NOT NULL,
+  observed  INTEGER NOT NULL,
+  PRIMARY KEY (entry, label),
+  CHECK (desired OR observed)
+);
+CREATE INDEX entry_label_by_label ON entry_label(label, entry) WHERE desired;
+CREATE INDEX entry_label_pending ON entry_label(entry) WHERE desired != observed;
+
+-- Full-text index, one row per logical message (rowid = message.id).
 CREATE VIRTUAL TABLE message_fts USING fts5(
   subject, from_addr, from_name, to_addrs, body_text,
-  tokenize='unicode61 remove_diacritics 2'
+  tokenize = 'unicode61 remove_diacritics 2'
 );
-
--- ── labels (Gmail-style, also used for M365 categories/folders) ─────
-CREATE TABLE label (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  account_id   TEXT NOT NULL REFERENCES account(id),
-  name         TEXT NOT NULL,                  -- e.g. 'INBOX', 'Important'
-  external_id  TEXT,                           -- gmail labelId, M365 folderId
-  color        TEXT,                           -- '#rrggbb' or null
-  UNIQUE(account_id, external_id)
-);
--- Membership, desired and observed (§6.6). A row with both 0 is deleted.
-CREATE TABLE message_label (
-  message      INTEGER NOT NULL REFERENCES message(id),
-  label_id     INTEGER NOT NULL REFERENCES label(id),
-  desired      INTEGER NOT NULL,               -- 0/1
-  observed     INTEGER NOT NULL,               -- 0/1
-  PRIMARY KEY (message, label_id)
-);
-CREATE INDEX message_label_by_label ON message_label(label_id, message);
-CREATE INDEX message_label_pending ON message_label(label_id)
-  WHERE desired != observed;
 
 -- ── matrix events (storage of all sync'd Matrix events) ─────────────
 CREATE TABLE matrix_room (
@@ -546,7 +543,7 @@ CREATE INDEX tx_log_by_ts ON tx_log(ts DESC);
 
 - **Message identity is the Message-ID, globally.** The same email in
   Gmail and M365 is one logical message (for a unified inbox) with
-  per-account state in `message_account`. Every distinct copy is a
+  per-account state in `mail_entry`. Every distinct copy is a
   `message_variant`; re-fetching identical bytes is idempotent (same
   sha256). Gmail rejects mail without a valid Message-ID, so a missing one
   is rare, but other paths can deliver it.
@@ -560,16 +557,27 @@ CREATE INDEX tx_log_by_ts ON tx_log(ts DESC);
   without a Message-ID get the same synthetic form, so they never merge
   with anything. The preferred variant is the first one stored, so a
   later colliding copy cannot replace what is displayed.
-- **No threads table.** `thread_id` is per account in `message_account`. Threading
+- **Entries.** A `mail_entry` is a message as it exists in one account
+  (a Gmail message, a Graph item), keyed by the provider's id; an account
+  may hold several copies of one logical message. Labels attach to
+  entries, since providers label their copies independently.
+- **Accounts are recorded by their first observation** (`account.kind`,
+  `sync_state`), so that every change to the database is a log entry;
+  their configuration (address, credentials) stays in the YAML.
+- **Variants are addressed by hash**: `mail/<sha256[0:2]>/<sha256>.eml`,
+  so no path is stored. Message-IDs are stored without angle brackets.
+- **No threads table.** `thread_id` is per account in `mail_entry`. Threading
   is whatever the provider tells us (Gmail `threadId`, M365 `conversationId`).
   We don't synthesize threads when the provider doesn't give them — MVP
   scope.
-- **Flags are a bitfield.** Seen/Flagged/Answered/Draft fit comfortably.
-  Provider-specific flags (gmail `\Important`, M365 `isRead`) project to
-  these.
+- **Flags are labels.** Gmail already models read and starred as system
+  labels (`UNREAD`, `STARRED`), so there is one desired/observed
+  mechanism, not two. M365's `isRead` and flag status will map onto the
+  same labels.
 - **Soft delete is label removal, not `message` deletion.** The
-  raw `.eml` stays on disk forever (invariant 4). Hard delete is deferred —
-  see ROADMAP.
+  raw `.eml` stays on disk forever (invariant 4). An entry the provider
+  deleted is removed with its labels, but its message and variants stay.
+  Hard delete is deferred — see ROADMAP.
 - **`tx_log` carries forward AND inverse.** Recorded inside the same SQLite
   transaction as the apply. The inverse is the inverse *edit* (§6.2), not a
   snapshot of pre-state.
@@ -580,18 +588,16 @@ CREATE INDEX tx_log_by_ts ON tx_log(ts DESC);
 
 ### 4.5 Body-text extraction for FTS
 
-The Gmail/Graph fetch path writes the `.eml`, then enqueues a parse job
-that:
-
-1. Parses MIME with `mail-parser` (stalwartlabs).
-2. Selects the `text/plain` part if present, otherwise the first
-   `text/html` part run through `html2text` (the Rust crate, deterministic,
-   no JS).
-3. Inserts the `message_fts` row (headers + body text) for the logical
-   message, replacing any earlier row when the preferred variant changes.
-
-Body extraction is deferred (not blocking the INSERT) so the inbox UI can
-show new messages instantly while indexing catches up.
+The fetch path writes the `.eml`, then parses it with `mail-parser`
+(stalwartlabs) — outside the writer lock, before recording the
+observation — taking the first `text/plain` part, or else the first
+`text/html` part converted by mail-parser's own HTML-to-text. The
+observation inserts the `message_fts` row (headers + the first 64 KB of
+body text) when it creates the logical message; the preferred variant
+never changes, so neither does the row. Parsing takes milliseconds and
+fetching dominates, so no separate indexing queue is needed. The parsed
+fields are not part of the recorded observation: they are derived from
+the `.eml`.
 
 ---
 
@@ -679,8 +685,10 @@ than it buffers is closed; the client reconnects and resumes.
 
 `ServerEvent` variants by domain:
 
-- **Mail**: `MessageAdded`, `MessageRemoved`, `MessageFlagsChanged`,
-  `LabelsChanged`, `ThreadChanged`.
+- **Mail**: `EntriesAdded`, `EntriesRemoved`, `LabelsChanged` (desired
+  and observed membership per entry and label), `LabelListChanged`.
+  Events carry ids, not content, since they are stored in the log;
+  clients query what they display.
 - **Matrix**: `RoomAdded`, `RoomRemoved`, `RoomNameChanged`,
   `RoomUnreadChanged`, `MatrixEventAdded` (carries decrypted plain text +
   raw JSON for unknown types), `RoomReadMarkerChanged`.
@@ -693,12 +701,18 @@ than it buffers is closed; the client reconnects and resumes.
 
 `ClientRequest` variants (MVP):
 
-- `Search { query, scope }` — FTS5 cross-account search.
-- `LoadMessage { id }` — fetch full body (text + sanitized HTML).
+- `ListAccounts` — mail accounts with their labels and counts.
+- `ListEntries { label, after, limit }` — a page of a label, newest first.
+- `Search { query, limit }` — FTS5 cross-account search.
+- `LoadMessage { message }` — fetch full body (text; sanitized HTML at M6).
 - `LoadRoomTimeline { room_id, before_event_id, limit }`.
 - `Undo { tx_log_id }`.
-- One request per op kind the client can dispatch (archive, label, mark
-  read, draft edits, send, ...), answered with the tx_log id.
+- One request per op kind the client can dispatch, answered with the
+  tx_log id: `ModifyLabels { entries, add, remove }` covers archive,
+  label, mark read and star; later draft edits, send, ...
+
+Query responses carry `as_of`, the last log entry they reflect: a client
+applies only events of later entries on top.
 
 ---
 
@@ -1018,21 +1032,14 @@ When the reconciler sends an outbox item:
 Next sync pass, the provider's Sent copy is observed. It has the same
 Message-ID but different bytes (the provider adds headers), so it is
 stored as a second variant of the same message, and the message gains its
-`message_account` row.
+`mail_entry` for the account.
 
 ### 8.7 Body extraction & FTS
 
-After every mail INSERT, enqueue an extract-body task (tokio task). It:
-
-1. Reads the `.eml` from disk.
-2. Parses with `mail-parser`.
-3. Selects best `text/plain` or runs html2text over the HTML part.
-4. Truncates to 64 KB.
-5. Inserts the `message_fts` row for the logical message.
-
-If body extraction fails (rare; mail-parser is permissive), the message is
-still in the FTS index by subject/from/to but body_text is empty. Log and
-move on.
+See §4.5. mail-parser accepts anything; a message it cannot make sense of
+is still stored and listed, with empty fields. Search matches every word
+of the query as a word prefix; the query is not interpreted as FTS5
+syntax.
 
 ### 8.8 Error semantics
 
@@ -1958,7 +1965,6 @@ would add a third subscription — out of scope for MVP.
 | `ts-rs`                   | Rust → TypeScript type codegen                             |
 | `mail-parser`             | RFC 5322 + MIME parsing                                    |
 | `mail-builder`            | Outbound MIME assembly                                     |
-| `html2text`               | HTML→plaintext for FTS body extraction                     |
 | `ammonia`                 | Server-side HTML sanitizer                                 |
 | `reqwest` + `oauth2`      | HTTPS + OAuth                                              |
 | `matrix-sdk`              | Matrix client with E2EE                                    |

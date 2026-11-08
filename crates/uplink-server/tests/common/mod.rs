@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use uplink_config::Config;
-use uplink_server::{open_log, serve_with_listener, Log};
+use uplink_server::{open, serve_with_listener, Services};
 use uplink_tx_log::Registry;
 
 // ── cert-generation helpers ───────────────────────────────────────────────────
@@ -145,14 +145,14 @@ pub fn write_config(config_path: &Path, cert_path: &Path, key_path: &Path) {
 }
 
 /// Starts a server for the config at `config_path` on a free port.
-pub async fn start_server(config_path: &Path, registry: Registry) -> (SocketAddr, Log) {
+pub async fn start_server(config_path: &Path, registry: Registry) -> (SocketAddr, Services) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind failed");
     let addr = listener.local_addr().unwrap();
 
     let config = Config::load(config_path).expect("config load failed");
-    let log = open_log(&config, registry).expect("opening database failed");
+    let log = open(&config, registry).expect("opening database failed");
     let cp = config_path.to_path_buf();
     let l = log.clone();
     tokio::spawn(async move {

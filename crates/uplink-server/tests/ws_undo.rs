@@ -14,7 +14,7 @@ use tokio_tungstenite::{
 use uplink_protocol::{
     ClientRequest, ErrorCode, LogEntry, ServerResponse, Source, TxLogId, WsClientMsg, WsServerMsg,
 };
-use uplink_server::Log;
+use uplink_server::Services;
 use uplink_storage::rusqlite::Connection;
 use uplink_tx_log::{
     sample::{self, SampleInsert, SampleObserved},
@@ -27,7 +27,7 @@ struct Server {
     dir: tempfile::TempDir,
     data_root: PathBuf,
     addr: SocketAddr,
-    log: Log,
+    log: Services,
 }
 
 /// A server whose database has the `sample` table and ops.

@@ -2,3 +2,22 @@
 name = "uplink-email"
 version = "0.1.0"
 edition = "2021"
+
+[dependencies]
+anyhow = "1.0.104"
+mail-parser = "0.11.9"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["rt"] }
+tracing = "0.1.44"
+uplink-protocol = { version = "0.1.0", path = "../uplink-protocol" }
+uplink-storage = { version = "0.1.0", path = "../uplink-storage" }
+uplink-tx-log = { version = "0.1.0", path = "../uplink-tx-log" }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["macros", "rt"] }
+uplink-realtime = { path = "../uplink-realtime" }
+uplink-tx-log = { path = "../uplink-tx-log", features = ["test-ops"] }

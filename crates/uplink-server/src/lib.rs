@@ -24,7 +24,10 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tower::Service;
 use tracing::info;
-use uplink_config::{BasicAuthConfig, Config, ConfigChanged, ConfigSection, Watcher};
+use uplink_config::{
+    AccountConfig, BasicAuthConfig, Config, ConfigChanged, ConfigSection, Watcher,
+};
+use uplink_email::{query::ConfiguredAccount, service::Mail};
 use uplink_protocol::{ClientRequest, ErrorCode, ServerError, ServerResponse, TxLogId};
 use uplink_realtime::{Backend, Hub, Replay};
 use uplink_tx_log::{Dispatcher, LogReader, Registry, UndoError};
@@ -41,7 +44,7 @@ struct StaticFiles;
 #[derive(Clone)]
 struct AppState {
     basic_auth: Arc<ArcSwap<BasicAuthConfig>>,
-    log: Log,
+    services: Services,
 }
 
 pub fn run() -> Result<()> {
@@ -61,7 +64,7 @@ async fn run_async() -> Result<()> {
 
     let config_path = parse_config_flag();
     let config = Config::load(&config_path)?;
-    let log = open_log(&config, Registry::new())?;
+    let services = open(&config, Registry::new())?;
 
     let bind: SocketAddr = config
         .server
@@ -72,24 +75,51 @@ async fn run_async() -> Result<()> {
     let listener = TcpListener::bind(&bind).await?;
     info!("listening on https://{}", bind);
 
-    serve_with_listener(config, config_path, listener, log).await
+    serve_with_listener(config, config_path, listener, services).await
 }
 
-/// The database: the only writer, and a reader for replay.
+/// What answers clients: the database's only writer, a reader for replay,
+/// and the domains.
 #[derive(Clone)]
-pub struct Log {
+pub struct Services {
     pub dispatcher: Dispatcher,
     pub reader: Arc<LogReader>,
+    pub mail: Mail,
 }
 
 /// Opens (and migrates) the database under the configured data root, with
-/// a dispatcher for the op kinds in `registry`.
-pub fn open_log(config: &Config, registry: Registry) -> Result<Log> {
-    let conn = uplink_storage::open(&config.data.root)?;
-    let reader = uplink_storage::open_reader(&config.data.root)?;
-    Ok(Log {
-        dispatcher: Dispatcher::new(conn, registry, Arc::new(Hub::new(HUB_CAPACITY))),
-        reader: Arc::new(LogReader::new(reader, MAX_REPLAY)),
+/// a dispatcher for the domains' op kinds plus those in `registry`.
+pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
+    uplink_email::mailbox::register(&mut registry);
+    let root = &config.data.root;
+    let dispatcher = Dispatcher::new(
+        uplink_storage::open(root)?,
+        registry,
+        Arc::new(Hub::new(HUB_CAPACITY)),
+    );
+    let mail_accounts = config
+        .accounts
+        .iter()
+        .filter_map(|account| match account {
+            AccountConfig::Gmail(gmail) => Some(ConfiguredAccount {
+                id: gmail.id.clone(),
+                address: gmail.address.clone(),
+            }),
+            AccountConfig::M365(_) | AccountConfig::Matrix(_) => None,
+        })
+        .collect();
+    Ok(Services {
+        mail: Mail::new(
+            dispatcher.clone(),
+            uplink_storage::open_reader(root)?,
+            root,
+            mail_accounts,
+        ),
+        reader: Arc::new(LogReader::new(
+            uplink_storage::open_reader(root)?,
+            MAX_REPLAY,
+        )),
+        dispatcher,
     })
 }
 
@@ -100,7 +130,7 @@ pub async fn serve_with_listener(
     config: Config,
     config_path: PathBuf,
     listener: TcpListener,
-    log: Log,
+    services: Services,
 ) -> Result<()> {
     let tls_server_config =
         build_tls_server_config_from_paths(&config.server.tls.cert, &config.server.tls.key)?;
@@ -112,7 +142,7 @@ pub async fn serve_with_listener(
 
     let state = AppState {
         basic_auth: basic_auth.clone(),
-        log,
+        services,
     };
 
     let (tx, rx) = tokio::sync::broadcast::channel::<ConfigChanged>(16);
@@ -310,11 +340,12 @@ async fn ws_handler(
     }
     ws.protocols([uplink_realtime::PROTOCOL])
         .on_upgrade(move |socket| async move {
-            uplink_realtime::run_session(socket, state.log.dispatcher.hub(), &state.log).await
+            uplink_realtime::run_session(socket, state.services.dispatcher.hub(), &state.services)
+                .await
         })
 }
 
-impl Backend for Log {
+impl Backend for Services {
     async fn handle(&self, request: ClientRequest) -> Result<ServerResponse, ServerError> {
         match request {
             ClientRequest::Undo { tx_log_id } => self
@@ -323,6 +354,19 @@ impl Backend for Log {
                 .await
                 .map(|id| ServerResponse::Undone { tx_log_id: id })
                 .map_err(undo_error),
+            ClientRequest::ListAccounts => self.mail.list_accounts().await,
+            ClientRequest::ListEntries {
+                label,
+                after,
+                limit,
+            } => self.mail.list_entries(label, after, limit).await,
+            ClientRequest::Search { query, limit } => self.mail.search(query, limit).await,
+            ClientRequest::LoadMessage { message } => self.mail.load_message(message).await,
+            ClientRequest::ModifyLabels {
+                entries,
+                add,
+                remove,
+            } => self.mail.modify_labels(entries, add, remove).await,
         }
     }
 
@@ -469,16 +513,19 @@ mod tests {
     const TEST_PASS: &str = "testpass";
 
     /// These tests don't touch the database; they share one.
-    static LOG: std::sync::LazyLock<(tempfile::TempDir, Log)> = std::sync::LazyLock::new(|| {
-        let dir = tempfile::tempdir().unwrap();
-        let conn = uplink_storage::open(dir.path()).unwrap();
-        let reader = uplink_storage::open_reader(dir.path()).unwrap();
-        let log = Log {
-            dispatcher: Dispatcher::new(conn, Registry::new(), Arc::new(Hub::new(16))),
-            reader: Arc::new(LogReader::new(reader, 16)),
-        };
-        (dir, log)
-    });
+    static SERVICES: std::sync::LazyLock<(tempfile::TempDir, Services)> =
+        std::sync::LazyLock::new(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let conn = uplink_storage::open(dir.path()).unwrap();
+            let reader = || uplink_storage::open_reader(dir.path()).unwrap();
+            let dispatcher = Dispatcher::new(conn, Registry::new(), Arc::new(Hub::new(16)));
+            let services = Services {
+                mail: Mail::new(dispatcher.clone(), reader(), dir.path(), vec![]),
+                reader: Arc::new(LogReader::new(reader(), 16)),
+                dispatcher,
+            };
+            (dir, services)
+        });
 
     fn test_state() -> AppState {
         AppState {
@@ -486,7 +533,7 @@ mod tests {
                 user: TEST_USER.to_string(),
                 password_bcrypt: TEST_BCRYPT.to_string(),
             }))),
-            log: LOG.1.clone(),
+            services: SERVICES.1.clone(),
         }
     }
 
