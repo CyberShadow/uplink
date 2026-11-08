@@ -1158,6 +1158,19 @@ is still stored and listed, with empty fields. Search matches every word
 of the query as a word prefix; the query is not interpreted as FTS5
 syntax.
 
+Speed (M10): `message_fts` has prefix indexes (`prefix = '1 2 3'`), so a
+short prefix is one index lookup rather than a merge of every term it
+starts. Results, like lists, are newest first, and a page is found one of
+two ways, by how many candidates there are (counted first, cheaply):
+up to 2000 are all sorted; more, and entries are walked newest first by
+an index (`mail_entry(received_at)`, or `(account_id, received_at)` for a
+label's or All Mail's list) until the page is full, which many
+candidates make quick. A page so costs about 2000 rows at most, however
+large the mailbox. Label counts are per label, over its own index
+entries, and stay linear in the label's size. The ignored test
+`speed_of_search_and_listing` measures a 50,000-message mailbox: search
+1–20 ms, a page of the Inbox 3 ms, All Mail under 1 ms, the counts 42 ms.
+
 ### 8.8 Error semantics
 
 - **OAuth refresh fails** (revoked token, password changed): set
@@ -1802,7 +1815,8 @@ shows the last 100 user actions with working Undo buttons.
 themes following the system (`color-scheme`, so native controls follow
 too; HTML mail keeps its white paper); `#` and `!` with Gmail's hiding
 of Trash and Spam, and All Mail (`ga`) (§8.1); joining and leaving
-Matrix rooms (§9.7).
+Matrix rooms (§9.7); search and lists under 100 ms on a 50,000-message
+mailbox (§8.7).
 
 ### Why this ordering
 

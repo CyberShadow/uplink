@@ -6,7 +6,7 @@ use uplink_protocol::{
     mail::{Entry, EntryId, EntryList, Label, LabelId, ListPosition, MessageId},
     TxLogId,
 };
-use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Row, ToSql, Transaction};
+use uplink_storage::rusqlite::{Connection, OptionalExtension, Row, ToSql, Transaction};
 use uplink_tx_log::as_of;
 
 /// SQL: whether the entry with id `entry` is in Trash or Spam, which, as
@@ -43,24 +43,32 @@ pub fn accounts(
             )
             .optional()?
             .unwrap_or(false);
+        // Per label, so each count is of its own index entries; what Trash
+        // and Spam hide is found once.
         let labels = tx
-            .prepare(&format!(
-                "SELECT l.id, l.external_id, l.name, l.system,
-                        count(el.entry),
-                        count(unread.entry)
+            .prepare(
+                "WITH hidden AS (
+                   SELECT entry FROM entry_label
+                   WHERE desired AND label IN (SELECT id FROM label
+                                               WHERE account_id = ?1
+                                                 AND external_id IN ('TRASH', 'SPAM'))),
+                 unread AS (
+                   SELECT entry FROM entry_label
+                   WHERE desired AND label = (SELECT id FROM label
+                                              WHERE account_id = ?1 AND external_id = 'UNREAD'))
+                 SELECT l.id, l.external_id, l.name, l.system,
+                   (SELECT count(*) FROM entry_label el
+                    WHERE el.label = l.id AND el.desired
+                      AND (l.external_id IN ('TRASH', 'SPAM')
+                           OR el.entry NOT IN (SELECT entry FROM hidden))),
+                   (SELECT count(*) FROM unread u
+                    JOIN entry_label el ON el.entry = u.entry AND el.label = l.id AND el.desired
+                    WHERE l.external_id IN ('TRASH', 'SPAM')
+                       OR u.entry NOT IN (SELECT entry FROM hidden))
                  FROM label l
-                 LEFT JOIN entry_label el ON el.label = l.id AND el.desired
-                   AND (l.external_id IN ('TRASH', 'SPAM') OR NOT {})
-                 LEFT JOIN entry_label unread
-                   ON unread.entry = el.entry AND unread.desired
-                  AND unread.label = (SELECT id FROM label
-                                      WHERE account_id = l.account_id
-                                        AND external_id = 'UNREAD')
                  WHERE l.account_id = ?1
-                 GROUP BY l.id
                  ORDER BY NOT l.system, l.name",
-                hidden("el.entry")
-            ))?
+            )?
             .query_map([&account.id], |r| {
                 Ok(Label {
                     id: LabelId(r.get(0)?),
@@ -92,6 +100,12 @@ pub struct Page {
     pub next: Option<ListPosition>,
 }
 
+/// Below this many candidates, a page is found by sorting them all; above,
+/// by walking entries newest first (by an index) until the page is full,
+/// which many candidates make quick. Either way a page costs about this
+/// many rows at most, however large the mailbox.
+const SORT_AT_MOST: i64 = 2000;
+
 /// The list's entries, newest first, after `after`.
 pub fn entries(
     conn: &mut Connection,
@@ -101,53 +115,53 @@ pub fn entries(
 ) -> Result<Page> {
     let tx = conn.transaction()?;
     let as_of = as_of(&tx)?;
-    // Positions compare as (received_at, entry); the first page starts
-    // after the greatest possible one.
-    let after = after.unwrap_or(ListPosition {
-        received_at: i64::MAX,
-        entry: EntryId(i64::MAX),
-    });
     let unhidden = format!("NOT {}", hidden("e.id"));
-    // `?1` is what the list is of.
-    let (key, from, condition): (Box<dyn ToSql>, &str, String) = match list {
+    type Params = Vec<(&'static str, Box<dyn ToSql>)>;
+    let (params, from, condition): (Params, &str, String) = match list {
         EntryList::Label { label } => {
-            let external_id: String = tx.query_row(
-                "SELECT external_id FROM label WHERE id = ?1",
+            let (account, external_id): (String, String) = tx.query_row(
+                "SELECT account_id, external_id FROM label WHERE id = ?1",
+                [label.0],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let unhidden = match external_id.as_str() {
+                "TRASH" | "SPAM" => "1".to_owned(),
+                _ => unhidden,
+            };
+            let count: i64 = tx.query_row(
+                "SELECT count(*) FROM entry_label WHERE label = ?1 AND desired",
                 [label.0],
                 |r| r.get(0),
             )?;
-            let condition = match external_id.as_str() {
-                "TRASH" | "SPAM" => "el.label = ?1 AND el.desired".to_owned(),
-                _ => format!("el.label = ?1 AND el.desired AND {unhidden}"),
-            };
-            (
-                Box::new(label.0),
-                "entry_label el JOIN mail_entry e ON e.id = el.entry",
-                condition,
-            )
+            if count <= SORT_AT_MOST {
+                (
+                    vec![(":label", Box::new(label.0))],
+                    "entry_label el JOIN mail_entry e ON e.id = el.entry",
+                    format!("el.label = :label AND el.desired AND {unhidden}"),
+                )
+            } else {
+                (
+                    vec![
+                        (":label", Box::new(label.0)),
+                        (":account", Box::new(account)),
+                    ],
+                    "mail_entry e INDEXED BY mail_entry_by_account_received",
+                    format!(
+                        "e.account_id = :account AND {unhidden}
+                         AND EXISTS (SELECT 1 FROM entry_label el
+                                     WHERE el.entry = e.id AND el.label = :label AND el.desired)"
+                    ),
+                )
+            }
         }
         EntryList::AllMail { account } => (
-            Box::new(account.clone()),
-            "mail_entry e",
-            format!("e.account_id = ?1 AND {unhidden}"),
+            vec![(":account", Box::new(account.clone()))],
+            "mail_entry e INDEXED BY mail_entry_by_account_received",
+            format!("e.account_id = :account AND {unhidden}"),
         ),
     };
-    let entries = tx
-        .prepare(&format!(
-            "SELECT {ENTRY_COLUMNS}
-             FROM {from}
-             JOIN message m ON m.id = e.message
-             WHERE {condition}
-               AND (e.received_at, e.id) < (?2, ?3)
-             ORDER BY e.received_at DESC, e.id DESC
-             LIMIT ?4"
-        ))?
-        .query_map(
-            params![key, after.received_at, after.entry.0, limit],
-            entry_row,
-        )?
-        .collect::<Result<Vec<_>, _>>()?;
-    let entries = with_labels(&tx, entries)?;
+    let params: Vec<(&str, &dyn ToSql)> = params.iter().map(|(n, v)| (*n, &**v)).collect();
+    let entries = page(&tx, from, &condition, &params, after, limit)?;
     let next = (entries.len() == limit as usize).then(|| {
         let last = entries.last().expect("a full page is not empty");
         ListPosition {
@@ -162,10 +176,46 @@ pub fn entries(
     })
 }
 
+/// The entries `FROM from WHERE condition`, newest first, after `after`.
+/// `from` names the entries `e`.
+fn page(
+    tx: &Transaction,
+    from: &str,
+    condition: &str,
+    params: &[(&str, &dyn ToSql)],
+    after: Option<ListPosition>,
+    limit: u32,
+) -> Result<Vec<Entry>> {
+    // Positions compare as (received_at, entry); the first page starts
+    // after the greatest possible one.
+    let after = after.unwrap_or(ListPosition {
+        received_at: i64::MAX,
+        entry: EntryId(i64::MAX),
+    });
+    let mut all: Vec<(&str, &dyn ToSql)> = params.to_vec();
+    all.extend([
+        (":received_at", &after.received_at as &dyn ToSql),
+        (":entry", &after.entry.0),
+        (":limit", &limit),
+    ]);
+    let entries = tx
+        .prepare(&format!(
+            "SELECT {ENTRY_COLUMNS}
+             FROM {from}
+             JOIN message m ON m.id = e.message
+             WHERE {condition}
+               AND (e.received_at, e.id) < (:received_at, :entry)
+             ORDER BY e.received_at DESC, e.id DESC
+             LIMIT :limit"
+        ))?
+        .query_map(&*all, entry_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    with_labels(tx, entries)
+}
+
 /// Entries of messages matching `query`, newest first. Each word of the
 /// query must match, as a prefix of a word in the message.
 pub fn search(conn: &mut Connection, query: &str, limit: u32) -> Result<(TxLogId, Vec<Entry>)> {
-    let hidden = hidden("e.id");
     let fts_query = query
         .split_whitespace()
         .map(|word| format!("\"{}\"*", word.replace('"', "\"\"")))
@@ -173,19 +223,35 @@ pub fn search(conn: &mut Connection, query: &str, limit: u32) -> Result<(TxLogId
         .join(" ");
     let tx = conn.transaction()?;
     let as_of = as_of(&tx)?;
-    let entries = tx
-        .prepare(&format!(
-            "SELECT {ENTRY_COLUMNS}
-             FROM message_fts f
-             JOIN mail_entry e ON e.message = f.rowid
-             JOIN message m ON m.id = e.message
-             WHERE message_fts MATCH ?1 AND NOT {hidden}
-             ORDER BY e.received_at DESC, e.id DESC
-             LIMIT ?2"
-        ))?
-        .query_map(params![fts_query, limit], entry_row)?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok((as_of, with_labels(&tx, entries)?))
+    let matches: i64 = tx.query_row(
+        "SELECT count(*) FROM message_fts WHERE message_fts MATCH ?1",
+        [&fts_query],
+        |r| r.get(0),
+    )?;
+    let unhidden = format!("NOT {}", hidden("e.id"));
+    let (from, condition) = if matches <= SORT_AT_MOST {
+        (
+            "message_fts f JOIN mail_entry e ON e.message = f.rowid",
+            format!("message_fts MATCH :query AND {unhidden}"),
+        )
+    } else {
+        (
+            "mail_entry e INDEXED BY mail_entry_by_received",
+            format!(
+                "e.message IN (SELECT rowid FROM message_fts WHERE message_fts MATCH :query)
+                 AND {unhidden}"
+            ),
+        )
+    };
+    let entries = page(
+        &tx,
+        from,
+        &condition,
+        &[(":query", &fts_query)],
+        None,
+        limit,
+    )?;
+    Ok((as_of, entries))
 }
 
 /// The message's entries, in every account, newest first; `None` if there

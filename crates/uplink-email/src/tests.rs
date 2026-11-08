@@ -13,7 +13,7 @@ use uplink_protocol::{
     ServerEvent, TxLogId,
 };
 use uplink_realtime::Hub;
-use uplink_storage::rusqlite::Connection;
+use uplink_storage::rusqlite::{params, Connection};
 use uplink_tx_log::{Dispatcher, Registry, UndoError};
 
 pub(crate) struct Db {
@@ -1019,4 +1019,268 @@ pub(crate) mod service {
             ErrorCode::NotFound
         );
     }
+}
+
+/// Fills an empty database with `messages` messages over accounts `a` and
+/// `b` (even and odd ids), as a mailbox looks to the queries: some words
+/// very common and most rare (word `i` drawn with weight about 1/i), most
+/// messages in the Inbox, a fifth unread, one in fifty in Trash.
+fn fill(conn: &mut Connection, messages: i64) {
+    let words: Vec<String> = (0..5000).map(|i| format!("w{i}")).collect();
+    let mut seed = 1u64;
+    let mut random = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let mut word = || {
+        let u = (random() % 1_000_000) as f64 / 1_000_000.0;
+        &words[((5000f64.powf(u)) as usize - 1).min(4999)]
+    };
+    let tx = conn.transaction().unwrap();
+    for account in ["a", "b"] {
+        tx.execute(
+            "INSERT INTO account (id, kind) VALUES (?1, 'gmail')",
+            [account],
+        )
+        .unwrap();
+        for label in ["INBOX", "UNREAD", "TRASH", "SPAM"] {
+            tx.execute(
+                "INSERT INTO label (account_id, external_id, name, system) VALUES (?1, ?2, ?2, 1)",
+                [account, label],
+            )
+            .unwrap();
+        }
+    }
+    for id in 1..=messages {
+        let subject: Vec<&str> = (0..6).map(|_| word().as_str()).collect();
+        let body: Vec<&str> = (0..80).map(|_| word().as_str()).collect();
+        let (subject, body) = (subject.join(" "), body.join(" "));
+        tx.execute(
+            "INSERT INTO message (id, message_id, preferred_variant, subject, from_addr,
+                                  to_addrs, cc_addrs, senders, snippet)
+             VALUES (?1, ?1 || '@x', ?1, ?2, 's@x', '[]', '[]', '[]', ?3)",
+            params![id, subject, &body[..60]],
+        )
+        .unwrap();
+        tx.execute(
+            "INSERT INTO message_variant (sha256, message, source, size_bytes)
+             VALUES (?1, ?1, 'a', 1)",
+            [id],
+        )
+        .unwrap();
+        tx.execute(
+            "INSERT INTO message_fts (rowid, subject, from_addr, from_name, to_addrs, body_text)
+             VALUES (?1, ?2, 's@x', '', '', ?3)",
+            params![id, subject, body],
+        )
+        .unwrap();
+        let account = if id % 2 == 0 { "a" } else { "b" };
+        let entry: i64 = tx
+            .query_row(
+                "INSERT INTO mail_entry (account_id, external_id, message, variant, received_at)
+                 VALUES (?1, ?2, ?2, ?2, ?2 * 1000) RETURNING id",
+                params![account, id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // Most in the Inbox, a fifth unread, a few in Trash.
+        let mut labels = vec!["INBOX"];
+        if id % 5 == 0 {
+            labels.push("UNREAD");
+        }
+        if id % 50 == 0 {
+            labels = vec!["TRASH"];
+        }
+        for label in labels {
+            tx.execute(
+                "INSERT INTO entry_label (entry, label, desired, observed)
+                 SELECT ?1, id, 1, 1 FROM label WHERE account_id = ?2 AND external_id = ?3",
+                params![entry, account, label],
+            )
+            .unwrap();
+        }
+    }
+    tx.commit().unwrap();
+    conn.execute_batch("ANALYZE").unwrap();
+}
+
+/// Lists and searches with many candidates walk entries newest first
+/// rather than sorting the candidates; both give the order plain queries
+/// do, page by page.
+#[test]
+fn large_lists_and_searches_page_in_order() {
+    use crate::query;
+    use uplink_protocol::mail::EntryList;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = uplink_storage::open(dir.path()).unwrap();
+    fill(&mut conn, 6000);
+    let plain = |conn: &Connection, sql: &str| -> Vec<i64> {
+        conn.prepare(sql)
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let unhidden = "NOT EXISTS (SELECT 1 FROM entry_label hl JOIN label h ON h.id = hl.label
+                                WHERE hl.entry = e.id AND hl.desired
+                                  AND h.external_id IN ('TRASH', 'SPAM'))";
+    let order = "ORDER BY e.received_at DESC, e.id DESC";
+    let label = |conn: &Connection, name: &str| -> i64 {
+        conn.query_row(
+            "SELECT id FROM label WHERE account_id = 'a' AND external_id = ?1",
+            [name],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let (inbox, unread) = (label(&conn, "INBOX"), label(&conn, "UNREAD"));
+    for (list, sql) in [
+        // 3000 entries: walked.
+        (
+            EntryList::Label {
+                label: LabelId(inbox),
+            },
+            format!(
+                "SELECT e.id FROM mail_entry e JOIN entry_label el ON el.entry = e.id
+                 WHERE el.label = {inbox} AND el.desired AND {unhidden} {order}"
+            ),
+        ),
+        // 600: sorted.
+        (
+            EntryList::Label {
+                label: LabelId(unread),
+            },
+            format!(
+                "SELECT e.id FROM mail_entry e JOIN entry_label el ON el.entry = e.id
+                 WHERE el.label = {unread} AND el.desired AND {unhidden} {order}"
+            ),
+        ),
+        (
+            EntryList::AllMail {
+                account: "b".into(),
+            },
+            format!(
+                "SELECT e.id FROM mail_entry e WHERE e.account_id = 'b' AND {unhidden} {order}"
+            ),
+        ),
+    ] {
+        let mut listed = vec![];
+        let mut after = None;
+        loop {
+            let page = query::entries(&mut conn, &list, after, 250).unwrap();
+            listed.extend(page.entries.iter().map(|e| e.id.0));
+            match page.next {
+                Some(next) => after = Some(next),
+                None => break,
+            }
+        }
+        assert_eq!(listed, plain(&conn, &sql), "{list:?}");
+    }
+    // Common words (walked), rare ones (sorted), and both.
+    for words in ["w0", "w1 w2", "w4321", "w12 w3000"] {
+        let fts = words
+            .split(' ')
+            .map(|w| format!("\"{w}\"*"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut expected = plain(
+            &conn,
+            &format!(
+                "SELECT e.id FROM message_fts f JOIN mail_entry e ON e.message = f.rowid
+                 WHERE message_fts MATCH '{fts}' AND {unhidden} {order}"
+            ),
+        );
+        expected.truncate(100);
+        let found: Vec<i64> = query::search(&mut conn, words, 100)
+            .unwrap()
+            .1
+            .iter()
+            .map(|e| e.id.0)
+            .collect();
+        assert_eq!(found, expected, "{words}");
+    }
+}
+
+/// How fast search and listing are over a mailbox of realistic size (SPEC
+/// §14 M10: under 100 ms). Slow to set up, so run on demand:
+/// `cargo test --release -p uplink-email -- --ignored --nocapture speed`.
+#[test]
+#[ignore]
+fn speed_of_search_and_listing() {
+    use crate::query;
+    use std::time::Instant;
+    use uplink_protocol::mail::EntryList;
+
+    const MESSAGES: i64 = 50_000;
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = uplink_storage::open(dir.path()).unwrap();
+    let started = Instant::now();
+    fill(&mut conn, MESSAGES);
+    eprintln!("set up {MESSAGES} messages in {:?}", started.elapsed());
+
+    let inbox: i64 = conn
+        .query_row(
+            "SELECT id FROM label WHERE account_id = 'a' AND external_id = 'INBOX'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut slowest = std::time::Duration::ZERO;
+    let mut time = |what: &str, f: &mut dyn FnMut(&mut Connection) -> usize| {
+        // The first run warms the page cache, as a running server's is.
+        f(&mut conn);
+        let started = Instant::now();
+        let found = f(&mut conn);
+        let took = started.elapsed();
+        slowest = slowest.max(took);
+        eprintln!("{what}: {found} in {took:?}");
+    };
+    for query in ["w0", "w1 w2", "w4321", "w12 w3000", "w"] {
+        time(&format!("search {query:?}"), &mut |conn| {
+            query::search(conn, query, 100).unwrap().1.len()
+        });
+    }
+    time("Inbox, first page", &mut |conn| {
+        query::entries(
+            conn,
+            &EntryList::Label {
+                label: LabelId(inbox),
+            },
+            None,
+            100,
+        )
+        .unwrap()
+        .entries
+        .len()
+    });
+    time("All Mail, first page", &mut |conn| {
+        query::entries(
+            conn,
+            &EntryList::AllMail {
+                account: "a".into(),
+            },
+            None,
+            100,
+        )
+        .unwrap()
+        .entries
+        .len()
+    });
+    time("accounts and counts", &mut |conn| {
+        query::accounts(
+            conn,
+            &[query::ConfiguredAccount {
+                id: "a".into(),
+                address: "a@x".into(),
+            }],
+        )
+        .unwrap()
+        .1
+        .len()
+    });
+    eprintln!("slowest: {slowest:?}");
 }
