@@ -1,6 +1,7 @@
 //! The parts of the Gmail REST API uplink uses (SPEC §8.1).
 
 use super::oauth::Credentials;
+use crate::account::SendError;
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{
     alphabet,
@@ -112,21 +113,6 @@ pub struct BatchModify<'a> {
     pub ids: &'a [String],
     pub add_label_ids: &'a [String],
     pub remove_label_ids: &'a [String],
-}
-
-/// Why `messages.send` did not succeed.
-#[derive(Debug, thiserror::Error)]
-pub enum SendError {
-    /// The message was not sent, but may be on a later attempt.
-    #[error("{0:#}")]
-    NotSent(anyhow::Error),
-    /// Gmail refused the message.
-    #[error("{0}")]
-    Rejected(String),
-    /// The request failed after it went out: the message may have been
-    /// sent.
-    #[error("{0:#}; it may have been sent")]
-    Unknown(anyhow::Error),
 }
 
 #[derive(Clone, Copy)]

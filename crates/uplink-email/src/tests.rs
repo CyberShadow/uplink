@@ -133,6 +133,7 @@ pub(crate) fn labels(ids: &[&str]) -> Option<Vec<ObservedLabel>> {
                 external_id: id.to_string(),
                 name: id.to_string(),
                 system: !id.starts_with("Label_"),
+                folder: false,
             })
             .collect(),
     )
@@ -577,6 +578,7 @@ async fn labels_are_replaced_by_a_listing() {
         external_id: "Label_2".into(),
         name: "New".into(),
         system: false,
+        folder: false,
     });
     db.observe("a", observed(Some(renamed), vec![], vec![], &[]))
         .await;
@@ -596,6 +598,7 @@ async fn labels_are_replaced_by_a_listing() {
                     external_id: "Label_2".into(),
                     name: "New".into(),
                     system: false,
+                    folder: false,
                 });
                 l
             }),

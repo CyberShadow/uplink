@@ -5,12 +5,12 @@ mod common;
 use common::{eventually, message, Provider};
 use std::{sync::Arc, time::Duration};
 use uplink_email::{
+    account::SyncTask,
     compose,
-    gmail::{api::Gmail, oauth::Credentials, sync::Sync},
+    gmail::{api::Gmail, oauth::Credentials, sync::GmailSync},
     mailbox,
     query::ConfiguredAccount,
     service::Mail,
-    store::Store,
 };
 use uplink_protocol::{
     compose::{DraftContent, DraftId, OutboxState},
@@ -66,16 +66,17 @@ impl Uplink {
         let credentials =
             Credentials::new(http.clone(), provider.account.clone(), provider.key.clone());
         tokio::spawn(
-            Sync {
-                account: "test".into(),
-                address: provider.account.address.clone(),
-                gmail: Gmail::new(http, &provider.account.endpoints.api, credentials),
-                dispatcher: self.dispatcher.clone(),
-                reader: self.reader(),
-                store: Store::mail(self.dir.path()),
-                blobs: Store::blobs(self.dir.path()),
-                poll_interval: Duration::from_millis(100),
-            }
+            SyncTask::new(
+                GmailSync {
+                    gmail: Gmail::new(http, &provider.account.endpoints.api, credentials),
+                },
+                "test".into(),
+                provider.account.address.clone(),
+                self.dispatcher.clone(),
+                self.reader(),
+                self.dir.path(),
+                Duration::from_millis(100),
+            )
             .run(),
         )
     }

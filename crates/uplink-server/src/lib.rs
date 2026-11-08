@@ -30,7 +30,7 @@ use uplink_config::{
     AccountConfig, BasicAuthConfig, Config, ConfigChanged, ConfigSection, GmailAccountConfig,
     MatrixAccountConfig, Watcher,
 };
-use uplink_email::{gmail::sync::Sync, query::ConfiguredAccount, service::Mail};
+use uplink_email::{gmail, query::ConfiguredAccount, service::Mail};
 use uplink_matrix::service::Matrix;
 use uplink_protocol::{ClientRequest, ErrorCode, ServerError, ServerResponse, TxLogId};
 use uplink_realtime::{Backend, Hub, Replay};
@@ -96,7 +96,7 @@ pub fn start_syncs(config: &Config, services: &Services) -> Result<()> {
         )?)?);
     let http = reqwest::Client::new();
     for account in gmail {
-        let sync = Sync::new(
+        let sync = gmail::sync::task(
             account,
             key.clone(),
             http.clone(),

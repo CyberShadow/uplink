@@ -1,0 +1,1023 @@
+From 9d16f449eb277b94968e8466c42d1c7aa05716a6 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Sun, 8 Nov 2026 17:38:46 +0000
+Subject: [PATCH] feat(microsoft): Graph mail, and the v1 authorization
+ endpoint
+
+Mail folders (well-known names included), messages kept as MIME (created
+from MIME, served by $value), per-folder delta queries with paging and
+removals, PATCH (read, flag, importance, categories), move, delete, and
+sendMail (MIME or JSON) delivering to seeded users. Ids are immutable.
+
+GET /:tenant/oauth2/authorize serves v1 (Azure AD) clients, mapping
+their resource to its default scope, as the v1 token endpoint already
+does.
+---
+ apps/web/content/docs/microsoft.mdx           |  16 +-
+ packages/@emulators/microsoft/README.md       |  16 +-
+ .../microsoft/src/__tests__/mail.test.ts      | 234 ++++++++++++++
+ packages/@emulators/microsoft/src/entities.ts |  40 +++
+ packages/@emulators/microsoft/src/index.ts    |   2 +
+ packages/@emulators/microsoft/src/mail.ts     | 233 ++++++++++++++
+ .../@emulators/microsoft/src/routes/mail.ts   | 288 ++++++++++++++++++
+ .../@emulators/microsoft/src/routes/oauth.ts  |  15 +
+ packages/@emulators/microsoft/src/store.ts    |  14 +-
+ skills/microsoft/SKILL.md                     |   2 +-
+ 10 files changed, 856 insertions(+), 4 deletions(-)
+ create mode 100644 packages/@emulators/microsoft/src/__tests__/mail.test.ts
+ create mode 100644 packages/@emulators/microsoft/src/mail.ts
+ create mode 100644 packages/@emulators/microsoft/src/routes/mail.ts
+
+diff --git a/apps/web/content/docs/microsoft.mdx b/apps/web/content/docs/microsoft.mdx
+index cc07b88..f735e0c 100644
+--- a/apps/web/content/docs/microsoft.mdx
++++ b/apps/web/content/docs/microsoft.mdx
+@@ -2,7 +2,7 @@
+ title: "Microsoft Entra ID"
+ ---
+ 
+-Microsoft Entra ID (Azure AD) v2.0 OAuth 2.0 and OpenID Connect emulation with authorization code flow, PKCE, client credentials, client-bound refresh tokens, RS256 ID tokens, OIDC discovery, and a Microsoft Graph `/v1.0/me` endpoint.
++Microsoft Entra ID (Azure AD) v2.0 OAuth 2.0 and OpenID Connect emulation with authorization code flow, PKCE, client credentials, client-bound refresh tokens, RS256 ID tokens, OIDC discovery, and Microsoft Graph `/v1.0/me` and mail endpoints.
+ 
+ ## Endpoints
+ 
+@@ -13,6 +13,12 @@ Microsoft Entra ID (Azure AD) v2.0 OAuth 2.0 and OpenID Connect emulation with a
+ - `POST /oauth2/v2.0/token` - token exchange (authorization code, refresh token, and client credentials grants)
+ - `GET /oidc/userinfo` - OpenID Connect user info
+ - `GET /v1.0/me` - Microsoft Graph user profile
++- `GET /:tenant/oauth2/authorize` - v1 (Azure AD) authorization endpoint: the v2 page, with the `resource`'s default scope
++- `GET /v1.0/me/mailFolders`, `GET /v1.0/me/mailFolders/:folder`, `GET|POST /v1.0/me/mailFolders/:folder/childFolders`, `POST /v1.0/me/mailFolders` - mail folders, by id or well-known name (`inbox`, `sentitems`, ...)
++- `GET /v1.0/me/mailFolders/:folder/messages/delta` - a folder's changes, through `@odata.nextLink` / `@odata.deltaLink`
++- `POST /v1.0/me/mailFolders/:folder/messages` - create a message from MIME (base64, `text/plain`)
++- `GET|PATCH|DELETE /v1.0/me/messages/:id`, `GET /v1.0/me/messages/:id/$value`, `POST /v1.0/me/messages/:id/move` - messages and their MIME source
++- `POST /v1.0/me/sendMail` - send MIME or a JSON message, delivering to seeded recipients
+ - `GET /oauth2/v2.0/logout` - end session / logout
+ - `POST /oauth2/v2.0/revoke` - token revocation
+ 
+@@ -51,3 +57,11 @@ The `id_token` is an RS256 JWT containing `sub`, `oid`, `tid` (tenant ID), `emai
+ ## Microsoft Graph
+ 
+ The `/v1.0/me` endpoint returns an OData-style response with `displayName`, `mail`, `userPrincipalName`, and `id`.
++
++## Microsoft Graph Mail
++
++Each user's mailbox starts with the well-known folders (Inbox, Drafts, Sent Items, Deleted Items, Junk Email, Archive, Outbox). Messages are stored as MIME, created from MIME with `POST /v1.0/me/mailFolders/{folder}/messages` (the base64 source as a `text/plain` body), and served back by `$value`. Message ids never change, as with `Prefer: IdType="ImmutableId"`; `move` keeps them.
++
++`/messages/delta` on a folder lists its messages, then, from its `@odata.deltaLink`, those changed (read, flagged, importance, categories, moved in) or removed (moved out or deleted, as `@removed`) since. Pages hold 10 messages unless `Prefer: odata.maxpagesize=N` asks otherwise. An unknown delta token answers 410 `SyncStateNotFound`, as an expired one does.
++
++`sendMail` takes MIME (base64, `text/plain`) or a JSON `message`; it keeps a read copy in Sent Items (unless `saveToSentItems` is false) and delivers to each recipient that is a seeded user, without the `Bcc` header.
+diff --git a/packages/@emulators/microsoft/README.md b/packages/@emulators/microsoft/README.md
+index ab0e641..b1f5d40 100644
+--- a/packages/@emulators/microsoft/README.md
++++ b/packages/@emulators/microsoft/README.md
+@@ -1,6 +1,6 @@
+ # @emulators/microsoft
+ 
+-Microsoft Entra ID (Azure AD) v2.0 OAuth 2.0 and OpenID Connect emulation with authorization code flow, PKCE, client credentials, client-bound refresh tokens, RS256 ID tokens, and OIDC discovery.
++Microsoft Entra ID (Azure AD) v2.0 OAuth 2.0 and OpenID Connect emulation with authorization code flow, PKCE, client credentials, client-bound refresh tokens, RS256 ID tokens, OIDC discovery, and Microsoft Graph mail.
+ 
+ Part of [emulate](https://github.com/vercel-labs/emulate) — local drop-in replacement services for CI and no-network sandboxes.
+ 
+@@ -20,6 +20,12 @@ npm install @emulators/microsoft
+ - `GET /oidc/userinfo` — OpenID Connect user info
+ - `GET /v1.0/me` — Microsoft Graph user profile
+ - `GET /v1.0/users/:id` — Microsoft Graph user by ID
++- `GET /:tenant/oauth2/authorize` — v1 (Azure AD) authorization endpoint: the v2 page, with the `resource`'s default scope
++- `GET /v1.0/me/mailFolders`, `GET /v1.0/me/mailFolders/:folder`, `GET|POST /v1.0/me/mailFolders/:folder/childFolders`, `POST /v1.0/me/mailFolders` — mail folders, by id or well-known name (`inbox`, `sentitems`, ...)
++- `GET /v1.0/me/mailFolders/:folder/messages/delta` — a folder's changes, through `@odata.nextLink` / `@odata.deltaLink`
++- `POST /v1.0/me/mailFolders/:folder/messages` — create a message from MIME (base64, `text/plain`)
++- `GET|PATCH|DELETE /v1.0/me/messages/:id`, `GET /v1.0/me/messages/:id/$value`, `POST /v1.0/me/messages/:id/move` — messages and their MIME source
++- `POST /v1.0/me/sendMail` — send MIME or a JSON message, delivering to seeded recipients
+ - `GET /oauth2/v2.0/logout` — end session / logout
+ - `POST /oauth2/v2.0/revoke` — token revocation
+ 
+@@ -40,6 +46,14 @@ grant_type=refresh_token"
+ 
+ Refresh requests require the `client_id` and `client_secret` of the client that received the refresh token. The token rotates after a successful request. `Authorization: Basic` may be used for the client credentials.
+ 
++## Microsoft Graph mail
++
++Each user's mailbox starts with the well-known folders (Inbox, Drafts, Sent Items, Deleted Items, Junk Email, Archive, Outbox). Messages are stored as MIME, created from MIME with `POST /v1.0/me/mailFolders/{folder}/messages` (the base64 source as a `text/plain` body), and served back by `$value`. Message ids never change, as with `Prefer: IdType="ImmutableId"`; `move` keeps them.
++
++`/messages/delta` on a folder lists its messages, then, from its `@odata.deltaLink`, those changed (read, flagged, importance, categories, moved in) or removed (moved out or deleted, as `@removed`) since. Pages hold 10 messages unless `Prefer: odata.maxpagesize=N` asks otherwise. An unknown delta token answers 410 `SyncStateNotFound`, as an expired one does.
++
++`sendMail` takes MIME (base64, `text/plain`) or a JSON `message`; it keeps a read copy in Sent Items (unless `saveToSentItems` is false) and delivers to each recipient that is a seeded user, without the `Bcc` header.
++
+ ## Seed Configuration
+ 
+ ```yaml
+diff --git a/packages/@emulators/microsoft/src/__tests__/mail.test.ts b/packages/@emulators/microsoft/src/__tests__/mail.test.ts
+new file mode 100644
+index 0000000..201ffee
+--- /dev/null
++++ b/packages/@emulators/microsoft/src/__tests__/mail.test.ts
+@@ -0,0 +1,234 @@
++import { describe, it, expect, beforeEach } from "vitest";
++import { Hono } from "@emulators/core";
++import { Store, WebhookDispatcher, authMiddleware, type TokenMap } from "@emulators/core";
++import { microsoftPlugin, seedFromConfig } from "../index.js";
++
++const base = "http://localhost:4000";
++const ALICE = "alice@example.com";
++const BOB = "bob@example.com";
++
++function createTestApp() {
++  const store = new Store();
++  const tokenMap: TokenMap = new Map();
++  const app = new Hono();
++  app.use("*", authMiddleware(tokenMap));
++  microsoftPlugin.register(app as any, store, new WebhookDispatcher(), base, tokenMap);
++  seedFromConfig(store, base, { users: [{ email: ALICE, name: "Alice" }, { email: BOB, name: "Bob" }] });
++  tokenMap.set("alice-token", { login: ALICE, id: 1, scopes: [] });
++  tokenMap.set("bob-token", { login: BOB, id: 2, scopes: [] });
++  return app;
++}
++
++function mime(subject: string, extra: string[] = []): string {
++  return [
++    "From: Carol <carol@example.net>",
++    `To: ${ALICE}`,
++    `Subject: ${subject}`,
++    `Message-ID: <${subject.replace(/\W/g, "")}@example.net>`,
++    "Date: Tue, 3 Nov 2026 10:00:00 +0000",
++    ...extra,
++    "",
++    `Body of ${subject}`,
++  ].join("\r\n");
++}
++
++describe("Microsoft Graph mail", () => {
++  let app: Hono;
++  const request = (path: string, init: RequestInit = {}, token = "alice-token") =>
++    app.request(`${base}${path}`, {
++      ...init,
++      headers: { Authorization: `Bearer ${token}`, ...(init.headers as Record<string, string>) },
++    });
++  const json = async (path: string, init: RequestInit = {}, token?: string) => {
++    const res = await request(path, init, token);
++    expect(res.status, `${init.method ?? "GET"} ${path}`).toBeLessThan(300);
++    return (await res.json()) as any;
++  };
++  const importMessage = (folder: string, raw: string) =>
++    json(`/v1.0/me/mailFolders/${folder}/messages`, {
++      method: "POST",
++      headers: { "Content-Type": "text/plain" },
++      body: Buffer.from(raw).toString("base64"),
++    });
++  /** Follows a delta query to its end: the items, and the delta link. */
++  const delta = async (url: string, pageSize?: number) => {
++    const items: any[] = [];
++    let next: string = url;
++    let pages = 0;
++    while (true) {
++      const page: any = await json(next.replace(base, ""), {
++        headers: pageSize ? { Prefer: `odata.maxpagesize=${pageSize}` } : {},
++      });
++      pages++;
++      items.push(...page.value);
++      if (page["@odata.deltaLink"]) return { items, link: page["@odata.deltaLink"] as string, pages };
++      next = page["@odata.nextLink"]!;
++    }
++  };
++
++  beforeEach(() => {
++    app = createTestApp();
++  });
++
++  it("needs a token", async () => {
++    const res = await app.request(`${base}/v1.0/me/mailFolders`);
++    expect(res.status).toBe(401);
++  });
++
++  it("lists the well-known folders, by id or name, and creates folders", async () => {
++    const { value } = await json("/v1.0/me/mailFolders");
++    expect(value.map((f: any) => f.displayName)).toEqual([
++      "Inbox",
++      "Drafts",
++      "Sent Items",
++      "Deleted Items",
++      "Junk Email",
++      "Archive",
++      "Outbox",
++    ]);
++    const inbox = await json("/v1.0/me/mailFolders/Inbox");
++    expect(inbox.id).toBe(value[0].id);
++
++    const projects = await json("/v1.0/me/mailFolders/inbox/childFolders", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ displayName: "Projects" }),
++    });
++    expect(projects.parentFolderId).toBe(inbox.id);
++    expect((await json("/v1.0/me/mailFolders/inbox")).childFolderCount).toBe(1);
++    const children = await json(`/v1.0/me/mailFolders/${inbox.id}/childFolders`);
++    expect(children.value.map((f: any) => f.displayName)).toEqual(["Projects"]);
++  });
++
++  it("stores messages as MIME, serving them back with $value", async () => {
++    const raw = mime("Lunch");
++    const message = await importMessage("inbox", raw);
++    expect(message.subject).toBe("Lunch");
++    expect(message.from.emailAddress).toEqual({ name: "Carol", address: "carol@example.net" });
++    expect(message.internetMessageId).toBe("<Lunch@example.net>");
++    expect(message.receivedDateTime).toBe("2026-11-03T10:00:00.000Z");
++    expect(message.isRead).toBe(false);
++    const res = await request(`/v1.0/me/messages/${message.id}/$value`);
++    expect(await res.text()).toBe(raw);
++    // Replies join the conversation.
++    const reply = await importMessage("inbox", mime("Re Lunch", ["In-Reply-To: <Lunch@example.net>"]));
++    expect(reply.conversationId).toBe(message.conversationId);
++  });
++
++  it("reports a folder's changes through delta links", async () => {
++    const first = await importMessage("inbox", mime("First"));
++    await importMessage("inbox", mime("Second"));
++    await importMessage("inbox", mime("Third"));
++    const initial = await delta("/v1.0/me/mailFolders/inbox/messages/delta", 2);
++    expect(initial.pages).toBe(2);
++    expect(initial.items.map((m) => m.subject)).toEqual(["First", "Second", "Third"]);
++
++    // Nothing new.
++    const quiet = await delta(initial.link);
++    expect(quiet.items).toEqual([]);
++
++    await json(`/v1.0/me/messages/${first.id}`, {
++      method: "PATCH",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({
++        isRead: true,
++        flag: { flagStatus: "flagged" },
++        importance: "high",
++        categories: ["Red category"],
++      }),
++    });
++    const changed = await delta(quiet.link);
++    expect(changed.items).toHaveLength(1);
++    expect(changed.items[0]).toMatchObject({
++      id: first.id,
++      isRead: true,
++      flag: { flagStatus: "flagged" },
++      importance: "high",
++      categories: ["Red category"],
++    });
++
++    // Moved: gone from the Inbox, in the Archive under the same id.
++    const archive = await delta("/v1.0/me/mailFolders/archive/messages/delta");
++    const moved = await json(`/v1.0/me/messages/${first.id}/move`, {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ destinationId: "archive" }),
++    });
++    expect(moved.id).toBe(first.id);
++    const fromInbox = await delta(changed.link);
++    expect(fromInbox.items).toEqual([
++      { "@odata.type": "#microsoft.graph.message", id: first.id, "@removed": { reason: "deleted" } },
++    ]);
++    const intoArchive = await delta(archive.link);
++    expect(intoArchive.items.map((m) => [m.id, m.parentFolderId])).toEqual([[first.id, moved.parentFolderId]]);
++
++    // Deleted.
++    const res = await request(`/v1.0/me/messages/${first.id}`, { method: "DELETE" });
++    expect(res.status).toBe(204);
++    expect((await delta(intoArchive.link)).items.map((m) => m["@removed"])).toEqual([{ reason: "deleted" }]);
++    expect((await request(`/v1.0/me/messages/${first.id}`)).status).toBe(404);
++  });
++
++  it("answers 410 for a delta token it does not know", async () => {
++    const res = await request("/v1.0/me/mailFolders/inbox/messages/delta?$deltatoken=999");
++    expect(res.status).toBe(410);
++    expect(((await res.json()) as any).error.code).toBe("SyncStateNotFound");
++  });
++
++  it("sends MIME, keeping a copy in Sent Items and delivering to the recipients", async () => {
++    const raw = [
++      `From: ${ALICE}`,
++      `To: Bob <${BOB}>`,
++      "Bcc: dave@example.org",
++      "Subject: Hello Bob",
++      "Message-ID: <hello@example.com>",
++      "",
++      "Hi!",
++    ].join("\r\n");
++    const res = await request("/v1.0/me/sendMail", {
++      method: "POST",
++      headers: { "Content-Type": "text/plain" },
++      body: Buffer.from(raw).toString("base64"),
++    });
++    expect(res.status).toBe(202);
++    const sent = await delta("/v1.0/me/mailFolders/sentitems/messages/delta");
++    expect(sent.items.map((m) => [m.subject, m.isRead])).toEqual([["Hello Bob", true]]);
++    const received = (await delta("/v1.0/me/mailFolders/inbox/messages/delta", undefined)).items;
++    expect(received).toEqual([]);
++    const bobs = await json("/v1.0/me/mailFolders/inbox/messages/delta", {}, "bob-token");
++    expect(bobs.value.map((m: any) => [m.subject, m.internetMessageId, m.isRead])).toEqual([
++      ["Hello Bob", "<hello@example.com>", false],
++    ]);
++    const delivered = await (await request(`/v1.0/me/messages/${bobs.value[0].id}/$value`, {}, "bob-token")).text();
++    expect(delivered).not.toContain("Bcc:");
++  });
++
++  it("sends JSON messages too", async () => {
++    const res = await request("/v1.0/me/sendMail", {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({
++        message: {
++          subject: "Plain",
++          body: { contentType: "Text", content: "Hello" },
++          toRecipients: [{ emailAddress: { address: BOB } }],
++        },
++      }),
++    });
++    expect(res.status).toBe(202);
++    const bobs = await json("/v1.0/me/mailFolders/inbox/messages/delta", {}, "bob-token");
++    expect(bobs.value.map((m: any) => m.subject)).toEqual(["Plain"]);
++  });
++
++  it("serves the v1 authorization page with the resource's default scope", async () => {
++    const res = await app.request(
++      `${base}/common/oauth2/authorize?client_id=c&response_type=code&redirect_uri=urn:ietf:wg:oauth:2.0:oob&resource=https://graph.microsoft.com`,
++    );
++    expect(res.status).toBe(302);
++    const location = new URL(res.headers.get("location")!, base);
++    expect(location.pathname).toBe("/oauth2/v2.0/authorize");
++    expect(location.searchParams.get("scope")).toBe("https://graph.microsoft.com/.default");
++    expect(location.searchParams.get("redirect_uri")).toBe("urn:ietf:wg:oauth:2.0:oob");
++    expect(location.searchParams.has("resource")).toBe(false);
++  });
++});
+diff --git a/packages/@emulators/microsoft/src/entities.ts b/packages/@emulators/microsoft/src/entities.ts
+index d01cc06..0b817f7 100644
+--- a/packages/@emulators/microsoft/src/entities.ts
++++ b/packages/@emulators/microsoft/src/entities.ts
+@@ -22,3 +22,43 @@ export interface MicrosoftOAuthClient extends Entity {
+   /** Tenant ID this app is registered in */
+   tenant_id: string;
+ }
++
++/** A mail folder (Graph `mailFolder`). */
++export interface MicrosoftMailFolder extends Entity {
++  folder_id: string;
++  user_email: string;
++  display_name: string;
++  parent_folder_id: string | null;
++  /** `inbox`, `sentitems`, ...: the name Graph accepts in place of the id. */
++  well_known_name: string | null;
++}
++
++/** A message (Graph `message`), kept as its MIME source. */
++export interface MicrosoftMessage extends Entity {
++  message_id: string;
++  user_email: string;
++  folder_id: string;
++  /** The MIME source. */
++  mime: string;
++  subject: string;
++  from_name: string | null;
++  from_address: string | null;
++  internet_message_id: string;
++  conversation_id: string;
++  received_at: string;
++  is_read: boolean;
++  is_draft: boolean;
++  flag_status: "notFlagged" | "flagged" | "complete";
++  importance: "low" | "normal" | "high";
++  categories: string[];
++  /** The mailbox's change counter when the message last changed. */
++  change: number;
++}
++
++/** A message that left a folder (moved or deleted), for delta queries. */
++export interface MicrosoftMessageRemoval extends Entity {
++  user_email: string;
++  folder_id: string;
++  message_id: string;
++  change: number;
++}
+diff --git a/packages/@emulators/microsoft/src/index.ts b/packages/@emulators/microsoft/src/index.ts
+index 4a42218..73bf59e 100644
+--- a/packages/@emulators/microsoft/src/index.ts
++++ b/packages/@emulators/microsoft/src/index.ts
+@@ -3,6 +3,7 @@ import type { ServicePlugin, Store, WebhookDispatcher, TokenMap, AppEnv, RouteCo
+ import { getMicrosoftStore } from "./store.js";
+ import { generateOid, DEFAULT_TENANT_ID } from "./helpers.js";
+ import { oauthRoutes } from "./routes/oauth.js";
++import { mailRoutes } from "./routes/mail.js";
+ 
+ export { getMicrosoftStore, type MicrosoftStore } from "./store.js";
+ export * from "./entities.js";
+@@ -81,6 +82,7 @@ export const microsoftPlugin: ServicePlugin = {
+   register(app: Hono<AppEnv>, store: Store, webhooks: WebhookDispatcher, baseUrl: string, tokenMap?: TokenMap): void {
+     const ctx: RouteContext = { app, store, webhooks, baseUrl, tokenMap };
+     oauthRoutes(ctx);
++    mailRoutes(ctx);
+   },
+   seed(store: Store, baseUrl: string): void {
+     seedDefaults(store, baseUrl);
+diff --git a/packages/@emulators/microsoft/src/mail.ts b/packages/@emulators/microsoft/src/mail.ts
+new file mode 100644
+index 0000000..aefa23c
+--- /dev/null
++++ b/packages/@emulators/microsoft/src/mail.ts
+@@ -0,0 +1,233 @@
++import { randomBytes } from "crypto";
++import type { Store } from "@emulators/core";
++import { getMicrosoftStore, type MicrosoftStore } from "./store.js";
++import type { MicrosoftMailFolder, MicrosoftMessage } from "./entities.js";
++
++/** The folders every mailbox has, by the names Graph accepts for them. */
++export const WELL_KNOWN_FOLDERS: Record<string, string> = {
++  inbox: "Inbox",
++  drafts: "Drafts",
++  sentitems: "Sent Items",
++  deleteditems: "Deleted Items",
++  junkemail: "Junk Email",
++  archive: "Archive",
++  outbox: "Outbox",
++};
++
++/** An id in the shape of Graph's: opaque, URL-safe base64. */
++export function generateGraphId(prefix: string): string {
++  return prefix + randomBytes(24).toString("base64url");
++}
++
++export function ensureMailbox(ms: MicrosoftStore, email: string): void {
++  if (ms.mailFolders.findBy("user_email", email).length > 0) return;
++  for (const [wellKnown, name] of Object.entries(WELL_KNOWN_FOLDERS)) {
++    ms.mailFolders.insert({
++      folder_id: generateGraphId("AAMkFolder"),
++      user_email: email,
++      display_name: name,
++      parent_folder_id: null,
++      well_known_name: wellKnown,
++    });
++  }
++}
++
++/** A folder of the mailbox by id or well-known name. */
++export function findFolder(ms: MicrosoftStore, email: string, idOrName: string): MicrosoftMailFolder | undefined {
++  ensureMailbox(ms, email);
++  const folders = ms.mailFolders.findBy("user_email", email);
++  const name = idOrName.toLowerCase();
++  return folders.find((f) => f.folder_id === idOrName) ?? folders.find((f) => f.well_known_name === name);
++}
++
++export function findMessage(ms: MicrosoftStore, email: string, id: string): MicrosoftMessage | undefined {
++  return ms.messages.findBy("message_id", id).find((m) => m.user_email === email);
++}
++
++/** Advances the mailbox's change counter; delta tokens are its values. */
++export function nextChange(store: Store, email: string): number {
++  let counters = store.getData<Map<string, number>>("microsoft.mail.changes");
++  if (!counters) {
++    counters = new Map();
++    store.setData("microsoft.mail.changes", counters);
++  }
++  const next = (counters.get(email) ?? 0) + 1;
++  counters.set(email, next);
++  return next;
++}
++
++export function currentChange(store: Store, email: string): number {
++  return store.getData<Map<string, number>>("microsoft.mail.changes")?.get(email) ?? 0;
++}
++
++export interface MessageInput {
++  mime: string;
++  isRead?: boolean;
++  isDraft?: boolean;
++  receivedAt?: string;
++}
++
++/** Stores `input.mime` in the folder, as a new message. */
++export function createMessage(
++  store: Store,
++  email: string,
++  folder: MicrosoftMailFolder,
++  input: MessageInput,
++): MicrosoftMessage {
++  const ms = getMicrosoftStore(store);
++  const headers = parseHeaders(input.mime);
++  const from = parseMailbox(headers.get("from") ?? "");
++  const messageId = headers.get("message-id")?.trim() ?? `<${generateGraphId("")}@emulate.microsoft.local>`;
++  const date = Date.parse(headers.get("date") ?? "");
++  return ms.messages.insert({
++    message_id: generateGraphId("AAMkMessage"),
++    user_email: email,
++    folder_id: folder.folder_id,
++    mime: input.mime,
++    subject: headers.get("subject") ?? "",
++    from_name: from?.name ?? null,
++    from_address: from?.address ?? null,
++    internet_message_id: messageId,
++    conversation_id: conversationOf(ms, email, headers),
++    received_at: input.receivedAt ?? (Number.isNaN(date) ? new Date() : new Date(date)).toISOString(),
++    is_read: input.isRead ?? false,
++    is_draft: input.isDraft ?? false,
++    flag_status: "notFlagged",
++    importance: "normal",
++    categories: [],
++    change: nextChange(store, email),
++  });
++}
++
++/** The conversation of the message replied to, if the mailbox has it. */
++function conversationOf(ms: MicrosoftStore, email: string, headers: Map<string, string>): string {
++  const referenced = `${headers.get("in-reply-to") ?? ""} ${headers.get("references") ?? ""}`.match(/<[^>]+>/g) ?? [];
++  const mailbox = ms.messages.findBy("user_email", email);
++  for (const id of referenced) {
++    const original = mailbox.find((m) => m.internet_message_id === id);
++    if (original) return original.conversation_id;
++  }
++  return generateGraphId("AAQkConversation");
++}
++
++/** Records a change to the message, and its leaving a folder if it did. */
++export function changeMessage(
++  store: Store,
++  message: MicrosoftMessage,
++  update: Partial<Pick<MicrosoftMessage, "folder_id" | "is_read" | "flag_status" | "importance" | "categories">>,
++): MicrosoftMessage {
++  const ms = getMicrosoftStore(store);
++  const change = nextChange(store, message.user_email);
++  if (update.folder_id !== undefined && update.folder_id !== message.folder_id) {
++    recordRemoval(ms, message, change);
++  }
++  return ms.messages.update(message.id, { ...update, change })!;
++}
++
++export function deleteMessage(store: Store, message: MicrosoftMessage): void {
++  const ms = getMicrosoftStore(store);
++  recordRemoval(ms, message, nextChange(store, message.user_email));
++  ms.messages.delete(message.id);
++}
++
++function recordRemoval(ms: MicrosoftStore, message: MicrosoftMessage, change: number): void {
++  ms.messageRemovals.insert({
++    user_email: message.user_email,
++    folder_id: message.folder_id,
++    message_id: message.message_id,
++    change,
++  });
++}
++
++/** The folder's changes after `since`, oldest first: its messages that
++ * changed, and those that left it. */
++export function folderChanges(
++  ms: MicrosoftStore,
++  email: string,
++  folderId: string,
++  since: number,
++  upto: number,
++): Array<{ change: number; message: MicrosoftMessage } | { change: number; removed: string }> {
++  const changed = ms.messages
++    .findBy("user_email", email)
++    .filter((m) => m.folder_id === folderId && m.change > since && m.change <= upto)
++    .map((message) => ({ change: message.change, message }));
++  const present = new Set(changed.map((c) => c.message.message_id));
++  const removed = ms.messageRemovals
++    .findBy("user_email", email)
++    .filter((r) => r.folder_id === folderId && r.change > since && r.change <= upto)
++    // A message that left and came back is reported as it is now.
++    .filter((r) => !present.has(r.message_id))
++    .map((r) => ({ change: r.change, removed: r.message_id }));
++  const latest = new Map<string, { change: number; removed: string }>();
++  for (const r of removed) latest.set(r.removed, r);
++  return [...changed, ...latest.values()].sort((a, b) => a.change - b.change);
++}
++
++/** Graph's representation of the message. */
++export function formatMessage(message: MicrosoftMessage) {
++  const address = (name: string | null, address: string | null) =>
++    address === null ? null : { emailAddress: { name: name ?? address, address } };
++  return {
++    "@odata.type": "#microsoft.graph.message",
++    id: message.message_id,
++    createdDateTime: message.created_at,
++    lastModifiedDateTime: message.updated_at,
++    receivedDateTime: message.received_at,
++    subject: message.subject,
++    bodyPreview: "",
++    importance: message.importance,
++    parentFolderId: message.folder_id,
++    conversationId: message.conversation_id,
++    internetMessageId: message.internet_message_id,
++    isRead: message.is_read,
++    isDraft: message.is_draft,
++    from: address(message.from_name, message.from_address),
++    sender: address(message.from_name, message.from_address),
++    categories: message.categories,
++    flag: { flagStatus: message.flag_status },
++  };
++}
++
++export function formatFolder(ms: MicrosoftStore, folder: MicrosoftMailFolder) {
++  const all = ms.messages.findBy("user_email", folder.user_email).filter((m) => m.folder_id === folder.folder_id);
++  return {
++    id: folder.folder_id,
++    displayName: folder.display_name,
++    parentFolderId: folder.parent_folder_id,
++    childFolderCount: ms.mailFolders
++      .findBy("user_email", folder.user_email)
++      .filter((f) => f.parent_folder_id === folder.folder_id).length,
++    unreadItemCount: all.filter((m) => !m.is_read).length,
++    totalItemCount: all.length,
++    isHidden: false,
++  };
++}
++
++/** The MIME message's top-level headers, unfolded, by lowercase name; the
++ * first of each. */
++export function parseHeaders(mime: string): Map<string, string> {
++  const end = mime.search(/\r?\n\r?\n/);
++  const block = (end === -1 ? mime : mime.slice(0, end)).replace(/\r?\n[ \t]+/g, " ");
++  const headers = new Map<string, string>();
++  for (const line of block.split(/\r?\n/)) {
++    const colon = line.indexOf(":");
++    if (colon <= 0) continue;
++    const name = line.slice(0, colon).trim().toLowerCase();
++    if (!headers.has(name)) headers.set(name, line.slice(colon + 1).trim());
++  }
++  return headers;
++}
++
++/** `Name <address>` or a bare address. */
++export function parseMailbox(value: string): { name: string | null; address: string } | null {
++  const angle = value.match(/^\s*(?:"?([^"<]*?)"?\s*)?<([^>]+)>\s*$/);
++  if (angle) return { name: angle[1]?.trim() || null, address: angle[2].trim() };
++  const bare = value.trim();
++  return bare.includes("@") ? { name: null, address: bare } : null;
++}
++
++/** The addresses in an address-list header. */
++export function parseAddresses(value: string): string[] {
++  return [...value.matchAll(/<([^>@\s]+@[^>\s]+)>|([^\s,<>"]+@[^\s,<>"]+)/g)].map((m) => (m[1] ?? m[2]).toLowerCase());
++}
+diff --git a/packages/@emulators/microsoft/src/routes/mail.ts b/packages/@emulators/microsoft/src/routes/mail.ts
+new file mode 100644
+index 0000000..3cc3bd3
+--- /dev/null
++++ b/packages/@emulators/microsoft/src/routes/mail.ts
+@@ -0,0 +1,288 @@
++import type { Context, RouteContext } from "@emulators/core";
++import { getMicrosoftStore } from "../store.js";
++import type { MicrosoftMessage } from "../entities.js";
++import {
++  changeMessage,
++  createMessage,
++  currentChange,
++  deleteMessage,
++  ensureMailbox,
++  findFolder,
++  findMessage,
++  folderChanges,
++  formatFolder,
++  formatMessage,
++  generateGraphId,
++  parseAddresses,
++  parseHeaders,
++} from "../mail.js";
++
++/** Messages per delta page unless the client prefers another size. */
++const DEFAULT_PAGE_SIZE = 10;
++
++function graphError(c: Context, status: 400 | 401 | 404 | 410, code: string, message: string) {
++  return c.json({ error: { code, message } }, status);
++}
++
++/** Microsoft Graph mail: folders, messages, their delta queries, moving,
++ * flagging and sending. Messages are kept as MIME; ids never change, as
++ * with `Prefer: IdType="ImmutableId"`. */
++export function mailRoutes({ app, store, baseUrl }: RouteContext): void {
++  const ms = getMicrosoftStore(store);
++
++  const user = (c: Context): string | Response => {
++    const authUser = c.get("authUser");
++    if (!authUser) return graphError(c, 401, "InvalidAuthenticationToken", "Access token is empty.");
++    ensureMailbox(ms, authUser.login);
++    return authUser.login;
++  };
++
++  const folderNotFound = (c: Context) =>
++    graphError(c, 404, "ErrorItemNotFound", "The specified object was not found in the store.");
++
++  // ---------- Folders ----------
++
++  app.get("/v1.0/me/mailFolders", (c) => {
++    const email = user(c);
++    if (email instanceof Response) return email;
++    const folders = ms.mailFolders.findBy("user_email", email).filter((f) => f.parent_folder_id === null);
++    return c.json({ value: folders.map((f) => formatFolder(ms, f)) });
++  });
++
++  app.get("/v1.0/me/mailFolders/:folder", (c) => {
++    const email = user(c);
++    if (email instanceof Response) return email;
++    const folder = findFolder(ms, email, c.req.param("folder"));
++    if (!folder) return folderNotFound(c);
++    return c.json(formatFolder(ms, folder));
++  });
++
++  app.get("/v1.0/me/mailFolders/:folder/childFolders", (c) => {
++    const email = user(c);
++    if (email instanceof Response) return email;
++    const folder = findFolder(ms, email, c.req.param("folder"));
++    if (!folder) return folderNotFound(c);
++    const children = ms.mailFolders
++      .findBy("user_email", email)
++      .filter((f) => f.parent_folder_id === folder.folder_id);
++    return c.json({ value: children.map((f) => formatFolder(ms, f)) });
++  });
++
++  const createFolder = async (c: Context, parent: string | null) => {
++    const email = user(c);
++    if (email instanceof Response) return email;
++    const body = (await c.req.json().catch(() => ({}))) as { displayName?: unknown };
++    if (typeof body.displayName !== "string" || body.displayName === "") {
++      return graphError(c, 400, "ErrorInvalidRequest", "displayName is required.");
++    }
++    const folder = ms.mailFolders.insert({
++      folder_id: generateGraphId("AAMkFolder"),
++      user_email: email,
++      display_name: body.displayName,
++      parent_folder_id: parent,
++      well_known_name: null,
++    });
++    return c.json(formatFolder(ms, folder), 201);
++  };
++
++  app.post("/v1.0/me/mailFolders", (c) => createFolder(c, null));
++
++  app.post("/v1.0/me/mailFolders/:folder/childFolders", (c) => {
++    const email = user(c);
++    if (email instanceof Response) return email;
++    const parent = findFolder(ms, email, c.req.param("folder"));
++    if (!parent) return folderNotFound(c);
++    return createFolder(c, parent.folder_id);
++  });
++
++  // ---------- Delta ----------
++
++  app.get("/v1.0/me/mailFolders/:folder/messages/delta", (c) => {
++    const email = user(c);
++    if (email instanceof Response) return email;
++    const folder = findFolder(ms, email, c.req.param("folder"));
++    if (!folder) return folderNotFound(c);
++
++    const deltaToken = c.req.query("$deltatoken");
++    const skipToken = c.req.query("$skiptoken");
++    let since: number;
++    let upto: number;
++    let offset: number;
++    if (skipToken !== undefined) {
++      try {
++        ({ since, upto, offset } = JSON.parse(Buffer.from(skipToken, "base64url").toString()));
++      } catch {
++        return graphError(c, 400, "ErrorInvalidUrlQuery", "The skip token is invalid.");
++      }
++    } else {
++      since = deltaToken === undefined ? 0 : Number(deltaToken);
++      if (!Number.isInteger(since) || since < 0 || since > currentChange(store, email)) {
++        return graphError(c, 410, "SyncStateNotFound", "The sync state is not found or has expired.");
++      }
++      upto = currentChange(store, email);
++      offset = 0;
++    }
++
++    const prefer = c.req.header("Prefer") ?? "";
++    const pageSize = Number(prefer.match(/odata\.maxpagesize=(\d+)/)?.[1] ?? DEFAULT_PAGE_SIZE);
++    let changes = folderChanges(ms, email, folder.folder_id, since, upto);
++    // The first round lists what is there; nothing has left yet.
++    if (since === 0) changes = changes.filter((change) => "message" in change);
++    const page = changes.slice(offset, offset + pageSize);
++    const value = page.map((change) =>
++      "message" in change
++        ? formatMessage(change.message)
++        : { "@odata.type": "#microsoft.graph.message", id: change.removed, "@removed": { reason: "deleted" } },
++    );
++    const link = `${baseUrl}/v1.0/me/mailFolders/${folder.folder_id}/messages/delta`;
++    const more = offset + pageSize < changes.length;
++    return c.json({
++      "@odata.context": `${baseUrl}/v1.0/$metadata#Collection(message)`,
++      value,
++      ...(more
++        ? {
++            "@odata.nextLink": `${link}?$skiptoken=${Buffer.from(
++              JSON.stringify({ since, upto, offset: offset + pageSize }),
++            ).toString("base64url")}`,
++          }
++        : { "@odata.deltaLink": `${link}?$deltatoken=${upto}` }),
++    });
++  });
++
++  // ---------- Messages ----------
++
++  const withMessage =
++    (handler: (c: Context, email: string, message: MicrosoftMessage) => Response | Promise<Response>) =>
++    (c: Context) => {
++      const email = user(c);
++      if (email instanceof Response) return email;
++      const message = findMessage(ms, email, c.req.param("message") ?? "");
++      if (!message) return folderNotFound(c);
++      return handler(c, email, message);
++    };
++
++  app.get(
++    "/v1.0/me/messages/:message",
++    withMessage((c, _email, message) => c.json(formatMessage(message))),
++  );
++
++  app.get(
++    "/v1.0/me/messages/:message/$value",
++    withMessage((c, _email, message) => c.body(message.mime, 200, { "Content-Type": "text/plain" })),
++  );
++
++  app.patch(
++    "/v1.0/me/messages/:message",
++    withMessage(async (c, _email, message) => {
++      const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
++      if (!body) return graphError(c, 400, "ErrorInvalidRequest", "The request body is not JSON.");
++      const update: Parameters<typeof changeMessage>[2] = {};
++      if (typeof body.isRead === "boolean") update.is_read = body.isRead;
++      const flag = body.flag as { flagStatus?: unknown } | undefined;
++      if (flag && ["notFlagged", "flagged", "complete"].includes(flag.flagStatus as string)) {
++        update.flag_status = flag.flagStatus as MicrosoftMessage["flag_status"];
++      }
++      if (["low", "normal", "high"].includes(body.importance as string)) {
++        update.importance = body.importance as MicrosoftMessage["importance"];
++      }
++      if (Array.isArray(body.categories) && body.categories.every((x) => typeof x === "string")) {
++        update.categories = body.categories as string[];
++      }
++      return c.json(formatMessage(changeMessage(store, message, update)));
++    }),
++  );
++
++  app.post(
++    "/v1.0/me/messages/:message/move",
++    withMessage(async (c, email, message) => {
++      const body = (await c.req.json().catch(() => ({}))) as { destinationId?: unknown };
++      const destination =
++        typeof body.destinationId === "string" ? findFolder(ms, email, body.destinationId) : undefined;
++      if (!destination) return folderNotFound(c);
++      return c.json(formatMessage(changeMessage(store, message, { folder_id: destination.folder_id })), 201);
++    }),
++  );
++
++  app.delete(
++    "/v1.0/me/messages/:message",
++    withMessage((c, _email, message) => {
++      deleteMessage(store, message);
++      return c.body(null, 204);
++    }),
++  );
++
++  /** A message created from MIME (base64 in a text/plain body). */
++  const mimeBody = async (c: Context): Promise<string | null> => {
++    if (!(c.req.header("Content-Type") ?? "").includes("text/plain")) return null;
++    const mime = Buffer.from((await c.req.text()).trim(), "base64").toString("utf8");
++    return parseHeaders(mime).size > 0 ? mime : null;
++  };
++
++  app.post("/v1.0/me/mailFolders/:folder/messages", async (c) => {
++    const email = user(c);
++    if (email instanceof Response) return email;
++    const folder = findFolder(ms, email, c.req.param("folder"));
++    if (!folder) return folderNotFound(c);
++    const mime = await mimeBody(c);
++    if (mime === null) {
++      return graphError(c, 400, "ErrorMimeContentInvalid", "The emulator creates messages from MIME only.");
++    }
++    const message = createMessage(store, email, folder, { mime, isDraft: folder.well_known_name === "drafts" });
++    return c.json(formatMessage(message), 201);
++  });
++
++  // ---------- Sending ----------
++
++  app.post("/v1.0/me/sendMail", async (c) => {
++    const email = user(c);
++    if (email instanceof Response) return email;
++    let mime = await mimeBody(c);
++    let saveToSentItems = true;
++    if (mime === null) {
++      const body = (await c.req.json().catch(() => null)) as {
++        message?: {
++          subject?: string;
++          body?: { contentType?: string; content?: string };
++          toRecipients?: Array<{ emailAddress?: { address?: string } }>;
++          ccRecipients?: Array<{ emailAddress?: { address?: string } }>;
++        };
++        saveToSentItems?: boolean;
++      } | null;
++      if (!body?.message) return graphError(c, 400, "ErrorInvalidRequest", "A message is required.");
++      const list = (r?: Array<{ emailAddress?: { address?: string } }>) =>
++        (r ?? []).map((x) => x.emailAddress?.address).filter(Boolean).join(", ");
++      const html = body.message.body?.contentType?.toLowerCase() === "html";
++      mime = [
++        `From: ${email}`,
++        `To: ${list(body.message.toRecipients)}`,
++        ...(body.message.ccRecipients?.length ? [`Cc: ${list(body.message.ccRecipients)}`] : []),
++        `Subject: ${body.message.subject ?? ""}`,
++        `Message-ID: <${generateGraphId("")}@emulate.microsoft.local>`,
++        `Date: ${new Date().toUTCString()}`,
++        "MIME-Version: 1.0",
++        `Content-Type: text/${html ? "html" : "plain"}; charset=utf-8`,
++        "",
++        body.message.body?.content ?? "",
++      ].join("\r\n");
++      saveToSentItems = body.saveToSentItems ?? true;
++    }
++    const headers = parseHeaders(mime);
++    const recipients = ["to", "cc", "bcc"].flatMap((h) => parseAddresses(headers.get(h) ?? ""));
++    if (recipients.length === 0) {
++      return graphError(c, 400, "ErrorInvalidRecipients", "At least one recipient is not valid.");
++    }
++    const receivedAt = new Date().toISOString();
++    if (saveToSentItems) {
++      createMessage(store, email, findFolder(ms, email, "sentitems")!, { mime, isRead: true, receivedAt });
++    }
++    // Recipients do not see who else was Bcc'd.
++    const delivered = mime.replace(/^Bcc:.*(?:\r?\n[ \t].*)*\r?\n/im, "");
++    for (const address of new Set(recipients)) {
++      const recipient = ms.users.findOneBy("email", address as never);
++      if (!recipient) continue;
++      const inbox = findFolder(ms, recipient.email, "inbox")!;
++      createMessage(store, recipient.email, inbox, { mime: delivered, receivedAt });
++    }
++    return c.body(null, 202);
++  });
++}
+diff --git a/packages/@emulators/microsoft/src/routes/oauth.ts b/packages/@emulators/microsoft/src/routes/oauth.ts
+index 5ef9940..616ea9d 100644
+--- a/packages/@emulators/microsoft/src/routes/oauth.ts
++++ b/packages/@emulators/microsoft/src/routes/oauth.ts
+@@ -234,6 +234,21 @@ export function oauthRoutes({ app, store, baseUrl, tokenMap }: RouteContext): vo
+     return c.html(renderCardPage("Sign in with Microsoft", subtitleText, body, SERVICE_LABEL));
+   });
+ 
++  // ---------- v1 authorization page (legacy) ----------
++  // Azure AD v1 applications name the `resource` they want a token for
++  // rather than scopes; the v2 page serves them, with the resource's
++  // default scope.
++
++  app.get("/:tenant/oauth2/authorize", (c) => {
++    const url = new URL(c.req.url);
++    const resource = url.searchParams.get("resource");
++    url.searchParams.delete("resource");
++    if (resource && !url.searchParams.has("scope")) {
++      url.searchParams.set("scope", `${resource.replace(/\/$/, "")}/.default`);
++    }
++    return c.redirect(`/oauth2/v2.0/authorize?${url.searchParams}`, 302);
++  });
++
+   // ---------- Authorization callback ----------
+ 
+   app.post("/oauth2/v2.0/authorize/callback", async (c) => {
+diff --git a/packages/@emulators/microsoft/src/store.ts b/packages/@emulators/microsoft/src/store.ts
+index dec0326..272a78e 100644
+--- a/packages/@emulators/microsoft/src/store.ts
++++ b/packages/@emulators/microsoft/src/store.ts
+@@ -1,14 +1,26 @@
+ import { Store, type Collection } from "@emulators/core";
+-import type { MicrosoftUser, MicrosoftOAuthClient } from "./entities.js";
++import type {
++  MicrosoftUser,
++  MicrosoftOAuthClient,
++  MicrosoftMailFolder,
++  MicrosoftMessage,
++  MicrosoftMessageRemoval,
++} from "./entities.js";
+ 
+ export interface MicrosoftStore {
+   users: Collection<MicrosoftUser>;
+   oauthClients: Collection<MicrosoftOAuthClient>;
++  mailFolders: Collection<MicrosoftMailFolder>;
++  messages: Collection<MicrosoftMessage>;
++  messageRemovals: Collection<MicrosoftMessageRemoval>;
+ }
+ 
+ export function getMicrosoftStore(store: Store): MicrosoftStore {
+   return {
+     users: store.collection<MicrosoftUser>("microsoft.users", ["oid", "email"]),
+     oauthClients: store.collection<MicrosoftOAuthClient>("microsoft.oauth_clients", ["client_id"]),
++    mailFolders: store.collection<MicrosoftMailFolder>("microsoft.mail_folders", ["folder_id", "user_email"]),
++    messages: store.collection<MicrosoftMessage>("microsoft.messages", ["message_id", "user_email"]),
++    messageRemovals: store.collection<MicrosoftMessageRemoval>("microsoft.message_removals", ["user_email"]),
+   };
+ }
+diff --git a/skills/microsoft/SKILL.md b/skills/microsoft/SKILL.md
+index 95b979a..934f730 100644
+--- a/skills/microsoft/SKILL.md
++++ b/skills/microsoft/SKILL.md
+@@ -6,7 +6,7 @@ allowed-tools: Bash(npx emulate:*), Bash(curl:*)
+ 
+ # Microsoft Entra ID Emulator
+ 
+-Microsoft Entra ID (Azure AD) v2.0 OAuth 2.0 and OpenID Connect emulation with authorization code flow, PKCE, client credentials, RS256 ID tokens, OIDC discovery, and a Microsoft Graph `/v1.0/me` endpoint.
++Microsoft Entra ID (Azure AD) v2.0 OAuth 2.0 and OpenID Connect emulation with authorization code flow, PKCE, client credentials, RS256 ID tokens, OIDC discovery, and Microsoft Graph `/v1.0/me` and mail (folders, delta queries, MIME messages, move, sendMail) endpoints.
+ 
+ ## Start
+ 
+-- 
+2.55.0
+

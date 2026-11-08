@@ -60,6 +60,9 @@ pub struct ObservedLabel {
     pub external_id: String,
     pub name: String,
     pub system: bool,
+    /// One of the account's folders, of which an entry is in exactly one
+    /// (SPEC §8.3).
+    pub folder: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -244,12 +247,13 @@ impl Observation for LabelsPushed {
 /// Makes the account's labels `labels`; returns whether anything changed.
 fn replace_labels(tx: &Transaction, account: &str, labels: Vec<ObservedLabel>) -> Result<bool> {
     let mut known: HashMap<String, ObservedLabel> = tx
-        .prepare("SELECT external_id, name, system FROM label WHERE account_id = ?1")?
+        .prepare("SELECT external_id, name, system, folder FROM label WHERE account_id = ?1")?
         .query_map([account], |r| {
             Ok(ObservedLabel {
                 external_id: r.get(0)?,
                 name: r.get(1)?,
                 system: r.get(2)?,
+                folder: r.get(3)?,
             })
         })?
         .map(|l| l.map(|l| (l.external_id.clone(), l)))
@@ -260,10 +264,18 @@ fn replace_labels(tx: &Transaction, account: &str, labels: Vec<ObservedLabel>) -
             continue;
         }
         tx.execute(
-            "INSERT INTO label (account_id, external_id, name, system) VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO label (account_id, external_id, name, system, folder)
+             VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT (account_id, external_id)
-             DO UPDATE SET name = excluded.name, system = excluded.system",
-            params![account, label.external_id, label.name, label.system],
+             DO UPDATE SET name = excluded.name, system = excluded.system,
+                           folder = excluded.folder",
+            params![
+                account,
+                label.external_id,
+                label.name,
+                label.system,
+                label.folder
+            ],
         )?;
         changed = true;
     }
