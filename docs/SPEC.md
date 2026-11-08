@@ -1884,15 +1884,18 @@ message, check calendar, mark a todo done) feels usable without thinking;
 search returns relevant cross-account hits in < 100 ms; the tx_log view
 shows the last 100 user actions with working Undo buttons.
 
-**State:** in progress. Done: the history view (§6.3); light and dark
-themes following the system (`color-scheme`, so native controls follow
-too; HTML mail keeps its white paper); `#` and `!` with Gmail's hiding
-of Trash and Spam, and All Mail (`ga`) (§8.1); joining and leaving
-Matrix rooms (§9.7); search and lists under 100 ms on a 50,000-message
-mailbox (§8.7); attachments listed and downloaded, and inline images
-shown (§8.9); attaching files when composing, and forwarding them
-(§7.4). Not done: list virtualization (lists load a page at a time as
-they scroll).
+**State:** done, but for what waits on other milestones: "check
+calendar" in the daily loop is M8's. Done: the history view (§6.3);
+light and dark themes following the system (`color-scheme`, so native
+controls follow too; HTML mail keeps its white paper); `#` and `!` with
+Gmail's hiding of Trash and Spam, and All Mail (`ga`) (§8.1); the rest
+of Gmail's list shortcuts, with one keymap for sequences (§12.5);
+joining and leaving Matrix rooms (§9.7); search and lists under 100 ms
+on a 50,000-message mailbox (§8.7); attachments listed and downloaded,
+and inline images shown (§8.9); attaching files when composing, and
+forwarding them (§7.4); README status. Lists are still not virtualized
+(§12.6): pages of 100 load as the focus nears the end, and a few
+hundred rows render without trouble; it comes in if that changes.
 
 ### Why this ordering
 
