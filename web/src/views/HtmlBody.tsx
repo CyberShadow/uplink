@@ -13,7 +13,7 @@ function document(html: string, remote: boolean): string {
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${images}; style-src 'unsafe-inline'">
 <base target="_blank">
-<style>body { margin: 0; font: 14px/1.4 system-ui, sans-serif; overflow-wrap: anywhere; }</style>
+<style>body { margin: 0; padding: 8px; font: 14px/1.4 system-ui, sans-serif; overflow-wrap: anywhere; color: #000; background: #fff; }</style>
 </head><body>${html}</body></html>`
 }
 

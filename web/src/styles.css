@@ -1,4 +1,6 @@
+/* Light or dark, as the system is; native controls follow. */
 :root {
+  color-scheme: light dark;
   --fg: #1f1f1f;
   --muted: #5f6368;
   --line: #e0e0e0;
@@ -8,6 +10,8 @@
   --accent: #1a73e8;
   --bg: #fff;
   --nav-bg: #f6f8fc;
+  --error-bg: #fce8e6;
+  --error-fg: #a50e0e;
   font: 14px/1.4 system-ui, sans-serif;
   color: var(--fg);
   background: var(--bg);
@@ -24,6 +28,8 @@
     --accent: #8ab4f8;
     --bg: #1f1f1f;
     --nav-bg: #18191b;
+    --error-bg: #5c1c1c;
+    --error-fg: #f6aea9;
   }
 }
 

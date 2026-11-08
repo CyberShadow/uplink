@@ -84,7 +84,7 @@
 }
 
 .error {
-  color: #d93025;
+  color: var(--error-fg);
 }
 
 .placeholder {

@@ -97,10 +97,13 @@
   color: var(--muted);
 }
 
+/* Mail is written for white paper, whatever the theme. */
 .html {
   display: block;
   width: 100%;
   border: none;
+  border-radius: 4px;
+  background: #fff;
 }
 
 .remote {

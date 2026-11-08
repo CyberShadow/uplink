@@ -33,6 +33,9 @@ def read(page):
     page.keyboard.press("Enter")
     expect(page.get_by_role("article")).to_contain_text("quixotic")
     page.screenshot(path=f"{SHOTS}/message.png")
+    page.emulate_media(color_scheme="dark")
+    page.screenshot(path=f"{SHOTS}/message-dark.png")
+    page.emulate_media(color_scheme="light")
     page.keyboard.press("u")
     expect(page.get_by_role("list", name="Messages")).to_be_visible()
     return {"subjects": subjects(page)}

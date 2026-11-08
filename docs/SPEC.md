@@ -1766,6 +1766,10 @@ message, check calendar, mark a todo done) feels usable without thinking;
 search returns relevant cross-account hits in < 100 ms; the tx_log view
 shows the last 100 user actions with working Undo buttons.
 
+**State:** in progress. Done: the history view (§6.3); light and dark
+themes following the system (`color-scheme`, so native controls follow
+too; HTML mail keeps its white paper).
+
 ### Why this ordering
 
 - M3 (tx_log/undo) precedes any data ingest because it's the central

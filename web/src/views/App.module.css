@@ -47,8 +47,8 @@
 
 .error {
   padding: 6px 16px;
-  background: #fce8e6;
-  color: #a50e0e;
+  background: var(--error-bg);
+  color: var(--error-fg);
 }
 
 .placeholder {
