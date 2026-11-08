@@ -1,7 +1,7 @@
 //! The parts of the Gmail REST API uplink uses (SPEC §8.1).
 
-use super::oauth::Credentials;
 use crate::account::SendError;
+use crate::oauth::Credentials;
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{
     alphabet,

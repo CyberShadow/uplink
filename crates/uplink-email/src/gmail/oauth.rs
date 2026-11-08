@@ -1,28 +1,19 @@
 //! Google OAuth: the one-time authorization (`uplink oauth init`) and
 //! access-token refresh (SPEC §13.2).
 
+use crate::oauth::{self, token_request, Grant};
 use anyhow::{bail, ensure, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{
-    path::PathBuf,
-    sync::Arc,
-    time::{Duration, Instant},
-};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::TcpListener,
-    sync::Mutex,
 };
 use uplink_config::GmailAccountConfig;
-use uplink_storage::seal::{self, MasterKey};
+use uplink_storage::seal::MasterKey;
 use url::Url;
 
 pub const SCOPE: &str = "https://www.googleapis.com/auth/gmail.modify";
-
-/// Refresh an access token this long before it expires.
-const EXPIRY_MARGIN: Duration = Duration::from_secs(60);
 
 /// Runs the authorization-code flow for `account` and stores the refresh
 /// token it yields. The user opens the URL passed to `present`; Google
@@ -72,9 +63,9 @@ pub async fn authorize(
         .get("code")
         .context("the redirect carries no authorization code")?;
 
-    let response: TokenResponse = token_request(
+    let response = token_request(
         &reqwest::Client::new(),
-        account,
+        &account.endpoints.token,
         &[
             ("grant_type", "authorization_code"),
             ("code", code),
@@ -88,13 +79,7 @@ pub async fn authorize(
     let refresh_token = response
         .refresh_token
         .context("Google returned no refresh token")?;
-    seal::write(
-        key,
-        &account.id,
-        &Token { refresh_token },
-        &account.oauth.token_file,
-    )?;
-    Ok(())
+    oauth::store(key, &grant(account), refresh_token)
 }
 
 /// Accepts connections until one is the redirect, and answers it.
@@ -146,129 +131,16 @@ fn challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
-/// What a token file holds, once unsealed.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Token {
-    pub refresh_token: String,
-}
-
-#[derive(Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    expires_in: u64,
-    refresh_token: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct TokenError {
-    error: String,
-    error_description: Option<String>,
-}
-
-/// The token endpoint refused the grant (e.g. `invalid_grant`: the token
-/// was revoked); the account needs authorizing again.
-#[derive(Debug, thiserror::Error)]
-#[error("Google refused the token request: {0}")]
-pub struct Refused(pub String);
-
-async fn token_request(
-    http: &reqwest::Client,
-    account: &GmailAccountConfig,
-    form: &[(&str, &str)],
-) -> Result<TokenResponse> {
-    let response = http
-        .post(&account.endpoints.token)
-        .form(form)
-        .send()
-        .await
-        .context("requesting a token")?;
-    let status = response.status();
-    if status.is_success() {
-        return response.json().await.context("decoding the token response");
-    }
-    let body = response.text().await?;
-    match serde_json::from_str::<TokenError>(&body) {
-        Ok(e) if status.is_client_error() => Err(Refused(match e.error_description {
-            Some(description) => format!("{}: {description}", e.error),
-            None => e.error,
-        })
-        .into()),
-        _ => bail!("token request failed with {status}: {body}"),
-    }
-}
-
-/// Access tokens for an account, refreshed as they expire.
-#[derive(Clone)]
-pub struct Credentials {
-    http: reqwest::Client,
-    account: Arc<GmailAccountConfig>,
-    key: Arc<MasterKey>,
-    current: Arc<Mutex<Option<(String, Instant)>>>,
-}
-
-impl Credentials {
-    pub fn new(http: reqwest::Client, account: GmailAccountConfig, key: Arc<MasterKey>) -> Self {
-        Self {
-            http,
-            account: Arc::new(account),
-            key,
-            current: Arc::new(Mutex::new(None)),
-        }
-    }
-
-    pub fn token_file(&self) -> &PathBuf {
-        &self.account.oauth.token_file
-    }
-
-    /// A valid access token.
-    pub async fn access_token(&self) -> Result<String> {
-        let mut current = self.current.lock().await;
-        if let Some((token, expires)) = &*current {
-            if Instant::now() + EXPIRY_MARGIN < *expires {
-                return Ok(token.clone());
-            }
-        }
-        let token = self.refresh().await?;
-        *current = Some(token.clone());
-        Ok(token.0)
-    }
-
-    /// Forgets the access token, e.g. after the API rejected it.
-    pub async fn invalidate(&self) {
-        *self.current.lock().await = None;
-    }
-
-    async fn refresh(&self) -> Result<(String, Instant)> {
-        let account = &self.account;
-        let stored = seal::read::<Token>(&self.key, &account.id, &account.oauth.token_file)?;
-        let requested = Instant::now();
-        let response = token_request(
-            &self.http,
-            account,
-            &[
-                ("grant_type", "refresh_token"),
-                ("refresh_token", &stored.refresh_token),
-                ("client_id", &account.oauth.client_id),
-                ("client_secret", &account.oauth.client_secret),
-            ],
-        )
-        .await?;
-        // Google may rotate the refresh token (SPEC §15.4).
-        if let Some(refresh_token) = response.refresh_token {
-            if refresh_token != stored.refresh_token {
-                seal::write(
-                    &self.key,
-                    &account.id,
-                    &Token { refresh_token },
-                    &account.oauth.token_file,
-                )?;
-            }
-        }
-        Ok((
-            response.access_token,
-            requested + Duration::from_secs(response.expires_in),
-        ))
+/// How `account`'s refresh token is redeemed.
+pub fn grant(account: &GmailAccountConfig) -> Grant {
+    Grant {
+        account: account.id.clone(),
+        token_file: account.oauth.token_file.clone(),
+        endpoint: account.endpoints.token.clone(),
+        refresh_form: vec![
+            ("client_id", account.oauth.client_id.clone()),
+            ("client_secret", account.oauth.client_secret.clone()),
+        ],
     }
 }
 

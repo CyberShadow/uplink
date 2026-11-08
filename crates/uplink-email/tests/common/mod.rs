@@ -13,7 +13,10 @@ use serde::Deserialize;
 use serde_json::json;
 use std::{path::Path, process::Stdio, sync::Arc, time::Duration};
 use uplink_config::{AccountConfig, Config, GmailAccountConfig, GmailOAuthConfig, GoogleEndpoints};
-use uplink_email::gmail::oauth::{self, Credentials, Token};
+use uplink_email::{
+    gmail::oauth,
+    oauth::{Credentials, Token},
+};
 use uplink_storage::seal::{self, MasterKey};
 
 pub struct Provider {
@@ -103,7 +106,7 @@ impl Provider {
             (account, Some(child))
         };
         Self {
-            credentials: Credentials::new(http.clone(), account.clone(), key.clone()),
+            credentials: Credentials::new(http.clone(), oauth::grant(&account), key.clone()),
             account,
             key,
             http,

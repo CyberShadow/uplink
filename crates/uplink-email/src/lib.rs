@@ -5,6 +5,7 @@ pub mod account;
 pub mod compose;
 pub mod gmail;
 pub mod mailbox;
+pub mod oauth;
 pub mod parse;
 pub mod query;
 pub mod service;

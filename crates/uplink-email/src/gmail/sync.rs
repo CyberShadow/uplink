@@ -3,11 +3,12 @@
 
 use super::{
     api::{BatchModify, Format, Gmail, Message},
-    oauth::Credentials,
+    oauth,
 };
 use crate::{
     account::{Account, Provider, SendError, SyncTask},
     mailbox::{EntryLabels, LabelChange, LabelsPushed, MailboxObserved, NewEntry, ObservedLabel},
+    oauth::Credentials,
 };
 use anyhow::Result;
 use futures_util::{stream, StreamExt, TryStreamExt};
@@ -47,7 +48,7 @@ pub fn task(
     dispatcher: Dispatcher,
     data_root: &Path,
 ) -> Result<SyncTask<GmailSync>> {
-    let credentials = Credentials::new(http.clone(), config.clone(), key);
+    let credentials = Credentials::new(http.clone(), oauth::grant(config), key);
     Ok(SyncTask::new(
         GmailSync {
             gmail: Gmail::new(http, &config.endpoints.api, credentials),

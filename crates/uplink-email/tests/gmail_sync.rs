@@ -7,8 +7,9 @@ use std::{sync::Arc, time::Duration};
 use uplink_email::{
     account::SyncTask,
     compose,
-    gmail::{api::Gmail, oauth::Credentials, sync::GmailSync},
+    gmail::{api::Gmail, oauth, sync::GmailSync},
     mailbox,
+    oauth::Credentials,
     query::ConfiguredAccount,
     service::Mail,
 };
@@ -63,8 +64,11 @@ impl Uplink {
 
     fn start_sync(&self, provider: &Provider) -> tokio::task::JoinHandle<()> {
         let http = reqwest::Client::new();
-        let credentials =
-            Credentials::new(http.clone(), provider.account.clone(), provider.key.clone());
+        let credentials = Credentials::new(
+            http.clone(),
+            oauth::grant(&provider.account),
+            provider.key.clone(),
+        );
         tokio::spawn(
             SyncTask::new(
                 GmailSync {
