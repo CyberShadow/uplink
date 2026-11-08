@@ -25,7 +25,7 @@ rather than enumerated. Anything left intentionally open is in §15.
 4. [Storage & schema](#4-storage--schema)
 5. [Wire protocol (WebSocket)](#5-wire-protocol-websocket)
 6. [Transaction log & undo](#6-transaction-log--undo)
-7. [Real-time draft sync](#7-real-time-draft-sync)
+7. [Drafts](#7-drafts)
 8. [Email pipeline (Gmail + M365)](#8-email-pipeline-gmail--m365)
 9. [Matrix pipeline](#9-matrix-pipeline)
 10. [Calendar pipeline](#10-calendar-pipeline)
@@ -92,12 +92,12 @@ Don't litigate these in code review.
    plaintext at rest (encryption of OAuth secrets is at-rest, with the key
    in a sibling file — see §13). Client receives already-decrypted, already-
    resolved, ready-to-render payloads.
-3. **Every user-initiated, reversible state mutation is dispatched through
-   the tx_log.** Single chokepoint. Every dispatch applies an op and records
-   it with its inverse in one transaction. Mass operations are a *single*
-   tx_log entry with a batch inverse. Undo is itself an op (append-only
-   log). Actions with irreversible external effects (sending mail or a
-   Matrix message) are not ops and cannot be undone — see §6.5.
+3. **Every user-initiated state mutation is dispatched through the
+   tx_log.** Single chokepoint. Every dispatch applies an op and records it
+   with its inverse in one transaction. Ops change *desired* state locally;
+   reconcilers bring provider state in line afterwards (§6.6). Mass
+   operations are a *single* tx_log entry with a batch inverse. Undo is
+   itself an op (append-only log).
 4. **Raw `.eml` files and raw `.ics` blobs are sacred.** Content-addressed by
    SHA-256(raw bytes), never modified, never deleted by the application, no
    attachment extraction. Indexes (search, threading, labels) live in SQLite
@@ -359,49 +359,55 @@ CREATE TABLE account (
 );
 
 -- ── messages (mail) ─────────────────────────────────────────────────
+-- A logical message is identified by its Message-ID, globally across
+-- accounts. Each distinct copy of it (as built locally on send, as stored
+-- by each provider, as delivered via a mailing list, ...) is a *variant*:
+-- its own raw .eml, content-addressed. See §4.4 for identity rules.
 CREATE TABLE message (
-  id              TEXT PRIMARY KEY,         -- sha256(.eml bytes), hex
-  account_id      TEXT NOT NULL REFERENCES account(id),
-  message_id      TEXT,                     -- RFC 5322 Message-ID header
-  thread_id       TEXT,                     -- gmail thrid / msft conversationId
-                                            -- or computed from References
+  id              INTEGER PRIMARY KEY,
+  message_id      TEXT NOT NULL UNIQUE,     -- RFC 5322 Message-ID, or a
+                                            -- synthetic one (§4.4)
+  preferred_variant TEXT NOT NULL,          -- variant shown by default
+  -- header fields of the preferred variant, for listing and search:
   subject         TEXT,
   from_addr       TEXT,                     -- canonicalized addr
   from_name       TEXT,
   to_addrs        TEXT,                     -- JSON array
   cc_addrs        TEXT,
-  bcc_addrs       TEXT,
-  date_sent       INTEGER,                  -- unix seconds (Date: header)
-  date_received   INTEGER NOT NULL,         -- unix seconds (server-arrived)
-  size_bytes      INTEGER NOT NULL,
-  flags           INTEGER NOT NULL,         -- bitfield (seen, flagged, ...)
-  raw_path        TEXT NOT NULL             -- relative to $DATA, e.g.
-                                            -- mail/ab/abcd....eml
+  date_sent       INTEGER                   -- unix seconds (Date: header)
 );
-CREATE INDEX message_by_thread ON message(thread_id, date_received DESC);
-CREATE INDEX message_by_account_date ON message(account_id, date_received DESC);
 
--- FTS5 over extracted plain text. Body extraction is via html2text +
--- mail-parser stripping signatures and quoted replies (lightly).
+CREATE TABLE message_variant (
+  sha256          TEXT PRIMARY KEY,         -- of the raw bytes, hex
+  message         INTEGER NOT NULL REFERENCES message(id),
+  source          TEXT NOT NULL,            -- account id, or 'local'
+  date_received   INTEGER NOT NULL,         -- unix seconds
+  size_bytes      INTEGER NOT NULL,
+  raw_path        TEXT NOT NULL             -- mail/ab/abcd....eml
+);
+CREATE INDEX message_variant_by_message ON message_variant(message);
+
+-- A logical message as it exists in one account. Flags are kept as
+-- desired (what the user asked for) and observed (what the provider last
+-- reported); the account's reconciler pushes differences (§6.6).
+CREATE TABLE message_account (
+  message         INTEGER NOT NULL REFERENCES message(id),
+  account_id      TEXT NOT NULL REFERENCES account(id),
+  external_id     TEXT NOT NULL,            -- X-GM-MSGID / Graph message id
+  thread_id       TEXT,                     -- X-GM-THRID / conversationId
+  flags           INTEGER NOT NULL,         -- desired; bitfield (seen, flagged, ...)
+  observed_flags  INTEGER NOT NULL,
+  PRIMARY KEY (message, account_id)
+);
+CREATE INDEX message_account_by_thread ON message_account(account_id, thread_id);
+
+-- FTS5 over extracted plain text, one row per logical message, keyed by
+-- message.id. Self-contained (not an external-content table): body_text
+-- has no column to live in elsewhere.
 CREATE VIRTUAL TABLE message_fts USING fts5(
   subject, from_addr, from_name, to_addrs, body_text,
-  content='message', content_rowid='rowid',
   tokenize='unicode61 remove_diacritics 2'
 );
--- Triggers keep message_fts in sync with INSERT/DELETE on message;
--- UPDATE not used (messages are immutable; flags/labels live in separate tables).
-CREATE TRIGGER message_ai AFTER INSERT ON message BEGIN
-  INSERT INTO message_fts(rowid, subject, from_addr, from_name, to_addrs, body_text)
-  VALUES (new.rowid,
-          new.subject,
-          new.from_addr,
-          coalesce(new.from_name, ''),
-          new.to_addrs,
-          ''); -- body_text filled by a follow-up UPDATE after parse
-END;
-CREATE TRIGGER message_ad AFTER DELETE ON message BEGIN
-  DELETE FROM message_fts WHERE rowid = old.rowid;
-END;
 
 -- ── labels (Gmail-style, also used for M365 categories/folders) ─────
 CREATE TABLE label (
@@ -412,12 +418,17 @@ CREATE TABLE label (
   color        TEXT,                           -- '#rrggbb' or null
   UNIQUE(account_id, external_id)
 );
+-- Membership, desired and observed (§6.6). A row with both 0 is deleted.
 CREATE TABLE message_label (
-  message_id   TEXT NOT NULL REFERENCES message(id),
+  message      INTEGER NOT NULL REFERENCES message(id),
   label_id     INTEGER NOT NULL REFERENCES label(id),
-  PRIMARY KEY (message_id, label_id)
+  desired      INTEGER NOT NULL,               -- 0/1
+  observed     INTEGER NOT NULL,               -- 0/1
+  PRIMARY KEY (message, label_id)
 );
-CREATE INDEX message_label_by_label ON message_label(label_id, message_id);
+CREATE INDEX message_label_by_label ON message_label(label_id, message);
+CREATE INDEX message_label_pending ON message_label(label_id)
+  WHERE desired != observed;
 
 -- ── matrix events (storage of all sync'd Matrix events) ─────────────
 CREATE TABLE matrix_room (
@@ -483,6 +494,7 @@ CREATE TABLE todo (
 CREATE INDEX todo_by_done_due ON todo(done_at, due_ts);
 
 -- ── drafts (local-only MVP) ──────────────────────────────────────────
+-- Edited only through draft.* ops (§7); history lives in tx_log.
 CREATE TABLE draft (
   id             TEXT PRIMARY KEY,          -- ULID
   account_id     TEXT NOT NULL REFERENCES account(id),
@@ -493,19 +505,19 @@ CREATE TABLE draft (
   body_text      TEXT NOT NULL DEFAULT '',
   body_html      TEXT NOT NULL DEFAULT '',
   in_reply_to    TEXT,                      -- Message-ID of original
-  version        INTEGER NOT NULL DEFAULT 0,
-  content_hash   BLOB NOT NULL,             -- sha256(canonical_json(fields))
   updated_at     INTEGER NOT NULL
 );
-CREATE TABLE draft_op (
-  id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  draft_id       TEXT NOT NULL REFERENCES draft(id),
-  version        INTEGER NOT NULL,          -- the post-op version
-  op_json        TEXT NOT NULL,
-  applied_at     INTEGER NOT NULL,
-  client_id      TEXT NOT NULL              -- which tab originated
+
+-- ── outbox (§6.7) ────────────────────────────────────────────────────
+CREATE TABLE outbox (
+  id             INTEGER PRIMARY KEY,
+  account_id     TEXT NOT NULL REFERENCES account(id),
+  kind           TEXT NOT NULL,             -- 'mail' | 'matrix'
+  payload        TEXT NOT NULL,             -- JSON: the draft / message
+  not_before     INTEGER NOT NULL,          -- unix ms; send delay
+  state          TEXT NOT NULL,             -- 'queued' | 'sending' | 'sent' | 'failed'
+  error          TEXT
 );
-CREATE INDEX draft_op_by_draft ON draft_op(draft_id, version);
 
 -- ── transaction log ─────────────────────────────────────────────────
 CREATE TABLE tx_log (
@@ -528,24 +540,35 @@ CREATE INDEX tx_log_open ON tx_log(undone_by) WHERE undone_by IS NULL;
 
 ### 4.4 Schema design notes
 
-- **`message.id = sha256(.eml bytes)`.** Same bytes → same id, so re-fetching
-  a message is idempotent. The same physical message replicated across IMAP
-  folders shows up once in storage and is linked from multiple `message_label`
-  rows.
-- **No threads table.** `thread_id` is denormalized into `message`. Threading
+- **Message identity is the Message-ID, globally.** The same email in
+  Gmail and M365 is one logical message (for a unified inbox) with
+  per-account state in `message_account`. Every distinct copy is a
+  `message_variant`; re-fetching identical bytes is idempotent (same
+  sha256). Gmail rejects mail without a valid Message-ID, so a missing one
+  is rare, but other paths can deliver it.
+- **Merging is checked, not assumed.** A new variant joins an existing
+  message only if it agrees on `Date:` (exact) and the sender address —
+  where a mailing list rewrote `From:` for DMARC (`List-Id` present), on
+  the original sender (`X-Original-From` / `Reply-To`). A variant that
+  fails the check is a Message-ID *collision* (spam, broken clients): it
+  becomes its own logical message under a synthetic Message-ID
+  `<sha256@variant.uplink.invalid>` and the collision is logged. Variants
+  without a Message-ID get the same synthetic form, so they never merge
+  with anything. The preferred variant is the first one stored, so a
+  later colliding copy cannot replace what is displayed.
+- **No threads table.** `thread_id` is per account in `message_account`. Threading
   is whatever the provider tells us (Gmail `threadId`, M365 `conversationId`).
   We don't synthesize threads when the provider doesn't give them — MVP
   scope.
 - **Flags are a bitfield.** Seen/Flagged/Answered/Draft fit comfortably.
   Provider-specific flags (gmail `\Important`, M365 `isRead`) project to
   these.
-- **Soft delete is `message_label` row removal, not `message` deletion.** The
+- **Soft delete is label removal, not `message` deletion.** The
   raw `.eml` stays on disk forever (invariant 4). Hard delete is deferred —
   see ROADMAP.
-- **`tx_log` carries forward AND inverse.** Computed inside the same SQLite
-  transaction as the apply. The inverse is computed against pre-state, so
-  it's correct *for the world that existed when the op was issued* — undo
-  always replays that snapshot, not the current state.
+- **`tx_log` carries forward AND inverse.** Recorded inside the same SQLite
+  transaction as the apply. The inverse is the inverse *edit* (§6.2), not a
+  snapshot of pre-state.
 - **`undone_by` / `undoes`** form pairs: when entry A is undone, a new entry
   B is appended with `B.undoes = A.id`, and a separate update sets
   `A.undone_by = B.id`. Both updates happen inside one transaction. Redo
@@ -560,8 +583,8 @@ that:
 2. Selects the `text/plain` part if present, otherwise the first
    `text/html` part run through `html2text` (the Rust crate, deterministic,
    no JS).
-3. Updates `message_fts` with the extracted body text via a follow-up
-   `UPDATE message_fts SET body_text = ?`.
+3. Inserts the `message_fts` row (headers + body text) for the logical
+   message, replacing any earlier row when the preferred variant changes.
 
 Body extraction is deferred (not blocking the INSERT) so the inbox UI can
 show new messages instantly while indexing catches up.
@@ -653,22 +676,19 @@ reconnects and resumes.
 - **Calendar**: `CalendarEventAdded`, `CalendarEventRemoved`,
   `CalendarEventChanged`.
 - **TODO**: `TodoAdded`, `TodoChanged`, `TodoRemoved`.
-- **Draft**: `DraftChanged { id, version, fields_set, by_client_id }`.
+- **Draft**: `DraftEdited { id, edit }` (§7).
+- **Outbox**: `OutboxItemChanged { id, state }`.
 - **TxLog**: `TxLogEntryAdded`, `TxLogEntryUndone`.
 - **Config**: `ConfigChanged { section }`.
 
 `ClientRequest` variants (MVP):
 
-- `Send { draft_id }` — submit a draft for sending.
 - `Search { query, scope }` — FTS5 cross-account search.
 - `LoadMessage { id }` — fetch full body (text + sanitized HTML).
 - `LoadRoomTimeline { room_id, before_event_id, limit }`.
 - `Undo { tx_log_id }`.
-- `OpenDraft { id }` / `CreateDraft { account_id, ... }`.
-
-`ClientEvent` variants (MVP):
-
-- `DraftEdit { id, base_hash, op }` — see §7.
+- One request per op kind the client can dispatch (archive, label, mark
+  read, draft edits, send, ...), answered with the tx_log id.
 
 ---
 
@@ -714,10 +734,9 @@ Key properties:
   If the op fails, no log entry; if the log INSERT fails, the op rolls back.
   Atomic.
 - **Broadcast happens after commit.** Subscribers see only committed state.
-- **The inverse is computed inside `apply`** against pre-state, before
-  pre-state is mutated. This means undo replays the inverse against
-  *current* state — but the inverse was computed knowing what to put back.
-  For mass operations this is one inverse describing all the per-row changes.
+- **The inverse is computed inside `apply`** from what the op actually
+  changed. For mass operations this is one inverse describing all the
+  per-row changes.
 - **Op author writes the inverse.** No automatic introspection. Op-specific
   knowledge of which fields changed is encoded in `apply`.
 
@@ -729,9 +748,19 @@ Op kinds are registered in a `Registry` by the crates that define them
 Dispatch rejects an op whose inverse kind is unregistered, so every
 recorded entry can be undone.
 
-Inverses act on uplink's state and on provider state that can be put back
-(labels, flags, todos). There are no inverses for irreversible external
-actions; those are not ops at all (§6.5).
+**An inverse performs the inverse edit only** — it never restores a
+snapshot. Undoing "archive these 50" re-adds INBOX to exactly the messages
+the archive removed it from; changes made to them since are untouched.
+Edits that replace a value (set a field from A to B) record the value
+they replaced, and their inverse expects to find B: if the value changed
+again in the meantime, undo **refuses** with a conflict rather than
+overwriting. This is the same conflict as in desired-state sync (§6.6);
+a future UI may let the user pick which version to keep.
+
+Ops change desired state, never provider state directly (§6.6), so every
+inverse is itself just a desired-state change. Whether it can still be
+fulfilled is decided by the op: un-sending is possible only while the
+item is still in the outbox (§6.7).
 
 ### 6.3 Undo
 
@@ -750,8 +779,8 @@ toggle back and forth.
 ### 6.4 Mass operations
 
 A mass operation (e.g. "archive 50 selected messages") is a *single* Op,
-not 50 ops. Its `apply` mutates 50 rows, computes a single inverse listing
-all 50 pre-states, and produces one tx_log entry. The UI shows it as
+not 50 ops. Its `apply` mutates 50 rows, computes a single inverse covering
+the rows it changed, and produces one tx_log entry. The UI shows it as
 "Archived 50 messages" with one Undo button.
 
 Without this property, the undo log would be flooded with per-row noise
@@ -759,141 +788,112 @@ and undo would have to replay 50 entries to roll back one user gesture.
 
 ### 6.5 Which operations go through the dispatcher
 
-**Everything user-initiated that mutates persistent state.** Examples:
+**Everything user-initiated that mutates persistent state.** `tx_log` is
+the record of user intent. Examples:
 
 - Marking message read/unread, archiving, labeling, deleting.
+- Editing a draft (§7), sending mail, sending a Matrix message (§6.7).
 - Creating, editing, completing a TODO.
 - Flagging a message for follow-up (creates a linked TODO).
 
 **Not** through the dispatcher:
 
 - Background sync writes (new mail arriving, Matrix events streaming in,
-  calendar delta). These are *observations* of the external world; they
-  aren't user actions and can't be undone in any meaningful sense. They go
-  into the broadcast hub directly and write to storage via a dedicated
-  ingest path that does *not* touch `tx_log`.
+  calendar delta) and reconciler bookkeeping (§6.6). These are
+  *observations* of the external world, not user actions. They write to
+  storage via a dedicated ingest path that does *not* touch `tx_log`, and
+  publish their events to the hub. Clients receive one event stream
+  containing both.
 - Read-only queries (search, load message body, load room timeline).
-- Draft edits (different sync mechanism — see §7).
-- Actions with irreversible external effects: sending mail, sending a
-  Matrix message. Once out, they cannot be taken back, so they are not
-  undoable and not recorded in tx_log. They are performed directly; their
-  local effects (the sent copy, the local echo) arrive like any other
-  observation of the external world. A best-effort "undo" (e.g. Matrix
-  redaction) may come later as an explicit action of its own.
 
-### 6.6 Why drafts aren't tx_log ops
+### 6.6 Desired state and reconciliation
 
-Drafts get edited dozens of times per minute. Putting each keystroke in
-the tx_log would (a) bloat it past usefulness and (b) make undo confusing
-("undo my last keystroke"). Drafts have their own CAS edit protocol with
-their own op log (`draft_op` table) used for replay across tabs.
+Ops record what the user wants; they do not call providers. State that
+mirrors a provider (labels, flags) is stored twice: *desired* (set by
+ops) and *observed* (set by sync). Each account runs a reconciler task
+that, after every commit touching its state, pushes the differences —
+IMAP `STORE`/`COPY`, Graph `PATCH`/`move` — and retries with backoff on
+failure. The UI shows desired state immediately, so actions feel instant
+and survive a provider outage.
+
+When sync observes a remote change:
+
+- if there is no pending local change for that field, desired follows
+  observed (the remote change wins);
+- if there is, the local change wins and is pushed. Surfacing such
+  conflicts to the user is deferred, together with undo conflicts (§6.2).
+
+### 6.7 Outbox: actions that can't be taken back
+
+Sending mail or a Matrix message is a desired state that can only be
+fulfilled once. `mail.send` / `matrix.send` move the message into the
+`outbox`; the account's reconciler performs the send once `not_before`
+has passed. The inverse takes the item back out (returning a mail to its
+draft) and succeeds only while the item is still `queued`; afterwards
+undo refuses ("already sent"). A configurable send delay therefore gives
+a reliable undo-send window. Sends stay in `tx_log` like any other op.
+
+The queued item is also the local echo: it appears in Sent / the room
+timeline immediately, marked pending, and becomes a normal message once
+the provider's copy is observed (§8.6).
 
 ---
 
-## 7. Real-time draft sync
+## 7. Drafts
 
 ### 7.1 What we actually need
 
-Single user, two tabs (or laptop+phone, eventually). Tab A is typing in the
-compose window, tab B has the same draft open. We want:
+Single user, a few tabs (or laptop+phone, eventually). Tab A is typing in
+the compose window, tab B has the same draft open. We want:
 
 - Tab B sees tab A's edits within ~500 ms.
 - If both edit at once, neither's edit is silently dropped.
-- If the network drops, tab A's keystrokes survive locally and flush on
+- If the network drops, tab A's text survives locally and flushes on
   reconnect.
 
-We do not need: collaborative editing primitives (no two-user concurrent
-typing), operational transforms, CRDTs, presence (no second user).
+We do not need operational transforms, CRDTs, or presence.
 
-### 7.2 Server-arbitrated CAS
+### 7.2 Draft edits are ops
 
-Each draft has `version: u64` and `content_hash: [u8; 32]` (sha256 of the
-canonical-JSON of all draft fields, via `serde_jcs` for stable ordering).
-
-Client sends:
-
-```jsonc
-{
-  "type": "event",
-  "body": {
-    "type": "draft_edit",
-    "id": "01H...",
-    "base_hash": "abcd...32-byte-hex",
-    "op": {
-      "type": "field_set",
-      "field": "subject",
-      "value": "Re: hello"
-    },
-    "client_id": "tab-uuid-1"
-  }
-}
-```
-
-Server logic:
-
-1. Load `draft` row, compute current `content_hash`.
-2. If `current_hash == base_hash`: apply op, recompute hash and version+1,
-   write `draft_op` row, broadcast `DraftChanged { ... }` to all subscribers
-   (including the originating tab — which uses `client_id` to recognize its
-   own echo).
-3. If `current_hash != base_hash`: send `Response { error: stale_base }` to
-   the originating tab. Tab refreshes draft state and retries.
-
-### 7.3 DraftOp variants
+Draft changes are ordinary tx_log ops, so undo, history and broadcast
+need nothing draft-specific:
 
 ```rust
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum DraftOp {
-    /// Set a top-level field. Used for subject, to/cc/bcc, in_reply_to.
-    FieldSet { field: DraftField, value: serde_json::Value },
-    /// Insert text into body_text at offset. Used for compose typing.
-    Insert { field: BodyField, offset: u32, text: String },
-    /// Delete a range from body_text. Used for compose deletes.
-    Delete { field: BodyField, offset: u32, length: u32 },
-    /// Atomic replace (used by WYSIWYG body_html — TipTap outputs HTML
-    /// in one shot; we don't try to diff it).
-    Replace { field: BodyField, value: String },
-}
+/// Replace `delete` with `insert` at `offset` (in chars) of a text field.
+/// Applies only if `delete` is what is at `offset` now; otherwise the
+/// edit is stale and refused.
+struct DraftEdit { id: DraftId, field: TextField, offset: u32, delete: String, insert: String }
+/// Set a non-text field (to/cc/bcc, in_reply_to), expecting `old`.
+struct DraftSet  { id: DraftId, field: DraftField, old: Value, new: Value }
 ```
 
-Insert/Delete on `body_text` lets short edits avoid sending the whole body.
-For `body_html` we use `Replace` because WYSIWYG output isn't safe to
-incremental-diff.
+The inverse of an edit swaps `delete` and `insert`; the precondition is
+the conflict check for both concurrent tabs and undo (§6.2). Each entry
+stores only the changed span, never a copy of the draft.
 
-### 7.4 Coalescing
+The client debounces typing (~500 ms) and sends one `DraftEdit` covering
+the difference between the text it last saw from the server and its
+current text (common prefix/suffix). The server applies it and
+broadcasts `DraftEdited`. A tab applies a remote edit directly if it has
+no unsent local changes; if it does, it rebases them: it adopts the new
+server text and sends a fresh diff of its own text against it. The
+editor's undo keeps operating on keystrokes; tx_log undo steps back one
+saved edit at a time.
 
-Client batches keystrokes for ~150 ms before sending a single `Insert` /
-`Delete`. The intra-tab UX still feels instant (local state updates on
-keypress, network echo confirms it).
+`body_html` (TipTap output) is edited the same way, as text.
 
-### 7.5 IndexedDB write-through
+### 7.3 History
 
-Every keystroke writes to IndexedDB *before* attempting the WS send. On
-reconnect, the client's queue is replayed. On client startup, IndexedDB is
-inspected: if there's a draft state newer than the server's last-known
-version for that draft, the client diffs locally and sends the missing ops.
+Runs of consecutive edits to the same draft are shown collapsed as one row
+in the log UI ("edited draft 'Re: lunch'"), expandable. Because undo is
+appended rather than destructive, the history of a draft is never lost —
+in the spirit of vim's and emacs' persistent undo.
 
-This handles the "network drops for 5 minutes mid-paragraph" case without
-data loss.
+### 7.4 IndexedDB write-through
 
-### 7.6 Why hashing not version numbers
-
-If we keyed CAS on `(draft_id, base_version)`, two tabs could each send a
-patch off the same base_version, the server would apply one, and the second
-would see `current_version > base_version` and reject. Fine. But `base_hash`
-is more robust against the edge case where the server has applied an op
-that *happened to produce the same fields* — e.g. tab A inserts "x" and
-deletes "x" in two quick gestures; tab B's edit racing in between should
-still be rejected only if content actually differs. Hashes are content-
-identity, versions are commit-identity. Content-identity is the right
-primitive.
-
-### 7.7 Bandwidth cost
-
-`serde_jcs` runs over the whole draft on every edit. For a 50 KB body
-that's ~50 KB hashed per keystroke (or per coalesced batch). Sha256 of
-50 KB is microseconds. Negligible.
+Every debounced edit is written to IndexedDB before it is sent, and
+removed once acknowledged. On reconnect or startup, pending edits are
+re-sent; any that come back stale are rebased as above.
 
 ---
 
@@ -963,8 +963,10 @@ that's ~50 KB hashed per keystroke (or per coalesced batch). Sha256 of
 
 ### 8.4 M365 — send
 
-- **Transport**: `POST /me/sendMail` with JSON message body. Graph builds
-  the RFC 5322 server-side.
+- **Transport**: `POST /me/sendMail` with the RFC 5322 message we built
+  (base64 MIME body), so our Message-ID is kept and the provider's copy
+  becomes a variant of the same logical message. Verify at M6 that Graph
+  preserves the Message-ID.
 - **OAuth scope required**: `Mail.Send`.
 
 ### 8.5 Compose
@@ -980,17 +982,16 @@ that's ~50 KB hashed per keystroke (or per coalesced batch). Sha256 of
 
 ### 8.6 Persistence of sent mail
 
-After successful send:
+When the reconciler sends an outbox item:
 
-1. Persist the assembled RFC 5322 bytes to `mail/<sha256>/<sha256>.eml`.
-2. Insert `message` row with the assigned account's "Sent" label.
-3. Broadcast `MessageAdded`.
+1. Persist the assembled RFC 5322 bytes as a `local` variant, creating
+   the logical message (its Message-ID is the one we generated).
+2. Mark the outbox item `sent` and broadcast.
 
-This is the only path that writes to the mail store from compose. The
-provider's "Sent" folder will *also* show it (Gmail API auto-appends to
-Sent; Graph likewise). Next sync pass we'll observe it again — the
-sha256 content-addressing means it dedups against the local copy
-automatically (same bytes → same `message.id`).
+Next sync pass, the provider's Sent copy is observed. It has the same
+Message-ID but different bytes (the provider adds headers), so it is
+stored as a second variant of the same message, and the message gains its
+`message_account` row.
 
 ### 8.7 Body extraction & FTS
 
@@ -1000,7 +1001,7 @@ After every mail INSERT, enqueue an extract-body task (tokio task). It:
 2. Parses with `mail-parser`.
 3. Selects best `text/plain` or runs html2text over the HTML part.
 4. Truncates to 64 KB.
-5. `UPDATE message_fts SET body_text = ? WHERE rowid = ?`.
+5. Inserts the `message_fts` row for the logical message.
 
 If body extraction fails (rare; mail-parser is permissive), the message is
 still in the FTS index by subject/from/to but body_text is empty. Log and
@@ -1078,14 +1079,11 @@ let resp = room.send(content).await?;
 // resp.event_id is the canonical id
 ```
 
-Send is not a tx_log op and cannot be undone (§6.5). On send:
-
-1. Insert a placeholder `matrix_event` row marked `pending = 1` (an extra
-   column not shown above; flag for "local echo").
-2. Broadcast `MatrixEventAdded` with the local echo.
-3. After server ACK, UPDATE the row replacing the temp id with the canonical
-   `event_id`, clear `pending`, broadcast `MatrixEventUpdated`.
-4. If send fails, mark the row `failed = 1`, surface in UI.
+Send is a `matrix.send` op that queues an outbox item (§6.7), which is
+also the local echo. The reconciler sends it with the outbox id as the
+transaction id; when the server's echo of the event is observed, the
+pending item is replaced by the real event. If sending fails, the item is
+marked `failed` and surfaced in the UI.
 
 ### 9.4 Cross-signing pairing
 
@@ -1499,8 +1497,11 @@ echoed both events with monotonic cursors.
 - Initial UID walk + metadata insert.
 - Body fetch + .eml persist + FTS body extract.
 - Frontend mail-list view with selection + keyboard nav.
+- First real ops: mark read/unread, archive, label — with the Gmail
+  reconciler pushing them over IMAP (§6.6).
 
-**Done when:** a freshly-paired Gmail account streams new messages into
+**Done when:** archiving a message in uplink archives it in Gmail, and
+undoing the archive brings it back; a freshly-paired Gmail account streams new messages into
 the UI within ~5 s of arrival on IMAP; FTS search returns hits across
 subject/body/from; a power-loss simulation (kill + restart server) doesn't
 lose any persisted messages.
@@ -1520,23 +1521,21 @@ which account each message is from; the delta-link survives restart.
 ### M6. Send + Compose + local Drafts
 
 - TipTap compose UI.
-- Local-only drafts with CAS protocol.
-- Gmail API send.
-- Graph sendMail.
-- Send is not a tx_log op (§6.5).
+- Local-only drafts as ops (§7).
+- Outbox + send delay (§6.7); Gmail API send; Graph sendMail.
 
 **Done when:** composing a reply, switching tabs mid-edit, and having the
 draft survive a network drop all work; clicking send actually transmits;
-the sent message shows up in the local mail store within one provider-
-sync interval *and* dedups by sha256 against the local copy on round-
-trip.
+undoing a send within the delay keeps it from going out; the provider's
+copy of a sent message shows up within one sync interval as a second
+variant of the same logical message.
 
 ### M7. Matrix
 
 - Account pair CLI subcommand (Secret Storage import).
 - matrix-rust-sdk sync loop.
 - Plain-text receive into `matrix_event`.
-- Plain-text send (not a tx_log op; §6.5).
+- Plain-text send through the outbox (§6.7).
 - Room list + timeline UI.
 - Unknown event types rendered as raw JSON.
 
@@ -1702,12 +1701,10 @@ README install steps.
 
 ### 15.9 Irreversible external actions
 
-**Decision**: sending mail (Gmail API, Graph) and sending Matrix messages
-are not undoable and are not tx_log ops (§6.5). Redacting a Matrix message
-is best-effort at most (recipients may already have the plaintext), and
-mail cannot be recalled at all. Logging them without an inverse would keep
-an audit trail, at the cost of a second kind of tx_log entry; not worth it
-for MVP.
+**Decision**: sending is an outbox op (§6.7): logged like everything else,
+undoable until performed, refused afterwards. Matrix redaction as an
+"undo" after sending is best-effort at most (recipients may already have
+the plaintext); if wanted, it would be an explicit action of its own.
 
 ### 15.10 Test infrastructure
 
@@ -1899,7 +1896,6 @@ would add a third subscription — out of scope for MVP.
 | `rusqlite`                | SQLite                                                     |
 | `refinery`                | Migrations                                                 |
 | `serde`/`serde_json`      | Serde                                                      |
-| `serde_jcs`               | RFC 8785 canonical JSON for draft hashing                  |
 | `ts-rs`                   | Rust → TypeScript type codegen                             |
 | `mail-parser`             | RFC 5322 + MIME parsing                                    |
 | `mail-builder`            | Outbound MIME assembly                                     |
