@@ -32,6 +32,8 @@ export type View =
   | { kind: 'label'; account: string; label: string }
   /** The account's mail outside Trash and Spam. */
   | { kind: 'all'; account: string }
+  /** Every account's Inbox, as one. */
+  | { kind: 'inbox' }
   | { kind: 'search'; query: string }
   /** A message's entries, in every account. */
   | { kind: 'message'; message: MessageId }
@@ -42,6 +44,8 @@ export function sameView(a: View, b: View): boolean {
       return b.kind === 'label' && a.account === b.account && a.label === b.label
     case 'all':
       return b.kind === 'all' && a.account === b.account
+    case 'inbox':
+      return b.kind === 'inbox'
     case 'search':
       return b.kind === 'search' && a.query === b.query
     case 'message':
@@ -138,6 +142,13 @@ export class MailStore {
     const list = this.list.value
     if (!list) return
     const shown = list.view.kind === 'label' ? this.labelOf(list.view) : null
+    // The labels that put an entry on the list, if the list is of labels.
+    const listing: ((label: LabelId) => boolean) | null =
+      list.view.kind === 'inbox'
+        ? (label) => this.labels.value.get(label)!.external_id === 'INBOX'
+        : shown
+          ? (label) => label === shown.id
+          : null
     const byEntry = new Map<EntryId, typeof changes>()
     for (const change of changes) {
       byEntry.set(change.entry, [...(byEntry.get(change.entry) ?? []), change])
@@ -147,7 +158,7 @@ export class MailStore {
     const hiding = (label: LabelId) => HIDING.has(this.labels.value.get(label)!.external_id)
     const present = new Set(list.entries.map((e) => e.id))
     const joins = (c: (typeof changes)[number]) =>
-      (!!shown && c.label === shown.id && c.desired) || (hides && hiding(c.label) && !c.desired)
+      (!!listing && listing(c.label) && c.desired) || (hides && hiding(c.label) && !c.desired)
     if (changes.some((c) => !present.has(c.entry) && joins(c))) {
       // An entry may have joined the list on show; only the server knows
       // whether, and where.
@@ -162,7 +173,7 @@ export class MailStore {
           if (change.desired) labels.add(change.label)
           else labels.delete(change.label)
         }
-        if (shown && !labels.has(shown.id)) return []
+        if (listing && ![...labels].some(listing)) return []
         if (hides && [...labels].some(hiding)) return []
         return [{ ...entry, labels: [...labels] }]
       }),
@@ -318,6 +329,9 @@ export class MailStore {
     }
     if (list.view.kind === 'all') {
       return { type: 'list_entries', list: { type: 'all_mail', account: list.view.account }, after, limit }
+    }
+    if (list.view.kind === 'inbox') {
+      return { type: 'list_entries', list: { type: 'inbox' }, after, limit }
     }
     const label = this.labelOf(list.view)
     return label ? { type: 'list_entries', list: { type: 'label', label: label.id }, after, limit } : null

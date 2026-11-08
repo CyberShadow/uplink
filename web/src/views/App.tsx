@@ -2,6 +2,7 @@ import type { ReadonlySignal } from '@preact/signals'
 import { useEffect, useState } from 'preact/hooks'
 import { lazy, LocationProvider, Route, Router, useLocation } from 'preact-iso'
 import type { Status } from '../connection'
+import type { Account } from '../generated/protocol'
 import { EMPTY } from '../compose/reply'
 import { ServicesContext, useServices } from '../context'
 import { useKeymap } from '../keymap'
@@ -47,7 +48,12 @@ function Shell() {
     if (id) route(mailPath(id, label))
   }
   useKeymap({
-    goInbox: go('INBOX'),
+    // The Inbox of the account on show, or else of every account.
+    goInbox: () => {
+      const home = mail.accounts.value && homeInbox(mail.accounts.value)
+      if (/^\/(?:mail|all)\//.test(path)) go('INBOX')()
+      else if (home) route(home)
+    },
     goStarred: go('STARRED'),
     goSent: go('SENT'),
     goAll: () => {
@@ -84,6 +90,7 @@ function Shell() {
           </div>
         )}
         <Router>
+          <Route path="/inbox/:entry?" component={Inbox} />
           <Route path="/mail/:account/:label/:entry?" component={Mail} />
           <Route path="/all/:account/:entry?" component={Mail} />
           <Route path="/search/:terms/:entry?" component={Mail} />
@@ -110,17 +117,31 @@ function Shell() {
   )
 }
 
-/** Shows the first mail account's Inbox. */
+function Inbox(props: { entry?: string }) {
+  return <Mail inbox entry={props.entry} />
+}
+
+/** Shows every account's Inbox, or the one account's. */
 function Home() {
   const { mail, matrix } = useServices()
   const { route } = useLocation()
-  const first = mail.accounts.value?.[0]?.id
+  const inbox = mail.accounts.value && homeInbox(mail.accounts.value)
   useEffect(() => {
-    if (first) route(mailPath(first, 'INBOX'), true)
-  }, [first, route])
+    if (inbox) route(inbox, true)
+  }, [inbox, route])
   const loaded = mail.accounts.value && matrix.accounts.value
   const message = !loaded ? 'Loading…' : matrix.accounts.value!.length > 0 ? 'Pick a room.' : 'No accounts configured.'
   return <p class={styles.placeholder}>{message}</p>
+}
+
+/** With more than one mail account, their Inboxes are one. */
+function homeInbox(accounts: Account[]): string | null {
+  if (accounts.length > 1) return inboxPath()
+  return accounts.length === 1 ? mailPath(accounts[0].id, 'INBOX') : null
+}
+
+export function inboxPath(entry?: number): string {
+  return entry === undefined ? '/inbox' : `/inbox/${entry}`
 }
 
 export function mailPath(account: string, label: string, entry?: number): string {

@@ -82,6 +82,8 @@ pub enum EntryList {
     Label { label: LabelId },
     /// The account's entries outside Trash and Spam: Gmail's All Mail.
     AllMail { account: String },
+    /// Every account's Inbox, as one.
+    Inbox,
 }
 
 /// Where a page of a message list ends; lists run newest first.

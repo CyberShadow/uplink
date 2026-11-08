@@ -162,6 +162,32 @@ pub fn entries(
             "mail_entry e INDEXED BY mail_entry_by_account_received",
             format!("e.account_id = :account AND {unhidden}"),
         ),
+        EntryList::Inbox => {
+            let inboxes = "SELECT id FROM label WHERE external_id = 'INBOX'";
+            let count: i64 = tx.query_row(
+                &format!("SELECT count(*) FROM entry_label WHERE label IN ({inboxes}) AND desired"),
+                [],
+                |r| r.get(0),
+            )?;
+            if count <= SORT_AT_MOST {
+                (
+                    vec![],
+                    "entry_label el JOIN mail_entry e ON e.id = el.entry",
+                    format!("el.label IN ({inboxes}) AND el.desired AND {unhidden}"),
+                )
+            } else {
+                (
+                    vec![],
+                    "mail_entry e INDEXED BY mail_entry_by_received",
+                    format!(
+                        "{unhidden}
+                         AND EXISTS (SELECT 1 FROM entry_label el
+                                     WHERE el.entry = e.id AND el.label IN ({inboxes})
+                                       AND el.desired)"
+                    ),
+                )
+            }
+        }
     };
     let params: Vec<(&str, &dyn ToSql)> = params.iter().map(|(n, v)| (*n, &**v)).collect();
     let entries = page(&tx, from, &condition, &params, after, limit)?;

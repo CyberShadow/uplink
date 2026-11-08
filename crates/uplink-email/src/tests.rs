@@ -912,6 +912,52 @@ pub(crate) mod service {
     }
 
     #[tokio::test]
+    async fn the_inbox_of_every_account() {
+        let db = Db::new();
+        let mail = mail_with(&db).await;
+        let store = db.store();
+        let entry = |id: &str, labels: &[&str], received_at| {
+            let mut e = new_entry(
+                &store,
+                id,
+                labels,
+                &raw(&format!("{id}@x"), "s@x", DATE, &format!("In b {id}"), ""),
+            );
+            e.received_at = received_at;
+            e
+        };
+        let entries = vec![
+            entry("b1", &["INBOX"], 3500),
+            entry("b2", &["UNREAD"], 4500),
+            entry("b3", &["INBOX", "TRASH"], 5500),
+        ];
+        db.observe(
+            "b",
+            observed(labels(&["INBOX", "UNREAD", "TRASH"]), entries, vec![], &[]),
+        )
+        .await;
+        let inbox = |after, limit| mail.list_entries(EntryList::Inbox, after, limit);
+        assert_eq!(
+            subjects(&inbox(None, 10).await.unwrap()),
+            [
+                "Subject 5",
+                "Subject 4",
+                "In b b1",
+                "Subject 3",
+                "Subject 2",
+                "Subject 1"
+            ]
+        );
+        let ServerResponse::Entries { next, .. } = inbox(None, 3).await.unwrap() else {
+            panic!()
+        };
+        assert_eq!(
+            subjects(&inbox(next, 10).await.unwrap()),
+            ["Subject 3", "Subject 2", "Subject 1"]
+        );
+    }
+
+    #[tokio::test]
     async fn message_content() {
         let db = Db::new();
         let mail = mail_with(&db).await;

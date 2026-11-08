@@ -57,6 +57,16 @@
   font-weight: normal;
 }
 
+.account {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .star {
   margin-right: 6px;
   color: #f4b400;

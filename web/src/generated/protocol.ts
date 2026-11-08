@@ -58,7 +58,7 @@ events: Array<ServerEvent>, };
 /**
  * What a message list is of.
  */
-export type EntryList = { "type": "label", label: LabelId, } | { "type": "all_mail", account: string, };
+export type EntryList = { "type": "label", label: LabelId, } | { "type": "all_mail", account: string, } | { "type": "inbox" };
 
 /**
  * A user's op as the history lists it.

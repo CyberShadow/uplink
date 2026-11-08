@@ -5,7 +5,7 @@ import { useServices } from '../context'
 import { keepFocus, useKeymap } from '../keymap'
 import type { MailStore, View } from '../stores/mail'
 import { respond, type Response } from '../compose/reply'
-import { allMailPath, mailPath, searchPath } from './App'
+import { allMailPath, inboxPath, mailPath, searchPath } from './App'
 import { HtmlBody } from './HtmlBody'
 import { LabelPicker, MovePicker } from './LabelPicker'
 import { composePath } from './Outgoing'
@@ -15,6 +15,8 @@ import { fileSize } from './size'
 
 // Route params; preact-iso's own `query` prop is the URL's query string.
 interface Props {
+  /** Every account's Inbox, rather than a label's or a search's list. */
+  inbox?: boolean
   account?: string
   label?: string
   terms?: string
@@ -29,17 +31,19 @@ export function Mail(props: Props) {
   const { route } = useLocation()
   const [picking, setPicking] = useState<'label' | 'move' | null>(null)
 
-  const { account, label, terms, message } = props
+  const { inbox, account, label, terms, message } = props
   const view: View = useMemo(
     () =>
-      message !== undefined
-        ? { kind: 'message', message: Number(message) }
-        : terms !== undefined
-          ? { kind: 'search', query: terms }
-          : label === undefined
-            ? { kind: 'all', account: account! }
-            : { kind: 'label', account: account!, label },
-    [account, label, terms, message],
+      inbox
+        ? { kind: 'inbox' }
+        : message !== undefined
+          ? { kind: 'message', message: Number(message) }
+          : terms !== undefined
+            ? { kind: 'search', query: terms }
+            : label === undefined
+              ? { kind: 'all', account: account! }
+              : { kind: 'label', account: account!, label },
+    [inbox, account, label, terms, message],
   )
   useEffect(() => mail.show(view), [mail, view])
 
@@ -49,6 +53,8 @@ export function Mail(props: Props) {
         return mailPath(view.account, view.label, entry)
       case 'all':
         return allMailPath(view.account, entry)
+      case 'inbox':
+        return inboxPath(entry)
       case 'search':
         return searchPath(view.query, entry)
       case 'message':
@@ -183,6 +189,10 @@ function MessageList(props: { mail: MailStore; open: (entry: Entry) => void }) {
 
   if (!list?.loaded) return <p class={styles.placeholder}>Loading…</p>
   if (list.entries.length === 0) return <p class={styles.placeholder}>No messages.</p>
+  // With several accounts, each row says whose it is.
+  const accounts = mail.accounts.value ?? []
+  const address = (account: string) =>
+    accounts.length > 1 ? accounts.find((a) => a.id === account)!.address : null
   return (
     <ul
       class={styles.list}
@@ -225,6 +235,7 @@ function MessageList(props: { mail: MailStore; open: (entry: Entry) => void }) {
             <span class={styles.from}>{sender(entry)}</span>
             <span class={styles.summary}>
               {isFlagged && <Flag />}
+              {address(entry.account) && <span class={styles.account}>{address(entry.account)}</span>}
               <LabelChips mail={mail} entry={entry} />
               <span class={styles.subject}>{entry.subject ?? '(no subject)'}</span>
               <span class={styles.snippet}> — {entry.snippet}</span>

@@ -1,7 +1,7 @@
 import { useLocation } from 'preact-iso'
 import type { Account, Label, MailProvider } from '../generated/protocol'
 import { useServices } from '../context'
-import { allMailPath, mailPath } from './App'
+import { allMailPath, inboxPath, mailPath } from './App'
 import { roomPath } from './Room'
 import styles from './Nav.module.css'
 
@@ -59,6 +59,16 @@ export function Nav() {
   return (
     <nav class={styles.nav}>
       <ul>
+        {(mail.accounts.value?.length ?? 0) > 1 &&
+          link(
+            inboxPath(),
+            'All inboxes',
+            mail.accounts.value!.reduce(
+              (unread, account) =>
+                unread + (account.labels.find((l) => l.system && l.external_id === 'INBOX')?.unread ?? 0),
+              0,
+            ),
+          )}
         {link('/drafts', 'Drafts', drafts.drafts.value?.size ?? 0)}
         {link('/outbox', 'Outbox', drafts.outbox.value?.length ?? 0)}
         {link('/history', 'History', 0)}

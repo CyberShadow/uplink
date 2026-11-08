@@ -264,12 +264,19 @@ export class FakeServer implements Requester, Blobs {
         return { type: 'accounts', as_of: this.head(), accounts: this.listAccounts() }
       case 'list_entries': {
         const list = body.list
-        const all = this.sorted().filter((e) =>
-          list.type === 'label'
-            ? e.labels.includes(list.label) &&
-              (HIDING.includes(this.labelById(list.label).external_id) || !this.hidden(e))
-            : e.account === list.account && !this.hidden(e),
-        )
+        const all = this.sorted().filter((e) => {
+          switch (list.type) {
+            case 'label':
+              return (
+                e.labels.includes(list.label) &&
+                (HIDING.includes(this.labelById(list.label).external_id) || !this.hidden(e))
+              )
+            case 'all_mail':
+              return e.account === list.account && !this.hidden(e)
+            case 'inbox':
+              return e.labels.some((l) => this.labelById(l).external_id === 'INBOX') && !this.hidden(e)
+          }
+        })
         const start = body.after
           ? all.findIndex((e) => e.id === body.after!.entry) + 1
           : 0

@@ -2,6 +2,7 @@ import { signal } from '@preact/signals'
 import { render, screen, waitFor, within } from '@testing-library/preact'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it } from 'vitest'
+import type { Entry } from '../generated/protocol'
 import { Client } from '../stores/client'
 import { FakeServer } from '../test/server'
 import { App } from './App'
@@ -312,9 +313,10 @@ describe('mail', () => {
 })
 
 describe('Microsoft 365', () => {
+  let memo: Entry
   beforeEach(() => {
     server.addM365Account('office', ['Inbox/Projects'], ['Red'])
-    server.deliver('office', 'Memo')
+    memo = server.deliver('office', 'Memo')
   })
 
   it('lists the well-known folders in the nav, its drafts as Outlook’s', async () => {
@@ -342,6 +344,36 @@ describe('Microsoft 365', () => {
     expect(within(screen.getByRole('navigation')).getByRole('link', { name: 'Gmail drafts' })).toBeTruthy()
   })
 
+  it('opens every account’s Inbox as one, saying whose each message is', async () => {
+    const user = await start('/')
+    expect(location.pathname).toBe('/inbox')
+    expect(subjects()).toEqual(['Memo', 'First', 'Second', 'Third'])
+    expect(rows().map((row) => row.querySelector('[class*=account]')!.textContent)).toEqual([
+      'office@example.com',
+      'work@example.com',
+      'work@example.com',
+      'work@example.com',
+    ])
+    const nav = screen.getByRole('navigation')
+    const all = within(nav).getByRole('link', { name: /All inboxes/ })
+    expect(all.textContent).toBe('All inboxes4')
+    expect(all.getAttribute('aria-current')).toBe('page')
+
+    // Archiving takes a message off the list; one moved back joins it.
+    await user.keyboard('e')
+    await waitFor(() => expect(subjects()).toEqual(['First', 'Second', 'Third']))
+    server.relabel(memo.id, server.labelId('office', 'INBOX'), true)
+    await waitFor(() => expect(subjects()).toEqual(['Memo', 'First', 'Second', 'Third']))
+
+    // g i goes to the Inbox of the account on show, or else to all.
+    await user.keyboard('gi')
+    expect(location.pathname).toBe('/inbox')
+    await user.keyboard('gs')
+    expect(location.pathname).toBe('/mail/work/STARRED')
+    await user.keyboard('gi')
+    expect(location.pathname).toBe('/mail/work/INBOX')
+  })
+
   it('moves to a folder with v, and labels with categories only', async () => {
     const user = await start('/mail/office/INBOX')
     await user.keyboard('l')
@@ -358,7 +390,6 @@ describe('Microsoft 365', () => {
         .getAllByRole('option')
         .map((o) => o.textContent),
     ).toEqual(['Sent', 'Outlook drafts', 'Archive', 'Spam', 'Trash', 'Inbox/Projects'])
-    const memo = client.mail.list.value!.entries[0]
     await user.keyboard('proj{Enter}')
     await screen.findByText('No messages.')
     expect(server.labelsOf(memo.id)).toContain(server.labelId('office', 'Inbox/Projects'))
