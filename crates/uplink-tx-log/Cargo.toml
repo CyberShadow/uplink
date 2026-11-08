@@ -2,3 +2,22 @@
 name = "uplink-tx-log"
 version = "0.1.0"
 edition = "2021"
+
+[features]
+# Exposes the `sample` ops used to exercise the dispatcher in tests.
+test-ops = []
+
+[dependencies]
+uplink-protocol = { path = "../uplink-protocol" }
+uplink-realtime = { path = "../uplink-realtime" }
+uplink-storage = { path = "../uplink-storage" }
+
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["rt", "macros"] }

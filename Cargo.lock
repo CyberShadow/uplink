@@ -2049,6 +2049,17 @@ version = "0.1.0"
 [[package]]
 name = "uplink-tx-log"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "uplink-protocol",
+ "uplink-realtime",
+ "uplink-storage",
+]
 
 [[package]]
 name = "url"
