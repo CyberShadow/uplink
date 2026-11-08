@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
 use axum::{
-    extract::Request,
-    http::{header, StatusCode, Uri},
+    extract::{ws::WebSocketUpgrade, Request, State},
+    http::{header, HeaderMap, StatusCode, Uri},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
@@ -14,12 +14,23 @@ use rust_embed::Embed;
 use rustls::ServerConfig;
 use rustls_pemfile::{certs, private_key};
 use sha2::Digest;
-use std::{io::BufReader, net::SocketAddr, path::{Path, PathBuf}, sync::Arc};
+use std::{
+    io::BufReader,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tower::Service;
 use tracing::info;
 use uplink_config::{BasicAuthConfig, Config, ConfigChanged, ConfigSection, Watcher};
+use uplink_protocol::{ClientRequest, ErrorCode, ServerError, ServerResponse};
+use uplink_realtime::{Hub, RequestHandler};
+use uplink_tx_log::{Dispatcher, Registry, UndoError};
+
+/// Events kept for replay to reconnecting clients (SPEC §5.3).
+const HUB_CAPACITY: usize = 4096;
 
 #[derive(Embed)]
 #[folder = "static/"]
@@ -28,6 +39,7 @@ struct StaticFiles;
 #[derive(Clone)]
 struct AppState {
     basic_auth: Arc<ArcSwap<BasicAuthConfig>>,
+    dispatcher: Dispatcher,
 }
 
 pub fn run() -> Result<()> {
@@ -47,6 +59,7 @@ async fn run_async() -> Result<()> {
 
     let config_path = parse_config_flag();
     let config = Config::load(&config_path)?;
+    let dispatcher = open_dispatcher(&config, Registry::new())?;
 
     let bind: SocketAddr = config
         .server
@@ -57,7 +70,18 @@ async fn run_async() -> Result<()> {
     let listener = TcpListener::bind(&bind).await?;
     info!("listening on https://{}", bind);
 
-    serve_with_listener(config, config_path, listener).await
+    serve_with_listener(config, config_path, listener, dispatcher).await
+}
+
+/// Opens (and migrates) the database under the configured data root, and
+/// sets up the dispatcher for the op kinds in `registry`.
+pub fn open_dispatcher(config: &Config, registry: Registry) -> Result<Dispatcher> {
+    let conn = uplink_storage::open(&config.data.root)?;
+    Ok(Dispatcher::new(
+        conn,
+        registry,
+        Arc::new(Hub::new(HUB_CAPACITY)),
+    ))
 }
 
 /// Start accepting connections on `listener` using `config`.
@@ -67,26 +91,24 @@ pub async fn serve_with_listener(
     config: Config,
     config_path: PathBuf,
     listener: TcpListener,
+    dispatcher: Dispatcher,
 ) -> Result<()> {
-    let tls_server_config = build_tls_server_config_from_paths(
-        &config.server.tls.cert,
-        &config.server.tls.key,
-    )?;
+    let tls_server_config =
+        build_tls_server_config_from_paths(&config.server.tls.cert, &config.server.tls.key)?;
 
-    let tls_holder: Arc<ArcSwap<ServerConfig>> =
-        Arc::new(ArcSwap::from(tls_server_config));
+    let tls_holder: Arc<ArcSwap<ServerConfig>> = Arc::new(ArcSwap::from(tls_server_config));
 
     let basic_auth: Arc<ArcSwap<BasicAuthConfig>> =
         Arc::new(ArcSwap::from(Arc::new(config.server.basic_auth.clone())));
 
     let state = AppState {
         basic_auth: basic_auth.clone(),
+        dispatcher,
     };
 
     let (tx, rx) = tokio::sync::broadcast::channel::<ConfigChanged>(16);
 
-    let _watcher = Watcher::new(config_path.clone(), tx)
-        .context("starting config watcher")?;
+    let _watcher = Watcher::new(config_path.clone(), tx).context("starting config watcher")?;
 
     tokio::spawn(config_reload_task(
         rx,
@@ -114,18 +136,13 @@ pub async fn serve_with_listener(
                         hyper::service::service_fn(move |req: Request<Incoming>| {
                             tower_service.clone().call(req)
                         });
-                    let result =
-                        hyper_util::server::conn::auto::Builder::new(
-                            hyper_util::rt::TokioExecutor::new(),
-                        )
-                        .serve_connection(io, hyper_service)
-                        .await;
+                    let result = hyper_util::server::conn::auto::Builder::new(
+                        hyper_util::rt::TokioExecutor::new(),
+                    )
+                    .serve_connection_with_upgrades(io, hyper_service)
+                    .await;
                     if let Err(e) = result {
-                        tracing::debug!(
-                            "connection error from {}: {}",
-                            peer_addr,
-                            e
-                        );
+                        tracing::debug!("connection error from {}: {}", peer_addr, e);
                     }
                 }
                 Err(e) => {
@@ -162,60 +179,46 @@ async fn handle_config_changed(
     basic_auth: &Arc<ArcSwap<BasicAuthConfig>>,
 ) {
     match event.section {
-        ConfigSection::Tls => {
-            match Config::load(config_path) {
-                Ok(cfg) => {
-                    let cert_pem = match std::fs::read(&cfg.server.tls.cert) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            tracing::error!(
-                                "config: tls reload failed reading cert: {e:#}"
-                            );
-                            return;
-                        }
-                    };
-                    let key_pem = match std::fs::read(&cfg.server.tls.key) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            tracing::error!(
-                                "config: tls reload failed reading key: {e:#}"
-                            );
-                            return;
-                        }
-                    };
-                    let fp = pem_fingerprint(&cert_pem);
-                    match build_tls_server_config(&cert_pem, &key_pem) {
-                        Ok(sc) => {
-                            tls_holder.store(sc);
-                            info!("config: tls cert reloaded ({fp})");
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                "config: tls reload failed, keeping old cert: {e:#}"
-                            );
-                        }
+        ConfigSection::Tls => match Config::load(config_path) {
+            Ok(cfg) => {
+                let cert_pem = match std::fs::read(&cfg.server.tls.cert) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::error!("config: tls reload failed reading cert: {e:#}");
+                        return;
+                    }
+                };
+                let key_pem = match std::fs::read(&cfg.server.tls.key) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::error!("config: tls reload failed reading key: {e:#}");
+                        return;
+                    }
+                };
+                let fp = pem_fingerprint(&cert_pem);
+                match build_tls_server_config(&cert_pem, &key_pem) {
+                    Ok(sc) => {
+                        tls_holder.store(sc);
+                        info!("config: tls cert reloaded ({fp})");
+                    }
+                    Err(e) => {
+                        tracing::error!("config: tls reload failed, keeping old cert: {e:#}");
                     }
                 }
-                Err(e) => {
-                    tracing::error!(
-                        "config: could not read config for tls reload: {e:#}"
-                    );
-                }
             }
-        }
-        ConfigSection::BasicAuth => {
-            match Config::load(config_path) {
-                Ok(cfg) => {
-                    basic_auth.store(Arc::new(cfg.server.basic_auth));
-                    info!("config: basic_auth reloaded");
-                }
-                Err(e) => {
-                    tracing::error!(
-                        "config: basic_auth reload failed, keeping old config: {e:#}"
-                    );
-                }
+            Err(e) => {
+                tracing::error!("config: could not read config for tls reload: {e:#}");
             }
-        }
+        },
+        ConfigSection::BasicAuth => match Config::load(config_path) {
+            Ok(cfg) => {
+                basic_auth.store(Arc::new(cfg.server.basic_auth));
+                info!("config: basic_auth reloaded");
+            }
+            Err(e) => {
+                tracing::error!("config: basic_auth reload failed, keeping old config: {e:#}");
+            }
+        },
         ConfigSection::Accounts => {
             if let Ok(cfg) = Config::load(config_path) {
                 info!(
@@ -240,9 +243,7 @@ fn pem_fingerprint(cert_pem: &[u8]) -> String {
     match first {
         Some(Ok(der)) => {
             let hash = sha2::Sha256::digest(&*der);
-            hash.iter()
-                .map(|b| format!("{b:02x}"))
-                .collect()
+            hash.iter().map(|b| format!("{b:02x}")).collect()
         }
         _ => "unknown".to_string(),
     }
@@ -251,6 +252,7 @@ fn pem_fingerprint(cert_pem: &[u8]) -> String {
 fn build_app(state: AppState) -> Router {
     Router::new()
         .route("/", get(index_handler))
+        .route("/ws", get(ws_handler))
         .fallback(static_file_handler)
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -273,6 +275,68 @@ async fn index_handler() -> impl IntoResponse {
             "hello from uplink",
         )
             .into_response()
+    }
+}
+
+async fn ws_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    let offered = headers
+        .get_all(header::SEC_WEBSOCKET_PROTOCOL)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .any(|p| p.trim() == uplink_realtime::PROTOCOL);
+    if !offered {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "WebSocket subprotocol {} required\n",
+                uplink_realtime::PROTOCOL
+            ),
+        )
+            .into_response();
+    }
+    ws.protocols([uplink_realtime::PROTOCOL])
+        .on_upgrade(move |socket| async move {
+            let requests = Requests {
+                dispatcher: state.dispatcher,
+            };
+            uplink_realtime::run_session(socket, requests.dispatcher.hub(), &requests).await
+        })
+}
+
+struct Requests {
+    dispatcher: Dispatcher,
+}
+
+impl RequestHandler for Requests {
+    async fn handle(&self, request: ClientRequest) -> Result<ServerResponse, ServerError> {
+        match request {
+            ClientRequest::Undo { tx_log_id } => self
+                .dispatcher
+                .undo(tx_log_id)
+                .await
+                .map(|id| ServerResponse::Undone { tx_log_id: id })
+                .map_err(undo_error),
+        }
+    }
+}
+
+fn undo_error(e: UndoError) -> ServerError {
+    let code = match &e {
+        UndoError::NotFound(_) => ErrorCode::NotFound,
+        UndoError::AlreadyUndone { .. } => ErrorCode::AlreadyUndone,
+        UndoError::Failed(e) => {
+            tracing::error!("undo failed: {e:#}");
+            ErrorCode::Internal
+        }
+    };
+    ServerError {
+        code,
+        message: format!("{e:#}"),
     }
 }
 
@@ -317,8 +381,7 @@ async fn basic_auth_middleware(
 
     let ba = state.basic_auth.load();
     let expected_user = ba.user.as_bytes();
-    let user_match =
-        subtle::ConstantTimeEq::ct_eq(username.as_bytes(), expected_user).unwrap_u8();
+    let user_match = subtle::ConstantTimeEq::ct_eq(username.as_bytes(), expected_user).unwrap_u8();
 
     if user_match != 1 {
         return unauthorized();
@@ -344,19 +407,16 @@ pub fn build_tls_server_config_from_paths(
     cert_path: &str,
     key_path: &str,
 ) -> Result<Arc<ServerConfig>> {
-    let cert_bytes = std::fs::read(cert_path)
-        .with_context(|| format!("reading TLS cert '{cert_path}'"))?;
-    let key_bytes = std::fs::read(key_path)
-        .with_context(|| format!("reading TLS key '{key_path}'"))?;
+    let cert_bytes =
+        std::fs::read(cert_path).with_context(|| format!("reading TLS cert '{cert_path}'"))?;
+    let key_bytes =
+        std::fs::read(key_path).with_context(|| format!("reading TLS key '{key_path}'"))?;
 
     build_tls_server_config(&cert_bytes, &key_bytes)
 }
 
 /// Build a `rustls::ServerConfig` from PEM bytes.
-pub fn build_tls_server_config(
-    cert_pem: &[u8],
-    key_pem: &[u8],
-) -> Result<Arc<ServerConfig>> {
+pub fn build_tls_server_config(cert_pem: &[u8], key_pem: &[u8]) -> Result<Arc<ServerConfig>> {
     let cert_chain: Vec<_> = certs(&mut BufReader::new(cert_pem))
         .collect::<Result<_, _>>()
         .context("parsing TLS cert PEM")?;
@@ -396,10 +456,18 @@ mod tests {
     use tower::ServiceExt;
 
     // password = "testpass", cost = 4 (min cost for fast tests)
-    const TEST_BCRYPT: &str =
-        "$2b$04$G1zE/xiQeRXdPalTbG/Quu55uU6n5a9ICljrYbTpceT/qklM.0yay";
+    const TEST_BCRYPT: &str = "$2b$04$G1zE/xiQeRXdPalTbG/Quu55uU6n5a9ICljrYbTpceT/qklM.0yay";
     const TEST_USER: &str = "testuser";
     const TEST_PASS: &str = "testpass";
+
+    /// These tests don't touch the database; they share one.
+    static DISPATCHER: std::sync::LazyLock<(tempfile::TempDir, Dispatcher)> =
+        std::sync::LazyLock::new(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let conn = uplink_storage::open(dir.path()).unwrap();
+            let dispatcher = Dispatcher::new(conn, Registry::new(), Arc::new(Hub::new(16)));
+            (dir, dispatcher)
+        });
 
     fn test_state() -> AppState {
         AppState {
@@ -407,6 +475,7 @@ mod tests {
                 user: TEST_USER.to_string(),
                 password_bcrypt: TEST_BCRYPT.to_string(),
             }))),
+            dispatcher: DISPATCHER.1.clone(),
         }
     }
 
@@ -563,10 +632,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/")
-                    .header(
-                        header::AUTHORIZATION,
-                        basic_auth_header(NEW_USER, NEW_PASS),
-                    )
+                    .header(header::AUTHORIZATION, basic_auth_header(NEW_USER, NEW_PASS))
                     .body(Body::empty())
                     .unwrap(),
             )

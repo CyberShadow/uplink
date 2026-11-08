@@ -103,8 +103,7 @@ impl Config {
     pub fn load(path: &Path) -> Result<Config> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading config file {}", path.display()))?;
-        let config: Config =
-            serde_yaml::from_str(&text).with_context(|| "parsing config YAML")?;
+        let config: Config = serde_yaml::from_str(&text).with_context(|| "parsing config YAML")?;
         Ok(config)
     }
 }
@@ -174,12 +173,10 @@ impl Watcher {
 
         let initial_config = Config::load(&config_path)?;
 
-        let (evt_tx, evt_rx) =
-            std::sync::mpsc::channel::<notify::Result<notify::Event>>();
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel::<notify::Result<notify::Event>>();
 
-        let mut file_watcher =
-            notify::RecommendedWatcher::new(evt_tx, notify::Config::default())
-                .context("creating file watcher")?;
+        let mut file_watcher = notify::RecommendedWatcher::new(evt_tx, notify::Config::default())
+            .context("creating file watcher")?;
 
         // Watch the config file's parent directory so we catch both in-place
         // modifications and write-then-rename patterns (e.g. vim, sed -i).
@@ -188,9 +185,7 @@ impl Watcher {
             .context("config path must have a parent directory")?;
         file_watcher
             .watch(config_parent, notify::RecursiveMode::NonRecursive)
-            .with_context(|| {
-                format!("watching config dir {}", config_parent.display())
-            })?;
+            .with_context(|| format!("watching config dir {}", config_parent.display()))?;
 
         // Derive the initial cert/key paths and watch their parent directories
         // if they differ from the config's parent (so cert renewal in a
@@ -201,27 +196,16 @@ impl Watcher {
         for tls_path in [&cert_path, &key_path] {
             if let Some(parent) = tls_path.parent() {
                 if parent != config_parent && parent.exists() {
-                    if let Err(e) = file_watcher
-                        .watch(parent, notify::RecursiveMode::NonRecursive)
+                    if let Err(e) = file_watcher.watch(parent, notify::RecursiveMode::NonRecursive)
                     {
-                        tracing::warn!(
-                            "config: could not watch {}: {e}",
-                            parent.display()
-                        );
+                        tracing::warn!("config: could not watch {}: {e}", parent.display());
                     }
                 }
             }
         }
 
         let thread = std::thread::spawn(move || {
-            watcher_thread(
-                config_path,
-                cert_path,
-                key_path,
-                initial_config,
-                evt_rx,
-                tx,
-            );
+            watcher_thread(config_path, cert_path, key_path, initial_config, evt_rx, tx);
         });
 
         Ok(Self {
@@ -276,7 +260,9 @@ fn watcher_thread(
 
         // Determine what changed based on which path was affected.
         let config_touched = config_name.as_ref().is_some_and(|n| {
-            all_paths.iter().any(|p| p.file_name() == Some(n.as_os_str()))
+            all_paths
+                .iter()
+                .any(|p| p.file_name() == Some(n.as_os_str()))
         });
         let tls_file_touched = all_paths.iter().any(|p| {
             let f = p.file_name();
@@ -294,9 +280,7 @@ fn watcher_thread(
                     current_config = new_config;
                 }
                 Err(e) => {
-                    tracing::error!(
-                        "config: reload failed, keeping old config: {e:#}"
-                    );
+                    tracing::error!("config: reload failed, keeping old config: {e:#}");
                 }
             }
         } else if tls_file_touched {
@@ -386,7 +370,10 @@ accounts:
         let AccountConfig::M365(ref m) = cfg.accounts[1] else {
             panic!("expected m365 account");
         };
-        assert_eq!(m.oauth.authority, "https://login.microsoftonline.com/common");
+        assert_eq!(
+            m.oauth.authority,
+            "https://login.microsoftonline.com/common"
+        );
 
         let AccountConfig::Matrix(ref mx) = cfg.accounts[2] else {
             panic!("expected matrix account");
@@ -458,8 +445,7 @@ accounts:
         f.write_all(yaml.as_bytes()).unwrap();
         let err = Config::load(f.path()).unwrap_err();
         assert!(
-            err.to_string().contains("exchange")
-                || format!("{err:#}").contains("exchange"),
+            err.to_string().contains("exchange") || format!("{err:#}").contains("exchange"),
             "error should mention the bad kind value: {err:#}"
         );
     }
@@ -540,10 +526,7 @@ data:
         let old = base_config();
         let mut new = old.clone();
         new.server.tls.cert = "/tmp/cert2.pem".into();
-        assert_eq!(
-            diff_config_sections(&old, &new),
-            vec![ConfigSection::Tls]
-        );
+        assert_eq!(diff_config_sections(&old, &new), vec![ConfigSection::Tls]);
     }
 
     #[test]
@@ -562,10 +545,7 @@ data:
         let old = base_config();
         let mut new = old.clone();
         new.server.bind = "127.0.0.1:9000".into();
-        assert_eq!(
-            diff_config_sections(&old, &new),
-            vec![ConfigSection::Bind]
-        );
+        assert_eq!(diff_config_sections(&old, &new), vec![ConfigSection::Bind]);
     }
 
     #[test]
@@ -573,22 +553,20 @@ data:
         let old = base_config();
         let mut new = old.clone();
         new.data.root = PathBuf::from("/tmp/elsewhere");
-        assert_eq!(
-            diff_config_sections(&old, &new),
-            vec![ConfigSection::Data]
-        );
+        assert_eq!(diff_config_sections(&old, &new), vec![ConfigSection::Data]);
     }
 
     #[test]
     fn diff_detects_accounts_change() {
         let old = base_config();
         let mut new = old.clone();
-        new.accounts.push(AccountConfig::Matrix(MatrixAccountConfig {
-            id: "mx".into(),
-            homeserver: "https://matrix.org".into(),
-            mxid: "@u:matrix.org".into(),
-            state_dir: PathBuf::from("/tmp/mx"),
-        }));
+        new.accounts
+            .push(AccountConfig::Matrix(MatrixAccountConfig {
+                id: "mx".into(),
+                homeserver: "https://matrix.org".into(),
+                mxid: "@u:matrix.org".into(),
+                state_dir: PathBuf::from("/tmp/mx"),
+            }));
         assert_eq!(
             diff_config_sections(&old, &new),
             vec![ConfigSection::Accounts]
@@ -626,13 +604,10 @@ data:
         // Overwrite the cert file in-place.
         std::fs::write(&cert_path, b"cert2").unwrap();
 
-        let event = tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            rx.recv(),
-        )
-        .await
-        .expect("timed out waiting for ConfigChanged")
-        .expect("channel error");
+        let event = tokio::time::timeout(std::time::Duration::from_secs(3), rx.recv())
+            .await
+            .expect("timed out waiting for ConfigChanged")
+            .expect("channel error");
 
         assert_eq!(event.section, ConfigSection::Tls);
     }
@@ -665,13 +640,10 @@ data:
         );
         std::fs::write(&cfg_path, new_yaml).unwrap();
 
-        let event = tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            rx.recv(),
-        )
-        .await
-        .expect("timed out waiting for ConfigChanged")
-        .expect("channel error");
+        let event = tokio::time::timeout(std::time::Duration::from_secs(3), rx.recv())
+            .await
+            .expect("timed out waiting for ConfigChanged")
+            .expect("channel error");
 
         assert_eq!(event.section, ConfigSection::BasicAuth);
     }
@@ -705,13 +677,10 @@ data:
             "127.0.0.1:8443",
         );
 
-        let event = tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            rx.recv(),
-        )
-        .await
-        .expect("timed out waiting for ConfigChanged")
-        .expect("channel error");
+        let event = tokio::time::timeout(std::time::Duration::from_secs(3), rx.recv())
+            .await
+            .expect("timed out waiting for ConfigChanged")
+            .expect("channel error");
 
         assert_eq!(event.section, ConfigSection::Tls);
     }
@@ -744,13 +713,10 @@ data:
         );
         std::fs::write(&cfg_path, new_yaml).unwrap();
 
-        let event = tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            rx.recv(),
-        )
-        .await
-        .expect("timed out waiting for ConfigChanged")
-        .expect("channel error");
+        let event = tokio::time::timeout(std::time::Duration::from_secs(3), rx.recv())
+            .await
+            .expect("timed out waiting for ConfigChanged")
+            .expect("channel error");
 
         assert_eq!(event.section, ConfigSection::Accounts);
     }
@@ -780,25 +746,15 @@ data:
         }
 
         // We should get at most 2 events (the rapid writes coalesce).
-        let first = tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            rx.recv(),
-        )
-        .await
-        .expect("timed out")
-        .expect("channel error");
+        let first = tokio::time::timeout(std::time::Duration::from_secs(3), rx.recv())
+            .await
+            .expect("timed out")
+            .expect("channel error");
         assert_eq!(first.section, ConfigSection::Tls);
 
         // No second event should arrive within a short window.
-        let second = tokio::time::timeout(
-            std::time::Duration::from_millis(400),
-            rx.recv(),
-        )
-        .await;
-        assert!(
-            second.is_err(),
-            "expected no second event but got one"
-        );
+        let second = tokio::time::timeout(std::time::Duration::from_millis(400), rx.recv()).await;
+        assert!(second.is_err(), "expected no second event but got one");
     }
 
     #[tokio::test]
@@ -824,11 +780,7 @@ data:
         std::fs::write(&cfg_path, b"not: valid: yaml: [[[").unwrap();
 
         // No event should be emitted when the config is invalid.
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(600),
-            rx.recv(),
-        )
-        .await;
+        let result = tokio::time::timeout(std::time::Duration::from_millis(600), rx.recv()).await;
         assert!(
             result.is_err(),
             "expected no event on parse error but got one"

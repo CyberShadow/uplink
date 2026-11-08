@@ -5,10 +5,14 @@ edition = "2021"
 
 [dependencies]
 uplink-config = { path = "../uplink-config" }
+uplink-protocol = { path = "../uplink-protocol" }
+uplink-realtime = { path = "../uplink-realtime" }
+uplink-storage = { path = "../uplink-storage" }
+uplink-tx-log = { path = "../uplink-tx-log" }
 
 anyhow = "1"
 arc-swap = "1"
-axum = "0.7"
+axum = { version = "0.7", features = ["ws"] }
 base64 = "0.22"
 bcrypt = "0.17"
 hyper = { version = "1", features = ["full"] }
@@ -26,11 +30,16 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
+uplink-tx-log = { path = "../uplink-tx-log", features = ["test-ops"] }
+
 axum = { version = "0.7", features = ["macros"] }
+futures-util = "0.3"
 hex = "0.4"
 http-body-util = "0.1"
 rcgen = "0.13"
+serde_json = "1"
 sha2 = "0.10"
 tempfile = "3"
 tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.24"
 tower = { version = "0.5", features = ["util"] }

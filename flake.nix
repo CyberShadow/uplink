@@ -122,6 +122,10 @@
             cargoClippyExtraArgs = "--workspace -- -D warnings";
           });
 
+          backend-fmt = craneLib.cargoFmt {
+            src = cargoSrc;
+          };
+
           # Verify the pnpm-based SPA build produces valid output.
           frontend-build = pkgs.stdenv.mkDerivation {
             pname = "uplink-frontend-check";
