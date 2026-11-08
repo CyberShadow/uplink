@@ -1,0 +1,896 @@
+From 72bb9a8e7d605c26172fb70b9f27512313b5f0bb Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Sun, 8 Nov 2026 18:24:37 +0000
+Subject: [PATCH] feat(microsoft): Graph calendar: events, series, calendar
+ views and their delta
+
+---
+ packages/@emulators/microsoft/README.md       |  10 +-
+ .../microsoft/src/__tests__/calendar.test.ts  | 196 ++++++++++++++
+ packages/@emulators/microsoft/src/calendar.ts | 246 +++++++++++++++++
+ packages/@emulators/microsoft/src/entities.ts |  62 +++++
+ packages/@emulators/microsoft/src/index.ts    |   2 +
+ .../microsoft/src/routes/calendar.ts          | 251 ++++++++++++++++++
+ packages/@emulators/microsoft/src/store.ts    |  15 ++
+ 7 files changed, 781 insertions(+), 1 deletion(-)
+ create mode 100644 packages/@emulators/microsoft/src/__tests__/calendar.test.ts
+ create mode 100644 packages/@emulators/microsoft/src/calendar.ts
+ create mode 100644 packages/@emulators/microsoft/src/routes/calendar.ts
+
+diff --git a/packages/@emulators/microsoft/README.md b/packages/@emulators/microsoft/README.md
+index b1f5d40..40c89e2 100644
+--- a/packages/@emulators/microsoft/README.md
++++ b/packages/@emulators/microsoft/README.md
+@@ -1,6 +1,6 @@
+ # @emulators/microsoft
+ 
+-Microsoft Entra ID (Azure AD) v2.0 OAuth 2.0 and OpenID Connect emulation with authorization code flow, PKCE, client credentials, client-bound refresh tokens, RS256 ID tokens, OIDC discovery, and Microsoft Graph mail.
++Microsoft Entra ID (Azure AD) v2.0 OAuth 2.0 and OpenID Connect emulation with authorization code flow, PKCE, client credentials, client-bound refresh tokens, RS256 ID tokens, OIDC discovery, and Microsoft Graph mail and calendar.
+ 
+ Part of [emulate](https://github.com/vercel-labs/emulate) — local drop-in replacement services for CI and no-network sandboxes.
+ 
+@@ -26,6 +26,8 @@ npm install @emulators/microsoft
+ - `POST /v1.0/me/mailFolders/:folder/messages` — create a message from MIME (base64, `text/plain`)
+ - `GET|PATCH|DELETE /v1.0/me/messages/:id`, `GET /v1.0/me/messages/:id/$value`, `POST /v1.0/me/messages/:id/move` — messages and their MIME source
+ - `POST /v1.0/me/sendMail` — send MIME or a JSON message, delivering to seeded recipients
++- `POST /v1.0/me/events`, `GET|PATCH|DELETE /v1.0/me/events/:id`, `GET /v1.0/me/events/:id/instances` — events and recurring series; an occurrence's id changes or cancels that occurrence
++- `GET /v1.0/me/calendarView`, `GET /v1.0/me/calendarView/delta` — the events in a window, series expanded, and their changes
+ - `GET /oauth2/v2.0/logout` — end session / logout
+ - `POST /oauth2/v2.0/revoke` — token revocation
+ 
+@@ -54,6 +56,12 @@ Each user's mailbox starts with the well-known folders (Inbox, Drafts, Sent Item
+ 
+ `sendMail` takes MIME (base64, `text/plain`) or a JSON `message`; it keeps a read copy in Sent Items (unless `saveToSentItems` is false) and delivers to each recipient that is a seeded user, without the `Bcc` header.
+ 
++## Microsoft Graph calendar
++
++Events live in the user's one calendar. Times are UTC: requests give them with `timeZone: "UTC"` (others are refused), and responses give them so, as with `Prefer: outlook.timezone="UTC"`. A series' `recurrence` may follow a `daily`, `weekly`, `absoluteMonthly` or `absoluteYearly` pattern, over an `endDate`, `numbered` or `noEnd` range (expanded three years ahead). Changing or deleting one of its occurrences, by the occurrence's id, makes an exception of it.
++
++`calendarView` lists the events overlapping `startDateTime`–`endDateTime`, series as their occurrences and exceptions. Its `delta` lists them, then, from its `@odata.deltaLink`, those changed since, and as `@removed` those deleted, cancelled or moved out of the window. An unknown delta token answers 410 `SyncStateNotFound`.
++
+ ## Seed Configuration
+ 
+ ```yaml
+diff --git a/packages/@emulators/microsoft/src/__tests__/calendar.test.ts b/packages/@emulators/microsoft/src/__tests__/calendar.test.ts
+new file mode 100644
+index 0000000..f8a15a3
+--- /dev/null
++++ b/packages/@emulators/microsoft/src/__tests__/calendar.test.ts
+@@ -0,0 +1,196 @@
++import { describe, it, expect, beforeEach } from "vitest";
++import { Hono } from "@emulators/core";
++import { Store, WebhookDispatcher, authMiddleware, type TokenMap } from "@emulators/core";
++import { microsoftPlugin, seedFromConfig } from "../index.js";
++
++const base = "http://localhost:4000";
++const ALICE = "alice@example.com";
++
++function createTestApp() {
++  const store = new Store();
++  const tokenMap: TokenMap = new Map();
++  const app = new Hono();
++  app.use("*", authMiddleware(tokenMap));
++  microsoftPlugin.register(app as any, store, new WebhookDispatcher(), base, tokenMap);
++  seedFromConfig(store, base, { users: [{ email: ALICE, name: "Alice" }] });
++  tokenMap.set("alice-token", { login: ALICE, id: 1, scopes: [] });
++  return app;
++}
++
++const utc = (dateTime: string) => ({ dateTime, timeZone: "UTC" });
++const WINDOW = "startDateTime=2026-11-01T00:00:00Z&endDateTime=2026-12-01T00:00:00Z";
++
++describe("Microsoft Graph calendar", () => {
++  let app: Hono;
++  const request = (path: string, init: RequestInit = {}) =>
++    app.request(`${base}${path}`, {
++      ...init,
++      headers: {
++        Authorization: "Bearer alice-token",
++        "Content-Type": "application/json",
++        ...(init.headers as Record<string, string>),
++      },
++    });
++  const json = async (path: string, init: RequestInit = {}) => {
++    const res = await request(path, init);
++    expect(res.status, `${init.method ?? "GET"} ${path}`).toBeLessThan(300);
++    return res.status === 204 ? null : ((await res.json()) as any);
++  };
++  const create = (event: object) => json("/v1.0/me/events", { method: "POST", body: JSON.stringify(event) });
++  const view = async () =>
++    (await json(`/v1.0/me/calendarView?${WINDOW}`)).value.map((e: any) => [e.subject, e.start.dateTime, e.type]);
++  /** Follows a delta query to its end: the items, and the delta link. */
++  const delta = async (url: string, pageSize?: number) => {
++    const items: any[] = [];
++    let next = url;
++    while (true) {
++      const page: any = await json(next.replace(base, ""), {
++        headers: pageSize ? { Prefer: `odata.maxpagesize=${pageSize}` } : {},
++      });
++      items.push(...page.value);
++      if (page["@odata.deltaLink"]) return { items, link: page["@odata.deltaLink"] as string };
++      next = page["@odata.nextLink"];
++    }
++  };
++  const weekly = {
++    subject: "Standup",
++    start: utc("2026-11-02T09:00:00"),
++    end: utc("2026-11-02T09:15:00"),
++    recurrence: {
++      pattern: { type: "weekly", interval: 1, daysOfWeek: ["monday", "thursday"] },
++      range: { type: "endDate", startDate: "2026-11-02", endDate: "2026-11-30" },
++    },
++  };
++
++  beforeEach(() => {
++    app = createTestApp();
++  });
++
++  it("lists single events and a series' occurrences in a calendar view", async () => {
++    await create({ subject: "Dentist", start: utc("2026-11-10T14:00:00"), end: utc("2026-11-10T15:00:00") });
++    await create({ subject: "Last year", start: utc("2025-11-10T14:00:00"), end: utc("2025-11-10T15:00:00") });
++    const series = await create(weekly);
++    expect(series.type).toBe("seriesMaster");
++    expect(await view()).toEqual([
++      ["Standup", "2026-11-02T09:00:00.0000000", "occurrence"],
++      ["Standup", "2026-11-05T09:00:00.0000000", "occurrence"],
++      ["Standup", "2026-11-09T09:00:00.0000000", "occurrence"],
++      ["Dentist", "2026-11-10T14:00:00.0000000", "singleInstance"],
++      ["Standup", "2026-11-12T09:00:00.0000000", "occurrence"],
++      ["Standup", "2026-11-16T09:00:00.0000000", "occurrence"],
++      ["Standup", "2026-11-19T09:00:00.0000000", "occurrence"],
++      ["Standup", "2026-11-23T09:00:00.0000000", "occurrence"],
++      ["Standup", "2026-11-26T09:00:00.0000000", "occurrence"],
++      ["Standup", "2026-11-30T09:00:00.0000000", "occurrence"],
++    ]);
++  });
++
++  it("expands daily, monthly and yearly patterns, numbered or without end", async () => {
++    const series = (subject: string, pattern: object, range: object) =>
++      create({
++        subject,
++        start: utc("2026-01-31T08:00:00"),
++        end: utc("2026-01-31T09:00:00"),
++        recurrence: { pattern, range: { startDate: "2026-01-31", ...range } },
++      });
++    await series("Daily", { type: "daily", interval: 100 }, { type: "numbered", numberOfOccurrences: 3 });
++    await series("Monthly", { type: "absoluteMonthly", interval: 2, dayOfMonth: 31 }, { type: "noEnd" });
++    await series("Yearly", { type: "absoluteYearly", interval: 1, month: 1, dayOfMonth: 31 }, { type: "noEnd" });
++    const occurrences = async (window: string) =>
++      (await json(`/v1.0/me/calendarView?${window}`)).value.map((e: any) => `${e.subject} ${e.start.dateTime.slice(0, 10)}`);
++    expect(await occurrences("startDateTime=2026-01-01T00:00:00Z&endDateTime=2027-02-01T00:00:00Z")).toEqual([
++      "Daily 2026-01-31",
++      "Monthly 2026-01-31",
++      "Yearly 2026-01-31",
++      "Monthly 2026-03-31",
++      "Daily 2026-05-11",
++      // Every other month, when it has a 31st.
++      "Monthly 2026-05-31",
++      "Monthly 2026-07-31",
++      "Daily 2026-08-19",
++      "Monthly 2027-01-31",
++      "Yearly 2027-01-31",
++    ]);
++  });
++
++  it("changes and cancels single occurrences, as exceptions", async () => {
++    const series = await create(weekly);
++    const { value: instances } = await json(`/v1.0/me/events/${series.id}/instances?${WINDOW}`);
++    const moved = await json(`/v1.0/me/events/${instances[1].id}`, {
++      method: "PATCH",
++      body: JSON.stringify({ subject: "Standup (moved)", start: utc("2026-11-06T10:00:00"), end: utc("2026-11-06T10:15:00") }),
++    });
++    expect(moved).toMatchObject({ id: instances[1].id, type: "exception", seriesMasterId: series.id });
++    await json(`/v1.0/me/events/${instances[2].id}`, { method: "DELETE" });
++    expect((await view()).slice(0, 3)).toEqual([
++      ["Standup", "2026-11-02T09:00:00.0000000", "occurrence"],
++      ["Standup (moved)", "2026-11-06T10:00:00.0000000", "exception"],
++      ["Standup", "2026-11-12T09:00:00.0000000", "occurrence"],
++    ]);
++  });
++
++  it("reports a calendar view's changes through delta links", async () => {
++    const dentist = await create({ subject: "Dentist", start: utc("2026-11-10T14:00:00"), end: utc("2026-11-10T15:00:00") });
++    const series = await create(weekly);
++    const initial = await delta(`/v1.0/me/calendarView/delta?${WINDOW}`, 4);
++    expect(initial.items).toHaveLength(10);
++    expect((await delta(initial.link)).items).toEqual([]);
++
++    // A series shortened: its later occurrences are removed.
++    await json(`/v1.0/me/events/${series.id}`, {
++      method: "PATCH",
++      body: JSON.stringify({
++        recurrence: { ...weekly.recurrence, range: { ...weekly.recurrence.range, endDate: "2026-11-05" } },
++      }),
++    });
++    const shortened = await delta(initial.link);
++    expect(shortened.items.filter((e) => e["@removed"])).toHaveLength(7);
++
++    // An event moved out of the window is reported as removed; one renamed,
++    // as it is now.
++    await json(`/v1.0/me/events/${dentist.id}`, {
++      method: "PATCH",
++      body: JSON.stringify({ start: utc("2027-01-10T14:00:00"), end: utc("2027-01-10T15:00:00") }),
++    });
++    const { value: [first] } = await json(`/v1.0/me/events/${series.id}/instances?${WINDOW}`);
++    await json(`/v1.0/me/events/${first.id}`, { method: "PATCH", body: JSON.stringify({ subject: "Kickoff" }) });
++    const later = await delta(shortened.link);
++    expect(later.items.map((e) => [e.id, e["@removed"] ? "removed" : e.subject])).toEqual([
++      [dentist.id, "removed"],
++      [first.id, "Kickoff"],
++    ]);
++
++    // Deleting the series removes what is left of it.
++    await json(`/v1.0/me/events/${series.id}`, { method: "DELETE" });
++    expect((await delta(later.link)).items.map((e) => e["@removed"])).toEqual([
++      { reason: "deleted" },
++      { reason: "deleted" },
++    ]);
++  });
++
++  it("answers 410 for a delta token it does not know", async () => {
++    const token = Buffer.from(JSON.stringify({ start: 0, end: 1, since: 99 })).toString("base64url");
++    const res = await request(`/v1.0/me/calendarView/delta?$deltatoken=${token}`);
++    expect(res.status).toBe(410);
++  });
++
++  it("takes UTC times and the patterns it expands only", async () => {
++    const res = await request("/v1.0/me/events", {
++      method: "POST",
++      body: JSON.stringify({
++        subject: "Elsewhere",
++        start: { dateTime: "2026-11-10T14:00:00", timeZone: "Pacific Standard Time" },
++        end: { dateTime: "2026-11-10T15:00:00", timeZone: "Pacific Standard Time" },
++      }),
++    });
++    expect(res.status).toBe(400);
++    const relative = await request("/v1.0/me/events", {
++      method: "POST",
++      body: JSON.stringify({
++        ...weekly,
++        recurrence: { ...weekly.recurrence, pattern: { type: "relativeMonthly", interval: 1 } },
++      }),
++    });
++    expect(relative.status).toBe(400);
++  });
++});
+diff --git a/packages/@emulators/microsoft/src/calendar.ts b/packages/@emulators/microsoft/src/calendar.ts
+new file mode 100644
+index 0000000..9c7cbb2
+--- /dev/null
++++ b/packages/@emulators/microsoft/src/calendar.ts
+@@ -0,0 +1,246 @@
++import type { Store } from "@emulators/core";
++import { getMicrosoftStore } from "./store.js";
++import type { MicrosoftEvent, MicrosoftEventFields, MicrosoftRecurrence } from "./entities.js";
++
++/** Series without an end date are expanded this far past their start. */
++const HORIZON_DAYS = 3 * 366;
++const DAY = 86_400_000;
++const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
++export const PATTERNS = ["daily", "weekly", "absoluteMonthly", "absoluteYearly"];
++export const RANGES = ["endDate", "noEnd", "numbered"];
++
++/** Advances the calendar's change counter; delta tokens hold its values. */
++export function nextCalendarChange(store: Store, email: string): number {
++  let counters = store.getData<Map<string, number>>("microsoft.calendar.changes");
++  if (!counters) {
++    counters = new Map();
++    store.setData("microsoft.calendar.changes", counters);
++  }
++  const next = (counters.get(email) ?? 0) + 1;
++  counters.set(email, next);
++  return next;
++}
++
++export function currentCalendarChange(store: Store, email: string): number {
++  return store.getData<Map<string, number>>("microsoft.calendar.changes")?.get(email) ?? 0;
++}
++
++/** Milliseconds since the epoch of a UTC `YYYY-MM-DDTHH:mm:ss`. */
++export function utcMs(dateTime: string): number {
++  return Date.parse(`${dateTime}Z`);
++}
++
++function utcString(ms: number): string {
++  return new Date(ms).toISOString().slice(0, 19);
++}
++
++/** A Graph `dateTimeTimeZone` as UTC `YYYY-MM-DDTHH:mm:ss`; the emulator
++ * takes UTC times only. `null` if it is not one. */
++export function parseDateTime(value: unknown): string | null {
++  const { dateTime, timeZone } = (value ?? {}) as { dateTime?: unknown; timeZone?: unknown };
++  if (typeof dateTime !== "string" || (timeZone !== undefined && String(timeZone).toUpperCase() !== "UTC")) {
++    return null;
++  }
++  const ms = Date.parse(dateTime.endsWith("Z") ? dateTime : `${dateTime}Z`);
++  return Number.isNaN(ms) ? null : utcString(ms);
++}
++
++/** A query parameter's date and time (ISO 8601, UTC unless it says). */
++export function parseWindowTime(value: string | undefined): number | null {
++  if (value === undefined) return null;
++  const ms = Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(value) ? value : `${value}Z`);
++  return Number.isNaN(ms) ? null : ms;
++}
++
++/** Whether `recurrence` is one the emulator expands. */
++export function isSupportedRecurrence(recurrence: unknown): recurrence is MicrosoftRecurrence {
++  const r = recurrence as MicrosoftRecurrence | null;
++  if (!r?.pattern || !r.range) return false;
++  if (!PATTERNS.includes(r.pattern.type) || !RANGES.includes(r.range.type)) return false;
++  if (!Number.isInteger(r.pattern.interval) || r.pattern.interval < 1) return false;
++  if (Number.isNaN(Date.parse(`${r.range.startDate}T00:00:00Z`))) return false;
++  if (r.pattern.type === "weekly" && !r.pattern.daysOfWeek?.every((d) => WEEKDAYS.includes(d.toLowerCase()))) {
++    return false;
++  }
++  if (r.range.type === "endDate" && Number.isNaN(Date.parse(`${r.range.endDate}T00:00:00Z`))) return false;
++  if (r.range.type === "numbered" && !(Number(r.range.numberOfOccurrences) > 0)) return false;
++  return true;
++}
++
++/** Whether the pattern has an occurrence on `day`, given the range's first
++ * day (both UTC midnights). */
++function matches(pattern: MicrosoftRecurrence["pattern"], first: number, day: number): boolean {
++  const d = new Date(day);
++  const f = new Date(first);
++  const months = (d.getUTCFullYear() - f.getUTCFullYear()) * 12 + d.getUTCMonth() - f.getUTCMonth();
++  switch (pattern.type) {
++    case "daily":
++      return Math.round((day - first) / DAY) % pattern.interval === 0;
++    case "weekly": {
++      const weekStart = first - f.getUTCDay() * DAY;
++      const week = Math.floor((day - weekStart) / (7 * DAY));
++      const days = (pattern.daysOfWeek ?? []).map((x) => x.toLowerCase());
++      return week % pattern.interval === 0 && days.includes(WEEKDAYS[d.getUTCDay()]);
++    }
++    case "absoluteMonthly":
++      return d.getUTCDate() === pattern.dayOfMonth && months % pattern.interval === 0;
++    case "absoluteYearly":
++      return (
++        d.getUTCMonth() + 1 === pattern.month &&
++        d.getUTCDate() === pattern.dayOfMonth &&
++        (months / 12) % pattern.interval === 0
++      );
++  }
++}
++
++/** The original start of each occurrence of the series, at the time of day
++ * the master starts. */
++export function occurrenceStarts(event: MicrosoftEvent): string[] {
++  const r = event.recurrence!;
++  const first = Date.parse(`${r.range.startDate}T00:00:00Z`);
++  const last = r.range.type === "endDate" ? Date.parse(`${r.range.endDate}T00:00:00Z`) : first + HORIZON_DAYS * DAY;
++  const most = r.range.type === "numbered" ? r.range.numberOfOccurrences! : Infinity;
++  const time = event.start.slice(10);
++  const starts: string[] = [];
++  for (let day = first; day <= last && starts.length < most; day += DAY) {
++    if (matches(r.pattern, first, day)) starts.push(`${utcString(day).slice(0, 10)}${time}`);
++  }
++  return starts;
++}
++
++const graphTime = (dateTime: string) => ({ dateTime: `${dateTime}.0000000`, timeZone: "UTC" });
++
++/** Graph's representation of an event, or of one occurrence of a series. */
++export function formatEvent(
++  event: MicrosoftEvent,
++  instance?: { id: string; fields: MicrosoftEventFields; type: "occurrence" | "exception"; originalStart: string },
++) {
++  const fields = instance?.fields ?? event;
++  return {
++    "@odata.type": "#microsoft.graph.event",
++    id: instance?.id ?? event.event_id,
++    iCalUId: event.ical_uid,
++    type: instance?.type ?? (event.recurrence ? "seriesMaster" : "singleInstance"),
++    seriesMasterId: instance ? event.event_id : null,
++    originalStart: instance ? `${instance.originalStart}Z` : null,
++    subject: fields.subject,
++    bodyPreview: fields.body.slice(0, 255),
++    body: { contentType: "text", content: fields.body },
++    start: graphTime(fields.start),
++    end: graphTime(fields.end),
++    isAllDay: fields.is_all_day,
++    location: { displayName: fields.location },
++    recurrence: instance ? null : event.recurrence,
++    isCancelled: false,
++    showAs: "busy",
++    organizer: { emailAddress: { address: event.user_email } },
++  };
++}
++
++export interface Instance {
++  instance_id: string;
++  start: string;
++  end: string;
++  json: string;
++}
++
++/** The instances a calendar view lists of the event: itself, or its
++ * series' occurrences as changed, less those cancelled. */
++export function instancesOf(event: MicrosoftEvent): Instance[] {
++  if (!event.recurrence) {
++    return [{ instance_id: event.event_id, start: event.start, end: event.end, json: JSON.stringify(formatEvent(event)) }];
++  }
++  const duration = utcMs(event.end) - utcMs(event.start);
++  return occurrenceStarts(event).flatMap((originalStart) => {
++    const date = originalStart.slice(0, 10);
++    const exception = event.exceptions[date];
++    if (exception === null) return [];
++    const fields: MicrosoftEventFields = {
++      subject: event.subject,
++      body: event.body,
++      location: event.location,
++      is_all_day: event.is_all_day,
++      start: originalStart,
++      end: utcString(utcMs(originalStart) + duration),
++      ...exception,
++    };
++    const id = occurrenceId(event.event_id, date);
++    const type = exception ? "exception" : "occurrence";
++    return [
++      {
++        instance_id: id,
++        start: fields.start,
++        end: fields.end,
++        json: JSON.stringify(formatEvent(event, { id, fields, type, originalStart })),
++      },
++    ];
++  });
++}
++
++export function occurrenceId(eventId: string, date: string): string {
++  return `${eventId}_${date.replaceAll("-", "")}`;
++}
++
++/** Makes the event's recorded instances `wanted`, recording what changed
++ * and what is gone under one change of the calendar. */
++export function syncInstances(store: Store, email: string, eventId: string, wanted: Instance[]): void {
++  const ms = getMicrosoftStore(store);
++  const recorded = new Map(
++    ms.eventInstances
++      .findBy("event_id", eventId)
++      .filter((i) => i.user_email === email)
++      .map((i) => [i.instance_id, i]),
++  );
++  let change: number | undefined;
++  const next = () => (change ??= nextCalendarChange(store, email));
++  for (const instance of wanted) {
++    const old = recorded.get(instance.instance_id);
++    recorded.delete(instance.instance_id);
++    if (!old) {
++      ms.eventInstances.insert({ ...instance, user_email: email, event_id: eventId, change: next() });
++    } else if (old.json !== instance.json) {
++      ms.eventInstances.update(old.id, { ...instance, change: next() });
++    }
++  }
++  for (const gone of recorded.values()) {
++    ms.eventInstances.delete(gone.id);
++    ms.eventInstanceRemovals.insert({ user_email: email, instance_id: gone.instance_id, change: next() });
++  }
++}
++
++/** The fields of an event, or of an occurrence, that a request body sets;
++ * `null` if one is malformed. */
++export function fieldsOf(body: Record<string, unknown>): Partial<MicrosoftEventFields> | null {
++  const fields: Partial<MicrosoftEventFields> = {};
++  if ("subject" in body) {
++    if (typeof body.subject !== "string") return null;
++    fields.subject = body.subject;
++  }
++  if ("body" in body) {
++    const content = (body.body as { content?: unknown } | null)?.content;
++    if (typeof content !== "string") return null;
++    fields.body = content;
++  }
++  if ("location" in body) {
++    const name = (body.location as { displayName?: unknown } | null)?.displayName;
++    if (typeof name !== "string") return null;
++    fields.location = name;
++  }
++  for (const key of ["start", "end"] as const) {
++    if (key in body) {
++      const time = parseDateTime(body[key]);
++      if (time === null) return null;
++      fields[key] = time;
++    }
++  }
++  if ("isAllDay" in body) {
++    if (typeof body.isAllDay !== "boolean") return null;
++    fields.is_all_day = body.isAllDay;
++  }
++  return fields;
++}
++
++/** Whether the instance (as recorded) overlaps [start, end). */
++export function overlaps(instance: { start: string; end: string }, start: number, end: number): boolean {
++  return utcMs(instance.start) < end && utcMs(instance.end) > start;
++}
+diff --git a/packages/@emulators/microsoft/src/entities.ts b/packages/@emulators/microsoft/src/entities.ts
+index 0b817f7..8f5d440 100644
+--- a/packages/@emulators/microsoft/src/entities.ts
++++ b/packages/@emulators/microsoft/src/entities.ts
+@@ -62,3 +62,65 @@ export interface MicrosoftMessageRemoval extends Entity {
+   message_id: string;
+   change: number;
+ }
++
++/** What an event, or one occurrence of a series, says. Times are UTC,
++ * `YYYY-MM-DDTHH:mm:ss`. */
++export interface MicrosoftEventFields {
++  subject: string;
++  body: string;
++  location: string;
++  start: string;
++  end: string;
++  is_all_day: boolean;
++}
++
++/** A Graph recurrence: its pattern and range, as Graph has them. */
++export interface MicrosoftRecurrence {
++  pattern: {
++    type: "daily" | "weekly" | "absoluteMonthly" | "absoluteYearly";
++    interval: number;
++    daysOfWeek?: string[];
++    dayOfMonth?: number;
++    month?: number;
++  };
++  range: {
++    type: "endDate" | "noEnd" | "numbered";
++    startDate: string;
++    endDate?: string;
++    numberOfOccurrences?: number;
++  };
++}
++
++/** A single event, or a series' master (Graph `event`). */
++export interface MicrosoftEvent extends Entity, MicrosoftEventFields {
++  event_id: string;
++  user_email: string;
++  ical_uid: string;
++  recurrence: MicrosoftRecurrence | null;
++  /** A series' occurrences changed or cancelled, by their original start
++   * date (`YYYY-MM-DD`); `null` for cancelled. */
++  exceptions: Record<string, Partial<MicrosoftEventFields> | null>;
++}
++
++/** An event as a calendar view lists it: a single event, or one occurrence
++ * of a series, kept up to date with its event so that delta queries can
++ * tell what changed. */
++export interface MicrosoftEventInstance extends Entity {
++  instance_id: string;
++  user_email: string;
++  /** The single event, or the series master. */
++  event_id: string;
++  start: string;
++  end: string;
++  /** Graph's representation, as JSON. */
++  json: string;
++  /** The calendar's change counter when the instance last changed. */
++  change: number;
++}
++
++/** An instance that no longer exists, for delta queries. */
++export interface MicrosoftEventInstanceRemoval extends Entity {
++  user_email: string;
++  instance_id: string;
++  change: number;
++}
+diff --git a/packages/@emulators/microsoft/src/index.ts b/packages/@emulators/microsoft/src/index.ts
+index 73bf59e..2fcb768 100644
+--- a/packages/@emulators/microsoft/src/index.ts
++++ b/packages/@emulators/microsoft/src/index.ts
+@@ -3,6 +3,7 @@ import type { ServicePlugin, Store, WebhookDispatcher, TokenMap, AppEnv, RouteCo
+ import { getMicrosoftStore } from "./store.js";
+ import { generateOid, DEFAULT_TENANT_ID } from "./helpers.js";
+ import { oauthRoutes } from "./routes/oauth.js";
++import { calendarRoutes } from "./routes/calendar.js";
+ import { mailRoutes } from "./routes/mail.js";
+ 
+ export { getMicrosoftStore, type MicrosoftStore } from "./store.js";
+@@ -83,6 +84,7 @@ export const microsoftPlugin: ServicePlugin = {
+     const ctx: RouteContext = { app, store, webhooks, baseUrl, tokenMap };
+     oauthRoutes(ctx);
+     mailRoutes(ctx);
++    calendarRoutes(ctx);
+   },
+   seed(store: Store, baseUrl: string): void {
+     seedDefaults(store, baseUrl);
+diff --git a/packages/@emulators/microsoft/src/routes/calendar.ts b/packages/@emulators/microsoft/src/routes/calendar.ts
+new file mode 100644
+index 0000000..424ed01
+--- /dev/null
++++ b/packages/@emulators/microsoft/src/routes/calendar.ts
+@@ -0,0 +1,251 @@
++import type { Context, RouteContext } from "@emulators/core";
++import { getMicrosoftStore } from "../store.js";
++import type { MicrosoftEvent } from "../entities.js";
++import {
++  currentCalendarChange,
++  fieldsOf,
++  formatEvent,
++  instancesOf,
++  isSupportedRecurrence,
++  overlaps,
++  parseWindowTime,
++  syncInstances,
++} from "../calendar.js";
++import { generateGraphId } from "../mail.js";
++
++/** Events per delta page unless the client prefers another size. */
++const DEFAULT_PAGE_SIZE = 10;
++
++function graphError(c: Context, status: 400 | 401 | 404 | 410, code: string, message: string) {
++  return c.json({ error: { code, message } }, status);
++}
++
++/** Where a delta round is: the window, the changes it covers, and how far
++ * into them it has got. */
++interface DeltaState {
++  start: number;
++  end: number;
++  since: number;
++  upto: number;
++  offset: number;
++}
++
++const encode = (state: object) => Buffer.from(JSON.stringify(state)).toString("base64url");
++
++/** Microsoft Graph calendar: events and recurring series in the user's
++ * calendar, calendar views of them (series expanded into occurrences),
++ * and delta queries of those views. Times are UTC: the emulator takes
++ * and gives UTC only, as with `Prefer: outlook.timezone="UTC"`. */
++export function calendarRoutes({ app, store, baseUrl }: RouteContext): void {
++  const ms = getMicrosoftStore(store);
++
++  const user = (c: Context): string | Response => {
++    const authUser = c.get("authUser");
++    if (!authUser) return graphError(c, 401, "InvalidAuthenticationToken", "Access token is empty.");
++    return authUser.login;
++  };
++  const notFound = (c: Context) =>
++    graphError(c, 404, "ErrorItemNotFound", "The specified object was not found in the store.");
++  const invalid = (c: Context, message: string) => graphError(c, 400, "ErrorInvalidRequest", message);
++
++  const eventOf = (email: string, id: string) =>
++    ms.events.findBy("event_id", id).find((e) => e.user_email === email);
++  const instanceOf = (email: string, id: string) =>
++    ms.eventInstances.findBy("instance_id", id).find((i) => i.user_email === email);
++  const resync = (event: MicrosoftEvent) => syncInstances(store, event.user_email, event.event_id, instancesOf(event));
++
++  /** The window of a calendar view request, or the error answering it. */
++  const windowOf = (c: Context): { start: number; end: number } | Response => {
++    const start = parseWindowTime(c.req.query("startDateTime") ?? c.req.query("startdatetime"));
++    const end = parseWindowTime(c.req.query("endDateTime") ?? c.req.query("enddatetime"));
++    if (start === null || end === null || end <= start) {
++      return invalid(c, "startDateTime and endDateTime are required, and must make a range.");
++    }
++    return { start, end };
++  };
++
++  // ---------- Events ----------
++
++  app.post("/v1.0/me/events", async (c) => {
++    const email = user(c);
++    if (email instanceof Response) return email;
++    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
++    if (!body) return invalid(c, "The request body is not JSON.");
++    const fields = fieldsOf(body);
++    if (!fields || fields.start === undefined || fields.end === undefined) {
++      return invalid(c, "An event needs a start and an end, in UTC.");
++    }
++    const recurrence = body.recurrence ?? null;
++    if (recurrence !== null && !isSupportedRecurrence(recurrence)) {
++      return invalid(c, "The emulator expands daily, weekly, absoluteMonthly and absoluteYearly patterns only.");
++    }
++    const event = ms.events.insert({
++      event_id: generateGraphId("AAMkEvent"),
++      user_email: email,
++      ical_uid: generateGraphId("040000008200E00074C5B7101A82E008"),
++      subject: "",
++      body: "",
++      location: "",
++      is_all_day: false,
++      ...fields,
++      start: fields.start,
++      end: fields.end,
++      recurrence,
++      exceptions: {},
++    });
++    resync(event);
++    return c.json(formatEvent(event), 201);
++  });
++
++  app.get("/v1.0/me/events/:event", (c) => {
++    const email = user(c);
++    if (email instanceof Response) return email;
++    const id = c.req.param("event");
++    const event = eventOf(email, id);
++    if (event) return c.json(formatEvent(event));
++    const instance = instanceOf(email, id);
++    return instance ? c.json(JSON.parse(instance.json)) : notFound(c);
++  });
++
++  app.get("/v1.0/me/events/:event/instances", (c) => {
++    const email = user(c);
++    if (email instanceof Response) return email;
++    const window = windowOf(c);
++    if (window instanceof Response) return window;
++    const event = eventOf(email, c.req.param("event"));
++    if (!event) return notFound(c);
++    const instances = ms.eventInstances
++      .findBy("event_id", event.event_id)
++      .filter((i) => i.user_email === email && overlaps(i, window.start, window.end))
++      .sort((a, b) => a.start.localeCompare(b.start));
++    return c.json({ value: instances.map((i) => JSON.parse(i.json)) });
++  });
++
++  /** Changes a series' occurrence: it becomes an exception. */
++  const changeOccurrence = (event: MicrosoftEvent, instanceJson: string, change: object | null) => {
++    const { originalStart } = JSON.parse(instanceJson) as { originalStart: string };
++    const date = originalStart.slice(0, 10);
++    const exceptions = { ...event.exceptions };
++    exceptions[date] = change === null ? null : { ...exceptions[date], ...change };
++    resync(ms.events.update(event.id, { exceptions })!);
++  };
++
++  app.patch("/v1.0/me/events/:event", async (c) => {
++    const email = user(c);
++    if (email instanceof Response) return email;
++    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
++    if (!body) return invalid(c, "The request body is not JSON.");
++    const fields = fieldsOf(body);
++    if (!fields) return invalid(c, "A field is malformed.");
++    const id = c.req.param("event");
++    const event = eventOf(email, id);
++    if (event) {
++      const update: Partial<MicrosoftEvent> = { ...fields };
++      if ("recurrence" in body) {
++        if (body.recurrence !== null && !isSupportedRecurrence(body.recurrence)) {
++          return invalid(c, "The emulator expands daily, weekly, absoluteMonthly and absoluteYearly patterns only.");
++        }
++        update.recurrence = body.recurrence as MicrosoftEvent["recurrence"];
++      }
++      const updated = ms.events.update(event.id, update)!;
++      resync(updated);
++      return c.json(formatEvent(updated));
++    }
++    const instance = instanceOf(email, id);
++    const master = instance && eventOf(email, instance.event_id);
++    if (!instance || !master || instance.instance_id === master.event_id) return notFound(c);
++    changeOccurrence(master, instance.json, fields);
++    return c.json(JSON.parse(instanceOf(email, id)!.json));
++  });
++
++  app.delete("/v1.0/me/events/:event", (c) => {
++    const email = user(c);
++    if (email instanceof Response) return email;
++    const id = c.req.param("event");
++    const event = eventOf(email, id);
++    if (event) {
++      ms.events.delete(event.id);
++      syncInstances(store, email, event.event_id, []);
++      return c.body(null, 204);
++    }
++    const instance = instanceOf(email, id);
++    const master = instance && eventOf(email, instance.event_id);
++    if (!instance || !master) return notFound(c);
++    changeOccurrence(master, instance.json, null);
++    return c.body(null, 204);
++  });
++
++  // ---------- Calendar views ----------
++
++  app.get("/v1.0/me/calendarView", (c) => {
++    const email = user(c);
++    if (email instanceof Response) return email;
++    const window = windowOf(c);
++    if (window instanceof Response) return window;
++    const instances = ms.eventInstances
++      .findBy("user_email", email)
++      .filter((i) => overlaps(i, window.start, window.end))
++      .sort((a, b) => a.start.localeCompare(b.start));
++    return c.json({ value: instances.map((i) => JSON.parse(i.json)) });
++  });
++
++  app.get("/v1.0/me/calendarView/delta", (c) => {
++    const email = user(c);
++    if (email instanceof Response) return email;
++    const deltaToken = c.req.query("$deltatoken");
++    const skipToken = c.req.query("$skiptoken");
++    let state: DeltaState;
++    if (skipToken !== undefined || deltaToken !== undefined) {
++      try {
++        state = JSON.parse(Buffer.from((skipToken ?? deltaToken)!, "base64url").toString());
++      } catch {
++        return graphError(c, 410, "SyncStateNotFound", "The sync state is not found or has expired.");
++      }
++      if (!(state.since <= currentCalendarChange(store, email))) {
++        return graphError(c, 410, "SyncStateNotFound", "The sync state is not found or has expired.");
++      }
++      if (deltaToken !== undefined) state = { ...state, upto: currentCalendarChange(store, email), offset: 0 };
++    } else {
++      const window = windowOf(c);
++      if (window instanceof Response) return window;
++      state = { ...window, since: 0, upto: currentCalendarChange(store, email), offset: 0 };
++    }
++
++    const { start, end, since, upto, offset } = state;
++    const changed = ms.eventInstances
++      .findBy("user_email", email)
++      .filter((i) => i.change > since && i.change <= upto)
++      .map((i) => ({ change: i.change, instance: i }));
++    const present = new Set(changed.map((x) => x.instance.instance_id));
++    const removed = ms.eventInstanceRemovals
++      .findBy("user_email", email)
++      .filter((r) => r.change > since && r.change <= upto && !present.has(r.instance_id))
++      .map((r) => ({ change: r.change, removed: r.instance_id }));
++    // The first round lists what is in the window; later ones also report
++    // as removed what has left it.
++    const changes = [...changed, ...removed]
++      .filter((x) => since > 0 || ("instance" in x && overlaps(x.instance, start, end)))
++      .sort((a, b) => a.change - b.change);
++
++    const prefer = c.req.header("Prefer") ?? "";
++    const pageSize = Number(prefer.match(/odata\.maxpagesize=(\d+)/)?.[1] ?? DEFAULT_PAGE_SIZE);
++    const page = changes.slice(offset, offset + pageSize);
++    const removal = (id: string) => ({ "@odata.type": "#microsoft.graph.event", id, "@removed": { reason: "deleted" } });
++    const value = page.map((x) =>
++      "instance" in x
++        ? overlaps(x.instance, start, end)
++          ? JSON.parse(x.instance.json)
++          : removal(x.instance.instance_id)
++        : removal(x.removed),
++    );
++    const link = `${baseUrl}/v1.0/me/calendarView/delta`;
++    const more = offset + pageSize < changes.length;
++    return c.json({
++      "@odata.context": `${baseUrl}/v1.0/$metadata#Collection(event)`,
++      value,
++      ...(more
++        ? { "@odata.nextLink": `${link}?$skiptoken=${encode({ ...state, offset: offset + pageSize })}` }
++        : { "@odata.deltaLink": `${link}?$deltatoken=${encode({ start, end, since: upto })}` }),
++    });
++  });
++}
+diff --git a/packages/@emulators/microsoft/src/store.ts b/packages/@emulators/microsoft/src/store.ts
+index 272a78e..8f23380 100644
+--- a/packages/@emulators/microsoft/src/store.ts
++++ b/packages/@emulators/microsoft/src/store.ts
+@@ -5,6 +5,9 @@ import type {
+   MicrosoftMailFolder,
+   MicrosoftMessage,
+   MicrosoftMessageRemoval,
++  MicrosoftEvent,
++  MicrosoftEventInstance,
++  MicrosoftEventInstanceRemoval,
+ } from "./entities.js";
+ 
+ export interface MicrosoftStore {
+@@ -13,6 +16,9 @@ export interface MicrosoftStore {
+   mailFolders: Collection<MicrosoftMailFolder>;
+   messages: Collection<MicrosoftMessage>;
+   messageRemovals: Collection<MicrosoftMessageRemoval>;
++  events: Collection<MicrosoftEvent>;
++  eventInstances: Collection<MicrosoftEventInstance>;
++  eventInstanceRemovals: Collection<MicrosoftEventInstanceRemoval>;
+ }
+ 
+ export function getMicrosoftStore(store: Store): MicrosoftStore {
+@@ -22,5 +28,14 @@ export function getMicrosoftStore(store: Store): MicrosoftStore {
+     mailFolders: store.collection<MicrosoftMailFolder>("microsoft.mail_folders", ["folder_id", "user_email"]),
+     messages: store.collection<MicrosoftMessage>("microsoft.messages", ["message_id", "user_email"]),
+     messageRemovals: store.collection<MicrosoftMessageRemoval>("microsoft.message_removals", ["user_email"]),
++    events: store.collection<MicrosoftEvent>("microsoft.events", ["event_id", "user_email"]),
++    eventInstances: store.collection<MicrosoftEventInstance>("microsoft.event_instances", [
++      "instance_id",
++      "event_id",
++      "user_email",
++    ]),
++    eventInstanceRemovals: store.collection<MicrosoftEventInstanceRemoval>("microsoft.event_instance_removals", [
++      "user_email",
++    ]),
+   };
+ }
+-- 
+2.55.0
+
