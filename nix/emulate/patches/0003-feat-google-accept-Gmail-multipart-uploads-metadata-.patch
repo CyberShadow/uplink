@@ -1,0 +1,97 @@
+From d761b6416d30f2e7c4772b015bb00f1413e4f4a3 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Sun, 8 Nov 2026 17:03:10 +0000
+Subject: [PATCH] feat(google): accept Gmail multipart uploads (metadata and
+ message)
+
+---
+ .../google/src/__tests__/google.test.ts       | 42 +++++++++++++++++++
+ .../@emulators/google/src/route-helpers.ts    | 19 +++++++++
+ 2 files changed, 61 insertions(+)
+
+diff --git a/packages/@emulators/google/src/__tests__/google.test.ts b/packages/@emulators/google/src/__tests__/google.test.ts
+index c5f49ba..5c2c326 100644
+--- a/packages/@emulators/google/src/__tests__/google.test.ts
++++ b/packages/@emulators/google/src/__tests__/google.test.ts
+@@ -806,6 +806,48 @@ describe("Google plugin integration", () => {
+     expect(thread.messages).toHaveLength(3);
+   });
+ 
++  it("accepts sent messages as multipart uploads", async () => {
++    const mime = Buffer.from(
++      buildRawMessage({
++        from: "testuser@example.com",
++        to: "Support <support@example.com>",
++        subject: "Re: Your support ticket has been updated",
++        body_text: "Uploaded rather than inlined.",
++        message_id: "<outbound-2@example.com>",
++      }),
++      "base64url",
++    ).toString("utf8");
++    const body = [
++      "--b0undary",
++      "Content-Type: application/json; charset=UTF-8",
++      "",
++      JSON.stringify({ threadId: "thread_support" }),
++      "--b0undary",
++      "Content-Type: message/rfc822",
++      "",
++      mime,
++      "--b0undary--",
++      "",
++    ].join("\r\n");
++
++    const sendRes = await app.request(`${base}/upload/gmail/v1/users/me/messages/send?uploadType=multipart`, {
++      method: "POST",
++      headers: authHeaders({ "Content-Type": 'multipart/related; boundary="b0undary"' }),
++      body,
++    });
++
++    expect(sendRes.status).toBe(200);
++    const sent = (await sendRes.json()) as { id: string; threadId: string; labelIds: string[] };
++    expect(sent.threadId).toBe("thread_support");
++    expect(sent.labelIds).toContain("SENT");
++
++    const rawRes = await app.request(`${base}/gmail/v1/users/me/messages/${sent.id}?format=raw`, {
++      headers: authHeaders(),
++    });
++    const fetched = (await rawRes.json()) as { raw: string };
++    expect(Buffer.from(fetched.raw, "base64url").toString("utf8")).toBe(mime);
++  });
++
+   it("modifies, batches, trashes, and deletes messages", async () => {
+     const labelRes = await jsonRequest(app, "/gmail/v1/users/me/labels", {
+       method: "POST",
+diff --git a/packages/@emulators/google/src/route-helpers.ts b/packages/@emulators/google/src/route-helpers.ts
+index 8682f51..25c269f 100644
+--- a/packages/@emulators/google/src/route-helpers.ts
++++ b/packages/@emulators/google/src/route-helpers.ts
+@@ -41,6 +41,25 @@ export async function parseGoogleBody(c: Context): Promise<Record<string, unknow
+     } catch {
+       return {};
+     }
++  } else if (contentType.includes("multipart/related")) {
++    // A multipart upload: JSON metadata, then the media (RFC 2387).
++    const boundary = /boundary="?([^";]+)"?/.exec(contentType)?.[1];
++    if (!boundary) return {};
++    const parts = rawText
++      .split(`--${boundary}`)
++      .slice(1, -1)
++      .map((part) => {
++        const start = part.indexOf("\r\n\r\n");
++        return start === -1 ? "" : part.slice(start + 4, part.endsWith("\r\n") ? -2 : undefined);
++      });
++    if (parts.length !== 2) return {};
++    try {
++      const json = JSON.parse(parts[0]);
++      parsed = json && typeof json === "object" && !Array.isArray(json) ? (json as Record<string, unknown>) : {};
++    } catch {
++      return {};
++    }
++    parsed.raw = Buffer.from(parts[1], "utf8").toString("base64url");
+   } else if (contentType.includes("application/x-www-form-urlencoded")) {
+     parsed = Object.fromEntries(new URLSearchParams(rawText));
+   } else {
+-- 
+2.55.0
+

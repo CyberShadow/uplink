@@ -31,7 +31,19 @@ fn put(id: &str, content: DraftContent) -> PutDraft {
         account: "a".into(),
         revision: 0,
         content,
+        attachments: vec![],
         in_reply_to: None,
+    }
+}
+
+fn attach(id: &str, name: &str) -> AttachToDraft {
+    AttachToDraft {
+        draft: DraftId(id.into()),
+        id: None,
+        blob: BlobId(VariantHash::of(name.as_bytes()).0),
+        name: name.into(),
+        mime: "text/plain".into(),
+        size: name.len() as i64,
     }
 }
 
@@ -290,6 +302,7 @@ async fn sent_mail_joins_its_provider_copy() {
     let raw_sent = build_message(
         "a@x",
         &content("Bob <b@x>", "Lunch", "<p>noon?</p>"),
+        vec![],
         &message_id[0],
         &ReplyContext::default(),
         1_800_000_000,
@@ -377,6 +390,7 @@ fn messages_are_built_sanitized_with_reply_headers() {
             subject: "Re: Lunch".into(),
             body: "<p>Noon <b>works</b><script>alert(1)</script></p>".into(),
         },
+        vec![],
         "new@a",
         &reply,
         1_800_000_000,
@@ -403,6 +417,7 @@ fn messages_are_built_sanitized_with_reply_headers() {
     let none = build_message(
         "a@x",
         &content("", "", ""),
+        vec![],
         "n@a",
         &ReplyContext::default(),
         0,
@@ -433,4 +448,179 @@ async fn unsendable_drafts_are_refused() {
         panic!()
     };
     assert_eq!(drafts.len(), 1);
+}
+
+#[tokio::test]
+async fn files_are_attached_and_detached_by_undoable_ops() {
+    let db = Db::new();
+    db.dispatch(put("d", content("b@x", "S", "body"))).await;
+    let mut live = db.hub.subscribe();
+    let first = db.dispatch(attach("d", "a.txt")).await;
+    let entry = live.recv().await.unwrap();
+    assert_eq!(entry.description, "Attached 'a.txt' to draft 'S'");
+    assert_eq!(
+        entry.events,
+        [ServerEvent::DraftsChanged(DraftsChanged {
+            drafts: vec![DraftId("d".into())]
+        })]
+    );
+    db.dispatch(attach("d", "b.txt")).await;
+    let names = |db: &Db| -> Vec<String> {
+        db.drafts()
+            .into_iter()
+            .flat_map(|d| d.attachments)
+            .map(|a| a.name)
+            .collect()
+    };
+    assert_eq!(names(&db), ["a.txt", "b.txt"]);
+    // Attaching leaves the text's revision as it is.
+    assert_eq!(db.drafts()[0].revision, 0);
+
+    // Undoing the attach detaches; undoing that reattaches, as before.
+    let a = db.drafts()[0].attachments[0].clone();
+    db.dispatcher.undo(first).await.unwrap();
+    assert_eq!(names(&db), ["b.txt"]);
+    db.dispatcher.undo(TxLogId(first.0 + 2)).await.unwrap();
+    assert_eq!(db.drafts()[0].attachments[0], a);
+    assert_eq!(
+        db.conflict(DetachFromDraft {
+            draft: DraftId("d".into()),
+            attachment: DraftAttachmentId(99),
+        })
+        .await,
+        "the file is no longer attached"
+    );
+    assert_eq!(
+        db.conflict(attach("e", "c.txt")).await,
+        "the draft no longer exists"
+    );
+
+    // Discarding and sending keep them with the draft.
+    let delete = db
+        .dispatch(DeleteDraft {
+            id: DraftId("d".into()),
+        })
+        .await;
+    let left: Vec<i64> = db.query("SELECT count(*) FROM draft_attachment");
+    assert_eq!(left, [0]);
+    db.dispatcher.undo(delete).await.unwrap();
+    assert_eq!(names(&db), ["a.txt", "b.txt"]);
+    let sent = db
+        .dispatch(SendDraft {
+            id: DraftId("d".into()),
+            delay_ms: 10_000,
+        })
+        .await;
+    assert_eq!(db.outbox()[0].draft.attachments.len(), 2);
+    db.dispatcher.undo(sent).await.unwrap();
+    assert_eq!(names(&db), ["a.txt", "b.txt"]);
+}
+
+#[test]
+fn messages_are_built_with_attached_files() {
+    let pdf = b"%PDF-1.4 \x00\xff binary".to_vec();
+    let raw = build_message(
+        "a@x",
+        &content("b@x", "Report", "<p>Attached.</p>"),
+        vec![
+            File {
+                name: "Résumé.pdf".into(),
+                mime: "application/pdf".into(),
+                content: pdf.clone(),
+            },
+            File {
+                name: "notes.txt".into(),
+                mime: "text/plain".into(),
+                content: b"hello".to_vec(),
+            },
+        ],
+        "n@a",
+        &ReplyContext::default(),
+        0,
+    )
+    .unwrap();
+    let listed = crate::parse::attachments(&raw);
+    assert_eq!(
+        listed
+            .iter()
+            .map(|a| (a.name.as_deref(), a.mime.as_str(), a.size, a.inline))
+            .collect::<Vec<_>>(),
+        [
+            (
+                Some("Résumé.pdf"),
+                "application/pdf",
+                pdf.len() as u64,
+                false
+            ),
+            (Some("notes.txt"), "text/plain", 5, false),
+        ]
+    );
+    assert_eq!(crate::parse::attachment(&raw, 0).unwrap().2, pdf);
+    let message = MessageParser::new().parse(&raw).unwrap();
+    assert_eq!(message.body_text(0).unwrap().trim(), "Attached.");
+}
+
+#[tokio::test]
+async fn uploaded_files_are_attached_within_limits() {
+    let db = Db::new();
+    let mail = mail_with(&db).await;
+    let id = DraftId("d".into());
+    mail.create_draft(id.clone(), "a".into(), content("b@x", "", ""), None)
+        .await
+        .unwrap();
+    let uploaded = mail.put_blob(b"hello".to_vec()).await.unwrap();
+    assert_eq!(uploaded.size, 5);
+    let attach = |name: &str, mime: &str, blob: &str| {
+        mail.attach_to_draft(id.clone(), BlobId(blob.into()), name.into(), mime.into())
+    };
+    let blob = uploaded.blob.0.as_str();
+    attach("hello.txt", "text/plain; charset=utf-8", blob)
+        .await
+        .unwrap();
+    let ServerResponse::Drafts { drafts, .. } = mail.list_drafts().await.unwrap() else {
+        panic!()
+    };
+    let [a] = &drafts[0].attachments[..] else {
+        panic!()
+    };
+    assert_eq!((a.name.as_str(), a.size), ("hello.txt", 5));
+
+    let invalid = [
+        attach("", "text/plain", blob).await,
+        attach("a\nb", "text/plain", blob).await,
+        attach("a", "text", blob).await,
+        attach("a", "text/", blob).await,
+        attach("a", "text/plain\r\nX: y", blob).await,
+        attach("a", "text/plain", "../../etc/passwd").await,
+    ];
+    for e in invalid {
+        assert_eq!(e.unwrap_err().code, ErrorCode::Invalid);
+    }
+    let missing = VariantHash::of(b"never uploaded").0;
+    assert_eq!(
+        attach("a", "text/plain", &missing).await.unwrap_err().code,
+        ErrorCode::NotFound
+    );
+    let e = mail
+        .attach_to_draft(
+            DraftId("e".into()),
+            uploaded.blob.clone(),
+            "a".into(),
+            "text/plain".into(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::NotFound);
+
+    let big = mail
+        .put_blob(vec![0; (crate::service::MAX_ATTACHMENTS - 4) as usize])
+        .await
+        .unwrap();
+    let e = attach("big.bin", "application/octet-stream", &big.blob.0)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (e.code, e.message.as_str()),
+        (ErrorCode::Invalid, "attachments may total at most 25 MB")
+    );
 }

@@ -1,6 +1,8 @@
 # The web UI in a real browser against the real server, emulated Gmail and
 # Conduit (SPEC §15.10 `e2e`). gmail-machine.nix prepends gmail_helpers.py.
 
+import email
+
 
 def ui(step):
     return json.loads(machine.succeed(f"uplink-ui {step}"))
@@ -161,5 +163,17 @@ with subtest("a file attached to a message downloads"):
     )
     result = ui("attachment")
     assert result == {"name": "figures.pdf", "content": "%PDF-1.4 figures"}, result
+
+    def forwarded():
+        for m in gmail(token, "GET", "/messages?labelIds=SENT").get("messages", []):
+            if subject_of(m["id"]) == "Fwd: Quarterly figures":
+                return gmail(token, "GET", f"/messages/{m['id']}?format=raw")
+
+    forward = email.message_from_bytes(
+        base64.urlsafe_b64decode(eventually("the forward to reach Gmail", forwarded)["raw"] + "==")
+    )
+    files = {part.get_filename(): part.get_payload(decode=True) for part in forward.walk() if part.get_filename()}
+    assert files == {"figures.pdf": b"%PDF-1.4 figures", "notes.txt": b"Notes on the figures"}, files
+    assert forward["To"] == "<carol@example.net>", forward["To"]
 
 machine.copy_from_vm("/tmp/screenshots", "")

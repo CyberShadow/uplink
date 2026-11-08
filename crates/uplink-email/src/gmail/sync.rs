@@ -12,11 +12,12 @@ use super::{
 };
 use crate::{
     compose::{
-        self, build_message, now_ms, Due, ReplyContext, SendFailed, SendStarted, SendSucceeded,
+        self, build_message, now_ms, Due, File, ReplyContext, SendFailed, SendStarted,
+        SendSucceeded,
     },
     mailbox::{EntryLabels, LabelChange, LabelsPushed, MailboxObserved, NewEntry, ObservedLabel},
     parse::parse,
-    store::{MailStore, VariantHash},
+    store::{Store, VariantHash},
 };
 use anyhow::{Context, Result};
 use futures_util::{stream, StreamExt, TryStreamExt};
@@ -62,7 +63,9 @@ pub struct Sync {
     pub dispatcher: Dispatcher,
     /// A reader connection of the task's own.
     pub reader: Connection,
-    pub store: MailStore,
+    pub store: Store,
+    /// Files attached to drafts.
+    pub blobs: Store,
     pub poll_interval: Duration,
 }
 
@@ -82,7 +85,8 @@ impl Sync {
             gmail: Gmail::new(http, &account.endpoints.api, credentials),
             dispatcher,
             reader: uplink_storage::open_reader(data_root)?,
-            store: MailStore::new(data_root),
+            store: Store::mail(data_root),
+            blobs: Store::blobs(data_root),
             poll_interval: POLL_INTERVAL,
         })
     }
@@ -97,6 +101,7 @@ impl Sync {
             gmail: self.gmail,
             dispatcher: self.dispatcher,
             store: self.store,
+            blobs: self.blobs,
             poll_interval: self.poll_interval,
         }
         .run()
@@ -109,7 +114,8 @@ struct Task {
     address: String,
     gmail: Gmail,
     dispatcher: Dispatcher,
-    store: MailStore,
+    store: Store,
+    blobs: Store,
     poll_interval: Duration,
     reader: Arc<Mutex<Connection>>,
     wake: broadcast::Receiver<Arc<LogEntry>>,
@@ -237,11 +243,14 @@ impl Task {
         let account = self.account.clone();
         let store = self.store.clone();
         let in_reply_to = due.draft.in_reply_to;
+        let blobs = self.blobs.clone();
+        let attachments = due.draft.attachments.clone();
         // The message replied to: its headers, and its thread here.
-        let (reply, thread_id) = self
+        let (files, reply, thread_id) = self
             .read(move |conn| {
+                let files = File::read_all(&blobs, &attachments)?;
                 let Some(message) = in_reply_to else {
-                    return Ok((ReplyContext::default(), None));
+                    return Ok((files, ReplyContext::default(), None));
                 };
                 let (message_id, variant) = crate::query::preferred_variant(conn, message)?
                     .context("the message replied to is gone")?;
@@ -255,13 +264,14 @@ impl Task {
                     )
                     .optional()?
                     .flatten();
-                Ok((ReplyContext::of(&message_id, &raw), thread_id))
+                Ok((files, ReplyContext::of(&message_id, &raw), thread_id))
             })
             .await
             .map_err(|e| SendError::Rejected(format!("{e:#}")))?;
         let raw = build_message(
             &self.address,
             &due.draft.content,
+            files,
             &due.message_id,
             &reply,
             now_ms() / 1000,

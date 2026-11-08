@@ -12,7 +12,7 @@ pub mod mail;
 pub mod matrix;
 pub mod todos;
 
-use compose::{Draft, DraftContent, DraftId, OutboxId, Splice};
+use compose::{BlobId, Draft, DraftAttachmentId, DraftContent, DraftId, OutboxId, Splice};
 use mail::{EntryId, EntryList, LabelId, ListPosition, MessageId};
 use matrix::{MatrixOutboxId, MembershipChange, RoomEventId, RoomId, TimelinePage};
 use todos::{TodoEdit, TodoId};
@@ -136,6 +136,18 @@ pub enum ClientRequest {
     },
     DeleteDraft {
         draft: DraftId,
+    },
+    /// Attach the uploaded `blob` to the draft, as a file `name` of type
+    /// `mime`.
+    AttachToDraft {
+        draft: DraftId,
+        blob: BlobId,
+        name: String,
+        mime: String,
+    },
+    DetachFromDraft {
+        draft: DraftId,
+        attachment: DraftAttachmentId,
     },
     /// Move the draft to the outbox, to be sent after the send delay.
     SendDraft {

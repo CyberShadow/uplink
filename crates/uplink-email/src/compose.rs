@@ -7,8 +7,15 @@
 //! outbox, from which the account's sync task sends it once the send delay
 //! has passed; until it claims the item, the send can be undone, which
 //! returns the draft.
+//!
+//! Files are attached by uploading them to the blob store, then attaching
+//! the blob, as an op of its own beside the text's splices (§7.4).
 
-use crate::{mailbox::insert_variant, parse::Parsed, store::VariantHash};
+use crate::{
+    mailbox::insert_variant,
+    parse::Parsed,
+    store::{Store, VariantHash},
+};
 use anyhow::{bail, ensure, Context, Result};
 use mail_builder::{
     headers::{address::Address, message_id::MessageId as MessageIdHeader},
@@ -19,8 +26,8 @@ use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uplink_protocol::{
     compose::{
-        Draft, DraftContent, DraftEdited, DraftField, DraftId, DraftsChanged, OutboxChanged,
-        OutboxId, OutboxItem, OutboxState, Splice,
+        BlobId, Draft, DraftAttachment, DraftAttachmentId, DraftContent, DraftEdited, DraftField,
+        DraftId, DraftsChanged, OutboxChanged, OutboxId, OutboxItem, OutboxState, Splice,
     },
     mail::{EntryId, MessageId},
     ServerEvent,
@@ -32,6 +39,8 @@ pub fn register(registry: &mut Registry) {
     registry.register::<PutDraft>();
     registry.register::<DeleteDraft>();
     registry.register::<EditDraft>();
+    registry.register::<AttachToDraft>();
+    registry.register::<DetachFromDraft>();
     registry.register::<SendDraft>();
     registry.register::<CancelSend>();
 }
@@ -41,7 +50,8 @@ pub fn register(registry: &mut Registry) {
 const DRAFT_COLUMNS: &str = "id, account_id, revision, to_addrs, cc_addrs, bcc_addrs, subject,
                              body_html, in_reply_to, updated_at";
 
-pub(crate) fn draft_row(r: &Row) -> uplink_storage::rusqlite::Result<Draft> {
+/// The draft, without its attachments.
+fn draft_row(r: &Row) -> uplink_storage::rusqlite::Result<Draft> {
     Ok(Draft {
         id: DraftId(r.get(0)?),
         account: r.get(1)?,
@@ -53,28 +63,49 @@ pub(crate) fn draft_row(r: &Row) -> uplink_storage::rusqlite::Result<Draft> {
             subject: r.get(6)?,
             body: r.get(7)?,
         },
+        attachments: vec![],
         in_reply_to: r.get::<_, Option<i64>>(8)?.map(MessageId),
         updated_at: r.get(9)?,
     })
 }
 
-pub(crate) fn drafts(tx: &Transaction) -> Result<Vec<Draft>> {
-    Ok(tx
-        .prepare(&format!(
-            "SELECT {DRAFT_COLUMNS} FROM draft ORDER BY updated_at DESC, id"
-        ))?
-        .query_map([], draft_row)?
-        .collect::<Result<_, _>>()?)
+fn with_attachments(tx: &Transaction, mut draft: Draft) -> Result<Draft> {
+    draft.attachments = tx
+        .prepare_cached(
+            "SELECT id, blob, name, mime, size FROM draft_attachment
+             WHERE draft = ?1 ORDER BY id",
+        )?
+        .query_map([&draft.id.0], |r| {
+            Ok(DraftAttachment {
+                id: DraftAttachmentId(r.get(0)?),
+                blob: BlobId(r.get(1)?),
+                name: r.get(2)?,
+                mime: r.get(3)?,
+                size: r.get(4)?,
+            })
+        })?
+        .collect::<Result<_, _>>()?;
+    Ok(draft)
 }
 
-fn draft(tx: &Transaction, id: &DraftId) -> Result<Option<Draft>> {
-    Ok(tx
-        .query_row(
-            &format!("SELECT {DRAFT_COLUMNS} FROM draft WHERE id = ?1"),
-            [&id.0],
-            draft_row,
-        )
-        .optional()?)
+pub(crate) fn drafts(tx: &Transaction) -> Result<Vec<Draft>> {
+    tx.prepare(&format!(
+        "SELECT {DRAFT_COLUMNS} FROM draft ORDER BY updated_at DESC, id"
+    ))?
+    .query_map([], draft_row)?
+    .map(|draft| with_attachments(tx, draft?))
+    .collect()
+}
+
+pub(crate) fn draft(tx: &Transaction, id: &DraftId) -> Result<Option<Draft>> {
+    tx.query_row(
+        &format!("SELECT {DRAFT_COLUMNS} FROM draft WHERE id = ?1"),
+        [&id.0],
+        draft_row,
+    )
+    .optional()?
+    .map(|draft| with_attachments(tx, draft))
+    .transpose()
 }
 
 fn existing_draft(tx: &Transaction, id: &DraftId) -> Result<Draft> {
@@ -104,9 +135,32 @@ fn insert_draft(tx: &Transaction, draft: &Draft) -> Result<()> {
     if inserted == 0 {
         bail!(Conflict(format!("draft {} exists already", draft.id.0)));
     }
+    for a in &draft.attachments {
+        insert_attachment(tx, &draft.id, Some(a.id), &a.blob, &a.name, &a.mime, a.size)?;
+    }
     Ok(())
 }
 
+/// Inserts the attachment as `id`, or as a new one.
+fn insert_attachment(
+    tx: &Transaction,
+    draft: &DraftId,
+    id: Option<DraftAttachmentId>,
+    blob: &BlobId,
+    name: &str,
+    mime: &str,
+    size: i64,
+) -> Result<DraftAttachmentId> {
+    Ok(DraftAttachmentId(tx.query_row(
+        "INSERT INTO draft_attachment (id, draft, blob, name, mime, size)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         RETURNING id",
+        params![id.map(|id| id.0), draft.0, blob.0, name, mime, size],
+        |r| r.get(0),
+    )?))
+}
+
+/// Deletes the draft and its attachments.
 fn delete_draft(tx: &Transaction, id: &DraftId) -> Result<Draft> {
     let draft = existing_draft(tx, id)?;
     tx.execute("DELETE FROM draft WHERE id = ?1", [&id.0])?;
@@ -135,6 +189,7 @@ pub struct PutDraft {
     pub account: String,
     pub revision: i64,
     pub content: DraftContent,
+    pub attachments: Vec<DraftAttachment>,
     pub in_reply_to: Option<MessageId>,
 }
 
@@ -145,6 +200,7 @@ impl PutDraft {
             account: draft.account,
             revision: draft.revision,
             content: draft.content,
+            attachments: draft.attachments,
             in_reply_to: draft.in_reply_to,
         }
     }
@@ -160,6 +216,7 @@ impl Op for PutDraft {
             account: self.account,
             revision: self.revision,
             content: self.content,
+            attachments: self.attachments,
             in_reply_to: self.in_reply_to,
             updated_at: now_ms(),
         };
@@ -271,6 +328,98 @@ impl Op for EditDraft {
             })],
         })
     }
+}
+
+/// Attaches a stored blob to a draft; with an `id`, as the attachment it
+/// was before it was detached.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttachToDraft {
+    pub draft: DraftId,
+    pub id: Option<DraftAttachmentId>,
+    pub blob: BlobId,
+    pub name: String,
+    pub mime: String,
+    pub size: i64,
+}
+
+impl Op for AttachToDraft {
+    const KIND: &'static str = "draft.attach";
+
+    fn apply(self, tx: &Transaction) -> Result<Applied> {
+        let draft = existing_draft(tx, &self.draft)?;
+        let id = insert_attachment(
+            tx,
+            &self.draft,
+            self.id,
+            &self.blob,
+            &self.name,
+            &self.mime,
+            self.size,
+        )?;
+        touch(tx, &self.draft)?;
+        Ok(Applied {
+            description: format!(
+                "Attached '{}' to draft {}",
+                self.name,
+                title(&draft.content)
+            ),
+            inverse: Inverse::of(&DetachFromDraft {
+                draft: self.draft.clone(),
+                attachment: id,
+            }),
+            events: vec![drafts_changed(&self.draft)],
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DetachFromDraft {
+    pub draft: DraftId,
+    pub attachment: DraftAttachmentId,
+}
+
+impl Op for DetachFromDraft {
+    const KIND: &'static str = "draft.detach";
+
+    fn apply(self, tx: &Transaction) -> Result<Applied> {
+        let draft = existing_draft(tx, &self.draft)?;
+        let attachment = draft
+            .attachments
+            .into_iter()
+            .find(|a| a.id == self.attachment)
+            .ok_or_else(|| Conflict("the file is no longer attached".into()))?;
+        tx.execute(
+            "DELETE FROM draft_attachment WHERE id = ?1",
+            [self.attachment.0],
+        )?;
+        touch(tx, &self.draft)?;
+        Ok(Applied {
+            description: format!(
+                "Removed '{}' from draft {}",
+                attachment.name,
+                title(&draft.content)
+            ),
+            inverse: Inverse::of(&AttachToDraft {
+                draft: self.draft.clone(),
+                id: Some(attachment.id),
+                blob: attachment.blob,
+                name: attachment.name,
+                mime: attachment.mime,
+                size: attachment.size,
+            }),
+            events: vec![drafts_changed(&self.draft)],
+        })
+    }
+}
+
+fn touch(tx: &Transaction, draft: &DraftId) -> Result<()> {
+    tx.execute(
+        "UPDATE draft SET updated_at = ?1 WHERE id = ?2",
+        params![now_ms(), draft.0],
+    )?;
+    Ok(())
 }
 
 /// `text` with `splice` applied, if what it deletes is at its offset.
@@ -697,11 +846,39 @@ impl ReplyContext {
     }
 }
 
-/// The RFC 5322 message for `draft`, from `from`, dated `date` (unix
-/// seconds). The HTML is sanitized, and a plain-text part derived from it.
+/// A file attached to an outgoing message.
+#[derive(Debug, Clone)]
+pub struct File {
+    pub name: String,
+    pub mime: String,
+    pub content: Vec<u8>,
+}
+
+impl File {
+    /// The draft's attachments, read from `blobs`.
+    pub fn read_all(blobs: &Store, attachments: &[DraftAttachment]) -> Result<Vec<File>> {
+        attachments
+            .iter()
+            .map(|a| {
+                Ok(File {
+                    name: a.name.clone(),
+                    mime: a.mime.clone(),
+                    content: blobs
+                        .get(&VariantHash(a.blob.0.clone()))
+                        .with_context(|| format!("attachment '{}'", a.name))?,
+                })
+            })
+            .collect()
+    }
+}
+
+/// The RFC 5322 message for `draft`, with `files` attached, from `from`,
+/// dated `date` (unix seconds). The HTML is sanitized, and a plain-text
+/// part derived from it.
 pub fn build_message(
     from: &str,
     draft: &DraftContent,
+    files: Vec<File>,
     message_id: &str,
     reply: &ReplyContext,
     date: i64,
@@ -728,6 +905,9 @@ pub fn build_message(
     }
     if !bcc.is_empty() {
         message = message.bcc(Address::new_list(bcc));
+    }
+    for file in files {
+        message = message.attachment(file.mime, file.name, file.content);
     }
     if let Some(in_reply_to) = &reply.in_reply_to {
         message = message

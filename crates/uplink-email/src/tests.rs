@@ -4,7 +4,7 @@ use crate::{
         SetLabels,
     },
     parse::parse,
-    store::MailStore,
+    store::Store,
 };
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -45,8 +45,8 @@ impl Db {
         uplink_storage::open_reader(self.dir.path()).unwrap()
     }
 
-    pub fn store(&self) -> MailStore {
-        MailStore::new(self.dir.path())
+    pub fn store(&self) -> Store {
+        Store::mail(self.dir.path())
     }
 
     pub async fn observe(&self, account: &str, observation: MailboxObserved) -> TxLogId {
@@ -114,12 +114,7 @@ pub(crate) fn raw(message_id: &str, from: &str, date: &str, subject: &str, body:
     .into_bytes()
 }
 
-pub(crate) fn new_entry(
-    store: &MailStore,
-    external_id: &str,
-    labels: &[&str],
-    raw: &[u8],
-) -> NewEntry {
+pub(crate) fn new_entry(store: &Store, external_id: &str, labels: &[&str], raw: &[u8]) -> NewEntry {
     NewEntry {
         external_id: external_id.to_owned(),
         thread_id: Some(format!("t-{external_id}")),

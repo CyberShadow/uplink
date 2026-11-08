@@ -12,6 +12,7 @@ import { labelName } from './Nav'
 import { composePath } from './Outgoing'
 import { messagePath } from './Todos'
 import styles from './Mail.module.css'
+import { fileSize } from './size'
 
 // Route params; preact-iso's own `query` prop is the URL's query string.
 interface Props {
@@ -237,7 +238,9 @@ function MessageView(props: { mail: MailStore; entry: Entry }) {
     const own = mail.accounts.value?.find((a) => a.id === entry.account)?.address ?? ''
     const draft = respond(kind, content, own)
     const id = await drafts.create(entry.account, draft.content, draft.inReplyTo)
-    if (id) route(composePath(id))
+    if (!id) return
+    route(composePath(id))
+    if (kind === 'forward') await drafts.attachForwarded(id, content)
   }
   useKeymap({ reply: responder('reply'), replyAll: responder('replyAll'), forward: responder('forward') })
 
@@ -300,17 +303,11 @@ function Attachments(props: { message: MessageContent }) {
           <a href={`/api/messages/${props.message.id}/attachments/${a.index}`} download={a.name ?? ''}>
             {a.name ?? `Attachment ${a.index + 1}`}
           </a>{' '}
-          <span class={styles.size}>{size(a.size)}</span>
+          <span class={styles.size}>{fileSize(a.size)}</span>
         </li>
       ))}
     </ul>
   )
-}
-
-function size(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
 /** The entry's labels worth showing beside it: user labels and Starred. */

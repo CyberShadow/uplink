@@ -21,6 +21,8 @@ pub struct Gmail {
     http: reqwest::Client,
     /// `.../gmail/v1/users/me`
     base: String,
+    /// `.../upload/gmail/v1/users/me`, for media.
+    upload: String,
     credentials: Credentials,
 }
 
@@ -138,6 +140,7 @@ impl Gmail {
         Self {
             http,
             base: format!("{}/gmail/v1/users/me", api.trim_end_matches('/')),
+            upload: format!("{}/upload/gmail/v1/users/me", api.trim_end_matches('/')),
             credentials,
         }
     }
@@ -196,19 +199,33 @@ impl Gmail {
     }
 
     /// Sends the RFC 5322 message `raw`, in thread `thread_id` if given.
+    /// Sends `raw` as a multipart upload, which takes messages of up to
+    /// 35 MB; a JSON body with the message inline is limited to 5 MB.
     pub async fn send_message(&self, raw: &[u8], thread_id: Option<&str>) -> Result<(), SendError> {
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
-        struct Send<'a> {
-            raw: String,
+        struct Metadata<'a> {
             #[serde(skip_serializing_if = "Option::is_none")]
             thread_id: Option<&'a str>,
         }
-        let body = Send {
-            raw: BASE64URL.encode(raw),
-            thread_id,
-        };
-        let url = format!("{}/messages/send", self.base);
+        let metadata = serde_json::to_string(&Metadata { thread_id }).expect("serializes");
+        // Random, so not in the message.
+        let boundary: String = rand::random::<[u8; 16]>()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let body = [
+            format!(
+                "--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{metadata}\r\n\
+                 --{boundary}\r\nContent-Type: message/rfc822\r\n\r\n"
+            )
+            .as_bytes(),
+            raw,
+            format!("\r\n--{boundary}--\r\n").as_bytes(),
+        ]
+        .concat();
+        let content_type = format!("multipart/related; boundary={boundary}");
+        let url = format!("{}/messages/send?uploadType=multipart", self.upload);
         for retry in [false, true] {
             let token = self
                 .credentials
@@ -219,7 +236,8 @@ impl Gmail {
                 .http
                 .post(&url)
                 .bearer_auth(token)
-                .json(&body)
+                .header(reqwest::header::CONTENT_TYPE, &content_type)
+                .body(body.clone())
                 .send()
                 .await
             {

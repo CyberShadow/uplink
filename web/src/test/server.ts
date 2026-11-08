@@ -2,6 +2,7 @@
 // the store and view tests. Like the real server, it delivers an op's log
 // entry before the op's response (SPEC §5.4).
 
+import type { Blobs } from '../blobs'
 import type { Requester } from '../connection'
 import { RequestError } from '../connection'
 import type {
@@ -28,6 +29,8 @@ import type {
   Todo,
   TodoEdit,
   ServerResponse,
+  UploadedBlob,
+  MessageId,
 } from '../generated/protocol'
 import type { Client } from '../stores/client'
 import { apply } from '../compose/splice'
@@ -44,7 +47,7 @@ interface Undoable {
   undone: boolean
 }
 
-export class FakeServer implements Requester {
+export class FakeServer implements Requester, Blobs {
   readonly requests: ClientRequest[] = []
   private client!: Client
   private accounts: { id: string; address: string; labels: Label[] }[] = []
@@ -59,6 +62,9 @@ export class FakeServer implements Requester {
   readonly drafts = new Map<string, Draft>()
   readonly outbox: OutboxItem[] = []
   private nextOutbox = 1
+  /** Uploaded blobs: their content's names, as the fake's ids. */
+  readonly blobs = new Map<string, number>()
+  private nextAttachment = 1
 
   readonly todos: Todo[] = []
   private nextTodo = 1
@@ -214,6 +220,20 @@ export class FakeServer implements Requester {
     return this.entries.find((e) => e.id === entry)!.labels
   }
 
+  async upload(file: Blob): Promise<UploadedBlob> {
+    return this.storeBlob(`blob:${await file.text()}`, file.size)
+  }
+
+  async copyAttachment(message: MessageId, index: number): Promise<UploadedBlob> {
+    const attachment = this.attachments.get(message)![index]
+    return this.storeBlob(`attachment:${message}:${index}`, attachment.size)
+  }
+
+  private storeBlob(blob: string, size: number): UploadedBlob {
+    this.blobs.set(blob, size)
+    return { blob, size }
+  }
+
   /** Runs before the next request is handled, as if it happened while
    * the request was on its way. */
   meanwhile: (() => void) | null = null
@@ -318,11 +338,41 @@ export class FakeServer implements Requester {
       case 'create_draft': {
         if (this.drafts.has(body.id)) throw new RequestError({ code: 'conflict', message: 'exists' })
         const { id, account, content, in_reply_to } = body
-        this.drafts.set(id, { id, account, content, in_reply_to, revision: 0, updated_at: Date.now() })
+        this.drafts.set(id, { id, account, content, attachments: [], in_reply_to, revision: 0, updated_at: Date.now() })
         return this.dispatched('Saved draft', [{ type: 'drafts_changed', drafts: [id] }])
       }
       case 'edit_draft':
         return { type: 'dispatched', tx_log_id: this.editDraft(body.draft, body.revision, body.splice) }
+      case 'attach_to_draft': {
+        const draft = this.drafts.get(body.draft)!
+        const attachment = {
+          id: this.nextAttachment++,
+          blob: body.blob,
+          name: body.name,
+          mime: body.mime,
+          size: this.blobs.get(body.blob)!,
+        }
+        this.drafts.set(draft.id, { ...draft, attachments: [...draft.attachments, attachment] })
+        const response = this.dispatched(`Attached '${body.name}'`, [{ type: 'drafts_changed', drafts: [draft.id] }])
+        this.undoable.set(this.head(), {
+          revert: () => {
+            const current = this.drafts.get(draft.id)!
+            this.drafts.set(draft.id, {
+              ...current,
+              attachments: current.attachments.filter((a) => a.id !== attachment.id),
+            })
+            return this.commit({ type: 'user' }, 'Undid it', [{ type: 'drafts_changed', drafts: [draft.id] }])
+          },
+          undone: false,
+        })
+        return response
+      }
+      case 'detach_from_draft': {
+        const draft = this.drafts.get(body.draft)!
+        const attachments = draft.attachments.filter((a) => a.id !== body.attachment)
+        this.drafts.set(draft.id, { ...draft, attachments })
+        return this.dispatched('Removed attachment', [{ type: 'drafts_changed', drafts: [draft.id] }])
+      }
       case 'delete_draft':
         this.drafts.delete(body.draft)
         return this.dispatched('Discarded draft', [{ type: 'drafts_changed', drafts: [body.draft] }])

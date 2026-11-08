@@ -276,6 +276,43 @@ describe('compose', () => {
     await user.keyboard('{Escape}')
     await screen.findByText('Body of First')
   })
+
+  it('attaches files, and removes them', async () => {
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('c')
+    await screen.findByRole('textbox', { name: 'To' })
+    await user.upload(screen.getByLabelText('Files to attach'), [
+      new File(['hello'], 'hello.txt', { type: 'text/plain' }),
+      new File(['%PDF'], 'report.pdf', { type: 'application/pdf' }),
+    ])
+    const list = await screen.findByRole('list', { name: 'Attachments' })
+    await waitFor(() => expect(within(list).getAllByRole('listitem')).toHaveLength(2))
+    expect(list.textContent).toBe('hello.txt 5 B×report.pdf 4 B×')
+    const [draft] = server.drafts.values()
+    expect(server.drafts.get(draft.id)!.attachments.map((a) => [a.name, a.mime])).toEqual([
+      ['hello.txt', 'text/plain'],
+      ['report.pdf', 'application/pdf'],
+    ])
+    await user.click(within(list).getByRole('button', { name: 'Remove hello.txt' }))
+    await waitFor(() => expect(within(list).getAllByRole('listitem')).toHaveLength(1))
+    expect(server.drafts.get(draft.id)!.attachments.map((a) => a.name)).toEqual(['report.pdf'])
+  })
+
+  it('forwards the files of the open message with f', async () => {
+    const first = server.deliver('work', 'With files')
+    server.attachments.set(first.message, [
+      { index: 0, name: null, mime: 'image/png', size: 10, inline: true },
+      { index: 1, name: 'minutes.pdf', mime: 'application/pdf', size: 2048, inline: false },
+    ])
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('{Enter}')
+    await screen.findByRole('list', { name: 'Attachments' })
+    await user.keyboard('f')
+    const subject = await screen.findByRole('textbox', { name: 'Subject' })
+    expect((subject as HTMLInputElement).value).toBe('Fwd: With files')
+    const forwarded = await screen.findByRole('list', { name: 'Attachments' })
+    expect(forwarded.textContent).toBe('minutes.pdf 2 KB×')
+  })
 })
 
 describe('matrix', () => {

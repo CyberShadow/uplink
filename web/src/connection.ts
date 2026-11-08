@@ -75,6 +75,8 @@ function isResendable(body: ClientRequest): boolean {
     case 'undo':
     case 'modify_labels':
     case 'delete_draft':
+    case 'attach_to_draft':
+    case 'detach_from_draft':
     case 'send_draft':
     case 'cancel_send':
     case 'send_matrix_message':

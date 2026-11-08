@@ -1,12 +1,13 @@
 use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
 use axum::{
-    extract::{self, ws::WebSocketUpgrade, Request, State},
+    body::Bytes,
+    extract::{self, ws::WebSocketUpgrade, DefaultBodyLimit, Request, State},
     http::{header, HeaderMap, StatusCode, Uri},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::get,
-    Router,
+    routing::{get, post},
+    Json, Router,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use hyper::body::Incoming;
@@ -357,6 +358,18 @@ fn build_app(state: AppState) -> Router {
             "/api/messages/:message/attachments/:index",
             get(attachment_handler),
         )
+        .route(
+            "/api/messages/:message/attachments/:index/blob",
+            post(copy_attachment_handler),
+        )
+        .route(
+            "/api/blobs",
+            post(blob_handler).layer(DefaultBodyLimit::max(
+                uplink_email::service::MAX_ATTACHMENTS
+                    .try_into()
+                    .expect("fits in usize"),
+            )),
+        )
         .fallback(static_file_handler)
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -393,6 +406,33 @@ async fn attachment_handler(
             )
                 .into_response()
         }
+        Err(e) if e.code == ErrorCode::NotFound => {
+            (StatusCode::NOT_FOUND, e.message).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.message).into_response(),
+    }
+}
+
+/// Stores an uploaded file, to be attached to drafts (SPEC §7.4).
+async fn blob_handler(State(state): State<AppState>, content: Bytes) -> Response {
+    match state.services.mail.put_blob(content.into()).await {
+        Ok(uploaded) => Json(uploaded).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.message).into_response(),
+    }
+}
+
+/// Stores a message's attachment as a blob, for a draft forwarding it.
+async fn copy_attachment_handler(
+    State(state): State<AppState>,
+    extract::Path((message, index)): extract::Path<(i64, u32)>,
+) -> Response {
+    match state
+        .services
+        .mail
+        .copy_attachment(uplink_protocol::mail::MessageId(message), index)
+        .await
+    {
+        Ok(uploaded) => Json(uploaded).into_response(),
         Err(e) if e.code == ErrorCode::NotFound => {
             (StatusCode::NOT_FOUND, e.message).into_response()
         }
@@ -515,6 +555,15 @@ impl Backend for Services {
                 splice,
             } => self.mail.edit_draft(draft, revision, splice).await,
             ClientRequest::DeleteDraft { draft } => self.mail.delete_draft(draft).await,
+            ClientRequest::AttachToDraft {
+                draft,
+                blob,
+                name,
+                mime,
+            } => self.mail.attach_to_draft(draft, blob, name, mime).await,
+            ClientRequest::DetachFromDraft { draft, attachment } => {
+                self.mail.detach_from_draft(draft, attachment).await
+            }
             ClientRequest::SendDraft { draft } => self.mail.send_draft(draft).await,
             ClientRequest::CancelSend { item } => self.mail.cancel_send(item).await,
             ClientRequest::ListOutbox => self.mail.list_outbox().await,
@@ -753,6 +802,55 @@ mod tests {
         };
         assert_eq!(get(false).await.unwrap().status(), StatusCode::UNAUTHORIZED);
         assert_eq!(get(true).await.unwrap().status(), StatusCode::NOT_FOUND);
+        let copy = build_app(test_state())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/messages/7/attachments/0/blob")
+                    .header(
+                        header::AUTHORIZATION,
+                        basic_auth_header(TEST_USER, TEST_PASS),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(copy.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn blobs_are_uploaded_within_the_limit() {
+        let post = |body: Vec<u8>| {
+            build_app(test_state()).oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/blobs")
+                    .header(
+                        header::AUTHORIZATION,
+                        basic_auth_header(TEST_USER, TEST_PASS),
+                    )
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+        };
+        let response = post(b"hello".to_vec()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let uploaded: uplink_protocol::compose::UploadedBlob =
+            serde_json::from_slice(&body).unwrap();
+        assert_eq!(uploaded.size, 5);
+        assert_eq!(
+            uploaded.blob.0,
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+        let too_big = vec![0; uplink_email::service::MAX_ATTACHMENTS as usize + 1];
+        assert_eq!(
+            post(too_big).await.unwrap().status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
     }
 
     #[test]

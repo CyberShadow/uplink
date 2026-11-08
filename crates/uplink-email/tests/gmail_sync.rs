@@ -10,7 +10,7 @@ use uplink_email::{
     mailbox,
     query::ConfiguredAccount,
     service::Mail,
-    store::MailStore,
+    store::Store,
 };
 use uplink_protocol::{
     compose::{DraftContent, DraftId, OutboxState},
@@ -72,7 +72,8 @@ impl Uplink {
                 gmail: Gmail::new(http, &provider.account.endpoints.api, credentials),
                 dispatcher: self.dispatcher.clone(),
                 reader: self.reader(),
-                store: MailStore::new(self.dir.path()),
+                store: Store::mail(self.dir.path()),
+                blobs: Store::blobs(self.dir.path()),
                 poll_interval: Duration::from_millis(100),
             }
             .run(),

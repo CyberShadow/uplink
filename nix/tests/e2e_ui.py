@@ -195,7 +195,8 @@ def trash(page):
 
 
 def attachment(page):
-    """Opens the message with a file attached, and downloads the file."""
+    """Opens the message with a file attached, downloads the file, and
+    forwards the message with another file attached."""
     rows = page.get_by_role("list", name="Messages").get_by_role("listitem")
     rows.filter(has_text="Quarterly figures").click()
     files = page.get_by_role("list", name="Attachments")
@@ -206,6 +207,21 @@ def attachment(page):
     path = download.value.path()
     with open(path, "rb") as f:
         content = f.read().decode()
+
+    # Forwarded with its file, and one more attached.
+    page.keyboard.press("f")
+    expect(page.get_by_role("textbox", name="Subject")).to_have_value("Fwd: Quarterly figures")
+    attached = page.get_by_role("list", name="Attachments")
+    expect(attached).to_contain_text("figures.pdf")
+    page.keyboard.type("carol@example.net")
+    with open("/tmp/notes.txt", "w") as f:
+        f.write("Notes on the figures")
+    page.get_by_label("Files to attach").set_input_files("/tmp/notes.txt")
+    expect(attached).to_contain_text("notes.txt")
+    expect(page.get_by_text("Saved")).to_be_visible()
+    page.screenshot(path=f"{SHOTS}/compose-attachments.png")
+    page.keyboard.press("Control+Enter")
+    expect(page.get_by_role("status")).to_contain_text("Sent 'Fwd: Quarterly figures'")
     return {"name": download.value.suggested_filename, "content": content}
 
 

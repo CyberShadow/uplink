@@ -1,15 +1,18 @@
 //! Answers the mail requests of the WebSocket protocol (SPEC §5.4).
 
 use crate::{
-    compose::{self, CancelSend, DeleteDraft, EditDraft, PutDraft, SendDraft},
+    compose::{
+        self, AttachToDraft, CancelSend, DeleteDraft, DetachFromDraft, EditDraft, PutDraft,
+        SendDraft,
+    },
     mailbox::{LabelChange, SetLabels},
     parse::{self, html_body, parse},
     query::{self, ConfiguredAccount},
-    store::{MailStore, VariantHash},
+    store::{Store, VariantHash},
 };
 use std::{path::Path, sync::Arc, time::Duration};
 use uplink_protocol::{
-    compose::{DraftContent, DraftId, OutboxId, Splice},
+    compose::{BlobId, DraftAttachmentId, DraftContent, DraftId, OutboxId, Splice, UploadedBlob},
     mail::{EntryId, EntryList, LabelId, ListPosition, MessageContent, MessageId},
     ErrorCode, ServerError, ServerResponse,
 };
@@ -22,11 +25,17 @@ use uplink_tx_log::{
 /// The most entries a list or search request may ask for.
 pub const MAX_LIMIT: u32 = 500;
 
+/// The most a draft's attachments may total, in bytes: Gmail's limit.
+/// Encoded as base64, they make a message of up to ~34 MB, within the 35
+/// MB Gmail takes.
+pub const MAX_ATTACHMENTS: u64 = 25 << 20;
+
 #[derive(Clone)]
 pub struct Mail {
     dispatcher: Dispatcher,
     reader: Reader,
-    store: MailStore,
+    store: Store,
+    blobs: Store,
     accounts: Arc<Vec<ConfiguredAccount>>,
     send_delay: Duration,
 }
@@ -44,7 +53,8 @@ impl Mail {
         Self {
             dispatcher,
             reader: Reader::new(reader),
-            store: MailStore::new(data_root),
+            store: Store::mail(data_root),
+            blobs: Store::blobs(data_root),
             accounts: Arc::new(accounts),
             send_delay,
         }
@@ -256,6 +266,7 @@ impl Mail {
                 account,
                 revision: 0,
                 content,
+                attachments: vec![],
                 in_reply_to,
             })
             .await
@@ -268,6 +279,96 @@ impl Mail {
                 revision: Some(revision),
                 splice,
             })
+            .await
+    }
+
+    /// Stores an uploaded file, to be attached to drafts.
+    pub async fn put_blob(&self, content: Vec<u8>) -> Result<UploadedBlob, ServerError> {
+        let blobs = self.blobs.clone();
+        tokio::task::spawn_blocking(move || {
+            let blob = blobs.put(&content).map_err(internal)?;
+            Ok(UploadedBlob {
+                blob: BlobId(blob.0),
+                size: content.len().try_into().expect("sizes fit in i64"),
+            })
+        })
+        .await
+        .expect("storing does not panic")
+    }
+
+    /// Stores the message's attachment at `index` as a blob, to attach it
+    /// to a draft forwarding the message.
+    pub async fn copy_attachment(
+        &self,
+        message: MessageId,
+        index: u32,
+    ) -> Result<UploadedBlob, ServerError> {
+        let (_, _, content) = self.attachment(message, index).await?;
+        self.put_blob(content).await
+    }
+
+    pub async fn attach_to_draft(
+        &self,
+        draft: DraftId,
+        blob: BlobId,
+        name: String,
+        mime: String,
+    ) -> Response {
+        if name.trim().is_empty() || name.contains(char::is_control) {
+            return Err(error(
+                ErrorCode::Invalid,
+                format!("not a file name: {name:?}"),
+            ));
+        }
+        if !is_mime_type(&mime) {
+            return Err(error(
+                ErrorCode::Invalid,
+                format!("not a MIME type: {mime:?}"),
+            ));
+        }
+        let hash = VariantHash::parse(&blob.0)
+            .ok_or_else(|| error(ErrorCode::Invalid, format!("not a blob: {:?}", blob.0)))?;
+        let size = self
+            .blobs
+            .size(&hash)
+            .map_err(internal)?
+            .ok_or_else(|| error(ErrorCode::NotFound, format!("no blob {}", blob.0)))?;
+        let id = draft.clone();
+        self.reader
+            .read(move |conn| {
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                let draft = compose::draft(&tx, &id)
+                    .map_err(internal)?
+                    .ok_or_else(|| error(ErrorCode::NotFound, format!("no draft {}", id.0)))?;
+                let attached: i64 = draft.attachments.iter().map(|a| a.size).sum();
+                if attached as u64 + size > MAX_ATTACHMENTS {
+                    return Err(error(
+                        ErrorCode::Invalid,
+                        format!("attachments may total at most {} MB", MAX_ATTACHMENTS >> 20),
+                    ));
+                }
+                Ok(())
+            })
+            .await?;
+        self.dispatcher
+            .answer(AttachToDraft {
+                draft,
+                id: None,
+                blob,
+                name,
+                mime,
+                size: size.try_into().expect("sizes fit in i64"),
+            })
+            .await
+    }
+
+    pub async fn detach_from_draft(
+        &self,
+        draft: DraftId,
+        attachment: DraftAttachmentId,
+    ) -> Response {
+        self.dispatcher
+            .answer(DetachFromDraft { draft, attachment })
             .await
     }
 
@@ -349,6 +450,20 @@ fn validate_modify_labels(
         }
     }
     Ok(())
+}
+
+/// `type/subtype`, optionally with parameters.
+fn is_mime_type(mime: &str) -> bool {
+    let essence = mime.split(';').next().expect("split yields one");
+    let token = |t: &str| {
+        !t.is_empty()
+            && t.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"!#$&-^_.+".contains(&b))
+    };
+    !mime.contains(char::is_control)
+        && essence
+            .split_once('/')
+            .is_some_and(|(kind, subtype)| token(kind) && token(subtype))
 }
 
 fn check_limit(limit: u32) -> Result<(), ServerError> {

@@ -6,15 +6,18 @@ import type {
   ClientRequest,
   Draft,
   DraftContent,
+  DraftAttachmentId,
   DraftEdited,
   DraftField,
   LogEntry,
+  MessageContent,
   MessageId,
   OutboxId,
   OutboxItem,
   ServerResponse,
   Splice,
 } from '../generated/protocol'
+import type { Blobs } from '../blobs'
 import { RequestError, type Requester } from '../connection'
 import { ComposeSession } from '../compose/session'
 import { apply } from '../compose/splice'
@@ -42,7 +45,7 @@ export class DraftStore {
   })
 
   constructor(
-    private readonly server: Requester,
+    private readonly server: Requester & Blobs,
     private readonly ops: Ops,
   ) {}
 
@@ -127,6 +130,57 @@ export class DraftStore {
       }
       throw error
     }
+  }
+
+  /** Uploads `files` and attaches them; resolves once all are, or one
+   * failed. */
+  async attach(draft: string, files: readonly File[]): Promise<void> {
+    for (const file of files) {
+      let uploaded
+      try {
+        uploaded = await this.server.upload(file)
+      } catch (error) {
+        this.ops.fail(`Could not attach ${file.name}: ${(error as Error).message}`)
+        return
+      }
+      const entry = await this.ops.dispatch({
+        type: 'attach_to_draft',
+        draft,
+        blob: uploaded.blob,
+        name: file.name,
+        mime: file.type || 'application/octet-stream',
+      })
+      if (!entry) return
+    }
+  }
+
+  /** Attaches the files `message` has, as forwarding it does; not the
+   * images its body shows, which the forward's text does not. */
+  async attachForwarded(draft: string, message: MessageContent): Promise<void> {
+    for (const a of message.attachments.filter((a) => !a.inline)) {
+      let copied
+      try {
+        copied = await this.server.copyAttachment(message.id, a.index)
+      } catch (error) {
+        this.ops.fail(`Could not attach ${a.name ?? 'an attachment'}: ${(error as Error).message}`)
+        return
+      }
+      const entry = await this.ops.dispatch(
+        {
+          type: 'attach_to_draft',
+          draft,
+          blob: copied.blob,
+          name: a.name ?? `attachment-${a.index}`,
+          mime: a.mime,
+        },
+        true,
+      )
+      if (!entry) return
+    }
+  }
+
+  detach(draft: string, attachment: DraftAttachmentId) {
+    return this.ops.dispatch({ type: 'detach_from_draft', draft, attachment })
   }
 
   discard(draft: string) {

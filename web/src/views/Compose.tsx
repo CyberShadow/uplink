@@ -5,14 +5,15 @@
 
 import { Editor } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
-import { useEffect, useLayoutEffect, useRef } from 'preact/hooks'
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
-import type { DraftField } from '../generated/protocol'
+import type { Draft, DraftField } from '../generated/protocol'
 import type { ComposeSession } from '../compose/session'
 import { diff, movePosition } from '../compose/splice'
 import { useServices } from '../context'
 import { keepFocus, useKeymap } from '../keymap'
 import styles from './Compose.module.css'
+import { fileSize } from './size'
 
 export default function Compose(props: { draft?: string }) {
   const { drafts } = useServices()
@@ -20,7 +21,7 @@ export default function Compose(props: { draft?: string }) {
   const draft = loaded?.get(props.draft!)
   if (!loaded) return <p class={styles.placeholder}>Loading…</p>
   if (!draft) return <p class={styles.placeholder}>This draft was sent or discarded.</p>
-  return <ComposeForm session={drafts.session(draft.id)} />
+  return <ComposeForm session={drafts.session(draft.id)} draft={draft} />
 }
 
 const ADDRESS_FIELDS: [DraftField, string][] = [
@@ -29,8 +30,8 @@ const ADDRESS_FIELDS: [DraftField, string][] = [
   ['bcc', 'Bcc'],
 ]
 
-function ComposeForm(props: { session: ComposeSession }) {
-  const { session } = props
+function ComposeForm(props: { session: ComposeSession; draft: Draft }) {
+  const { session, draft } = props
   const { drafts, mail } = useServices()
   const { route } = useLocation()
   const form = useRef<HTMLFormElement>(null)
@@ -39,6 +40,16 @@ function ComposeForm(props: { session: ComposeSession }) {
   const body = useRef<HTMLDivElement>(null)
   const content = session.content.value
   const gone = session.state.value === 'gone'
+  const picker = useRef<HTMLInputElement>(null)
+  const [uploading, setUploading] = useState(0)
+  const attach = async (files: readonly File[]) => {
+    setUploading((n) => n + files.length)
+    try {
+      await drafts.attach(session.id, files)
+    } finally {
+      setUploading((n) => n - files.length)
+    }
+  }
 
   const close = () => {
     session.flush()
@@ -46,6 +57,7 @@ function ComposeForm(props: { session: ComposeSession }) {
     else route('/')
   }
   const send = async () => {
+    if (uploading > 0) return
     await session.flush()
     if (session.state.value === 'gone') return
     if (await drafts.send(session.id)) close()
@@ -123,20 +135,70 @@ function ComposeForm(props: { session: ComposeSession }) {
         event.preventDefault()
         send()
       }}
+      onDragOver={(event) => {
+        if (!gone && event.dataTransfer?.types.includes('Files')) event.preventDefault()
+      }}
+      onDrop={(event) => {
+        const files = event.dataTransfer?.files
+        if (gone || !files?.length) return
+        event.preventDefault()
+        attach([...files])
+      }}
     >
       <div class={styles.from}>From {from}</div>
       {ADDRESS_FIELDS.map(([name, label]) => field(name, label))}
       {field('subject', 'Subject')}
       <div class={styles.body} ref={body} aria-label="Body" />
+      {draft.attachments.length > 0 && (
+        <ul class={styles.attachments} aria-label="Attachments">
+          {draft.attachments.map((a) => (
+            <li key={a.id}>
+              {a.name} <span class={styles.size}>{fileSize(a.size)}</span>
+              <button
+                type="button"
+                aria-label={`Remove ${a.name}`}
+                title="Remove"
+                onMouseDown={keepFocus}
+                onClick={() => drafts.detach(session.id, a.id)}
+                disabled={gone}
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       <div class={styles.actions}>
-        <button type="submit" disabled={gone}>
+        <button type="submit" disabled={gone || uploading > 0}>
           Send
         </button>
+        <button type="button" onMouseDown={keepFocus} onClick={() => picker.current!.click()} disabled={gone}>
+          Attach
+        </button>
+        <input
+          ref={picker}
+          type="file"
+          multiple
+          hidden
+          aria-label="Files to attach"
+          onChange={(event) => {
+            const input = event.currentTarget
+            const files = [...(input.files ?? [])]
+            input.value = ''
+            if (files.length) attach(files)
+          }}
+        />
         <button type="button" onMouseDown={keepFocus} onClick={discard} disabled={gone}>
           Discard
         </button>
         <span class={styles.state} aria-live="polite">
-          {gone ? 'Sent or discarded elsewhere' : session.state.value === 'saved' ? 'Saved' : 'Saving…'}
+          {gone
+            ? 'Sent or discarded elsewhere'
+            : uploading > 0
+              ? 'Attaching…'
+              : session.state.value === 'saved'
+                ? 'Saved'
+                : 'Saving…'}
         </span>
         {session.error.value && <span class={styles.error}>{session.error.value}</span>}
       </div>

@@ -109,7 +109,7 @@ Don't litigate these in code review.
 6. **No client-side persistence.** No client cache of mail metadata, no
    client cache of Matrix events. The SPA loads from the server on connect,
    keeps reactive state in memory, and writes nothing to disk. (IndexedDB
-   write-through of draft text is deferred, §7.4.)
+   write-through of draft text is deferred, §7.5.)
 
 ### 1.3 Out of scope for MVP (covered in `docs/ROADMAP.md`)
 
@@ -1008,7 +1008,48 @@ in the log UI ("edited draft 'Re: lunch'"), expandable. Because undo is
 appended rather than destructive, the history of a draft is never lost —
 in the spirit of vim's and emacs' persistent undo.
 
-### 7.4 IndexedDB write-through (deferred)
+### 7.4 Attachments
+
+A file is attached in two steps. The browser uploads it, `POST
+/api/blobs` with the file as the body, into the blob store: `blobs/` in
+the data root, content-addressed like the mail store (§4.1), and answered
+with `{blob, size}` (the SHA-256). Then `AttachToDraft {draft, blob, name,
+mime}` attaches it, as an op of its own:
+
+```rust
+/// With an `id`, reattaches the attachment as it was before it was
+/// detached (the inverse of `DetachFromDraft`).
+struct AttachToDraft { draft: DraftId, id: Option<DraftAttachmentId>, blob: BlobId, name: String, mime: String, size: i64 }
+struct DetachFromDraft { draft: DraftId, attachment: DraftAttachmentId }
+```
+
+Uploading is over HTTP rather than the WebSocket because files are large
+and binary; it changes nothing but the blob store, so it needs no log
+entry, and a blob attached to nothing is harmless. Attachments
+(`draft_attachment`) are part of the draft (`Draft.attachments`), but not
+of its text: attaching and detaching leave the revision as it is, so they
+never conflict with edits in flight, and they announce themselves with
+`DraftsChanged`, upon which tabs reload the drafts. Discarding, sending
+and undoing either take the attachments along (`PutDraft` and the
+outbox's copy of the draft include them). Blobs are never deleted: log
+entries refer to them, as they do to mail.
+
+The server refuses names that are empty or contain control characters,
+MIME types that are not `type/subtype`, unknown blobs, and attachments
+totalling more than 25 MB, Gmail's limit (uploads are cut off there
+too). The client sends the browser's MIME type for the file, or
+`application/octet-stream` when it has none.
+
+Forwarding takes the original's files along (not the images its body
+shows, since the forward quotes its text): `POST
+/api/messages/{message}/attachments/{index}/blob` copies each into the
+blob store, server-side, and the client attaches it.
+
+In the compose window, Attach opens the file picker; files can also be
+dropped onto it. Each attachment shows as a chip, with × to remove it.
+Send waits until uploads have finished.
+
+### 7.5 IndexedDB write-through (deferred)
 
 Unsaved text survives a dropped connection without it: the tab keeps it,
 and edits are resent on reconnect. Only closing the tab while
@@ -1066,7 +1107,11 @@ IMAP's per-folder copies, and a REST fake is practical to test against
 ### 8.2 Gmail — send
 
 - **Transport**: Gmail API `users.messages.send`. Build RFC 5322 message
-  in-memory, base64url-encode it, POST.
+  in-memory and POST it as a multipart upload
+  (`/upload/...?uploadType=multipart`: JSON metadata with the `threadId`,
+  then the message as `message/rfc822`), which takes messages of up to
+  35 MB; a JSON body with the message inlined as base64url is limited to
+  5 MB, too little for attachments.
 - **Why API not SMTP**: avoids "Sent" folder synchronization mismatch
   (Gmail SMTP doesn't append to Sent; the API does).
 - **Library**: hand-rolled HTTPS+JSON via `reqwest`. No SDK; Gmail send is
@@ -1129,12 +1174,13 @@ IMAP's per-folder copies, and a REST fake is practical to test against
 - **Outbound MIME assembly**: `mail-builder` crate (sibling of mail-parser
   from stalwartlabs): `multipart/alternative { text/plain; text/html }`,
   the plain text derived from the sanitized HTML (mail-parser's
-  `html_to_text`). The Message-ID is generated when the mail is queued,
+  `html_to_text`), inside `multipart/mixed` with the attached files
+  (§7.4), read from the blob store when the message is sent. The Message-ID is generated when the mail is queued,
   `<random@account.uplink>`; the Date when it is sent.
 - **Replies and forwards** are prefilled by the client from the loaded
   message: `Re:`/`Fwd:` subject, recipients (reply-all drops the
-  account's own address), and the body quoted. Attaching files is not
-  supported yet (ROADMAP).
+  account's own address), and the body quoted. A forward takes the
+  original's files along (§7.4).
 
 ### 8.6 Persistence of sent mail
 
@@ -1200,8 +1246,8 @@ Attachments: `LoadMessage` lists the message's parts other than its body
 `GET /api/messages/{message}/attachments/{index}` (behind basic auth,
 like everything) serves one as a download: `Content-Disposition:
 attachment`, `nosniff`, and `Content-Security-Policy: sandbox`, so that
-an HTML attachment opened anyway cannot act as uplink's page. Sending
-attachments is not supported yet.
+an HTML attachment opened anyway cannot act as uplink's page. Attaching
+files to drafts: §7.4.
 
 ---
 
@@ -1827,8 +1873,9 @@ too; HTML mail keeps its white paper); `#` and `!` with Gmail's hiding
 of Trash and Spam, and All Mail (`ga`) (§8.1); joining and leaving
 Matrix rooms (§9.7); search and lists under 100 ms on a 50,000-message
 mailbox (§8.7); attachments listed and downloaded, and inline images
-shown (§8.9). Not done: attaching files when composing; list
-virtualization (lists load a page at a time as they scroll).
+shown (§8.9); attaching files when composing, and forwarding them
+(§7.4). Not done: list virtualization (lists load a page at a time as
+they scroll).
 
 ### Why this ordering
 
@@ -2021,7 +2068,9 @@ request).
   404 for a `startHistoryId` older than the retained history, so the
   full-resync fallback is testable; `0002` lets a loopback redirect URI
   match a registered one on any port, as Google does for installed apps
-  (RFC 8252 §7.3), so `uplink oauth init` can listen on an ephemeral port.
+  (RFC 8252 §7.3), so `uplink oauth init` can listen on an ephemeral port;
+  `0003` accepts multipart uploads (`multipart/related`: JSON metadata,
+  then the message), as uplink sends mail (§8.2).
   uplink's Google endpoints (auth, token, API base) are configurable,
   defaulting to Google's.
 - **Real accounts.** A fake can diverge from the real service in

@@ -25,6 +25,11 @@ export class Ops {
     if (this.recent.size > RECENT) this.recent.delete(this.recent.keys().next().value!)
   }
 
+  /** Notes a failure to do what the user asked, before any op. */
+  fail(message: string) {
+    this.notice.value = { kind: 'failed', message }
+  }
+
   undo(id: TxLogId) {
     return this.dispatch({ type: 'undo', tx_log_id: id })
   }
@@ -36,7 +41,7 @@ export class Ops {
     try {
       response = await this.server.request(request)
     } catch (error) {
-      this.notice.value = { kind: 'failed', message: (error as Error).message }
+      this.fail((error as Error).message)
       return null
     }
     if (response.type !== 'dispatched' && response.type !== 'undone') {

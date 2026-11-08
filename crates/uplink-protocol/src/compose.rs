@@ -31,6 +31,38 @@ pub struct DraftContent {
     pub body: String,
 }
 
+/// A file uploaded to be attached (`POST /api/blobs`, SPEC §7.4): the
+/// lowercase hex SHA-256 of its content.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
+#[serde(transparent)]
+pub struct BlobId(pub String);
+
+/// The answer to `POST /api/blobs`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct UploadedBlob {
+    pub blob: BlobId,
+    /// In bytes.
+    pub size: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
+#[serde(transparent)]
+pub struct DraftAttachmentId(pub i64);
+
+/// A file attached to a draft.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct DraftAttachment {
+    pub id: DraftAttachmentId,
+    pub blob: BlobId,
+    /// The file name it is sent with.
+    pub name: String,
+    pub mime: String,
+    /// In bytes.
+    pub size: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Draft {
@@ -40,6 +72,9 @@ pub struct Draft {
     /// Number of edits applied since creation.
     pub revision: i64,
     pub content: DraftContent,
+    /// In the order attached. Not part of `content`: attaching and
+    /// detaching are ops of their own, and leave the revision as it is.
+    pub attachments: Vec<DraftAttachment>,
     /// The message this replies to.
     pub in_reply_to: Option<MessageId>,
     /// Ms since the Unix epoch.
