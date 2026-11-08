@@ -1,0 +1,84 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  background: rgb(0 0 0 / 0.3);
+}
+
+.dialog {
+  min-width: 320px;
+  max-height: 70vh;
+  overflow: auto;
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: var(--bg);
+  box-shadow: 0 4px 24px rgb(0 0 0 / 0.3);
+}
+
+.dialog h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.filter {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: inherit;
+  color: inherit;
+  font: inherit;
+}
+
+.options {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.options li {
+  padding: 3px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.highlighted {
+  background: var(--focus);
+}
+
+.check {
+  margin-right: 8px;
+}
+
+.empty {
+  color: var(--muted);
+}
+
+.keys td {
+  padding: 2px 12px 2px 0;
+}
+
+.notice {
+  position: fixed;
+  left: 24px;
+  bottom: 24px;
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  padding: 10px 16px;
+  border-radius: 6px;
+  background: #323232;
+  color: #fff;
+}
+
+.notice button {
+  border: 0;
+  background: none;
+  color: #8ab4f8;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}

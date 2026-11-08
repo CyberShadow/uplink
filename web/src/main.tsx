@@ -1,7 +1,14 @@
 import { render } from 'preact'
+import { Connection } from './connection'
+import { MailStore } from './stores/mail'
+import { App } from './views/App'
+import './styles.css'
 
-function App() {
-  return <h1>hello from uplink</h1>
-}
+const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
+const mail = new MailStore({ request: (body) => connection.request(body) })
+const connection = new Connection(url, {
+  reset: () => mail.reset(),
+  entry: (entry) => mail.apply(entry),
+})
 
-render(<App />, document.getElementById('app')!)
+render(<App mail={mail} status={connection.status} />, document.getElementById('app')!)

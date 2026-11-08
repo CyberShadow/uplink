@@ -29,28 +29,33 @@
         # pnpm_9 (9.x) produces a JSON-based v10 store that fetchPnpmDeps
         # handles correctly; pnpm_10/11 produces a SQLite v11 store that
         # is not fully supported by the fixup phase yet.
-        # Update pnpmDepsHash with: nix build .#uplinkWebDeps 2>&1 | grep "got:"
+        # When web/pnpm-lock.yaml changes, get the new hash with
+        #   nix build .#uplinkWebDeps --rebuild 2>&1 | grep got:
+        # (--rebuild: the output for the old hash satisfies a plain build).
         uplinkWebDeps = pkgs.fetchPnpmDeps {
           pname = "uplink-web-deps";
           src = ./web;
           fetcherVersion = 3;
           pnpm = pkgs.pnpm_9;
-          hash = "sha256-HN/XY+FjaI25/xW1oJ4sjOfYioEIiIPayDH6s+FWYHc=";
+          hash = "sha256-QXPucwoeu36OMVznwoDDXiP/p7DWjVhTP87H9dPGXlc=";
         };
 
-        uplinkWeb = pkgs.stdenv.mkDerivation {
-          pname = "uplink-web";
+        # A derivation running `script` in web/ with its dependencies.
+        webDerivation = pname: script: pkgs.stdenv.mkDerivation {
+          inherit pname;
           version = "0.1.0";
           src = ./web;
           nativeBuildInputs = [ pkgs.nodejs pkgs.pnpm_9 pkgs.pnpmConfigHook ];
           pnpmDeps = uplinkWebDeps;
-          buildPhase = ''
-            pnpm exec tsc
-            pnpm exec vite build --outDir $out
-          '';
+          buildPhase = script;
           installPhase = "true";
           dontInstall = true;
         };
+
+        uplinkWeb = webDerivation "uplink-web" ''
+          pnpm exec tsc
+          pnpm exec vite build --outDir $out
+        '';
 
         # ── Rust ───────────────────────────────────────────────────────────
         # Cargo sources plus the SQL migrations that uplink-storage embeds
@@ -149,20 +154,13 @@
             src = cargoSrc;
           };
 
-          # Verify the pnpm-based SPA build produces valid output.
-          frontend-build = pkgs.stdenv.mkDerivation {
-            pname = "uplink-frontend-check";
-            version = "0.1.0";
-            src = ./web;
-            nativeBuildInputs = [ pkgs.nodejs pkgs.pnpm_9 pkgs.pnpmConfigHook ];
-            pnpmDeps = uplinkWebDeps;
-            buildPhase = ''
-              pnpm exec tsc
-              pnpm exec vite build --outDir $out
-            '';
-            installPhase = "true";
-            dontInstall = true;
-          };
+          # Type-checks and bundles the SPA.
+          frontend-build = uplinkWeb;
+
+          frontend-test = webDerivation "uplink-web-test" ''
+            pnpm test
+            mkdir $out
+          '';
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           # NixOS VM tests (SPEC §15.10).
           integration-gmail = import ./nix/tests/gmail.nix {

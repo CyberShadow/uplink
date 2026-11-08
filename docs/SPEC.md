@@ -1359,8 +1359,11 @@ src/views/
 
 Gmail's scheme. The notable choices we ARE picking:
 
-- `j`/`k` next/prev message.
+- `j`/`k` next/prev message (in a message: open the next/prev one).
+- `o`/`Enter` open, `x` select, `*a`/`*n` select all / none.
 - `gi`/`gs`/`gd`/`gt`/`ga` jump to Inbox / Starred / Drafts / Sent / All.
+- `Shift+i`/`Shift+u` mark read / unread, `l` label (a filterable picker
+  toggling a user label on the selection).
 - `c` compose, `r` reply, `a` reply-all, `f` forward.
 - `e` archive, `#` delete, `!` mark as spam, `s` star.
 - `/` focus search.
@@ -1369,12 +1372,38 @@ Gmail's scheme. The notable choices we ARE picking:
 
 The notable choices we are NOT picking:
 
+Implemented at M4: `j k o Enter u x *a *n e s l Shift+i Shift+u gi gs gt
+gd / ?`. `ga` waits for an All Mail view (lists are of a label), `#` and `!`
+for trash/spam ops, `c r a f` for compose (M6). Opening a message marks it
+read, as Gmail does, without an undo notice.
+
 - **No `z` for undo.** Undo lives in the transaction log view and as an
   optional toast immediately after each mutating op. `z` overloads
   unhelpfully when search/compose has focus, and the tx_log is the
   better surface for the multi-step undo we actually support.
 
-### 12.6 Bundle budget
+### 12.6 Client state (M4)
+
+`stores/mail.ts` mirrors accounts and the list on show. Responses replace
+what they cover; log entries apply on top — label changes and removals
+locally (an entry losing the label on show leaves the list, focus moving
+on), anything else (new entries, an entry joining the label) by reloading
+the list's loaded range. This needs no id bookkeeping because the server
+sends the entries a response reflects before the response (§5.4). A
+query in flight when the socket drops is sent again on the next
+connection; an op is failed, since it may have been applied (the log will
+show it). The last op dispatched from the tab is shown with an Undo
+button.
+
+Lists are not virtualized yet: pages of 100 load as the focus or scroll
+nears the end; a reload re-reads up to 500. `@tanstack/react-virtual`
+comes in when lists get long enough to need it.
+
+Tests: vitest + jsdom + `@testing-library/preact`; the connection against
+`mock-socket`, the store and views against an in-memory stand-in for the
+server's mail requests (`web/src/test/server.ts`).
+
+### 12.7 Bundle budget
 
 Target: < 250 KB gzipped JS for first paint. Achievable with Preact + the
 listed libs (per the Matrix UI research, the Matrix-relevant external lib
@@ -1946,8 +1975,10 @@ visible. Routes (handled by `preact-iso`):
 | Route                                  | Content pane                           |
 |----------------------------------------|----------------------------------------|
 | `/`                                    | Home / dashboard                       |
-| `/mail/:account/:folder`               | Thread list                            |
-| `/mail/:account/:folder/:thread`       | Thread view                            |
+| `/mail/:account/:label`                | Message list (of a label, by provider id, e.g. `INBOX`) |
+| `/mail/:account/:label/:entry`         | Message view (thread view once threads exist) |
+| `/search/:terms`                       | Search results                         |
+| `/search/:terms/:entry`                | Message view, within the results       |
 | `/mail/compose/:draft`                 | Compose (new or continued draft)       |
 | `/matrix/:account/:room`               | Room timeline                          |
 | `/matrix/:account/space/:space`        | Space overview                         |
