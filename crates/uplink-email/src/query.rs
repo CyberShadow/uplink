@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result};
 use uplink_protocol::{
-    mail::{Entry, EntryId, EntryList, Label, LabelId, ListPosition, MessageId},
+    mail::{Entry, EntryId, EntryList, Label, LabelId, ListPosition, MailProvider, MessageId},
     TxLogId,
 };
 use uplink_storage::rusqlite::{Connection, OptionalExtension, Row, ToSql, Transaction};
@@ -25,6 +25,7 @@ fn hidden(entry: &str) -> String {
 pub struct ConfiguredAccount {
     pub id: String,
     pub address: String,
+    pub provider: MailProvider,
 }
 
 pub fn accounts(
@@ -56,7 +57,7 @@ pub fn accounts(
                    SELECT entry FROM entry_label
                    WHERE desired AND label = (SELECT id FROM label
                                               WHERE account_id = ?1 AND external_id = 'UNREAD'))
-                 SELECT l.id, l.external_id, l.name, l.system,
+                 SELECT l.id, l.external_id, l.name, l.system, l.folder,
                    (SELECT count(*) FROM entry_label el
                     WHERE el.label = l.id AND el.desired
                       AND (l.external_id IN ('TRASH', 'SPAM')
@@ -75,14 +76,16 @@ pub fn accounts(
                     external_id: r.get(1)?,
                     name: r.get(2)?,
                     system: r.get(3)?,
-                    total: r.get(4)?,
-                    unread: r.get(5)?,
+                    folder: r.get(4)?,
+                    total: r.get(5)?,
+                    unread: r.get(6)?,
                 })
             })?
             .collect::<Result<_, _>>()?;
         accounts.push(uplink_protocol::mail::Account {
             id: account.id.clone(),
             address: account.address.clone(),
+            provider: account.provider,
             synced,
             labels,
         });

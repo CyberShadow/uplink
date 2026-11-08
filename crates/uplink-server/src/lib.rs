@@ -31,7 +31,9 @@ use uplink_config::{
 };
 use uplink_email::{gmail, m365, query::ConfiguredAccount, service::Mail};
 use uplink_matrix::service::Matrix;
-use uplink_protocol::{ClientRequest, ErrorCode, ServerError, ServerResponse, TxLogId};
+use uplink_protocol::{
+    mail::MailProvider, ClientRequest, ErrorCode, ServerError, ServerResponse, TxLogId,
+};
 use uplink_realtime::{Backend, Hub, Replay};
 use uplink_storage::seal::MasterKey;
 use uplink_todos::service::Todos;
@@ -148,10 +150,12 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
             AccountConfig::Gmail(gmail) => Some(ConfiguredAccount {
                 id: gmail.id.clone(),
                 address: gmail.address.clone(),
+                provider: MailProvider::Gmail,
             }),
             AccountConfig::M365(m365) => Some(ConfiguredAccount {
                 id: m365.id.clone(),
                 address: m365.address.clone(),
+                provider: MailProvider::M365,
             }),
             AccountConfig::Matrix(_) => None,
         })

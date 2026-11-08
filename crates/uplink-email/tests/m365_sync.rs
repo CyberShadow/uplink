@@ -16,7 +16,7 @@ use uplink_email::{
     m365::{api::Graph, oauth, sync::M365Sync},
     oauth::Credentials,
 };
-use uplink_protocol::{compose::OutboxState, ServerResponse};
+use uplink_protocol::{compose::OutboxState, mail::MailProvider, ServerResponse};
 use uplink_storage::seal::MasterKey;
 
 const ALICE: &str = "alice@example.com";
@@ -226,7 +226,7 @@ fn dispatched(response: ServerResponse) -> uplink_protocol::TxLogId {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn mirrors_the_mailbox_and_pushes_changes() {
-    let uplink = Uplink::new();
+    let uplink = Uplink::new(MailProvider::M365);
     let microsoft = Microsoft::start(uplink.dir.path()).await;
     let projects = microsoft
         .call(
@@ -363,7 +363,7 @@ async fn mirrors_the_mailbox_and_pushes_changes() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn lists_a_folder_anew_once_its_delta_link_expired() {
-    let uplink = Uplink::new();
+    let uplink = Uplink::new(MailProvider::M365);
     let microsoft = Microsoft::start(uplink.dir.path()).await;
     let kept = microsoft.deliver(&message("kept", "")).await;
     let deleted = microsoft.deliver(&message("deleted", "")).await;
@@ -402,7 +402,7 @@ async fn lists_a_folder_anew_once_its_delta_link_expired() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sends_mail_keeping_its_message_id() {
-    let uplink = Uplink::new();
+    let uplink = Uplink::new(MailProvider::M365);
     let microsoft = Microsoft::start(uplink.dir.path()).await;
     microsoft.deliver(&message("original", "lunch?")).await;
     let sync = uplink.start(microsoft.provider(), ALICE);

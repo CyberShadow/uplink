@@ -8,6 +8,7 @@ type Check = 'all' | 'some' | 'none'
 
 /** A filterable list of an account's labels, one to choose. */
 function Picker(props: {
+  account: Account
   name: string
   placeholder: string
   labels: Label[]
@@ -23,7 +24,7 @@ function Picker(props: {
   // filter's.
   useLayoutEffect(() => input.current?.focus(), [])
 
-  const labels = props.labels.filter((l) => labelName(l).toLowerCase().includes(filter.toLowerCase()))
+  const labels = props.labels.filter((l) => labelName(props.account, l).toLowerCase().includes(filter.toLowerCase()))
   const choose = (label: Label) => {
     props.choose(label)
     props.close()
@@ -63,7 +64,7 @@ function Picker(props: {
               onClick={() => choose(label)}
             >
               {check && <span class={styles.check}>{{ all: '☑', some: '⊟', none: '☐' }[check(label)]}</span>}
-              {labelName(label)}
+              {labelName(props.account, label)}
             </li>
           ))}
           {labels.length === 0 && <li class={styles.empty}>No labels</li>}
@@ -92,7 +93,7 @@ function MixedAccounts(props: { name: string; close: () => void }) {
   )
 }
 
-/** Toggles a user label on `targets` (`l`). */
+/** Toggles a user label on `targets` (`l`); folders are moved to instead. */
 export function LabelPicker(props: { targets: Entry[]; close: () => void }) {
   const { mail } = useServices()
   const account = useTargetAccount(props.targets)
@@ -103,9 +104,10 @@ export function LabelPicker(props: { targets: Entry[]; close: () => void }) {
   }
   return (
     <Picker
+      account={account}
       name="Label"
       placeholder="Label as…"
-      labels={navLabels(account).user}
+      labels={navLabels(account).user.filter((l) => !l.folder)}
       check={check}
       choose={(label) => mail.toggleLabel(props.targets, label)}
       close={props.close}
@@ -114,18 +116,23 @@ export function LabelPicker(props: { targets: Entry[]; close: () => void }) {
 }
 
 /** Moves `targets` out of the label on show, or else the Inbox, into a
- * user label or the Inbox (`v`). */
+ * user label or the Inbox (`v`); or, if the account has folders, into
+ * another folder. */
 export function MovePicker(props: { targets: Entry[]; from: string | null; close: () => void }) {
   const { mail } = useServices()
   const account = useTargetAccount(props.targets)
   if (!account) return <MixedAccounts name="Move to" close={props.close} />
   const inbox = mail.systemLabel(account.id, 'INBOX')
-  const from = account.labels.find((l) => l.external_id === props.from && (l === inbox || !l.system)) ?? inbox
+  const { system, user } = navLabels(account)
+  const folders = account.labels.some((l) => l.folder)
+  const targets = folders ? [...system, ...user].filter((l) => l.folder) : [inbox, ...user]
+  const from = targets.find((l) => l.external_id === props.from) ?? inbox
   return (
     <Picker
+      account={account}
       name="Move to"
       placeholder="Move to…"
-      labels={[inbox, ...navLabels(account).user].filter((l) => l !== from)}
+      labels={targets.filter((l) => l !== from)}
       choose={(label) => mail.move(props.targets, from, label)}
       close={props.close}
     />
@@ -137,6 +144,7 @@ export function GoToLabel(props: { account: Account; go: (label: Label) => void;
   const { system, user } = navLabels(props.account)
   return (
     <Picker
+      account={props.account}
       name="Go to label"
       placeholder="Go to label…"
       labels={[...system, ...user]}

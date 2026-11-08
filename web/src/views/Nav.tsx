@@ -1,21 +1,26 @@
 import { useLocation } from 'preact-iso'
-import type { Account, Label } from '../generated/protocol'
+import type { Account, Label, MailProvider } from '../generated/protocol'
 import { useServices } from '../context'
 import { allMailPath, mailPath } from './App'
 import { roomPath } from './Room'
 import styles from './Nav.module.css'
 
-/** Gmail's system labels worth a place in the nav, in Gmail's order. */
+/** The system labels worth a place in the nav, in Gmail's order; Microsoft
+ * 365's well-known folders have the ids of the Gmail labels that mean the
+ * same, and an Archive besides. */
 const SYSTEM: Record<string, string> = {
   INBOX: 'Inbox',
   STARRED: 'Starred',
   IMPORTANT: 'Important',
   SENT: 'Sent',
   // uplink's own drafts are in Drafts, above the accounts.
-  DRAFT: 'Gmail drafts',
+  DRAFT: 'drafts',
+  ARCHIVE: 'Archive',
   SPAM: 'Spam',
   TRASH: 'Trash',
 }
+
+const PROVIDER: Record<MailProvider, string> = { gmail: 'Gmail', m365: 'Outlook' }
 
 /** The account's system labels worth listing, then its own; All Mail goes
  * between them. */
@@ -29,8 +34,10 @@ export function navLabels(account: Account): { system: Label[]; user: Label[] } 
   return { system, user }
 }
 
-export function labelName(label: Label): string {
-  return (label.system && SYSTEM[label.external_id]) || label.name
+export function labelName(account: Account, label: Label): string {
+  if (!label.system) return label.name
+  if (label.external_id === 'DRAFT') return `${PROVIDER[account.provider]} drafts`
+  return SYSTEM[label.external_id] ?? label.name
 }
 
 export function Nav() {
@@ -48,7 +55,7 @@ export function Nav() {
     )
   }
   const labelLink = (account: Account, label: Label) =>
-    link(mailPath(account.id, label.external_id), labelName(label), label.unread)
+    link(mailPath(account.id, label.external_id), labelName(account, label), label.unread)
   return (
     <nav class={styles.nav}>
       <ul>

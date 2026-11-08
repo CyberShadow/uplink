@@ -789,10 +789,12 @@ pub(crate) mod service {
                 ConfiguredAccount {
                     id: "a".into(),
                     address: "a@x".into(),
+                    provider: uplink_protocol::mail::MailProvider::Gmail,
                 },
                 ConfiguredAccount {
                     id: "b".into(),
                     address: "b@x".into(),
+                    provider: uplink_protocol::mail::MailProvider::Gmail,
                 },
             ],
             std::time::Duration::from_secs(10),
@@ -1371,6 +1373,7 @@ fn speed_of_search_and_listing() {
             &[query::ConfiguredAccount {
                 id: "a".into(),
                 address: "a@x".into(),
+                provider: uplink_protocol::mail::MailProvider::Gmail,
             }],
         )
         .unwrap()

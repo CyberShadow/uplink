@@ -11,7 +11,7 @@ use uplink_email::{
 };
 use uplink_protocol::{
     compose::{DraftContent, DraftId, OutboxState},
-    mail::{EntryId, LabelId, MessageId},
+    mail::{EntryId, LabelId, MailProvider, MessageId},
     ServerResponse,
 };
 use uplink_realtime::Hub;
@@ -27,7 +27,8 @@ pub struct Uplink {
 }
 
 impl Uplink {
-    pub fn new() -> Self {
+    /// An account `test` at `provider`.
+    pub fn new(provider: MailProvider) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let mut registry = Registry::new();
         mailbox::register(&mut registry);
@@ -44,6 +45,7 @@ impl Uplink {
             vec![ConfiguredAccount {
                 id: "test".into(),
                 address: "alice@example.com".into(),
+                provider,
             }],
             SEND_DELAY,
         );

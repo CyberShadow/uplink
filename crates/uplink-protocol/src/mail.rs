@@ -25,9 +25,18 @@ pub struct LabelId(pub i64);
 pub struct Account {
     pub id: String,
     pub address: String,
+    pub provider: MailProvider,
     /// Whether the first full sync has completed.
     pub synced: bool,
     pub labels: Vec<Label>,
+}
+
+/// Who keeps a mail account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum MailProvider {
+    Gmail,
+    M365,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -39,6 +48,8 @@ pub struct Label {
     pub name: String,
     /// Defined by the provider rather than the user.
     pub system: bool,
+    /// One of the account's folders, of which an entry is in exactly one.
+    pub folder: bool,
     /// Entries carrying the label (as desired).
     pub total: u32,
     /// Of those, the ones also labelled `UNREAD`.

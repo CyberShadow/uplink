@@ -84,11 +84,16 @@ export type EntryId = number;
 
 export type LabelId = number;
 
-export type Account = { id: string, address: string, 
+export type Account = { id: string, address: string, provider: MailProvider, 
 /**
  * Whether the first full sync has completed.
  */
 synced: boolean, labels: Array<Label>, };
+
+/**
+ * Who keeps a mail account.
+ */
+export type MailProvider = "gmail" | "m365";
 
 export type Label = { id: LabelId, 
 /**
@@ -99,6 +104,10 @@ external_id: string, name: string,
  * Defined by the provider rather than the user.
  */
 system: boolean, 
+/**
+ * One of the account's folders, of which an entry is in exactly one.
+ */
+folder: boolean, 
 /**
  * Entries carrying the label (as desired).
  */

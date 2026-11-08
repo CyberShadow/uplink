@@ -41,6 +41,7 @@ fn main() {
         EntryId,
         LabelId,
         Account,
+        MailProvider,
         Label,
         Entry,
         ListPosition,

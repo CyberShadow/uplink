@@ -12,7 +12,7 @@ use uplink_email::{
     gmail::{api::Gmail, oauth, sync::GmailSync},
     oauth::Credentials,
 };
-use uplink_protocol::{compose::OutboxState, ServerResponse};
+use uplink_protocol::{compose::OutboxState, mail::MailProvider, ServerResponse};
 use uplink_storage::rusqlite::OptionalExtension;
 
 /// Gmail's sync task, polling quickly.
@@ -33,7 +33,7 @@ fn start_sync(uplink: &Uplink, provider: &Provider) -> tokio::task::JoinHandle<(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn mirrors_the_mailbox_and_pushes_changes() {
-    let uplink = Uplink::new();
+    let uplink = Uplink::new(MailProvider::Gmail);
     let provider = Provider::start(uplink.dir.path(), None).await;
 
     // Mail present before the first sync, and mail arriving afterwards.
@@ -111,7 +111,7 @@ async fn mirrors_the_mailbox_and_pushes_changes() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn resyncs_fully_once_history_expired() {
-    let uplink = Uplink::new();
+    let uplink = Uplink::new(MailProvider::Gmail);
     if common::real() {
         eprintln!("skipped: needs an emulated account, whose history can expire");
         return;
@@ -161,7 +161,7 @@ async fn resyncs_fully_once_history_expired() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sends_mail_after_the_delay_unless_undone() {
-    let uplink = Uplink::new();
+    let uplink = Uplink::new(MailProvider::Gmail);
     let provider = Provider::start(uplink.dir.path(), None).await;
     let me = provider.account.address.clone();
     provider.deliver(&message("original", "lunch?")).await;

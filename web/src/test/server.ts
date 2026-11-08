@@ -17,6 +17,7 @@ import type {
   Label,
   LabelId,
   LabelState,
+  MailProvider,
   LogEntry,
   MatrixAccount,
   MatrixOutboxItem,
@@ -39,6 +40,8 @@ import { apply } from '../compose/splice'
 export const ME = '@me:example.org'
 
 const SYSTEM = ['INBOX', 'UNREAD', 'STARRED', 'IMPORTANT', 'SENT', 'DRAFT', 'TRASH', 'SPAM']
+/** Microsoft 365's well-known folders, by the ids uplink gives them. */
+const M365_FOLDERS = ['INBOX', 'SENT', 'DRAFT', 'TRASH', 'SPAM', 'ARCHIVE']
 const HIDING = ['TRASH', 'SPAM']
 
 interface Undoable {
@@ -50,7 +53,7 @@ interface Undoable {
 export class FakeServer implements Requester, Blobs {
   readonly requests: ClientRequest[] = []
   private client!: Client
-  private accounts: { id: string; address: string; labels: Label[] }[] = []
+  private accounts: { id: string; address: string; provider: MailProvider; labels: Label[] }[] = []
   private entries: Entry[] = []
   private log: LogEntry[] = []
   private undoable = new Map<number, Undoable>()
@@ -88,11 +91,23 @@ export class FakeServer implements Requester, Blobs {
       ...SYSTEM.map((external) => this.label(external, external, true)),
       ...userLabels.map((name, i) => this.label(`Label_${i + 1}`, name, false)),
     ]
-    this.accounts.push({ id, address: `${id}@example.com`, labels })
+    this.accounts.push({ id, address: `${id}@example.com`, provider: 'gmail', labels })
   }
 
-  private label(external_id: string, name: string, system: boolean): Label {
-    return { id: this.nextLabel++, external_id, name, system, total: 0, unread: 0 }
+  /** A Microsoft 365 account: folders, of which an entry is in one, and
+   * categories. */
+  addM365Account(id: string, folders: string[], categories: string[] = []) {
+    const labels = [
+      ...M365_FOLDERS.map((external) => this.label(external, external, true, true)),
+      ...['UNREAD', 'STARRED', 'IMPORTANT'].map((external) => this.label(external, external, true)),
+      ...folders.map((name, i) => this.label(`Folder_${i + 1}`, name, false, true)),
+      ...categories.map((name) => this.label(`cat:${name}`, name, false)),
+    ]
+    this.accounts.push({ id, address: `${id}@example.com`, provider: 'm365', labels })
+  }
+
+  private label(external_id: string, name: string, system: boolean, folder = false): Label {
+    return { id: this.nextLabel++, external_id, name, system, folder, total: 0, unread: 0 }
   }
 
   labelId(account: string, externalOrName: string): LabelId {
@@ -628,6 +643,7 @@ export class FakeServer implements Requester, Blobs {
       return {
         id: account.id,
         address: account.address,
+        provider: account.provider,
         synced: true,
         labels: account.labels.map((label) => {
           const showsHidden = HIDING.includes(label.external_id)

@@ -8,7 +8,6 @@ import { respond, type Response } from '../compose/reply'
 import { allMailPath, mailPath, searchPath } from './App'
 import { HtmlBody } from './HtmlBody'
 import { LabelPicker, MovePicker } from './LabelPicker'
-import { labelName } from './Nav'
 import { composePath } from './Outgoing'
 import { messagePath } from './Todos'
 import styles from './Mail.module.css'
@@ -348,7 +347,7 @@ function LabelChips(props: { mail: MailStore; entry: Entry }) {
           </span>
         ) : (
           <span key={label.id} class={styles.chip}>
-            {labelName(label)}
+            {label.name}
           </span>
         ),
       )}

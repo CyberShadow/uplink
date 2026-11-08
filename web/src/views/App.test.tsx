@@ -311,6 +311,61 @@ describe('mail', () => {
   })
 })
 
+describe('Microsoft 365', () => {
+  beforeEach(() => {
+    server.addM365Account('office', ['Inbox/Projects'], ['Red'])
+    server.deliver('office', 'Memo')
+  })
+
+  it('lists the well-known folders in the nav, its drafts as Outlook’s', async () => {
+    await start('/mail/office/INBOX')
+    const office = within(screen.getByRole('navigation'))
+      .getByText('office@example.com')
+      .closest('section')!
+    expect(
+      within(office as HTMLElement)
+        .getAllByRole('link')
+        .map((l) => l.textContent),
+    ).toEqual([
+      'Inbox1',
+      'Starred',
+      'Important',
+      'Sent',
+      'Outlook drafts',
+      'Archive',
+      'Spam',
+      'Trash',
+      'All Mail',
+      'Inbox/Projects',
+      'Red',
+    ])
+    expect(within(screen.getByRole('navigation')).getByRole('link', { name: 'Gmail drafts' })).toBeTruthy()
+  })
+
+  it('moves to a folder with v, and labels with categories only', async () => {
+    const user = await start('/mail/office/INBOX')
+    await user.keyboard('l')
+    expect(
+      within(screen.getByRole('dialog', { name: 'Label' }))
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['☐Red'])
+    await user.keyboard('{Escape}')
+
+    await user.keyboard('v')
+    expect(
+      within(screen.getByRole('dialog', { name: 'Move to' }))
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['Sent', 'Outlook drafts', 'Archive', 'Spam', 'Trash', 'Inbox/Projects'])
+    const memo = client.mail.list.value!.entries[0]
+    await user.keyboard('proj{Enter}')
+    await screen.findByText('No messages.')
+    expect(server.labelsOf(memo.id)).toContain(server.labelId('office', 'Inbox/Projects'))
+    expect(server.labelsOf(memo.id)).not.toContain(server.labelId('office', 'INBOX'))
+  })
+})
+
 describe('compose', () => {
   it('composes with c, saves as typed, and sends with Ctrl+Enter', async () => {
     const user = await start('/mail/work/INBOX')
