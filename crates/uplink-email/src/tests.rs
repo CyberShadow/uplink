@@ -512,9 +512,12 @@ async fn an_entry_is_in_one_folder() {
         .unwrap();
     assert_eq!(live.recv().await.unwrap().description, "Archived 1 message");
     assert_eq!(desired(&db), ["ARCHIVE", "UNREAD"]);
-    // Undo takes it out again.
+    // Undo takes it out again: a move, described as one.
     db.dispatcher.undo(archived).await.unwrap();
-    live.recv().await.unwrap();
+    assert_eq!(
+        live.recv().await.unwrap().description,
+        "Moved 1 message to Inbox"
+    );
     assert_eq!(desired(&db), ["INBOX", "UNREAD"]);
 
     // Labelling with a folder moves it there; other labels stay.
@@ -526,7 +529,7 @@ async fn an_entry_is_in_one_folder() {
         .unwrap();
     assert_eq!(
         live.recv().await.unwrap().description,
-        "Labelled 1 message 'Folder_1'"
+        "Moved 1 message to 'Folder_1'"
     );
     assert_eq!(desired(&db), ["Folder_1", "UNREAD"]);
     db.dispatcher

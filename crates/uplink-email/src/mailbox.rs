@@ -552,10 +552,26 @@ impl Op for SetLabels {
                 .copied()
                 .collect();
             let implied = implied_by_folders(tx, entry, &requested)?;
-            changes.extend(requested.into_iter().map(|c| (c, false)));
+            // Moving into a folder is leaving the other: described as one.
+            let mut moved = false;
+            let mut left = vec![];
+            for c in &requested {
+                if is_folder(tx, c.label)? {
+                    if c.desired {
+                        moved = true;
+                    } else {
+                        left.push(c.label);
+                    }
+                }
+            }
+            changes.extend(
+                requested
+                    .into_iter()
+                    .map(|c| (c, moved && left.contains(&c.label))),
+            );
             changes.extend(implied.into_iter().map(|c| (c, true)));
         }
-        for (change, implied) in changes {
+        for (change, undescribed) in changes {
             let entry_account: String = tx
                 .query_row(
                     "SELECT account_id FROM mail_entry WHERE id = ?1",
@@ -585,7 +601,7 @@ impl Op for SetLabels {
             }
             set_label_row(tx, change.entry, change.label, change.desired, observed)?;
             inverse.push(LabelChange { desired, ..change });
-            if !implied {
+            if !undescribed {
                 *groups.entry((change.label, change.desired)).or_default() += 1;
             }
             events.push(LabelState {
@@ -597,12 +613,18 @@ impl Op for SetLabels {
         }
         let mut description = vec![];
         for ((label, desired), count) in groups {
-            let (external_id, name): (String, String) = tx.query_row(
-                "SELECT external_id, name FROM label WHERE id = ?1",
+            let (external_id, name, folder): (String, String, bool) = tx.query_row(
+                "SELECT external_id, name, folder FROM label WHERE id = ?1",
                 [label.0],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )?;
-            description.push(describe_label_change(&external_id, &name, desired, count));
+            description.push(describe_label_change(
+                &external_id,
+                &name,
+                folder,
+                desired,
+                count,
+            ));
         }
         Ok(Applied {
             description: if description.is_empty() {
@@ -683,7 +705,23 @@ fn implied_by_folders(
     }
 }
 
-fn describe_label_change(external_id: &str, name: &str, desired: bool, count: usize) -> String {
+/// Whether the label is a folder; a label gone is refused later.
+fn is_folder(tx: &Transaction, label: LabelId) -> Result<bool> {
+    Ok(tx
+        .query_row("SELECT folder FROM label WHERE id = ?1", [label.0], |r| {
+            r.get(0)
+        })
+        .optional()?
+        .unwrap_or(false))
+}
+
+fn describe_label_change(
+    external_id: &str,
+    name: &str,
+    folder: bool,
+    desired: bool,
+    count: usize,
+) -> String {
     let n = messages(count);
     match (external_id, desired) {
         ("INBOX", false) => format!("archived {n}"),
@@ -696,6 +734,9 @@ fn describe_label_change(external_id: &str, name: &str, desired: bool, count: us
         ("TRASH", false) => format!("restored {n} from Trash"),
         ("SPAM", true) => format!("reported {n} as spam"),
         ("SPAM", false) => format!("marked {n} not spam"),
+        ("ARCHIVE", true) => format!("moved {n} to Archive"),
+        (_, true) if folder => format!("moved {n} to '{name}'"),
+        (_, false) if folder => format!("moved {n} out of '{name}'"),
         (_, true) => format!("labelled {n} '{name}'"),
         (_, false) => format!("removed label '{name}' from {n}"),
     }
