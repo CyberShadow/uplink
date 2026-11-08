@@ -1798,8 +1798,9 @@ variant of the same logical message.
 
 **State:** done for Gmail. Graph `sendMail` waits for M5. "Switching tabs
 mid-edit" is covered by the compose session tests (an edit from another
-tab while typing, and while an edit is in flight), not yet by two browser
-tabs in the e2e test, which covers replying and sending in Chromium.
+tab while typing, and while an edit is in flight), and by the e2e test,
+which writes one draft in two Chromium tabs, both typing at once, as
+well as replying and sending.
 
 ### M7. Matrix
 

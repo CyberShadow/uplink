@@ -225,7 +225,42 @@ def attachment(page):
     return {"name": download.value.suggested_filename, "content": content}
 
 
-STEPS = {f.__name__: f for f in [read, archive, undo, label, search, reply, matrix, todos, history, trash, attachment]}
+def tabs(page):
+    """Writes one draft in two tabs: each sees what the other types, even
+    when both type at once."""
+    page.keyboard.press("c")
+    subject = page.get_by_role("textbox", name="Subject")
+    expect(subject).to_be_visible()
+    other = page.context.new_page()
+    errors = []
+    other.on("console", lambda m: m.type in ("error", "warning") and errors.append(m.text))
+    other.on("pageerror", lambda e: errors.append(str(e)))
+    other.goto(page.url)
+    other_subject = other.get_by_role("textbox", name="Subject")
+    expect(other_subject).to_be_visible()
+    body = page.get_by_label("Body")
+    other_body = other.get_by_label("Body")
+
+    subject.click()
+    page.keyboard.type("Plans")
+    expect(other_subject).to_have_value("Plans")
+    other_body.locator(".ProseMirror").click()
+    other.keyboard.type("Typed in the other tab")
+    expect(body).to_contain_text("Typed in the other tab")
+
+    # Both at once, within the moment before either is saved.
+    page.keyboard.type(" for Friday")
+    other.keyboard.type(", and more")
+    for p in [page, other]:
+        expect(p.get_by_role("textbox", name="Subject")).to_have_value("Plans for Friday")
+        expect(p.get_by_label("Body")).to_have_text("Typed in the other tab, and more")
+        expect(p.get_by_text("Saved")).to_be_visible()
+    page.screenshot(path=f"{SHOTS}/compose-tabs.png")
+    assert not errors, errors
+    return {"draft": page.url.rsplit("/", 1)[1]}
+
+
+STEPS = {f.__name__: f for f in [read, archive, undo, label, search, reply, matrix, todos, history, trash, attachment, tabs]}
 
 step = STEPS[sys.argv[1]]
 with sync_playwright() as p:

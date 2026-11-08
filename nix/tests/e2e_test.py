@@ -176,4 +176,11 @@ with subtest("a file attached to a message downloads"):
     assert files == {"figures.pdf": b"%PDF-1.4 figures", "notes.txt": b"Notes on the figures"}, files
     assert forward["To"] == "<carol@example.net>", forward["To"]
 
+with subtest("a draft written in two tabs at once keeps both tabs' text"):
+    draft = ui("tabs")["draft"]
+    row = machine.succeed(
+        f"sqlite3 {STATE}/db/uplink.sqlite \"SELECT subject, body_html FROM draft WHERE id = '{draft}'\""
+    ).strip()
+    assert row == "Plans for Friday|<p>Typed in the other tab, and more</p>", row
+
 machine.copy_from_vm("/tmp/screenshots", "")
