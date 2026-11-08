@@ -73,6 +73,7 @@ export function Nav() {
         {link('/outbox', 'Outbox', drafts.outbox.value?.length ?? 0)}
         {link('/history', 'History', 0)}
         {link('/todos', 'To-dos', todos.todos.value?.filter((t) => t.done_at === null).length ?? 0)}
+        {link('/calendar', 'Calendar', 0)}
       </ul>
       {mail.accounts.value?.map((account) => (
         <section key={account.id}>

@@ -53,6 +53,10 @@ export type Action =
   | 'goLabel'
   | 'goTodos'
   | 'goHistory'
+  | 'goCalendar'
+  | 'today'
+  | 'weekView'
+  | 'agendaView'
   | 'search'
   | 'help'
 
@@ -66,8 +70,8 @@ export interface Binding {
 }
 
 export const KEYMAP: Binding[] = [
-  { action: 'next', keys: ['j'], label: 'j', help: 'Next message' },
-  { action: 'previous', keys: ['k'], label: 'k', help: 'Previous message' },
+  { action: 'next', keys: ['j'], label: 'j', help: 'Next message (in the calendar: the next week or agenda)' },
+  { action: 'previous', keys: ['k'], label: 'k', help: 'Previous message (in the calendar: the previous week or agenda)' },
   { action: 'open', keys: ['o', 'Enter'], label: 'o, Enter', help: 'Open message' },
   { action: 'back', keys: ['u'], label: 'u', help: 'Back to the list' },
   { action: 'select', keys: ['x'], label: 'x', help: 'Select message' },
@@ -107,6 +111,10 @@ export const KEYMAP: Binding[] = [
   { action: 'goLabel', keys: ['g l'], label: 'g l', help: 'Go to a label' },
   { action: 'goTodos', keys: ['g k'], label: 'g k', help: 'Go to To-dos' },
   { action: 'goHistory', keys: ['g h'], label: 'g h', help: 'Go to History (undo anything)' },
+  { action: 'goCalendar', keys: ['g c'], label: 'g c', help: 'Go to the calendar' },
+  { action: 'today', keys: ['t'], label: 't', help: 'Today (in the calendar)' },
+  { action: 'weekView', keys: ['w'], label: 'w', help: 'Week view (in the calendar)' },
+  { action: 'agendaView', keys: ['a'], label: 'a', help: 'Agenda view (in the calendar)' },
   { action: 'search', keys: ['/'], label: '/', help: 'Search' },
   { action: 'help', keys: ['[Shift]+?'], label: '?', help: 'Keyboard shortcuts' },
 ]

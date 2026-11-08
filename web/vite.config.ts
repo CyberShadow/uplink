@@ -35,5 +35,9 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['src/test/setup.ts'],
+    // Local times differ from UTC ones, as they do for most users: the
+    // calendar shows all-day events by their UTC dates, timed ones at
+    // local times.
+    env: { TZ: 'America/New_York' },
   },
 })

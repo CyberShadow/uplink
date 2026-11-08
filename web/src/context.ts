@@ -2,6 +2,7 @@ import { createContext } from 'preact'
 import { useContext } from 'preact/hooks'
 import type { ReadonlySignal } from '@preact/signals'
 import type { Status } from './connection'
+import type { CalendarStore } from './stores/calendar'
 import type { DraftStore } from './stores/drafts'
 import type { HistoryStore } from './stores/history'
 import type { MailStore } from './stores/mail'
@@ -16,6 +17,7 @@ export interface Services {
   matrix: MatrixStore
   todos: TodoStore
   history: HistoryStore
+  calendar: CalendarStore
   status: ReadonlySignal<Status>
 }
 

@@ -7,6 +7,7 @@ import { EMPTY } from '../compose/reply'
 import { ServicesContext, useServices } from '../context'
 import { useKeymap } from '../keymap'
 import type { Client } from '../stores/client'
+import { Calendar, calendarPath, today } from './Calendar'
 import { Help } from './Help'
 import { History } from './History'
 import { GoToLabel } from './LabelPicker'
@@ -22,9 +23,9 @@ import styles from './App.module.css'
 const Compose = lazy(() => import('./Compose'))
 
 export function App(props: { client: Client; status: ReadonlySignal<Status> }) {
-  const { ops, mail, drafts, matrix, todos, history } = props.client
+  const { ops, mail, drafts, matrix, todos, history, calendar } = props.client
   return (
-    <ServicesContext.Provider value={{ ops, mail, drafts, matrix, todos, history, status: props.status }}>
+    <ServicesContext.Provider value={{ ops, mail, drafts, matrix, todos, history, calendar, status: props.status }}>
       <LocationProvider>
         <Shell />
       </LocationProvider>
@@ -33,7 +34,7 @@ export function App(props: { client: Client; status: ReadonlySignal<Status> }) {
 }
 
 function Shell() {
-  const { mail, drafts, matrix, todos, history, status } = useServices()
+  const { mail, drafts, matrix, todos, history, calendar, status } = useServices()
   const { route, path } = useLocation()
   const [help, setHelp] = useState(false)
   const [goingToLabel, setGoingToLabel] = useState(false)
@@ -64,6 +65,7 @@ function Shell() {
     goDrafts: () => route('/drafts'),
     goTodos: () => route('/todos'),
     goHistory: () => route('/history'),
+    goCalendar: () => route(calendarPath('week', today())),
     compose: async () => {
       const id = account()
       if (!id) return
@@ -74,7 +76,7 @@ function Shell() {
     help: () => setHelp((shown) => !shown),
   })
 
-  const error = mail.error.value ?? drafts.error.value ?? matrix.error.value ?? todos.error.value ?? history.error.value
+  const error = mail.error.value ?? drafts.error.value ?? matrix.error.value ?? todos.error.value ?? history.error.value ?? calendar.error.value
   return (
     <div class={styles.shell}>
       <header class={styles.header}>
@@ -97,6 +99,8 @@ function Shell() {
           <Route path="/message/:message" component={Mail} />
           <Route path="/todos" component={Todos} />
           <Route path="/history" component={History} />
+          <Route path="/calendar" component={Calendar} />
+          <Route path="/calendar/:view/:date" component={Calendar} />
           <Route path="/compose/:draft" component={Compose} />
           <Route path="/drafts" component={Drafts} />
           <Route path="/outbox" component={Outbox} />
