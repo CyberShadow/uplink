@@ -181,6 +181,10 @@
             inherit pkgs emulate;
             uplinkModule = self.nixosModules.default;
           };
+          integration-m365 = import ./nix/tests/m365.nix {
+            inherit pkgs emulate;
+            uplinkModule = self.nixosModules.default;
+          };
           e2e = import ./nix/tests/e2e.nix {
             inherit pkgs emulate;
             uplinkModule = self.nixosModules.default;
