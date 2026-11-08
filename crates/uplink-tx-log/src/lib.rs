@@ -33,13 +33,12 @@ pub trait Op: Serialize + DeserializeOwned + Send + 'static {
     /// changed. Returning an error rolls the transaction back; return a
     /// [`Conflict`] when the state the op expects is not what it finds.
     fn apply(self, tx: &Transaction) -> Result<Applied>;
-
-    /// Human-readable description for the log UI.
-    fn describe(&self) -> String;
 }
 
 /// Outcome of [`Op::apply`].
 pub struct Applied {
+    /// What the op did, for the log UI (e.g. "Archived 3 messages").
+    pub description: String,
     /// The op that reverts this one.
     pub inverse: Inverse,
     /// What changed, for clients.
@@ -51,11 +50,16 @@ pub trait Observation: Serialize + Send + 'static {
     /// Discriminator recorded in `tx_log`, e.g. `"mail.received"`.
     const KIND: &'static str;
 
-    /// Records the observed state within `tx`, returning what changed.
-    fn apply(self, tx: &Transaction) -> Result<Vec<ServerEvent>>;
+    /// Records the state observed in `account` within `tx`.
+    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed>;
+}
 
-    /// Human-readable description for the log UI.
-    fn describe(&self) -> String;
+/// Outcome of [`Observation::apply`].
+pub struct Observed {
+    /// What was observed, for the log UI (e.g. "Received 3 messages").
+    pub description: String,
+    /// What changed, for clients.
+    pub events: Vec<ServerEvent>,
 }
 
 /// A serialized op, recorded as the inverse of another.
@@ -108,12 +112,11 @@ struct Executed {
 
 fn execute<O: Op>(tx: &Transaction, op: O) -> Result<Executed> {
     let op_json = to_json(O::KIND, &op);
-    let description = op.describe();
     let applied = op.apply(tx)?;
     Ok(Executed {
         kind: O::KIND,
         op_json,
-        description,
+        description: applied.description,
         inverse: Some(applied.inverse),
         events: applied.events,
     })
@@ -195,19 +198,23 @@ impl Dispatcher {
     ) -> Result<TxLogId> {
         self.on_writer(move |inner| {
             inner
-                .write(Source::Account { id: account }, |tx| {
-                    let op_json = to_json(O::KIND, &observation);
-                    let description = observation.describe();
-                    let events = observation.apply(tx)?;
-                    let executed = Executed {
-                        kind: O::KIND,
-                        op_json,
-                        description,
-                        inverse: None,
-                        events,
-                    };
-                    Ok((executed, None))
-                })
+                .write(
+                    Source::Account {
+                        id: account.clone(),
+                    },
+                    |tx| {
+                        let op_json = to_json(O::KIND, &observation);
+                        let observed = observation.apply(&account, tx)?;
+                        let executed = Executed {
+                            kind: O::KIND,
+                            op_json,
+                            description: observed.description,
+                            inverse: None,
+                            events: observed.events,
+                        };
+                        Ok((executed, None))
+                    },
+                )
                 .map(|entry| entry.id)
         })
         .await

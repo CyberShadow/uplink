@@ -2,7 +2,7 @@
 //! tests (SPEC §14 M3). The table is not part of the production schema;
 //! tests create it with [`SCHEMA`].
 
-use crate::{Applied, Conflict, Inverse, Observation, Op, Registry};
+use crate::{Applied, Conflict, Inverse, Observation, Observed, Op, Registry};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use uplink_storage::rusqlite::OptionalExtension;
@@ -42,13 +42,10 @@ impl Op for SampleInsert {
             [self.id, self.x],
         )?;
         Ok(Applied {
+            description: format!("insert sample {} = {}", self.id, self.x),
             inverse: Inverse::of(&SampleDelete { id: self.id }),
             events: vec![],
         })
-    }
-
-    fn describe(&self) -> String {
-        format!("insert sample {} = {}", self.id, self.x)
     }
 }
 
@@ -64,28 +61,24 @@ impl Op for SampleDelete {
             .ok_or_else(|| Conflict(format!("sample {} does not exist", self.id)))?;
         tx.execute("DELETE FROM sample WHERE id = ?1", [self.id])?;
         Ok(Applied {
+            description: format!("delete sample {}", self.id),
             inverse: Inverse::of(&SampleInsert { id: self.id, x }),
             events: vec![],
         })
-    }
-
-    fn describe(&self) -> String {
-        format!("delete sample {}", self.id)
     }
 }
 
 impl Observation for SampleObserved {
     const KIND: &'static str = "sample.observed";
 
-    fn apply(self, tx: &Transaction) -> Result<Vec<uplink_protocol::ServerEvent>> {
+    fn apply(self, _account: &str, tx: &Transaction) -> Result<Observed> {
         tx.execute(
             "INSERT INTO sample (id, x) VALUES (?1, ?2)",
             [self.id, self.x],
         )?;
-        Ok(vec![])
-    }
-
-    fn describe(&self) -> String {
-        format!("observed sample {} = {}", self.id, self.x)
+        Ok(Observed {
+            description: format!("observed sample {} = {}", self.id, self.x),
+            events: vec![],
+        })
     }
 }

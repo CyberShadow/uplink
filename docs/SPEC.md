@@ -716,12 +716,10 @@ pub trait Op: Serialize + DeserializeOwned + Send + 'static {
     /// Apply within `tx`, computing the inverse from pre-state. On error,
     /// the transaction rolls back.
     fn apply(self, tx: &Transaction) -> Result<Applied>;
-
-    /// Human description for the tx_log UI.
-    fn describe(&self) -> String;
 }
 
 pub struct Applied {
+    pub description: String,       // what it did, e.g. "Archived 3 messages"
     pub inverse: Inverse,          // Inverse::of(&some_op)
     pub events: Vec<ServerEvent>,  // broadcast after commit
 }
@@ -750,6 +748,9 @@ Key properties:
   per-row changes.
 - **Op author writes the inverse.** No automatic introspection. Op-specific
   knowledge of which fields changed is encoded in `apply`.
+- **The description comes from `apply`**, so it says what actually
+  happened, in the user's terms (label names rather than ids, the count of
+  messages that actually changed).
 
 ### 6.2 Inverses
 
