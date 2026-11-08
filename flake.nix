@@ -53,8 +53,17 @@
         };
 
         # ── Rust ───────────────────────────────────────────────────────────
+        # Cargo sources plus the SQL migrations that uplink-storage embeds
+        # at compile time.
+        cargoSrc = pkgs.lib.cleanSourceWith {
+          src = ./.;
+          name = "source";
+          filter = path: type:
+            pkgs.lib.hasSuffix ".sql" path || craneLib.filterCargoSources path type;
+        };
+
         commonArgs = {
-          src = craneLib.cleanCargoSource ./.;
+          src = cargoSrc;
           strictDeps = true;
           nativeBuildInputs = [ pkgs.pkg-config ];
           buildInputs = [
