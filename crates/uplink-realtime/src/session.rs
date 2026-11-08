@@ -1,6 +1,6 @@
 use crate::hub::Hub;
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
-use std::{convert::Infallible, future::Future, time::Duration};
+use std::{convert::Infallible, future::Future, sync::Arc, time::Duration};
 use tokio::{sync::broadcast::error::RecvError, time::Instant};
 use uplink_protocol::{
     ClientRequest, LogEntry, ServerError, ServerResponse, TxLogId, WsClientMsg, WsServerMsg,
@@ -121,25 +121,50 @@ async fn session(
                 WsClientMsg::Hello { .. } => return Err(protocol_error("duplicate hello")),
                 WsClientMsg::Request { request_id, body } => {
                     let reply = match backend.handle(body).await {
-                        Ok(body) => WsServerMsg::Response { request_id, body },
+                        Ok(body) => {
+                            // The entries a response reflects go out before
+                            // it, so every entry after it is news to the
+                            // client (SPEC §5.4).
+                            if let Some(position) = body.position() {
+                                while cursor < position {
+                                    forward(socket, live.recv().await, &mut cursor).await?;
+                                }
+                            }
+                            WsServerMsg::Response { request_id, body }
+                        }
                         Err(error) => WsServerMsg::RequestFailed { request_id, error },
                     };
                     send(socket, &reply).await?;
                 }
             },
-            published = live.recv() => match published {
-                Ok(entry) if entry.id <= cursor => {}
-                Ok(entry) => {
-                    cursor = entry.id;
-                    send(socket, &WsServerMsg::Entry { entry: (*entry).clone() }).await?;
-                }
-                Err(RecvError::Lagged(n)) => return Err(End::Close {
-                    code: CLOSE_LAGGED,
-                    reason: format!("lagged {n} entries behind"),
-                }),
-                Err(RecvError::Closed) => unreachable!("hub outlives its sessions"),
-            },
+            published = live.recv() => forward(socket, published, &mut cursor).await?,
         }
+    }
+}
+
+/// Sends a live entry the client has not seen yet, advancing `cursor`.
+async fn forward(
+    socket: &mut WebSocket,
+    published: Result<Arc<LogEntry>, RecvError>,
+    cursor: &mut TxLogId,
+) -> Result<(), End> {
+    match published {
+        Ok(entry) if entry.id <= *cursor => Ok(()),
+        Ok(entry) => {
+            *cursor = entry.id;
+            send(
+                socket,
+                &WsServerMsg::Entry {
+                    entry: (*entry).clone(),
+                },
+            )
+            .await
+        }
+        Err(RecvError::Lagged(n)) => Err(End::Close {
+            code: CLOSE_LAGGED,
+            reason: format!("lagged {n} entries behind"),
+        }),
+        Err(RecvError::Closed) => unreachable!("hub outlives its sessions"),
     }
 }
 

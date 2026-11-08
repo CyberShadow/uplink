@@ -135,7 +135,11 @@ async fn recv(ws: &mut Ws) -> WsServerMsg {
 }
 
 async fn recv_entry(ws: &mut Ws) -> LogEntry {
-    match recv(ws).await {
+    entry(recv(ws).await)
+}
+
+fn entry(msg: WsServerMsg) -> LogEntry {
+    match msg {
         WsServerMsg::Entry { entry } => entry,
         other => panic!("expected an entry, got {other:?}"),
     }
@@ -194,19 +198,20 @@ async fn dispatch_undo_redo_over_websocket() {
     assert_eq!((e.id, e.source.clone(), e.undoes), (op, Source::User, None));
     entries.push(e);
 
-    // Undo: the row is gone; the undo is a new entry.
-    let undo_id = undone(undo(&mut ws, 1, op).await, 1);
+    // Undo: the row is gone; the undo is a new entry, which reaches the
+    // client before the response does.
+    let e = entry(undo(&mut ws, 1, op).await);
+    let undo_id = undone(recv(&mut ws).await, 1);
     assert_eq!(server.tx_log_count(), 2);
     assert_eq!(server.samples(), vec![]);
-    let e = recv_entry(&mut ws).await;
     assert_eq!((e.id, e.undoes), (undo_id, Some(op)));
     entries.push(e);
 
     // Undo of the undo: the row is back.
-    let redo_id = undone(undo(&mut ws, 2, undo_id).await, 2);
+    let e = entry(undo(&mut ws, 2, undo_id).await);
+    let redo_id = undone(recv(&mut ws).await, 2);
     assert_eq!(server.tx_log_count(), 3);
     assert_eq!(server.samples(), vec![(1, 42)]);
-    let e = recv_entry(&mut ws).await;
     assert_eq!((e.id, e.undoes), (redo_id, Some(undo_id)));
     entries.push(e);
 

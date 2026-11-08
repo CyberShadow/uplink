@@ -132,6 +132,20 @@ pub enum ServerResponse {
     },
 }
 
+impl ServerResponse {
+    /// The log entry up to which the response reflects the log. The server
+    /// sends every entry up to it before the response, and only later ones
+    /// after.
+    pub fn position(&self) -> Option<TxLogId> {
+        match self {
+            Self::Undone { tx_log_id } | Self::Dispatched { tx_log_id } => Some(*tx_log_id),
+            Self::Accounts { as_of, .. } | Self::Entries { as_of, .. } => Some(*as_of),
+            // Message content does not change.
+            Self::Message { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ServerError {

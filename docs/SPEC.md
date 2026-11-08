@@ -718,8 +718,13 @@ than it buffers is closed; the client reconnects and resumes.
   tx_log id: `ModifyLabels { entries, add, remove }` covers archive,
   label, mark read and star; later draft edits, send, ...
 
-Query responses carry `as_of`, the last log entry they reflect: a client
-applies only events of later entries on top.
+Query responses carry `as_of`, the last log entry they reflect; `Undone`
+and `Dispatched` reflect the log up to their own entry. The session sends
+every entry up to that position before the response, and only later ones
+after it, so a client replaces its state with a response and applies every
+entry that follows on top, without comparing ids. (Requests are handled
+one at a time per session, and the hub publishes in commit order, so the
+session only ever waits for entries already committed.)
 
 ---
 
