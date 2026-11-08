@@ -107,6 +107,8 @@ pub struct ServerError {
 pub enum ErrorCode {
     NotFound,
     AlreadyUndone,
+    /// The current state is not what the request expects (SPEC §6.2).
+    Conflict,
     Internal,
 }
 

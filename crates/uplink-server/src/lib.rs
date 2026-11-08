@@ -329,6 +329,7 @@ fn undo_error(e: UndoError) -> ServerError {
     let code = match &e {
         UndoError::NotFound(_) => ErrorCode::NotFound,
         UndoError::AlreadyUndone { .. } => ErrorCode::AlreadyUndone,
+        UndoError::Conflict { .. } => ErrorCode::Conflict,
         UndoError::Failed(e) => {
             tracing::error!("undo failed: {e:#}");
             ErrorCode::Internal

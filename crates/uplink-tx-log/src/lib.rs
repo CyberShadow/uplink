@@ -26,9 +26,9 @@ pub trait Op: Serialize + DeserializeOwned + Send + 'static {
     /// unique within a [`Registry`].
     const KIND: &'static str;
 
-    /// Applies the op within `tx`, computing the inverse from the state
-    /// found before mutating it. Returning an error rolls the transaction
-    /// back.
+    /// Applies the op within `tx`, computing the inverse edit from what it
+    /// changed. Returning an error rolls the transaction back; return a
+    /// [`Conflict`] when the state the op expects is not what it finds.
     fn apply(self, tx: &Transaction) -> Result<Applied>;
 
     /// Human-readable description for the transaction log UI.
@@ -107,12 +107,22 @@ fn execute_json<O: Op>(tx: &Transaction, json: &str) -> Result<Executed> {
     execute(tx, op)
 }
 
+/// An op found state other than what it expects (e.g. a value it would
+/// replace was changed in the meantime). Ops return it through
+/// [`anyhow::Error`]; it is reported as a refusal rather than a failure.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct Conflict(pub String);
+
 #[derive(Debug, thiserror::Error)]
 pub enum UndoError {
     #[error("tx_log entry {} does not exist", .0 .0)]
     NotFound(TxLogId),
     #[error("tx_log entry {} was already undone by entry {}", .id.0, .undone_by.0)]
     AlreadyUndone { id: TxLogId, undone_by: TxLogId },
+    /// The inverse cannot be applied to the current state (SPEC §6.2).
+    #[error("tx_log entry {} cannot be undone: {}", .id.0, .conflict)]
+    Conflict { id: TxLogId, conflict: Conflict },
     #[error(transparent)]
     Failed(#[from] anyhow::Error),
 }
@@ -217,7 +227,10 @@ impl Inner {
             .ops
             .get(inverse_type.as_str())
             .with_context(|| format!("inverse op kind {inverse_type} is not registered"))?;
-        let executed = execute(&tx, &inverse_json)?;
+        let executed = execute(&tx, &inverse_json).map_err(|e| match e.downcast::<Conflict>() {
+            Ok(conflict) => UndoError::Conflict { id, conflict },
+            Err(e) => UndoError::Failed(e),
+        })?;
         let entry = self.record(&tx, &executed, Some(id))?;
         let undo_id = entry.id;
         tx.execute(

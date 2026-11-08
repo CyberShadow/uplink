@@ -2,9 +2,10 @@
 //! tests (SPEC §14 M3). The table is not part of the production schema;
 //! tests create it with [`SCHEMA`].
 
-use crate::{Applied, Inverse, Op, Registry};
+use crate::{Applied, Conflict, Inverse, Op, Registry};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use uplink_storage::rusqlite::OptionalExtension;
 use uplink_storage::rusqlite::Transaction;
 
 pub const SCHEMA: &str = "CREATE TABLE sample (id INTEGER PRIMARY KEY, x INTEGER NOT NULL)";
@@ -48,9 +49,12 @@ impl Op for SampleDelete {
     const KIND: &'static str = "sample.delete";
 
     fn apply(self, tx: &Transaction) -> Result<Applied> {
-        let x: i64 = tx.query_row("SELECT x FROM sample WHERE id = ?1", [self.id], |r| {
-            r.get(0)
-        })?;
+        let x: i64 = tx
+            .query_row("SELECT x FROM sample WHERE id = ?1", [self.id], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .ok_or_else(|| Conflict(format!("sample {} does not exist", self.id)))?;
         tx.execute("DELETE FROM sample WHERE id = ?1", [self.id])?;
         Ok(Applied {
             inverse: Inverse::of(&SampleInsert { id: self.id, x }),

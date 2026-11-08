@@ -266,7 +266,7 @@ async fn failed_apply_records_nothing() {
 }
 
 #[tokio::test]
-async fn failed_undo_rolls_back() {
+async fn conflicting_undo_is_refused() {
     let mut f = fixture();
     let op = f
         .dispatcher
@@ -278,7 +278,10 @@ async fn failed_undo_rolls_back() {
     // The row the inverse would delete is gone.
     f.db.execute("DELETE FROM sample", []).unwrap();
     let err = f.dispatcher.undo(op).await.unwrap_err();
-    assert!(matches!(err, UndoError::Failed(_)), "{err:?}");
+    assert!(
+        matches!(err, UndoError::Conflict { id, .. } if id == op),
+        "{err:?}"
+    );
     assert_eq!(
         f.log(),
         vec![row(
