@@ -18,9 +18,9 @@ import type {
   MessageContent,
   MessageId,
   ServerResponse,
-  TxLogId,
 } from '../generated/protocol'
 import type { Requester } from '../connection'
+import type { Ops } from './ops'
 
 export const PAGE = 100
 /** The server's limit on a page. */
@@ -44,15 +44,7 @@ export interface List {
   next: ListPosition | null
 }
 
-/** The outcome of the last op dispatched from this tab. */
-export type Notice =
-  | { kind: 'done'; id: TxLogId; description: string }
-  | { kind: 'failed'; message: string }
-
 type Load = 'reload' | 'more'
-
-/** How many recent entries to remember, to describe dispatched ops. */
-const RECENT = 64
 
 export class MailStore {
   readonly accounts = signal<Account[] | null>(null)
@@ -60,7 +52,6 @@ export class MailStore {
   /** The entry j/k move between and single-entry actions apply to. */
   readonly focus = signal<EntryId | null>(null)
   readonly selected = signal<ReadonlySet<EntryId>>(new Set())
-  readonly notice = signal<Notice | null>(null)
   readonly error = signal<string | null>(null)
 
   readonly labels = computed(() => {
@@ -85,9 +76,11 @@ export class MailStore {
   private listStale = false
   /** Bumped when the view changes, so responses for an old one are dropped. */
   private generation = 0
-  private recent = new Map<TxLogId, LogEntry>()
 
-  constructor(private readonly server: Requester) {}
+  constructor(
+    private readonly server: Requester,
+    private readonly ops: Ops,
+  ) {}
 
   // ── state from the server ───────────────────────────────────────────────
 
@@ -98,8 +91,6 @@ export class MailStore {
   }
 
   apply(entry: LogEntry) {
-    this.recent.set(entry.id, entry)
-    if (this.recent.size > RECENT) this.recent.delete(this.recent.keys().next().value!)
     for (const event of entry.events) {
       switch (event.type) {
         case 'entries_added':
@@ -115,10 +106,15 @@ export class MailStore {
           break
         case 'label_list_changed':
           break
+        case 'draft_edited':
+        case 'drafts_changed':
+        case 'outbox_changed':
+          // Not mail; no counts change.
+          continue
       }
+      // Every mail event can change the labels' counts.
+      this.invalidateAccounts()
     }
-    // Every mail event can change the labels' counts.
-    if (entry.events.length > 0) this.invalidateAccounts()
   }
 
   private applyLabelChanges(changes: { entry: EntryId; label: LabelId; desired: boolean }[]) {
@@ -358,10 +354,6 @@ export class MailStore {
     return this.modify(entries, () => (all ? { add: [], remove: [label.id] } : { add: [label.id], remove: [] }))
   }
 
-  undo(id: TxLogId) {
-    return this.dispatch({ type: 'undo', tx_log_id: id })
-  }
-
   /** One op per account, since labels belong to one. */
   private async modify(
     entries: Entry[],
@@ -371,30 +363,12 @@ export class MailStore {
     const byAccount = Map.groupBy(entries, (e) => e.account)
     await Promise.all(
       [...byAccount].map(([account, own]) =>
-        this.dispatch(
+        this.ops.dispatch(
           { type: 'modify_labels', entries: own.map((e) => e.id), ...labels(account) },
           quiet,
         ),
       ),
     )
-  }
-
-  private async dispatch(request: ClientRequest, quiet = false) {
-    let response: ServerResponse
-    try {
-      response = await this.server.request(request)
-    } catch (error) {
-      this.notice.value = { kind: 'failed', message: (error as Error).message }
-      return
-    }
-    if (response.type !== 'dispatched' && response.type !== 'undone') {
-      throw new Error(`unexpected response to ${request.type}: ${response.type}`)
-    }
-    if (quiet) return
-    // The entry came before the response.
-    const entry = this.recent.get(response.tx_log_id)
-    if (!entry) throw new Error(`entry ${response.tx_log_id} not received`)
-    this.notice.value = { kind: 'done', id: entry.id, description: entry.description }
   }
 
   // ── messages ────────────────────────────────────────────────────────────

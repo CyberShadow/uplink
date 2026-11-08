@@ -10,7 +10,8 @@ const SYSTEM: Record<string, string> = {
   STARRED: 'Starred',
   IMPORTANT: 'Important',
   SENT: 'Sent',
-  DRAFT: 'Drafts',
+  // uplink's own drafts are in Drafts, above the accounts.
+  DRAFT: 'Gmail drafts',
   SPAM: 'Spam',
   TRASH: 'Trash',
 }
@@ -30,10 +31,25 @@ export function labelName(label: Label): string {
 }
 
 export function Nav() {
-  const { mail } = useServices()
+  const { mail, drafts } = useServices()
   const { path } = useLocation()
+  const link = (href: string, name: string, count: number) => {
+    const current = path === href || path.startsWith(`${href}/`)
+    return (
+      <li>
+        <a href={href} class={current ? styles.current : undefined} aria-current={current ? 'page' : undefined}>
+          <span>{name}</span>
+          {count > 0 && <span class={styles.count}>{count}</span>}
+        </a>
+      </li>
+    )
+  }
   return (
     <nav class={styles.nav}>
+      <ul>
+        {link('/drafts', 'Drafts', drafts.drafts.value?.size ?? 0)}
+        {link('/outbox', 'Outbox', drafts.outbox.value?.length ?? 0)}
+      </ul>
       {mail.accounts.value?.map((account) => (
         <section key={account.id}>
           <h2 class={styles.account} title={account.id}>

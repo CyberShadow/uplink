@@ -1,20 +1,25 @@
 import type { ReadonlySignal } from '@preact/signals'
 import { useEffect, useState } from 'preact/hooks'
-import { LocationProvider, Route, Router, useLocation } from 'preact-iso'
+import { lazy, LocationProvider, Route, Router, useLocation } from 'preact-iso'
 import type { Status } from '../connection'
+import { EMPTY } from '../compose/reply'
 import { ServicesContext, useServices } from '../context'
 import { useKeymap } from '../keymap'
-import type { MailStore } from '../stores/mail'
+import type { Client } from '../stores/client'
 import { Help } from './Help'
 import { Mail } from './Mail'
 import { Nav } from './Nav'
 import { NoticeBar } from './NoticeBar'
+import { composePath, Drafts, Outbox } from './Outgoing'
 import { SearchBox } from './SearchBox'
 import styles from './App.module.css'
 
-export function App(props: { mail: MailStore; status: ReadonlySignal<Status> }) {
+const Compose = lazy(() => import('./Compose'))
+
+export function App(props: { client: Client; status: ReadonlySignal<Status> }) {
+  const { ops, mail, drafts } = props.client
   return (
-    <ServicesContext.Provider value={{ mail: props.mail, status: props.status }}>
+    <ServicesContext.Provider value={{ ops, mail, drafts, status: props.status }}>
       <LocationProvider>
         <Shell />
       </LocationProvider>
@@ -23,7 +28,7 @@ export function App(props: { mail: MailStore; status: ReadonlySignal<Status> }) 
 }
 
 function Shell() {
-  const { mail, status } = useServices()
+  const { mail, drafts, status } = useServices()
   const { route, path } = useLocation()
   const [help, setHelp] = useState(false)
 
@@ -40,7 +45,13 @@ function Shell() {
     goInbox: go('INBOX'),
     goStarred: go('STARRED'),
     goSent: go('SENT'),
-    goDrafts: go('DRAFT'),
+    goDrafts: () => route('/drafts'),
+    compose: async () => {
+      const id = account()
+      if (!id) return
+      const draft = await drafts.create(id, EMPTY, null)
+      if (draft) route(composePath(draft))
+    },
     search: () => document.querySelector<HTMLInputElement>('input[type=search]')?.focus(),
     help: () => setHelp((shown) => !shown),
   })
@@ -54,14 +65,17 @@ function Shell() {
       </header>
       <Nav />
       <main class={styles.content}>
-        {mail.error.value && (
+        {(mail.error.value ?? drafts.error.value) && (
           <div class={styles.error} role="alert">
-            {mail.error.value}
+            {mail.error.value ?? drafts.error.value}
           </div>
         )}
         <Router>
           <Route path="/mail/:account/:label/:entry?" component={Mail} />
           <Route path="/search/:terms/:entry?" component={Mail} />
+          <Route path="/compose/:draft" component={Compose} />
+          <Route path="/drafts" component={Drafts} />
+          <Route path="/outbox" component={Outbox} />
           <Route default component={Home} />
         </Router>
       </main>

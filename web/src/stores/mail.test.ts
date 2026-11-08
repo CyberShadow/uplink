@@ -1,15 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { FakeServer } from '../test/server'
-import { MailStore, PAGE } from './mail'
+import { Client } from './client'
+import type { MailStore } from './mail'
+import { PAGE } from './mail'
 
 let server: FakeServer
+let client: Client
 let mail: MailStore
 
 beforeEach(() => {
   server = new FakeServer()
   server.addAccount('work', ['Projects'])
-  mail = new MailStore(server)
-  server.attach(mail)
+  client = new Client(server)
+  mail = client.mail
+  server.attach(client)
 })
 
 const subjects = () => mail.list.value?.entries.map((e) => e.subject)
@@ -43,19 +47,19 @@ describe('MailStore', () => {
     expect(server.labelsOf(second.id)).not.toContain(server.labelId('work', 'INBOX'))
     expect(subjects()).toEqual(['First', 'Third'])
     expect(focused()).toBe('Third')
-    const notice = mail.notice.value
+    const notice = client.ops.notice.value
     expect(notice).toMatchObject({ kind: 'done', description: 'Changed 1 messages' })
 
-    await mail.undo(notice!.kind === 'done' ? notice!.id : -1)
+    await client.ops.undo(notice!.kind === 'done' ? notice!.id : -1)
     await vi.waitFor(() => expect(subjects()).toEqual(['First', 'Second', 'Third']))
-    expect(mail.notice.value).toMatchObject({ kind: 'done', description: 'Undid it' })
+    expect(client.ops.notice.value).toMatchObject({ kind: 'done', description: 'Undid it' })
   })
 
   it('reports a failed op', async () => {
     server.deliver('work', 'Only')
     await showInbox()
-    await mail.undo(99)
-    expect(mail.notice.value).toEqual({ kind: 'failed', message: 'not undoable' })
+    await client.ops.undo(99)
+    expect(client.ops.notice.value).toEqual({ kind: 'failed', message: 'not undoable' })
   })
 
   it('follows label changes observed on the provider', async () => {

@@ -1,13 +1,13 @@
 import { signal } from '@preact/signals'
-import { render, screen, within } from '@testing-library/preact'
+import { render, screen, waitFor, within } from '@testing-library/preact'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { MailStore } from '../stores/mail'
+import { Client } from '../stores/client'
 import { FakeServer } from '../test/server'
 import { App } from './App'
 
 let server: FakeServer
-let mail: MailStore
+let client: Client
 
 beforeEach(() => {
   server = new FakeServer()
@@ -15,14 +15,14 @@ beforeEach(() => {
   server.deliver('work', 'Third')
   server.deliver('work', 'Second')
   server.deliver('work', 'First')
-  mail = new MailStore(server)
-  server.attach(mail)
+  client = new Client(server)
+  server.attach(client)
 })
 
 async function start(path = '/') {
   history.replaceState(null, '', path)
-  render(<App mail={mail} status={signal('open')} />)
-  mail.reset()
+  render(<App client={client} status={signal('open')} />)
+  client.reset()
   await screen.findByRole('list', { name: 'Messages' })
   return userEvent.setup()
 }
@@ -70,7 +70,7 @@ describe('mail', () => {
     await user.keyboard('j{Enter}')
     expect(await screen.findByText('Body of Second')).toBeTruthy()
     expect(location.pathname).toMatch(/^\/mail\/work\/INBOX\/\d+$/)
-    const second = mail.list.value!.entries.find((e) => e.subject === 'Second')!
+    const second = client.mail.list.value!.entries.find((e) => e.subject === 'Second')!
     expect(server.labelsOf(second.id)).not.toContain(server.labelId('work', 'UNREAD'))
     // Reading quietly: no notice.
     expect(screen.queryByRole('status')).toBeNull()
@@ -112,7 +112,7 @@ describe('mail', () => {
     expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Filter labels' }))
     await user.keyboard('trav{Enter}')
     expect(screen.queryByRole('dialog')).toBeNull()
-    const first = mail.list.value!.entries[0]
+    const first = client.mail.list.value!.entries[0]
     expect(server.labelsOf(first.id)).toContain(server.labelId('work', 'Travel'))
     expect(within(rows()[0]).getByText('Travel')).toBeTruthy()
   })
@@ -155,5 +155,50 @@ describe('mail', () => {
     expect(within(help).getByText('Archive')).toBeTruthy()
     await user.keyboard('{Escape}')
     expect(screen.queryByRole('dialog')).toBeNull()
+  })
+})
+
+describe('compose', () => {
+  it('composes with c, saves as typed, and sends with Ctrl+Enter', async () => {
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('c')
+    const to = await screen.findByRole('textbox', { name: 'To' })
+    expect(location.pathname).toMatch(/^\/compose\//)
+    expect(document.activeElement).toBe(to)
+    await user.keyboard('bob@example.org')
+    await user.click(screen.getByRole('textbox', { name: 'Subject' }))
+    await user.keyboard('Lunch')
+    const [draft] = server.drafts.values()
+    await waitFor(() => expect(draft.id && server.drafts.get(draft.id)!.content.subject).toBe('Lunch'))
+    expect(server.drafts.get(draft.id)!.content.to).toBe('bob@example.org')
+
+    // Shortcuts work from within the fields, and nowhere else.
+    await user.keyboard('{Control>}{Enter}{/Control}')
+    await screen.findByText("Sent 'Lunch'")
+    expect(server.outbox.map((i) => i.draft.content.subject)).toEqual(['Lunch'])
+    expect(location.pathname).toBe('/mail/work/INBOX')
+
+    // Undo puts it back in the drafts.
+    await user.click(within(screen.getByRole('status')).getByRole('button', { name: 'Undo' }))
+    await waitFor(() => expect(server.drafts.size).toBe(1))
+    expect(server.outbox).toEqual([])
+    await user.keyboard('gd')
+    const drafts = await screen.findByRole('list', { name: 'Drafts' })
+    expect(within(drafts).getByText('Lunch')).toBeTruthy()
+  })
+
+  it('replies to the open message with r', async () => {
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('{Enter}')
+    await screen.findByText('Body of First')
+    await user.keyboard('r')
+    const subject = await screen.findByRole('textbox', { name: 'Subject' })
+    expect((subject as HTMLInputElement).value).toBe('Re: First')
+    expect((screen.getByRole('textbox', { name: 'To' }) as HTMLInputElement).value).toBe('Bob <bob@example.org>')
+    const [draft] = server.drafts.values()
+    expect(draft.in_reply_to).toBe(client.mail.list.value!.entries[0].message)
+    expect(draft.content.body).toContain('<blockquote><p>Body of First</p></blockquote>')
+    await user.keyboard('{Escape}')
+    await screen.findByText('Body of First')
   })
 })

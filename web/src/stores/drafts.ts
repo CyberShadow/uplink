@@ -1,0 +1,182 @@
+// Drafts and the outbox, as the server has them (SPEC §6.7, §7), and the
+// compose sessions editing drafts in this tab.
+
+import { signal } from '@preact/signals'
+import type {
+  ClientRequest,
+  Draft,
+  DraftContent,
+  DraftEdited,
+  DraftField,
+  LogEntry,
+  MessageId,
+  OutboxId,
+  OutboxItem,
+  ServerResponse,
+  Splice,
+} from '../generated/protocol'
+import { RequestError, type Requester } from '../connection'
+import { ComposeSession } from '../compose/session'
+import { apply } from '../compose/splice'
+import type { Ops } from './ops'
+
+export const FIELDS: readonly DraftField[] = ['to', 'cc', 'bcc', 'subject', 'body']
+
+export type EditOutcome = 'applied' | 'conflict' | 'gone'
+
+/** A query's state: whether one is in flight, and whether the state it
+ * loads went stale meanwhile (SPEC §12.6). */
+class Loader {
+  private loading = false
+  private stale = false
+
+  constructor(private readonly load: () => Promise<void>) {}
+
+  invalidate() {
+    // A query in flight reflects every entry received before its response.
+    if (this.loading) return
+    this.stale = true
+    this.pump()
+  }
+
+  private async pump() {
+    if (this.loading || !this.stale) return
+    this.stale = false
+    this.loading = true
+    try {
+      await this.load()
+    } finally {
+      this.loading = false
+    }
+    this.pump()
+  }
+}
+
+export class DraftStore {
+  /** By id; `null` until loaded. */
+  readonly drafts = signal<ReadonlyMap<string, Draft> | null>(null)
+  readonly outbox = signal<readonly OutboxItem[] | null>(null)
+  readonly error = signal<string | null>(null)
+
+  private sessions = new Map<string, ComposeSession>()
+  private draftLoader = new Loader(async () => {
+    const response = await this.query({ type: 'list_drafts' }, 'drafts')
+    if (response) this.drafts.value = new Map(response.drafts.map((d) => [d.id, d]))
+  })
+  private outboxLoader = new Loader(async () => {
+    const response = await this.query({ type: 'list_outbox' }, 'outbox')
+    if (response) this.outbox.value = response.items
+  })
+
+  constructor(
+    private readonly server: Requester,
+    private readonly ops: Ops,
+  ) {}
+
+  reset() {
+    this.draftLoader.invalidate()
+    this.outboxLoader.invalidate()
+  }
+
+  apply(entry: LogEntry) {
+    for (const event of entry.events) {
+      switch (event.type) {
+        case 'draft_edited':
+          this.applyEdit(event)
+          break
+        case 'drafts_changed':
+          this.draftLoader.invalidate()
+          break
+        case 'outbox_changed':
+          this.outboxLoader.invalidate()
+          break
+        case 'entries_added':
+        case 'entries_removed':
+        case 'labels_changed':
+        case 'label_list_changed':
+          break
+      }
+    }
+  }
+
+  private applyEdit(event: DraftEdited) {
+    const drafts = this.drafts.value
+    // Not loaded yet: the load in flight covers the edit.
+    if (!drafts) return
+    const draft = drafts.get(event.draft)
+    if (!draft || event.revision !== draft.revision + 1) {
+      throw new Error(`draft ${event.draft} edited at revision ${event.revision}, but known at ${draft?.revision}`)
+    }
+    const field = event.splice.field
+    const content = { ...draft.content, [field]: apply(draft.content[field], event.splice) }
+    this.drafts.value = new Map(drafts).set(draft.id, {
+      ...draft,
+      revision: event.revision,
+      content,
+    })
+  }
+
+  /** The session editing draft `id` in this tab; the draft must be loaded. */
+  session(id: string): ComposeSession {
+    let session = this.sessions.get(id)
+    if (!session) {
+      session = new ComposeSession(this, id)
+      this.sessions.set(id, session)
+    }
+    return session
+  }
+
+  // ── ops ─────────────────────────────────────────────────────────────────
+
+  /** Creates a draft; resolves to its id, or `null` if that failed. */
+  async create(account: string, content: DraftContent, inReplyTo: MessageId | null): Promise<string | null> {
+    const id = crypto.randomUUID()
+    const entry = await this.ops.dispatch(
+      { type: 'create_draft', id, account, content, in_reply_to: inReplyTo },
+      true,
+    )
+    return entry && id
+  }
+
+  /** Not through `ops`: edits are saved as typed, without notices, and a
+   * conflict is expected now and then. */
+  async edit(draft: string, revision: number, splice: Splice): Promise<EditOutcome> {
+    try {
+      await this.server.request({ type: 'edit_draft', draft, revision, splice })
+      return 'applied'
+    } catch (error) {
+      if (error instanceof RequestError && error.error.code === 'conflict') {
+        return this.drafts.value?.has(draft) ? 'conflict' : 'gone'
+      }
+      throw error
+    }
+  }
+
+  discard(draft: string) {
+    return this.ops.dispatch({ type: 'delete_draft', draft })
+  }
+
+  send(draft: string) {
+    return this.ops.dispatch({ type: 'send_draft', draft })
+  }
+
+  cancelSend(item: OutboxId) {
+    return this.ops.dispatch({ type: 'cancel_send', item })
+  }
+
+  private async query<T extends ServerResponse['type']>(
+    request: ClientRequest,
+    type: T,
+  ): Promise<Extract<ServerResponse, { type: T }> | null> {
+    try {
+      const response = await this.server.request(request)
+      if (response.type !== type) {
+        throw new Error(`expected ${type} in response to ${request.type}, got ${response.type}`)
+      }
+      return response as Extract<ServerResponse, { type: T }>
+    } catch (error) {
+      this.error.value = (error as Error).message
+      return null
+    }
+  }
+}

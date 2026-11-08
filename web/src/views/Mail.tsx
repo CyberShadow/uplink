@@ -4,9 +4,11 @@ import type { Entry, Label, MessageContent } from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus, useKeymap } from '../keymap'
 import type { MailStore, View } from '../stores/mail'
+import { respond, type Response } from '../compose/reply'
 import { mailPath, searchPath } from './App'
 import { LabelPicker } from './LabelPicker'
 import { labelName } from './Nav'
+import { composePath } from './Outgoing'
 import styles from './Mail.module.css'
 
 // Route params; preact-iso's own `query` prop is the URL's query string.
@@ -178,6 +180,8 @@ function MessageList(props: { mail: MailStore; open: (entry: Entry) => void }) {
 
 function MessageView(props: { mail: MailStore; entry: Entry }) {
   const { mail, entry } = props
+  const { drafts } = useServices()
+  const { route } = useLocation()
   // `null` if it failed to load.
   const [content, setContent] = useState<MessageContent | null | undefined>(undefined)
 
@@ -190,6 +194,15 @@ function MessageView(props: { mail: MailStore; entry: Entry }) {
       current = false
     }
   }, [mail, message])
+
+  const responder = (kind: Response) => async () => {
+    if (!content) return
+    const own = mail.accounts.value?.find((a) => a.id === entry.account)?.address ?? ''
+    const draft = respond(kind, content, own)
+    const id = await drafts.create(entry.account, draft.content, draft.inReplyTo)
+    if (id) route(composePath(id))
+  }
+  useKeymap({ reply: responder('reply'), replyAll: responder('replyAll'), forward: responder('forward') })
 
   // Opening a message reads it.
   const unread = isUnread(mail, entry)

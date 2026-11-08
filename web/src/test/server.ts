@@ -1,5 +1,5 @@
-// An in-memory stand-in for uplink's mail queries and label ops, for the
-// store and view tests. Like the real server, it delivers an op's log
+// An in-memory stand-in for uplink's mail, draft and outbox requests, for
+// the store and view tests. Like the real server, it delivers an op's log
 // entry before the op's response (SPEC §5.4).
 
 import type { Requester } from '../connection'
@@ -7,6 +7,9 @@ import { RequestError } from '../connection'
 import type {
   Account,
   ClientRequest,
+  Draft,
+  OutboxItem,
+  Splice,
   Entry,
   EntryId,
   Label,
@@ -16,18 +19,20 @@ import type {
   ServerEvent,
   ServerResponse,
 } from '../generated/protocol'
-import type { MailStore } from '../stores/mail'
+import type { Client } from '../stores/client'
+import { apply } from '../compose/splice'
 
 const SYSTEM = ['INBOX', 'UNREAD', 'STARRED', 'SENT', 'DRAFT', 'TRASH', 'SPAM']
 
 interface Undoable {
-  changes: LabelState[]
+  /** Applies the inverse, recording it as an entry; returns the entry. */
+  revert: () => number
   undone: boolean
 }
 
 export class FakeServer implements Requester {
   readonly requests: ClientRequest[] = []
-  private store!: MailStore
+  private client!: Client
   private accounts: { id: string; address: string; labels: Label[] }[] = []
   private entries: Entry[] = []
   private log: LogEntry[] = []
@@ -35,8 +40,17 @@ export class FakeServer implements Requester {
   private nextLabel = 1
   private nextEntry = 1
 
-  attach(store: MailStore) {
-    this.store = store
+  readonly drafts = new Map<string, Draft>()
+  readonly outbox: OutboxItem[] = []
+  private nextOutbox = 1
+
+  attach(client: Client) {
+    this.client = client
+  }
+
+  /** Edits a draft as another tab would. */
+  editElsewhere(draft: string, splice: Splice) {
+    this.editDraft(draft, this.drafts.get(draft)!.revision, splice)
   }
 
   addAccount(id: string, userLabels: string[] = []) {
@@ -94,9 +108,16 @@ export class FakeServer implements Requester {
     return this.entries.find((e) => e.id === entry)!.labels
   }
 
+  /** Runs before the next request is handled, as if it happened while
+   * the request was on its way. */
+  meanwhile: (() => void) | null = null
+
   async request(body: ClientRequest): Promise<ServerResponse> {
     this.requests.push(body)
     await Promise.resolve()
+    const meanwhile = this.meanwhile
+    this.meanwhile = null
+    meanwhile?.()
     switch (body.type) {
       case 'list_accounts':
         return { type: 'accounts', as_of: this.head(), accounts: this.listAccounts() }
@@ -148,7 +169,7 @@ export class FakeServer implements Requester {
         const id = this.commit({ type: 'user' }, `Changed ${body.entries.length} messages`, [
           { type: 'labels_changed', changes },
         ])
-        this.undoable.set(id, { changes, undone: false })
+        this.undoableLabels(id, changes)
         return { type: 'dispatched', tx_log_id: id }
       }
       case 'undo': {
@@ -156,20 +177,77 @@ export class FakeServer implements Requester {
         if (!op) throw new RequestError({ code: 'not_undoable', message: 'not undoable' })
         if (op.undone) throw new RequestError({ code: 'already_undone', message: 'already undone' })
         op.undone = true
-        const changes = op.changes.map((c) => this.setLabel(c.entry, c.label, !c.desired)!)
-        const id = this.commit({ type: 'user' }, 'Undid it', [{ type: 'labels_changed', changes }])
-        this.undoable.set(id, { changes, undone: false })
-        return { type: 'undone', tx_log_id: id }
+        return { type: 'undone', tx_log_id: op.revert() }
       }
       case 'list_drafts':
-      case 'create_draft':
-      case 'edit_draft':
-      case 'delete_draft':
-      case 'send_draft':
-      case 'cancel_send':
+        return { type: 'drafts', as_of: this.head(), drafts: [...this.drafts.values()] }
       case 'list_outbox':
-        throw new Error(`${body.type} is not implemented`)
+        return { type: 'outbox', as_of: this.head(), items: [...this.outbox] }
+      case 'create_draft': {
+        if (this.drafts.has(body.id)) throw new RequestError({ code: 'conflict', message: 'exists' })
+        const { id, account, content, in_reply_to } = body
+        this.drafts.set(id, { id, account, content, in_reply_to, revision: 0, updated_at: Date.now() })
+        return this.dispatched('Saved draft', [{ type: 'drafts_changed', drafts: [id] }])
+      }
+      case 'edit_draft':
+        return { type: 'dispatched', tx_log_id: this.editDraft(body.draft, body.revision, body.splice) }
+      case 'delete_draft':
+        this.drafts.delete(body.draft)
+        return this.dispatched('Discarded draft', [{ type: 'drafts_changed', drafts: [body.draft] }])
+      case 'send_draft': {
+        const draft = this.drafts.get(body.draft)!
+        this.drafts.delete(body.draft)
+        const id = this.nextOutbox++
+        this.outbox.push({ id, account: draft.account, draft, state: 'queued', error: null, not_before: Date.now() + 10_000 })
+        const response = this.dispatched(`Sent '${draft.content.subject}'`, [
+          { type: 'drafts_changed', drafts: [draft.id] },
+          { type: 'outbox_changed', items: [id] },
+        ])
+        this.undoable.set(this.head(), { revert: () => this.cancelSend(id, 'Undid it'), undone: false })
+        return response
+      }
+      case 'cancel_send':
+        return { type: 'dispatched', tx_log_id: this.cancelSend(body.item, 'Cancelled sending') }
     }
+  }
+
+  private undoableLabels(id: number, changes: LabelState[]) {
+    this.undoable.set(id, {
+      revert: () => {
+        const inverse = changes.map((c) => this.setLabel(c.entry, c.label, !c.desired)!)
+        const undo = this.commit({ type: 'user' }, 'Undid it', [{ type: 'labels_changed', changes: inverse }])
+        this.undoableLabels(undo, inverse)
+        return undo
+      },
+      undone: false,
+    })
+  }
+
+  private cancelSend(item: number, description: string): number {
+    const index = this.outbox.findIndex((i) => i.id === item)
+    const [cancelled] = this.outbox.splice(index, 1)
+    this.drafts.set(cancelled.draft.id, cancelled.draft)
+    return this.commit({ type: 'user' }, description, [
+      { type: 'drafts_changed', drafts: [cancelled.draft.id] },
+      { type: 'outbox_changed', items: [cancelled.id] },
+    ])
+  }
+
+  private dispatched(description: string, events: ServerEvent[]): ServerResponse {
+    return { type: 'dispatched', tx_log_id: this.commit({ type: 'user' }, description, events) }
+  }
+
+  private editDraft(id: string, revision: number, splice: Splice): number {
+    const draft = this.drafts.get(id)
+    if (!draft) throw new RequestError({ code: 'conflict', message: 'the draft no longer exists' })
+    if (draft.revision !== revision) {
+      throw new RequestError({ code: 'conflict', message: `the draft is at revision ${draft.revision}` })
+    }
+    const content = { ...draft.content, [splice.field]: apply(draft.content[splice.field], splice) }
+    this.drafts.set(id, { ...draft, content, revision: revision + 1 })
+    return this.commit({ type: 'user' }, 'Edited draft', [
+      { type: 'draft_edited', draft: id, revision: revision + 1, splice },
+    ])
   }
 
   private maybe(change: LabelState | null): LabelState[] {
@@ -195,7 +273,7 @@ export class FakeServer implements Requester {
       events,
     }
     this.log.push(entry)
-    this.store.apply(entry)
+    this.client.apply(entry)
     return entry.id
   }
 

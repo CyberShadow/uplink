@@ -2,10 +2,14 @@ import { createContext } from 'preact'
 import { useContext } from 'preact/hooks'
 import type { ReadonlySignal } from '@preact/signals'
 import type { Status } from './connection'
+import type { DraftStore } from './stores/drafts'
 import type { MailStore } from './stores/mail'
+import type { Ops } from './stores/ops'
 
 export interface Services {
+  ops: Ops
   mail: MailStore
+  drafts: DraftStore
   status: ReadonlySignal<Status>
 }
 
