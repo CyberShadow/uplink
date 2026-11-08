@@ -5,6 +5,7 @@
 //! their own `type` tags don't collide with the envelope's.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 pub mod mail;
 
@@ -13,13 +14,13 @@ use mail::{EntryId, LabelId, ListPosition, MessageId};
 /// Id of a log entry. Entries are numbered from 1 in commit order, so an
 /// id also serves as a position in the event stream; 0 is the position
 /// before the first entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
 #[serde(transparent)]
 pub struct TxLogId(pub i64);
 
 // ── envelopes ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WsClientMsg {
     Ping {
@@ -39,7 +40,7 @@ pub enum WsClientMsg {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WsServerMsg {
     Pong {
@@ -71,7 +72,7 @@ pub enum WsServerMsg {
 
 // ── requests ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ClientRequest {
     /// Undo a log entry. Undoing an undo entry is a redo.
@@ -103,7 +104,7 @@ pub enum ClientRequest {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ServerResponse {
     /// The undo was recorded as the log entry `tx_log_id`.
@@ -131,14 +132,14 @@ pub enum ServerResponse {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ServerError {
     pub code: ErrorCode,
     pub message: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     NotFound,
@@ -154,7 +155,7 @@ pub enum ErrorCode {
 
 // ── log entries ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct LogEntry {
     pub id: TxLogId,
@@ -170,7 +171,7 @@ pub struct LogEntry {
     pub events: Vec<ServerEvent>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Source {
     /// An op the user dispatched; it can be undone.
@@ -182,7 +183,7 @@ pub enum Source {
 /// A change to state that clients mirror (SPEC §5.4). Events carry ids
 /// rather than content, since they are stored in the log; clients query
 /// what they display.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerEvent {
     EntriesAdded(mail::EntriesAdded),

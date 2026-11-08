@@ -134,6 +134,17 @@
             cargoClippyExtraArgs = "--workspace -- -D warnings";
           });
 
+          # web/src/generated/protocol.ts is generated from uplink-protocol and checked in.
+          protocol-ts = craneLib.mkCargoDerivation (commonArgs // {
+            inherit cargoArtifacts;
+            pnameSuffix = "-protocol-ts";
+            buildPhaseCargoCommand = ''
+              cargoWithProfile run -q -p uplink-protocol --example typescript > protocol.ts
+              diff -u ${./web/src/generated/protocol.ts} protocol.ts
+            '';
+            installPhaseCommand = "mkdir -p $out";
+          });
+
           backend-fmt = craneLib.cargoFmt {
             src = cargoSrc;
           };

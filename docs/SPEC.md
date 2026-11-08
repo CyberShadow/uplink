@@ -155,7 +155,7 @@ uplink/
 │   │   ├── stores/                  # @preact/signals stores
 │   │   ├── views/                   # Mail, Matrix, Calendar, TODO
 │   │   ├── components/
-│   │   └── generated/protocol.ts    # produced by `cargo build` (ts-rs)
+│   │   └── generated/protocol.ts    # ts-rs output, checked in
 │   └── tsconfig.json
 ├── docs/
 │   ├── VISION.md
@@ -169,8 +169,10 @@ uplink/
 
 - **`uplink-protocol`** is a leaf crate with no deps on the others. It owns
   every type that crosses the WS boundary, every type that crosses the SPA
-  boundary, and runs `ts-rs` to emit `web/src/generated/protocol.ts`. Keeps
-  TS-side imports clean; nothing else can accidentally export a wire type.
+  boundary, and derives `ts-rs` bindings for them: its `typescript`
+  example prints `web/src/generated/protocol.ts`, which is checked in, and
+  the `protocol-ts` flake check fails when it is stale. Keeps TS-side
+  imports clean; nothing else can accidentally export a wire type.
 - **`uplink-tx-log`** sits between callers (mail/matrix/todo handlers, undo
   endpoint, draft endpoint) and the storage layer. There's no second path
   into the database. Storage primitives can be called only via an op.
@@ -1770,6 +1772,7 @@ flake is the source of truth.
 |------------------------|---------------------------------------------------------------|
 | `backend-test`         | `cargo test --workspace`                                      |
 | `backend-lint`         | `cargo clippy --workspace -- -D warnings` + `cargo fmt --check` |
+| `protocol-ts`          | `web/src/generated/protocol.ts` matches `uplink-protocol`     |
 | `frontend-test`        | `pnpm test` (vitest + jsdom + `@testing-library/preact`)      |
 | `frontend-lint`        | `pnpm lint` + `tsc --noEmit`                                  |
 | `integration-gmail`    | NixOS VM test: uplink service + Gmail emulator                |
