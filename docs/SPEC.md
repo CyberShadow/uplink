@@ -106,11 +106,10 @@ Don't litigate these in code review.
    defines.** No SSE, no long-poll, no second port. Heartbeat is app-level
    ping/pong at 25–30 s. The stream is the log itself (§6): reconnection
    replays the entries after the last one the client saw.
-6. **No client-side persistence other than IndexedDB write-through for the
-   currently-being-edited draft.** No client cache of mail metadata, no
+6. **No client-side persistence.** No client cache of mail metadata, no
    client cache of Matrix events. The SPA loads from the server on connect,
-   keeps reactive state in memory, and writes nothing back to disk except
-   draft text resilience.
+   keeps reactive state in memory, and writes nothing to disk. (IndexedDB
+   write-through of draft text is deferred, §7.4.)
 
 ### 1.3 Out of scope for MVP (covered in `docs/ROADMAP.md`)
 
@@ -229,6 +228,11 @@ data:
 # 32-byte random key, base64. Used to seal OAuth refresh tokens at rest.
 # Generate with: uplink keygen > master.key
 master_key_file: /etc/uplink/master.key
+
+# ── sending ─────────────────────────────────────────────────────────────
+# How long sent mail waits in the outbox, during which sending can be
+# undone (§6.7). Default 10.
+send_delay_secs: 10
 
 # ── accounts ────────────────────────────────────────────────────────────
 accounts:
@@ -498,29 +502,33 @@ CREATE TABLE todo (
 CREATE INDEX todo_by_done_due ON todo(done_at, due_ts);
 
 -- ── drafts (local-only MVP) ──────────────────────────────────────────
--- Edited only through draft.* ops (§7); history lives in tx_log.
+-- Edited only through draft ops (§7); history lives in tx_log.
 CREATE TABLE draft (
-  id             TEXT PRIMARY KEY,          -- ULID
-  account_id     TEXT NOT NULL REFERENCES account(id),
-  subject        TEXT NOT NULL DEFAULT '',
-  to_addrs       TEXT NOT NULL DEFAULT '[]',-- JSON array of strings
-  cc_addrs       TEXT NOT NULL DEFAULT '[]',
-  bcc_addrs      TEXT NOT NULL DEFAULT '[]',
-  body_text      TEXT NOT NULL DEFAULT '',
-  body_html      TEXT NOT NULL DEFAULT '',
-  in_reply_to    TEXT,                      -- Message-ID of original
+  id             TEXT PRIMARY KEY,          -- chosen by the creating client
+  account_id     TEXT NOT NULL,             -- configured account sent from
+  revision       INTEGER NOT NULL,          -- edits so far (§7.2)
+  to_addrs       TEXT NOT NULL,             -- address lists as typed
+  cc_addrs       TEXT NOT NULL,
+  bcc_addrs      TEXT NOT NULL,
+  subject        TEXT NOT NULL,
+  body_html      TEXT NOT NULL,             -- the editor's HTML
+  in_reply_to    INTEGER REFERENCES message(id),
   updated_at     INTEGER NOT NULL
 );
 
 -- ── outbox (§6.7) ────────────────────────────────────────────────────
-CREATE TABLE outbox (
-  id             INTEGER PRIMARY KEY,
-  account_id     TEXT NOT NULL REFERENCES account(id),
-  kind           TEXT NOT NULL,             -- 'mail' | 'matrix'
-  payload        TEXT NOT NULL,             -- JSON: the draft / message
-  not_before     INTEGER NOT NULL,          -- unix ms; send delay
+-- Mail only; Matrix sends get their own table, as their payload and
+-- reconciler differ. Ids are never reused: log entries refer to them.
+CREATE TABLE mail_outbox (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id     TEXT NOT NULL,
+  draft          TEXT NOT NULL,             -- JSON: the draft as sent
+  message_id     TEXT NOT NULL UNIQUE,      -- generated when queued
+  delay_ms       INTEGER NOT NULL,          -- the send delay queued with
+  not_before     INTEGER NOT NULL,          -- unix ms
   state          TEXT NOT NULL,             -- 'queued' | 'sending' | 'sent' | 'failed'
-  error          TEXT
+  error          TEXT,                      -- set iff failed
+  message        INTEGER REFERENCES message(id) -- set iff sent: the local copy
 );
 
 -- ── the log ─────────────────────────────────────────────────────────
@@ -702,8 +710,9 @@ than it buffers is closed; the client reconnects and resumes.
 - **Calendar**: `CalendarEventAdded`, `CalendarEventRemoved`,
   `CalendarEventChanged`.
 - **TODO**: `TodoAdded`, `TodoChanged`, `TodoRemoved`.
-- **Draft**: `DraftEdited { id, edit }` (§7).
-- **Outbox**: `OutboxItemChanged { id, state }`.
+- **Draft**: `DraftEdited { draft, revision, splice }` (§7.2), and
+  `DraftsChanged { drafts }` when drafts are created or deleted.
+- **Outbox**: `OutboxChanged { items }` (added, removed or changed state).
 - **Config**: `ConfigChanged { section }`.
 
 `ClientRequest` variants (MVP):
@@ -714,9 +723,12 @@ than it buffers is closed; the client reconnects and resumes.
 - `LoadMessage { message }` — fetch full body (text; sanitized HTML at M6).
 - `LoadRoomTimeline { room_id, before_event_id, limit }`.
 - `Undo { tx_log_id }`.
+- `ListDrafts`, `ListOutbox` — all drafts; outbox items not yet synced
+  back.
 - One request per op kind the client can dispatch, answered with the
   tx_log id: `ModifyLabels { entries, add, remove }` covers archive,
-  label, mark read and star; later draft edits, send, ...
+  label, mark read and star; `CreateDraft`, `EditDraft { draft, revision,
+  splice }`, `DeleteDraft`, `SendDraft`, `CancelSend { item }` (§6.7, §7).
 
 Query responses carry `as_of`, the last log entry they reflect; `Undone`
 and `Dispatched` reflect the log up to their own entry. The session sends
@@ -865,15 +877,32 @@ When sync observes a remote change:
 
 Sending mail or a Matrix message is a desired state that can only be
 fulfilled once. `mail.send` / `matrix.send` move the message into the
-`outbox`; the account's reconciler performs the send once `not_before`
-has passed. The inverse takes the item back out (returning a mail to its
-draft) and succeeds only while the item is still `queued`; afterwards
-undo refuses ("already sent"). A configurable send delay therefore gives
-a reliable undo-send window. Sends stay in `tx_log` like any other op.
+outbox; the account's reconciler performs the send once `not_before`
+has passed. The inverse (`mail.cancel_send`, also an op of its own) takes
+the item back out, returning a mail to its draft, and succeeds only while
+the item is `queued` or `failed`; afterwards undo refuses ("being sent",
+"was sent"). The send delay (`send_delay_secs`, default 10) therefore
+gives a reliable undo-send window. Sends stay in `tx_log` like any other
+op.
 
-The queued item is also the local echo: it appears in Sent / the room
-timeline immediately, marked pending, and becomes a normal message once
-the provider's copy is observed (§8.6).
+The reconciler (the account's sync task) *claims* a due item before
+handing it to the provider, recording it as `sending` (an observation
+refused if the item is no longer queued), so a cancel and a send can't
+both win. Then:
+
+- accepted: recorded `sent` with the message as sent (§8.6);
+- refused by the provider (4xx), or unbuildable (bad addresses): `failed`,
+  with the reason; cancelling returns the draft for fixing;
+- not sent for a passing reason (connection refused, 5xx, 429, token
+  refresh): back to `queued`, retried with the task's backoff;
+- interrupted after the request went out (timeout, process killed while
+  `sending`): `failed` as "may have been sent", never retried, since a
+  duplicate is worse than asking.
+
+The outbox lists queued, failed and sent items until the provider's copy
+of a sent one is synced, when the item is deleted: from then on it is
+mail like any other. Showing queued items in Sent / the room timeline as
+a local echo is deferred; the outbox view stands in for it.
 
 ---
 
@@ -897,28 +926,46 @@ Draft changes are ordinary tx_log ops, so undo, history and broadcast
 need nothing draft-specific:
 
 ```rust
-/// Replace `delete` with `insert` at `offset` (in chars) of a text field.
-/// Applies only if `delete` is what is at `offset` now; otherwise the
-/// edit is stale and refused.
-struct DraftEdit { id: DraftId, field: TextField, offset: u32, delete: String, insert: String }
-/// Set a non-text field (to/cc/bcc, in_reply_to), expecting `old`.
-struct DraftSet  { id: DraftId, field: DraftField, old: Value, new: Value }
+/// Creates a draft (revision 0), or restores a deleted one.
+struct PutDraft { id: DraftId, account: String, revision: i64, content: DraftContent, in_reply_to: Option<MessageId> }
+struct DeleteDraft { id: DraftId }
+/// Replace `delete` with `insert` at `offset` of one text field, based on
+/// the draft at `revision`.
+struct EditDraft { id: DraftId, revision: Option<i64>, splice: Splice }
+struct Splice { field: DraftField, offset: u32, delete: String, insert: String }
 ```
 
-The inverse of an edit swaps `delete` and `insert`; the precondition is
-the conflict check for both concurrent tabs and undo (§6.2). Each entry
-stores only the changed span, never a copy of the draft.
+Every field is text: To, Cc and Bcc are address lists as typed, parsed
+when sent, so they are edited like the subject and body. Offsets count
+UTF-16 code units, as JavaScript strings do; a splice inside a surrogate
+pair is refused.
 
-The client debounces typing (~500 ms) and sends one `DraftEdit` covering
-the difference between the text it last saw from the server and its
-current text (common prefix/suffix). The server applies it and
-broadcasts `DraftEdited`. A tab applies a remote edit directly if it has
-no unsent local changes; if it does, it rebases them: it adopts the new
-server text and sends a fresh diff of its own text against it. The
-editor's undo keeps operating on keystrokes; tx_log undo steps back one
-saved edit at a time.
+An edit names the revision it was computed against, and is refused if
+the draft has moved on: checking only that `delete` is at `offset` would
+not catch an insertion landing in the wrong place after an edit from
+another tab. Each edit increments the revision. The inverse swaps
+`delete` and `insert` and carries no revision, since undo applies it to
+whatever revision the draft has reached; it checks only that the text it
+removes is where it expects (§6.2), so edits can be undone one at a time,
+in any order that keeps their text in place. Each entry stores only the
+changed span, never a copy of the draft.
 
-`body_html` (TipTap output) is edited the same way, as text.
+The client (`web/src/compose/session.ts`) keeps the text as typed and the
+server's draft it is based on. Typing pauses for 500 ms, then one edit
+goes out for the first field that differs (common prefix/suffix, never
+splitting a surrogate pair), one edit in flight at a time. When the
+server's draft changes, the client recognizes its own edit (the next
+revision, with exactly its change) and otherwise rebases: its own
+changes, as one span against the old base, are moved past the remote
+change and applied to the new text. Where the two overlap, the local
+change gives up deleting what the remote one changed, so neither side's
+insertion is lost. An edit in flight meanwhile is refused as stale and
+recomputed. The editor's undo keeps operating on keystrokes; tx_log undo
+steps back one saved edit at a time.
+
+Creating and editing drafts are safe to resend after a reconnect, since
+neither can apply twice (the id exists; the revision moved on), so the
+connection resends them like queries.
 
 ### 7.3 History
 
@@ -927,11 +974,13 @@ in the log UI ("edited draft 'Re: lunch'"), expandable. Because undo is
 appended rather than destructive, the history of a draft is never lost —
 in the spirit of vim's and emacs' persistent undo.
 
-### 7.4 IndexedDB write-through
+### 7.4 IndexedDB write-through (deferred)
 
-Every debounced edit is written to IndexedDB before it is sent, and
-removed once acknowledged. On reconnect or startup, pending edits are
-re-sent; any that come back stale are rebased as above.
+Unsaved text survives a dropped connection without it: the tab keeps it,
+and edits are resent on reconnect. Only closing the tab while
+disconnected loses it, which is offline use, a non-goal (VISION). If it
+turns out to matter: write every debounced edit to IndexedDB before it is
+sent, remove it once acknowledged, and re-send pending edits on startup.
 
 ---
 
@@ -979,7 +1028,12 @@ IMAP's per-folder copies, and a REST fake is practical to test against
   (Gmail SMTP doesn't append to Sent; the API does).
 - **Library**: hand-rolled HTTPS+JSON via `reqwest`. No SDK; Gmail send is
   ~30 lines of code.
-- **OAuth scope required**: `https://www.googleapis.com/auth/gmail.send`.
+- **OAuth scope**: `gmail.modify`, which uplink already asks for, covers
+  sending (`gmail.send` is the narrower scope for send-only clients).
+- **Threading**: a reply carries `In-Reply-To` and `References` (the
+  original's References plus its Message-ID), and is sent with the
+  `threadId` of the original's entry in the account, as Gmail requires
+  for it to join the thread.
 
 ### 8.3 M365 — receive
 
@@ -1024,27 +1078,35 @@ IMAP's per-folder copies, and a REST fake is practical to test against
 
 ### 8.5 Compose
 
-- **Plain text body**: stored as-is in `draft.body_text`.
-- **WYSIWYG**: TipTap editor in the browser; output is HTML. Stored in
-  `draft.body_html`. On send, the HTML is sanitized (DOMPurify on the
-  client *and* a Rust HTML sanitizer server-side as defense-in-depth).
-- **HTML sanitizer**: `ammonia` crate on the server. Allowlist matches the
-  set of tags TipTap can output.
+- **Body**: TipTap (StarterKit) in the browser; its HTML is the draft's
+  one body, `draft.body_html`. There is no separate plain-text mode.
+- **HTML sanitizer**: `ammonia` (default allowlist, which covers what
+  StarterKit outputs) when the message is built, server-side. The client
+  does not sanitize what it sends: the server is the boundary.
 - **Outbound MIME assembly**: `mail-builder` crate (sibling of mail-parser
-  from stalwartlabs). Build `multipart/alternative { text/plain; text/html }`.
+  from stalwartlabs): `multipart/alternative { text/plain; text/html }`,
+  the plain text derived from the sanitized HTML (mail-parser's
+  `html_to_text`). The Message-ID is generated when the mail is queued,
+  `<random@account.uplink>`; the Date when it is sent.
+- **Replies and forwards** are prefilled by the client from the loaded
+  message: `Re:`/`Fwd:` subject, recipients (reply-all drops the
+  account's own address), and the body quoted. Attachments are not
+  supported yet.
 
 ### 8.6 Persistence of sent mail
 
 When the reconciler sends an outbox item:
 
-1. Persist the assembled RFC 5322 bytes as a `local` variant, creating
-   the logical message (its Message-ID is the one we generated).
+1. Persist the assembled RFC 5322 bytes as a variant (source: the
+   account), creating the logical message (its Message-ID is the one we
+   generated).
 2. Mark the outbox item `sent` and broadcast.
 
 Next sync pass, the provider's Sent copy is observed. It has the same
 Message-ID but different bytes (the provider adds headers), so it is
 stored as a second variant of the same message, and the message gains its
-`mail_entry` for the account.
+`mail_entry` for the account; the outbox item is then deleted. (emulate
+stores the bytes as sent, so there it is the same variant.)
 
 ### 8.7 Body extraction & FTS
 
@@ -1280,8 +1342,9 @@ user action in MVP — don't fan out into multiple ops, keep undo atomic.
 - **preact-iso** for routing.
 - **Vite 7** dev server / bundler.
 - **TypeScript** strict.
-- **TipTap** via `preact/compat` for the compose WYSIWYG.
-- **DOMPurify** for any sanitization on the client (defense in depth).
+- **TipTap** for the compose WYSIWYG: its framework-agnostic core
+  (`@tiptap/core`, `@tiptap/starter-kit`), driven from a Preact effect, so
+  no `preact/compat` (§15.1).
 - **tinykeys** for keyboard shortcuts (Gmail-style `j`/`k`/`gi`/`c`).
 - **@tanstack/react-virtual** for virtualized message lists.
 - **rrule** for client-side recurring-event expansion.
@@ -1308,7 +1371,6 @@ Vitest runs from the same config (jsdom).
 - Outbound message queue, drained on connect.
 - Cursor tracking: every received `Entry` updates the local cursor to its
   id; on reconnect, `Hello { since: cursor }` is sent.
-- IndexedDB write-through for draft text (per §7).
 
 ### 12.4 Views
 
@@ -1344,17 +1406,25 @@ Gmail's scheme. The notable choices we ARE picking:
 
 The notable choices we are NOT picking:
 
-Implemented at M4: `j k o Enter u x *a *n e s l Shift+i Shift+u gi gs gt
-gd / ?`. `ga` waits for an All Mail view (lists are of a label), `#` and `!`
-for trash/spam ops, `c r a f` for compose (M6). Opening a message marks it
-read, as Gmail does, without an undo notice.
+Implemented: `j k o Enter u x *a *n e s l Shift+i Shift+u gi gs gt gd /
+?` (M4), `c r a f` (M6), and in compose `Ctrl+Enter` send and `Esc` close
+(the draft stays; these work from within its fields). `gd` goes to
+uplink's own drafts; Gmail's DRAFT label is listed as "Gmail drafts".
+`ga` waits for an All Mail view (lists are of a label), `#` and `!` for
+trash/spam ops. Opening a message marks it read, as Gmail does, without
+an undo notice.
 
 - **No `z` for undo.** Undo lives in the transaction log view and as an
   optional toast immediately after each mutating op. `z` overloads
   unhelpfully when search/compose has focus, and the tx_log is the
   better surface for the multi-step undo we actually support.
 
-### 12.6 Client state (M4)
+### 12.6 Client state
+
+`stores/client.ts` holds the tab's stores, which the connection feeds:
+`ops.ts` (the ops dispatched from the tab, and the notice of the last one
+with its Undo), `mail.ts` and `drafts.ts` (drafts and the outbox, plus
+the compose sessions editing drafts in the tab, §7.2).
 
 `stores/mail.ts` mirrors accounts and the list on show. Responses replace
 what they cover; log entries apply on top — label changes and removals
@@ -1364,16 +1434,18 @@ the list's loaded range. This needs no id bookkeeping because the server
 sends the entries a response reflects before the response (§5.4). A
 query in flight when the socket drops is sent again on the next
 connection; an op is failed, since it may have been applied (the log will
-show it). The last op dispatched from the tab is shown with an Undo
-button.
+show it), except draft creation and edits, which can't apply twice
+(§7.2). The last op dispatched from the tab is shown with an Undo button.
+Drafts apply their edits locally and reload on creation and deletion; the
+outbox reloads on any change.
 
 Lists are not virtualized yet: pages of 100 load as the focus or scroll
 nears the end; a reload re-reads up to 500. `@tanstack/react-virtual`
 comes in when lists get long enough to need it.
 
 Tests: vitest + jsdom + `@testing-library/preact`; the connection against
-`mock-socket`, the store and views against an in-memory stand-in for the
-server's mail requests (`web/src/test/server.ts`).
+`mock-socket`, the stores, compose sessions and views against an
+in-memory stand-in for the server (`web/src/test/server.ts`).
 
 ### 12.7 Bundle budget
 
@@ -1592,6 +1664,11 @@ undoing a send within the delay keeps it from going out; the provider's
 copy of a sent message shows up within one sync interval as a second
 variant of the same logical message.
 
+**State:** done for Gmail. Graph `sendMail` waits for M5. "Switching tabs
+mid-edit" is covered by the compose session tests (an edit from another
+tab while typing, and while an edit is in flight), not yet by two browser
+tabs in the e2e test, which covers replying and sending in Chromium.
+
 ### M7. Matrix
 
 - Account pair CLI subcommand (Secret Storage import).
@@ -1672,9 +1749,12 @@ it via `preact/compat` is common but not officially supported. Risks:
 - Subtle ref semantics differences breaking floating-menu portals.
 - Bundle size from `preact/compat` shimming React APIs.
 
-**Decision pending**: do a 1-day spike *during M6* to confirm TipTap +
-preact/compat works for our compose needs. Fallbacks (in order): Lexical
-(framework-agnostic), ProseMirror direct (more LOC, no React dep).
+**Resolved (M6):** none of this applies, because TipTap's core is
+framework-agnostic: `new Editor({ element })` in a Preact layout effect,
+destroyed on unmount, with no React bindings and no `preact/compat`. It
+works in Chromium (e2e test) and under jsdom (view tests). Its bundle
+(~125 KB gzipped, mostly ProseMirror) is a separate chunk loaded when
+compose first opens; the main bundle stays ~23 KB.
 
 ### 15.2 Gmail GCP project ownership
 
@@ -2026,10 +2106,8 @@ would add a third subscription — out of scope for MVP.
 | `typescript`              | TS                                                         |
 | `tinykeys`                | Keyboard shortcuts                                         |
 | `@tanstack/react-virtual` | List virtualization                                        |
-| `@tiptap/core` + Preact compat | WYSIWYG compose                                       |
-| `dompurify`               | Client-side HTML sanitization                              |
+| `@tiptap/core` + `@tiptap/starter-kit` | WYSIWYG compose (lazy-loaded)             |
 | `rrule`                   | Recurring event expansion                                  |
-| `idb`                     | IndexedDB write-through                                    |
 | `vitest` + `@testing-library/preact` | Tests                                           |
 
 ---

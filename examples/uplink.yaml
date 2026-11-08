@@ -21,6 +21,10 @@ data:
 # Generate with: uplink keygen > master.key && chmod 600 master.key
 master_key_file: ./master.key
 
+# How long sent mail waits in the outbox, during which sending can be
+# undone.
+send_delay_secs: 10
+
 # ── accounts ────────────────────────────────────────────────────────────────
 accounts:
 

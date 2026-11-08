@@ -7,8 +7,9 @@ makes every action undoable. See `docs/VISION.md` for the goals and
 `docs/SPEC.md` for the design.
 
 **Status:** Gmail mail can be read, searched, archived, labelled, starred
-and marked read/unread, with undo. Sending, Microsoft 365, Matrix, calendar
-and tasks are in progress (SPEC §14).
+and marked read/unread, with undo, and written (drafts saved as you type,
+synced across tabs), replied to, forwarded and sent, with undo-send.
+Microsoft 365, Matrix, calendar and tasks are in progress (SPEC §14).
 
 ## Try it
 
@@ -69,8 +70,8 @@ the status to *In production* (Audience → Publish app) avoids that; for a
 client only you use, Google does not require verification, though the
 consent screen keeps warning that the app is unverified.
 
-uplink asks for the `gmail.modify` scope: read mail and change labels (it
-never deletes mail).
+uplink asks for the `gmail.modify` scope: read mail, change labels and
+send (it never deletes mail).
 
 ## Running on NixOS
 
