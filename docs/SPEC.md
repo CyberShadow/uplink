@@ -1291,40 +1291,12 @@ beyond preact-iso. No CSS framework — hand-written CSS modules.
 
 ### 12.2 Vite config
 
-Dev server proxying API and WebSocket traffic to the backend:
-
-```ts
-// web/vite.config.ts
-import { defineConfig } from 'vite'
-import preact from '@preact/preset-vite'
-
-export default defineConfig({
-  plugins: [preact()],
-  server: {
-    port: 5173,
-    proxy: {
-      '/api': {
-        target: 'http://127.0.0.1:8080', // uplink dev server (HTTP, no TLS)
-        changeOrigin: true,
-        // Forward the same basic-auth header in dev so authenticated routes
-        // work without the user re-entering credentials.
-      },
-      '/ws': {
-        target: 'ws://127.0.0.1:8080',
-        ws: true,
-        changeOrigin: true,
-      },
-    },
-  },
-  build: {
-    outDir: '../crates/uplink-server/static',
-    emptyOutDir: true,
-  },
-})
-```
-
-In production, the Rust binary serves `static/` and the SPA's WS connects
-to the same origin.
+`web/vite.config.ts`: the dev server (port 5173) proxies `/api` and `/ws`
+to the TLS server on `127.0.0.1:8443`. Its page is not under uplink's basic
+auth, so the proxy adds the credentials from `UPLINK_DEV_AUTH=user:password`.
+`vite build` writes to `crates/uplink-server/static/`, which the binary
+embeds; in production the SPA's WebSocket connects to the same origin.
+Vitest runs from the same config (jsdom).
 
 ### 12.3 Connection manager
 
@@ -1714,7 +1686,11 @@ fully-decentralised path — OAuth requires a registered client. Two patterns ar
    the Cloud Console), marks it as a Desktop/installed app, and pastes
    `client_id` + `client_secret` into uplink's YAML. Each install has its
    own OAuth project; the upstream uplink project has zero ongoing
-   relationship with Google. This is what we ship in MVP.
+   relationship with Google. This is what we ship in MVP. While the
+   consent screen's publishing status is *Testing*, Google expires refresh
+   tokens after 7 days; publishing it (no verification is required for a
+   client only its owner uses) avoids re-running `uplink oauth init`
+   weekly. README.md walks through the setup.
 2. **Bundled (roadmap).** Register one GCP project under the uplink
    maintainer, ship `client_id` + `client_secret` with the binary (Google
    tolerates this for installed apps; the secret isn't truly secret). This

@@ -1,81 +1,160 @@
 # uplink
 
-Self-hosted, single-user personal communication hub: unified Gmail + M365 mail,
-Matrix chat, M365 calendar, and local todos behind a single HTTPS+WebSocket
-server. See `docs/SPEC.md` for the full technical specification.
+A self-hosted, single-user web client for mail (Gmail now; Microsoft 365
+next), Matrix, calendar and tasks: one HTTPS + WebSocket server, a
+keyboard-driven web UI with Gmail's shortcuts, and a transaction log that
+makes every action undoable. See `docs/VISION.md` for the goals and
+`docs/SPEC.md` for the design.
 
-## Prerequisites
+**Status:** Gmail mail can be read, searched, archived, labelled, starred
+and marked read/unread, with undo. Sending, Microsoft 365, Matrix, calendar
+and tasks are in progress (SPEC §14).
 
-- [Nix](https://nixos.org/download) with flakes enabled
-- (Optional) [direnv](https://direnv.net/) for automatic shell activation
+## Try it
 
-## Run from source
-
-### 1. Enter the development shell
+You need [Nix](https://nixos.org/download) with flakes.
 
 ```sh
-nix develop
+nix build                      # result/bin/uplink, with the web UI built in
+cp examples/uplink.yaml uplink.yaml
+./result/bin/uplink keygen > master.key && chmod 600 master.key
 ```
 
-This provides `rustc`, `cargo`, `pnpm`, `node`, and required system libraries.
-
-### 2. Build the SPA
+Then set up a Gmail account (next section), and:
 
 ```sh
-cd web && pnpm install && pnpm build && cd ..
+./result/bin/uplink oauth init --account alice-gmail   # once per account
+./result/bin/uplink serve
 ```
 
-This writes the static assets into `crates/uplink-server/static/`.
+Open <https://localhost:8443/> and accept the certificate warning: the
+example uses a public, self-signed development certificate
+(`examples/dev-cert.pem`). Sign in as `alice` with the password `uplink`.
+To choose your own password, put the output of
+`echo 'your password' | ./result/bin/uplink hash-password` in
+`server.basic_auth.password_bcrypt`.
 
-### 3. Build the binary
+`uplink` reads `uplink.yaml` in the current directory; pass `--config PATH`
+otherwise. Data goes to `data.root` (`./data` in the example).
 
-```sh
-nix build
-# result/bin/uplink is the output
+Press `?` in the UI for the keyboard shortcuts.
+
+## Connecting a Gmail account
+
+Gmail access goes through an OAuth client that you register yourself
+(SPEC §15.2); it takes about ten minutes, once.
+
+1. In the [Google Cloud console](https://console.cloud.google.com/), create
+   a project (any name).
+2. Enable the **Gmail API** for it (APIs & Services → Library).
+3. Configure the **OAuth consent screen** (Google Auth Platform →
+   Branding / Audience): user type *External*, and add your Gmail address
+   under *Test users*.
+4. Create an **OAuth client** (Google Auth Platform → Clients → Create
+   client) of type *Desktop app*. Copy its client id and secret into the
+   account's `oauth` section in `uplink.yaml`, and set `address` and `id`.
+5. Run `uplink oauth init --account ID`, open the URL it prints, sign in,
+   and accept. Google warns that the app is unverified: it is your own
+   client, so continue. uplink receives the authorization on a local port,
+   stores the refresh token sealed with the master key, and prints
+   `Authorized`. If the browser runs on another machine than uplink, its
+   final redirect to `http://127.0.0.1:…` fails to load: copy that URL from
+   the address bar and paste it into `uplink oauth init`.
+6. Start (or restart) `uplink serve`; the first sync mirrors the mailbox,
+   then changes arrive within seconds.
+
+While the consent screen's publishing status is *Testing*, Google expires
+refresh tokens after 7 days, and `oauth init` must be run again. Setting
+the status to *In production* (Audience → Publish app) avoids that; for a
+client only you use, Google does not require verification, though the
+consent screen keeps warning that the app is unverified.
+
+uplink asks for the `gmail.modify` scope: read mail and change labels (it
+never deletes mail).
+
+## Running on NixOS
+
+The flake provides a module that runs uplink as a systemd service:
+
+```nix
+{
+  inputs.uplink.url = "path:/path/to/uplink";   # or a git URL
+
+  outputs = { nixpkgs, uplink, ... }: {
+    nixosConfigurations.host = nixpkgs.lib.nixosSystem {
+      modules = [
+        uplink.nixosModules.default
+        {
+          services.uplink = {
+            enable = true;
+            settings = {
+              server = {
+                bind = "0.0.0.0:8443";
+                tls = { cert = "/var/lib/uplink/cert.pem"; key = "/var/lib/uplink/key.pem"; };
+                basic_auth = { user = "alice"; password_bcrypt = "$2b$12$..."; };
+              };
+              master_key_file = "/var/lib/uplink/master.key";
+              accounts = [{
+                id = "alice-gmail";
+                kind = "gmail";
+                address = "alice@gmail.com";
+                oauth = {
+                  client_id = "....apps.googleusercontent.com";
+                  client_secret = "GOCSPX-...";
+                  token_file = "/var/lib/uplink/accounts/alice-gmail.token";
+                };
+              }];
+            };
+          };
+        }
+      ];
+    };
+  };
+}
 ```
 
-Or for a quick dev build (no Nix, requires being inside `nix develop`):
+The configuration lands in the Nix store, world-readable, so keep secrets
+(TLS key, master key, tokens) in the files it points to. Data lives in
+`/var/lib/uplink` (the service's state directory). The service fails until
+the master key exists; as root:
 
 ```sh
-cargo build --release
-# target/release/uplink
+install -d -m 700 -o uplink -g uplink /var/lib/uplink   # if the service has not run yet
+sudo -u uplink sh -c 'uplink keygen > /var/lib/uplink/master.key'
+sudo -u uplink uplink --config /etc/uplink/uplink.yaml oauth init --account alice-gmail
+systemctl restart uplink
 ```
 
-### 4. Run
+Changing accounts in the configuration needs a restart; TLS and
+basic-auth changes apply live.
+
+## Development
 
 ```sh
-./result/bin/uplink --config examples/uplink.yaml
+nix develop                 # Rust, Node, pnpm, and UPLINK_EMULATE for the tests
+nix flake check             # everything CI runs, including the NixOS VM tests
+cargo test --workspace      # Rust tests (Gmail ones run against emulate)
+cd web && pnpm install && pnpm test   # web tests
 ```
 
-### 5. Open in a browser
+For working on the UI, run `uplink serve` (on the example's
+`127.0.0.1:8443`) and `cd web && UPLINK_DEV_AUTH=alice:uplink pnpm dev`,
+then open <http://localhost:5173/>. Vite proxies `/ws` to the server,
+adding those credentials.
 
-Visit <https://localhost:8443/>.
-Accept the self-signed certificate warning (dev fixture only).
-Authenticate with:
+`web/src/generated/protocol.ts` is generated from `crates/uplink-protocol`;
+after changing wire types, regenerate it with
+`cargo run -q -p uplink-protocol --example typescript > web/src/generated/protocol.ts`.
 
-- **Username:** `alice`
-- **Password:** `uplink`
+### Testing against a real Gmail account
 
-### 6. Run tests
-
-```sh
-nix flake check        # full check: cargo test + pnpm build
-cargo test --workspace # Rust tests only
-```
-
-## Development cert
-
-`examples/dev-cert.pem` and `examples/dev-key.pem` are a self-signed RSA-4096
-certificate for `localhost` / `127.0.0.1`, valid for 10 years.
-
-**These are public dev fixtures — never use them in production.**
-
-To regenerate:
+The Gmail tests normally run against
+[emulate](https://github.com/vercel-labs/emulate), a Gmail API fake. To
+run them against a real account instead (a throwaway one: the tests
+deliver and delete messages, and clean up after themselves), set it up as
+above in some `uplink.yaml`, then:
 
 ```sh
-openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
-  -keyout examples/dev-key.pem \
-  -out examples/dev-cert.pem \
-  -subj "/CN=localhost" \
-  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+UPLINK_TEST_GMAIL_CONFIG=path/to/uplink.yaml UPLINK_TEST_GMAIL_ACCOUNT=ID \
+  cargo test -p uplink-email --test gmail_sync
 ```

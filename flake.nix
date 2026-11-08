@@ -59,12 +59,15 @@
 
         # ── Rust ───────────────────────────────────────────────────────────
         # Cargo sources plus the SQL migrations that uplink-storage embeds
-        # at compile time.
+        # at compile time, and the example configuration.
         cargoSrc = pkgs.lib.cleanSourceWith {
           src = ./.;
           name = "source";
           filter = path: type:
-            pkgs.lib.hasSuffix ".sql" path || craneLib.filterCargoSources path type;
+            pkgs.lib.hasSuffix ".sql" path
+            # A test checks that the example configuration parses.
+            || pkgs.lib.hasSuffix "/examples/uplink.yaml" path
+            || craneLib.filterCargoSources path type;
         };
 
         commonArgs = {

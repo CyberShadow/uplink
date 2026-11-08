@@ -1,6 +1,13 @@
 import { defineConfig } from 'vitest/config'
 import preact from '@preact/preset-vite'
 
+// The dev server's page is not behind uplink's basic auth, so the proxy
+// adds the credentials: UPLINK_DEV_AUTH=user:password.
+const devAuth = process.env.UPLINK_DEV_AUTH
+const proxyHeaders = devAuth
+  ? { Authorization: `Basic ${Buffer.from(devAuth).toString('base64')}` }
+  : undefined
+
 export default defineConfig({
   plugins: [preact()],
   server: {
@@ -10,12 +17,14 @@ export default defineConfig({
         target: 'https://127.0.0.1:8443',
         changeOrigin: true,
         secure: false,
+        headers: proxyHeaders,
       },
       '/ws': {
         target: 'wss://127.0.0.1:8443',
         ws: true,
         changeOrigin: true,
         secure: false,
+        headers: proxyHeaders,
       },
     },
   },

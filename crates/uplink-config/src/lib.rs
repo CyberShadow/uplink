@@ -328,6 +328,13 @@ fn is_relevant(event: &notify::Event) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn example_config_parses() {
+        let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/uplink.yaml");
+        let config = Config::load(&example).unwrap();
+        assert_eq!(config.accounts.len(), 1);
+    }
     use std::io::Write;
 
     /// Happy-path: verbatim SPEC §3.2 example (with all account kinds).

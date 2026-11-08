@@ -1,6 +1,5 @@
-# uplink sample / development configuration
-# All fields parsed; server.* and data.* are consumed so far.
-# DO NOT USE IN PRODUCTION — credentials and certs are obvious placeholders.
+# uplink development configuration: copy it, then fill in your account.
+# The certificate and password are public placeholders; see README.md.
 
 # ── server ──────────────────────────────────────────────────────────────────
 server:
@@ -10,8 +9,7 @@ server:
     key:  "examples/dev-key.pem"    # PEM, unencrypted
   basic_auth:
     user: alice
-    # bcrypt hash of "uplink" (cost 12). Generate a fresh one with:
-    #   htpasswd -bnBC 12 "" yourpassword | tr -d ':\n'
+    # bcrypt hash of "uplink". Make your own with: uplink hash-password
     password_bcrypt: "$2b$12$Z5QelJuvdiqVHbPGIlx/d.zNmaHFLs5vXr41y3ucCcBkndL6tErju"
 
 # ── data location ───────────────────────────────────────────────────────────
@@ -19,35 +17,37 @@ data:
   root: ./data   # created on first run
 
 # ── master key ──────────────────────────────────────────────────────────────
-# 32-byte random key, base64. Used to seal OAuth refresh tokens at rest.
-# Generate with: uplink keygen > master.key
+# 32-byte random key, base64. Seals OAuth refresh tokens at rest.
+# Generate with: uplink keygen > master.key && chmod 600 master.key
 master_key_file: ./master.key
 
 # ── accounts ────────────────────────────────────────────────────────────────
 accounts:
 
-  # — Gmail —
+  # — Gmail — (see README.md for the client id and secret)
   - id: alice-gmail
     kind: gmail
     address: alice@gmail.com
     oauth:
       client_id:     "1234.apps.googleusercontent.com"
       client_secret: "GOCSPX-xxxxxxxxxx"
-      token_file:    ./data/accounts/alice-gmail.token
+      token_file:    ./data/accounts/alice-gmail.token   # written by `uplink oauth init`
 
+  # Not implemented yet; the server ignores these kinds with a warning.
+  #
   # — Microsoft 365 —
-  - id: alice-m365
-    kind: m365
-    address: alice@example.com
-    oauth:
-      client_id: "d3590ed6-52b3-4102-aeff-aad2292ab01c"
-      authority: "https://login.microsoftonline.com/common"
-      resource: "https://graph.microsoft.com"
-      token_file: ./data/accounts/alice-m365.token
-
+  # - id: alice-m365
+  #   kind: m365
+  #   address: alice@example.com
+  #   oauth:
+  #     client_id: "d3590ed6-52b3-4102-aeff-aad2292ab01c"
+  #     authority: "https://login.microsoftonline.com/common"
+  #     resource: "https://graph.microsoft.com"
+  #     token_file: ./data/accounts/alice-m365.token
+  #
   # — Matrix —
-  - id: alice-matrix
-    kind: matrix
-    homeserver: "https://matrix.example.org"
-    mxid: "@alice:example.org"
-    state_dir: ./data/matrix/alice-matrix
+  # - id: alice-matrix
+  #   kind: matrix
+  #   homeserver: "https://matrix.example.org"
+  #   mxid: "@alice:example.org"
+  #   state_dir: ./data/matrix/alice-matrix

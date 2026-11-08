@@ -73,7 +73,14 @@ pub fn start_syncs(config: &Config, services: &Services) -> Result<()> {
         .iter()
         .filter_map(|account| match account {
             AccountConfig::Gmail(gmail) => Some(gmail),
-            AccountConfig::M365(_) | AccountConfig::Matrix(_) => None,
+            AccountConfig::M365(m365) => {
+                tracing::warn!(account = m365.id, "M365 accounts are not supported yet");
+                None
+            }
+            AccountConfig::Matrix(matrix) => {
+                tracing::warn!(account = matrix.id, "Matrix accounts are not supported yet");
+                None
+            }
         })
         .collect();
     // The master key is needed only to unseal OAuth tokens.
