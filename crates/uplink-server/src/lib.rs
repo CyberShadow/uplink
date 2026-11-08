@@ -26,6 +26,7 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tower::Service;
 use tracing::info;
+use uplink_calendar::service::Calendar;
 use uplink_config::{
     AccountConfig, BasicAuthConfig, Config, ConfigChanged, ConfigSection, Watcher,
 };
@@ -36,7 +37,6 @@ use uplink_protocol::{
 };
 use uplink_realtime::{Backend, Hub, Replay};
 use uplink_storage::seal::MasterKey;
-use uplink_calendar::service::Calendar;
 use uplink_todos::service::Todos;
 use uplink_tx_log::{Dispatcher, LogReader, Registry, UndoError};
 

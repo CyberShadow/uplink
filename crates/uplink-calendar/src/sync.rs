@@ -153,7 +153,9 @@ impl CalendarSync {
             (self.start_link(start, end), start, end, true)
         };
         let (mut url, mut start, mut end, mut full) = match state {
-            Some(s) if now - PAST_MS - s.start < MOVE_AFTER_MS => (s.delta_link, s.start, s.end, false),
+            Some(s) if now - PAST_MS - s.start < MOVE_AFTER_MS => {
+                (s.delta_link, s.start, s.end, false)
+            }
             Some(_) => {
                 tracing::info!(account = self.account, "moving the calendar window");
                 fresh()
@@ -166,7 +168,10 @@ impl CalendarSync {
                 if full {
                     bail!("Graph refused to list the calendar");
                 }
-                tracing::info!(account = self.account, "delta link expired; listing the calendar");
+                tracing::info!(
+                    account = self.account,
+                    "delta link expired; listing the calendar"
+                );
                 (url, start, end, full) = fresh();
                 items.clear();
                 continue;

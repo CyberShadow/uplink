@@ -82,7 +82,11 @@ impl Setup {
             request = request.json(&body);
         }
         let response = request.send().await.unwrap();
-        assert!(response.status().is_success(), "{path}: {}", response.status());
+        assert!(
+            response.status().is_success(),
+            "{path}: {}",
+            response.status()
+        );
         response.json().await.unwrap_or(Value::Null)
     }
 
@@ -234,9 +238,15 @@ async fn follows_changes_and_moves_its_window() {
     setup.create(standup()).await;
     setup.sync.sync(NOW + 8 * DAY).await.unwrap();
     let log = setup.log();
-    assert!(log.last().unwrap().starts_with("Calendar listed"), "{log:?}");
+    assert!(
+        log.last().unwrap().starts_with("Calendar listed"),
+        "{log:?}"
+    );
     let latest = setup.events(NOW + 300 * DAY, NOW + 374 * DAY).await;
-    assert_eq!(latest.last().unwrap().start, NOW + 371 * DAY + 9 * 3_600_000);
+    assert_eq!(
+        latest.last().unwrap().start,
+        NOW + 371 * DAY + 9 * 3_600_000
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -302,7 +312,13 @@ async fn start_emulate(dir: &Path) -> (String, tokio::process::Child) {
         .unwrap()
         .port();
     let child = tokio::process::Command::new(emulate)
-        .args(["start", "--service", "microsoft", "--port", &port.to_string()])
+        .args([
+            "start",
+            "--service",
+            "microsoft",
+            "--port",
+            &port.to_string(),
+        ])
         .arg("--config")
         .arg(&config)
         .current_dir(dir)

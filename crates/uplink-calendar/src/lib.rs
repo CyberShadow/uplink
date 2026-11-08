@@ -71,7 +71,10 @@ impl Observation for CalendarObserved {
             self.account_kind
         );
         if self.replace {
-            tx.execute("DELETE FROM calendar_event WHERE account_id = ?1", [account])?;
+            tx.execute(
+                "DELETE FROM calendar_event WHERE account_id = ?1",
+                [account],
+            )?;
         }
         for event in &self.events {
             tx.execute(

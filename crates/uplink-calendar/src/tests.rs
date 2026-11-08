@@ -94,7 +94,10 @@ async fn records_listings_and_changes() {
         )
         .await;
     assert_eq!(description, "Calendar listed: 3 events");
-    assert_eq!(db.subjects(0, 24 * HOUR).await, ["Standup", "Lunch", "Gone soon"]);
+    assert_eq!(
+        db.subjects(0, 24 * HOUR).await,
+        ["Standup", "Lunch", "Gone soon"]
+    );
     // Overlapping the range is enough; touching it is not.
     assert_eq!(db.subjects(9 * HOUR + 1, 12 * HOUR).await, ["Standup"]);
 
@@ -106,7 +109,10 @@ async fn records_listings_and_changes() {
         )
         .await;
     assert_eq!(description, "Calendar: 1 event changed, 1 event removed");
-    assert_eq!(db.subjects(0, 24 * HOUR).await, ["Standup", "Lunch with Bob"]);
+    assert_eq!(
+        db.subjects(0, 24 * HOUR).await,
+        ["Standup", "Lunch with Bob"]
+    );
 
     // A new listing replaces what was there.
     db.observe(true, vec![event("d", "Review", HOUR, 2 * HOUR)], &[])
