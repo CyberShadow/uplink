@@ -271,9 +271,9 @@ accounts:
     kind: matrix
     homeserver: "https://matrix.example.org"
     mxid: "@alice:example.org"
-    # Device login: created once via `uplink matrix pair`, stored as
-    # access_token + device_id in matrix-rust-sdk's own state store under
-    # data.root/matrix/alice-matrix/. No password in YAML.
+    # The device is created once by `uplink matrix pair` (§9.4), which
+    # seals its session here; matrix-rust-sdk keeps its stores here too.
+    # No password in YAML.
     state_dir: /var/lib/uplink/matrix/alice-matrix
 ```
 
@@ -438,36 +438,44 @@ CREATE VIRTUAL TABLE message_fts USING fts5(
   tokenize = 'unicode61 remove_diacritics 2'
 );
 
--- ── matrix events (storage of all sync'd Matrix events) ─────────────
+-- ── matrix (V0004; §9) ───────────────────────────────────────────────
+-- Local ids, never reused. Rooms and events as synced; messages being
+-- sent. Events are in sync order, which is also the timeline's.
 CREATE TABLE matrix_room (
-  id            TEXT PRIMARY KEY,           -- room_id
-  account_id    TEXT NOT NULL REFERENCES account(id),
-  name          TEXT,                       -- best-guess display name
-  topic         TEXT,
-  avatar_mxc    TEXT,
-  unread_count  INTEGER NOT NULL DEFAULT 0,
-  highlight_count INTEGER NOT NULL DEFAULT 0,
-  last_event_ts INTEGER,                    -- ms since epoch
-  last_seen_ts  INTEGER                     -- our read marker (ms)
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id   TEXT NOT NULL REFERENCES account(id),
+  room_id      TEXT NOT NULL,        -- !opaque:server
+  name         TEXT NOT NULL,        -- display name, as the SDK computes it
+  encrypted    INTEGER NOT NULL,
+  membership   TEXT NOT NULL,        -- 'joined' | 'invited' | 'left'
+  read_up_to   INTEGER REFERENCES matrix_event(id), -- desired read marker
+  read_pushed  INTEGER REFERENCES matrix_event(id), -- last receipt sent/seen
+  UNIQUE (account_id, room_id)
 );
 CREATE TABLE matrix_event (
-  id              TEXT PRIMARY KEY,         -- event_id (with $)
-  room_id         TEXT NOT NULL REFERENCES matrix_room(id),
-  sender          TEXT NOT NULL,            -- mxid
-  ts              INTEGER NOT NULL,         -- ms since epoch
-  type            TEXT NOT NULL,            -- e.g. 'm.room.message'
-  msgtype         TEXT,                     -- 'm.text' / null
-  body            TEXT,                     -- plain text for m.text
-  raw_json        TEXT NOT NULL             -- the full event content
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  room         INTEGER NOT NULL REFERENCES matrix_room(id),
+  event_id     TEXT NOT NULL,
+  sender       TEXT NOT NULL,
+  sender_name  TEXT,
+  ts           INTEGER NOT NULL,     -- origin_server_ts
+  type         TEXT NOT NULL,
+  msgtype      TEXT,                 -- of m.room.message
+  body         TEXT,                 -- of m.room.message
+  raw_json     TEXT NOT NULL,        -- the event, decrypted if it could be
+  encryption   TEXT NOT NULL,        -- 'none' | 'decrypted' | 'undecryptable'
+  UNIQUE (room, event_id)
 );
-CREATE INDEX matrix_event_by_room_ts ON matrix_event(room_id, ts DESC);
-
-CREATE VIRTUAL TABLE matrix_event_fts USING fts5(
-  sender, body,
-  content='matrix_event', content_rowid='rowid',
-  tokenize='unicode61 remove_diacritics 2'
+CREATE TABLE matrix_outbox (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  room         INTEGER NOT NULL REFERENCES matrix_room(id),
+  body         TEXT NOT NULL,
+  queued_at    INTEGER NOT NULL,
+  state        TEXT NOT NULL,        -- 'queued' | 'sending' | 'sent' | 'failed'
+  error        TEXT,
+  event_id     TEXT                  -- once sent
 );
--- triggers omitted for brevity, same shape as message_fts.
+-- Full-text search of Matrix messages is deferred.
 
 -- ── calendar (M365 read-only) ────────────────────────────────────────
 CREATE TABLE calendar_event (
@@ -704,9 +712,9 @@ than it buffers is closed; the client reconnects and resumes.
   and observed membership per entry and label), `LabelListChanged`.
   Events carry ids, not content, since they are stored in the log;
   clients query what they display.
-- **Matrix**: `RoomAdded`, `RoomRemoved`, `RoomNameChanged`,
-  `RoomUnreadChanged`, `MatrixEventAdded` (carries decrypted plain text +
-  raw JSON for unknown types), `RoomReadMarkerChanged`.
+- **Matrix**: `RoomsChanged { rooms }` (appeared, or name, membership,
+  unread count or read marker changed), `TimelineAdded { room, events }`
+  (appended to the timeline), `MatrixOutboxChanged { items }`.
 - **Calendar**: `CalendarEventAdded`, `CalendarEventRemoved`,
   `CalendarEventChanged`.
 - **TODO**: `TodoAdded`, `TodoChanged`, `TodoRemoved`.
@@ -722,14 +730,18 @@ than it buffers is closed; the client reconnects and resumes.
 - `Search { query, limit }` — FTS5 cross-account search.
 - `LoadMessage { message }` — headers, the text body, and the sanitized
   HTML body if there is one (§8.9).
-- `LoadRoomTimeline { room_id, before_event_id, limit }`.
+- `ListRooms` — Matrix accounts and their rooms with unread counts;
+  `ListTimeline { room, page, limit }` — the latest events, or those
+  before or after one, oldest first; `ListMatrixOutbox`.
 - `Undo { tx_log_id }`.
 - `ListDrafts`, `ListOutbox` — all drafts; outbox items not yet synced
   back.
 - One request per op kind the client can dispatch, answered with the
   tx_log id: `ModifyLabels { entries, add, remove }` covers archive,
   label, mark read and star; `CreateDraft`, `EditDraft { draft, revision,
-  splice }`, `DeleteDraft`, `SendDraft`, `CancelSend { item }` (§6.7, §7).
+  splice }`, `DeleteDraft`, `SendDraft`, `CancelSend { item }` (§6.7, §7);
+  `SendMatrixMessage { room, body }`, `CancelMatrixSend { item }`,
+  `MarkRoomRead { room, event }` (§9).
 
 Query responses carry `as_of`, the last log entry they reflect; `Undone`
 and `Dispatched` reflect the log up to their own entry. The session sends
@@ -902,7 +914,13 @@ both win. Then:
 
 The outbox lists queued, failed and sent items until the provider's copy
 of a sent one is synced, when the item is deleted: from then on it is
-mail like any other. Showing queued items in Sent / the room timeline as
+mail like any other.
+
+Matrix messages (§9.3) differ in two ways. They have no send delay, since
+chat expects immediacy: undo cancels one only until the task claims it.
+And since the homeserver deduplicates a transaction id, a message is sent
+again rather than failed when the outcome is unknown or the task was
+interrupted; only a refusal fails it. Showing queued items in Sent / the room timeline as
 a local echo is deferred; the outbox view stands in for it.
 
 ---
@@ -1144,145 +1162,110 @@ shown yet. Messages without an HTML part show their text.
 
 ### 9.1 SDK & shape
 
-`matrix-rust-sdk` (the crate Element X uses), with E2EE enabled
-server-side. Configured to use SQLite as its state store (under
-`$DATA/matrix/<account_id>/`). Crypto store is also SQLite; matrix-rust-sdk
-manages migration internally.
+`matrix-sdk` 0.19 (matrix-rust-sdk, the crate Element X uses), with E2EE,
+one client per account. Its stores (state, crypto, event cache) are
+SQLite under the account's `state_dir`, encrypted with a passphrase
+derived from the master key (`MasterKey::derive("matrix-store:<id>")`).
+The SDK does not keep the session (access token, device id); uplink seals
+it in `state_dir/session.sealed` (§13.4).
 
-```rust
-use matrix_sdk::{Client, config::SyncSettings};
-use matrix_sdk::ruma::events::room::message::SyncRoomMessageEvent;
-use matrix_sdk::room::Room;
-use matrix_sdk::encryption::EncryptionInfo;
+The account's sync task (`uplink_matrix::sync`) runs two loops on the
+client:
 
-let client = Client::builder()
-    .homeserver_url(&cfg.homeserver)
-    .sqlite_store(&cfg.state_dir, None)
-    .build()
-    .await?;
-
-client.add_event_handler(
-    |ev: SyncRoomMessageEvent, room: Room, enc_info: Option<EncryptionInfo>| async move {
-        persist_message(ev, room, enc_info).await;
-    },
-);
-
-client.sync(SyncSettings::default()).await?;
-```
-
-The `Option<EncryptionInfo>` parameter tells us whether the message arrived
-encrypted (and was decrypted) or plaintext. We store this distinction in
-the event row for display purposes.
+- **Receiving.** `/sync` (v2, §15.6) long polls of 30 s, from the token
+  recorded in `account.sync_state`, passed explicitly: the SDK's own
+  stored token is not used, so what uplink recorded and where it syncs
+  from always agree. A response that changes something uplink stores is
+  recorded as one `matrix.synced` observation (rooms upserted, events
+  added, own receipts applied, the token updated) in one transaction.
+  Responses that change nothing uplink stores (empty long polls, others'
+  receipts) are not recorded, to keep the log quiet; the next sync
+  starts from their token all the same. After a restart, sync resumes
+  from the recorded token, and events already stored are skipped. The
+  SDK decrypts as it syncs. The filter lazy-loads members, drops
+  presence, and keeps only receipts of the ephemeral events.
+- **Sending.** On every user op (the hub), or every 30 s: sends queued
+  messages (§9.3) and pushes the read marker (§9.5).
 
 ### 9.2 Persistence
 
-Every Matrix event flows through `persist_message`:
+Every timeline event becomes a `matrix_event` row: its type, for
+`m.room.message` its `msgtype` and plain-text `body`, the event JSON
+(decrypted, if it was encrypted and could be), whether it was encrypted,
+and the sender's display name in the room at the time.
 
-1. Insert into `matrix_event` with:
-   - `type` = event type (`m.room.message` etc.)
-   - `msgtype` = `m.text` / null
-   - `body` = decrypted plain text (for `m.text`) or null
-   - `raw_json` = the full event content, including any unrecognized fields
-2. Broadcast `MatrixEventAdded` carrying the typed payload.
+**Nothing is dropped:** the timeline shows text message types (`m.text`,
+`m.notice`, `m.emote`) as text, undecryptable events as such, and every
+other event — other message types, state events, types uplink has never
+heard of — as its raw JSON, collapsed under its type. This is the "fail
+open" invariant from the ROADMAP: don't drop, don't crash, display
+verbatim.
 
-**For unknown event types (anything not `m.room.message` with `m.text`):**
-the row still gets created with `body = null` and `raw_json` containing the
-full content. The frontend renders the raw JSON in the timeline. This is
-the "fail open" invariant from the ROADMAP — don't drop, don't crash,
-display verbatim.
+The timeline is ordered by sync arrival. uplink only syncs forward, so
+the first sync brings the latest events of each room, and a gappy
+(`limited`) sync leaves a gap; backfilling with `/messages` is deferred.
+Events that arrive undecryptable stay so, even if the key arrives later;
+retrying them is deferred.
 
 ### 9.3 Sending
 
-```rust
-use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+`matrix.send` (`SendMatrixMessage`) queues a plain-text message in
+`matrix_outbox`; the room's timeline shows it at the end, with its state,
+until it is synced back. The sending loop claims a message (`sending`,
+refused if no longer queued, so an undo and a send can't both win) and
+sends it with transaction id `uplink-<id>`:
 
-let content = RoomMessageEventContent::text_plain(body);
-let resp = room.send(content).await?;
-// resp.event_id is the canonical id
-```
-
-Send is a `matrix.send` op that queues an outbox item (§6.7), which is
-also the local echo. The reconciler sends it with the outbox id as the
-transaction id; when the server's echo of the event is observed, the
-pending item is replaced by the real event. If sending fails, the item is
-marked `failed` and surfaced in the UI.
+- accepted: `sent`, with its event id; deleted once that event is synced
+  (or at once, if sync delivered it first);
+- refused (4xx other than 429): `failed`, with the homeserver's reason;
+  it can be cancelled (`CancelMatrixSend`);
+- anything else, including a send interrupted by a restart: queued
+  again and retried with backoff — the homeserver deduplicates the
+  transaction id, so a retry cannot duplicate the message.
 
 ### 9.4 Cross-signing pairing
 
-A CLI subcommand: `uplink matrix pair --account=alice-matrix`. UX:
+`uplink matrix pair --account ID` (run as the service user) logs in with
+the account's password as a new device ("uplink (ID)"), seals the
+session, and syncs once to upload the device's keys. It then asks for
+the account's recovery key or Secret Storage passphrase: with it,
+matrix-sdk's `Recovery::recover` imports the cross-signing keys (and the
+key backup key) from Secret Storage, so the device signs itself and the
+account's other devices trust it; left empty, the device stays
+unverified. Typed at a terminal, both are read without echo; otherwise
+a line each from standard input, for scripts. A running uplink picks
+the paired account up within a minute (its sync task retries restoring
+the session with backoff). To pair again, delete `state_dir`: its stores
+belong to the old device.
 
-```
-$ uplink matrix pair --account=alice-matrix
-
-Pairing the alice-matrix account with an existing trusted Matrix device.
-You will need:
-  - Access to a Matrix device of yours that has cross-signing already
-    bootstrapped (e.g. Element on your phone), AND
-  - Your Secret Storage passphrase OR recovery key.
-
-[1/5] Logging in to homeserver…
-      → homeserver: https://matrix.example.org
-      → user:       @alice:example.org
-
-      Password: ********
-
-[2/5] Created device 'uplink/2026-05-20'.
-      device_id = UPLABCDEFGH
-      access_token saved to /var/lib/uplink/matrix/alice-matrix/
-
-[3/5] Detecting Secret Storage on your account…
-      → default key:  RcU... (key id Vh3T7...)
-      → OK, Secret Storage is set up.
-
-[4/5] Importing cross-signing secrets.
-      Enter Secret Storage passphrase (or recovery key):
-      ********
-
-      → SSSS unlocked. Importing master_signing, self_signing, user_signing
-        keys.
-      → Cross-signing identity loaded.
-      → Signing this device's curve25519+ed25519 keys.
-      → Done.
-
-[5/5] Verification check:
-      → Device UPLABCDEFGH is now signed by your own master key.
-      → Other Element devices will show this device as verified.
-
-  ✔ Paired successfully. Restart uplink (or wait for inotify-driven
-    reload) for the running server to pick up the new device.
-```
-
-Internally this uses:
-
-```rust
-let ss = client.encryption().secret_storage();
-let store = ss.open_secret_store(&passphrase).await?;
-store.import_secrets().await?;
-// matrix-rust-sdk now has the cross-signing private keys;
-// it signs this device automatically.
-```
-
-The reason this is a CLI flow and not a SPA flow: cross-signing setup is
-done once per device, ever. Wiring it into the SPA would require a
-device-verification UI that's largely orthogonal to MVP scope. The CLI is
-~150 lines and adequate.
+This is a CLI flow and not a SPA flow because cross-signing setup is
+done once per device, ever; device verification UI is out of scope.
 
 ### 9.5 Rooms list / unread counts
 
-- `MatrixSync` updates `matrix_room.unread_count` and `highlight_count`
-  from the SDK's sync response.
-- Broadcast `RoomUnreadChanged` for each room whose counts changed.
-- Read marker (`m.fully_read`): set via `room.send_receipt(...)` whenever
-  the SPA reports a "viewed up to event X" event for that room.
+- A room's unread count is computed locally: messages (and undecryptable
+  events, which nearly always are messages) from others after the read
+  marker. The homeserver's notification counts are not used, since they
+  follow push rules uplink does not show and could not follow an undo.
+- The read marker is desired state (§6.6). Showing a room, in a visible
+  tab, marks it read up to its latest event (`MarkRoomRead`, quietly:
+  no notice). The sending loop pushes an `m.read` receipt for it.
+  Receipts only move forward, so undoing a mark-read moves the marker
+  back in uplink only.
+- The account's own receipts from other devices move the marker forward,
+  when past the latest receipt uplink sent or saw (so the echo of its own
+  receipt does not undo an undo).
 
 ### 9.6 What we deliberately don't do
 
 - No formatted_body rendering. ROADMAP item, deferred.
 - No reactions, edits, threads, replies — also deferred. These arrive in
   `matrix_event.raw_json` and render as raw JSON in the timeline.
+- No invitations, room creation or leaving: rooms one is invited to are
+  listed, and joining is done in another client.
+- No backfill and no retrying undecryptable events (§9.2).
 - No SPA-side device management or verification UI.
-- No moderation UI (kick/ban/redact). The CLI can do `uplink matrix
-  redact <event>` if needed in an emergency; not implementing in MVP.
+- No moderation UI (kick/ban/redact).
 
 ---
 
@@ -1390,18 +1373,20 @@ Vitest runs from the same config (jsdom).
 
 ```
 src/views/
-├── Mail.tsx               # 3-pane: account list | message list | message
-├── MessageList.tsx
-├── MessageView.tsx
-├── Compose.tsx            # TipTap-backed
-├── Matrix.tsx             # 2-pane: room list | timeline
-├── RoomTimeline.tsx
-├── Calendar.tsx           # agenda + month grid
-├── Todos.tsx              # list + add
-├── TxLog.tsx              # transaction log with Undo buttons
-├── Search.tsx             # cross-account FTS results
-└── Settings.tsx           # read-only display of YAML config sections
+├── App.tsx                # shell: header, nav, routes, notice bar
+├── Nav.tsx                # drafts/outbox, mail labels, Matrix rooms
+├── Mail.tsx               # message list and message view
+├── HtmlBody.tsx           # sandboxed HTML mail (§8.9)
+├── LabelPicker.tsx
+├── Compose.tsx            # TipTap-backed, lazily loaded
+├── Outgoing.tsx           # drafts and the mail outbox
+├── Room.tsx               # a Matrix room: timeline and composer
+├── SearchBox.tsx
+├── NoticeBar.tsx          # the last op, with Undo
+└── Help.tsx               # keyboard shortcuts
 ```
+
+Planned: calendar, to-dos, the transaction log.
 
 ### 12.5 Keyboard shortcuts
 
@@ -1426,7 +1411,8 @@ Implemented: `j k o Enter u x *a *n e s l Shift+i Shift+u gi gs gt gd /
 uplink's own drafts; Gmail's DRAFT label is listed as "Gmail drafts".
 `ga` waits for an All Mail view (lists are of a label), `#` and `!` for
 trash/spam ops. Opening a message marks it read, as Gmail does, without
-an undo notice.
+an undo notice. In a Matrix room (M7), `r` goes to the message box, where
+`Enter` sends, `Shift+Enter` breaks the line and `Esc` leaves.
 
 - **No `z` for undo.** Undo lives in the transaction log view and as an
   optional toast immediately after each mutating op. `z` overloads
@@ -1573,11 +1559,12 @@ requires the URN-form redirect URI:
 
 ### 13.5 Matrix credentials
 
-`matrix-rust-sdk` stores its own access tokens in its sqlite_store under
-`$DATA/matrix/<account_id>/`. We don't intermediate. Encryption-at-rest of
-that store is whatever matrix-rust-sdk does (currently: the SQLite store
-is in plaintext on disk, the crypto store has encrypted secrets). Good
-enough for MVP — same trust boundary as everything else server-side.
+The session (access token, device id) is sealed with the master key in
+the account's `state_dir` (§9.1, §13.4). matrix-rust-sdk's stores there
+are encrypted with a passphrase derived from the master key; the crypto
+store holds the device's keys and, once paired with the recovery key,
+the cross-signing keys. No password is stored anywhere: it is typed
+into `uplink matrix pair` once.
 
 ### 13.6 TLS
 
@@ -1697,6 +1684,13 @@ another Matrix client; sending one from the other client appears in
 uplink; an unknown
 event type (e.g. a sticker received from another client) appears in
 uplink's timeline as raw JSON rather than crashing or vanishing.
+
+**State:** done. `crates/uplink-matrix/tests/conduit.rs` runs each test
+against its own Conduit, with another matrix-sdk client on the other
+side: messages both ways in an encrypted room, an unknown event type
+kept as raw JSON, read receipts both ways, resuming after a restart, and
+pairing with the recovery key verifying the device. The `e2e` VM test
+pairs an account with the real CLI and chats from Chromium.
 
 ### M8. Calendar (M365 read-only)
 
@@ -1826,10 +1820,12 @@ session cookies.
 
 ### 15.6 Matrix sliding-sync vs v2 sync
 
-matrix-rust-sdk supports both. Sliding sync is faster but homeserver
-support varies. **Decision**: let matrix-rust-sdk's `SlidingSyncBuilder`
-default behavior pick. If the homeserver doesn't support it, the SDK
-falls back to v2 sync automatically. No code in uplink decides.
+**Resolved (M7): v2 `/sync`.** Every homeserver has it, and Conduit, the
+test homeserver, advertises only the simplified sliding sync that
+matrix-sdk's sliding sync is moving away from. v2 sync with a filter
+(lazy-loaded members, no presence, receipts only) and uplink's own token
+(§9.1) is simple and enough for a single user's rooms. Revisit if
+initial sync of a large account proves too slow.
 
 ### 15.7 Items I didn't spike
 
@@ -1882,8 +1878,7 @@ flake is the source of truth.
 | `frontend-build`       | `tsc` + `vite build` (the SPA the binary embeds)              |
 | `integration-gmail`    | NixOS VM test: uplink service + Gmail emulator                |
 | `integration-m365`     | NixOS VM test: uplink service + Graph fake                    |
-| `integration-matrix`   | NixOS VM test: uplink service + a real homeserver             |
-| `e2e`                  | NixOS VM test: the web UI in Chromium (Playwright), keyboard-driven, against uplink + Gmail emulator; screenshots in its output |
+| `e2e`                  | NixOS VM test: the web UI in Chromium (Playwright), keyboard-driven, against uplink + Gmail emulator + Conduit; screenshots in its output |
 
 **Unit / property tests**
 
@@ -1941,34 +1936,25 @@ request).
 - **M365 (Graph):** emulate's Microsoft emulator covers OAuth only, no
   mail. Look for prior art at M5 start; otherwise a small Graph fake of
   the endpoints uplink uses (delta, `$value`, sendMail, PATCH/move).
-- **Matrix:** Conduit (single-binary Rust homeserver, ships in nixpkgs).
-  The test provisions it, registers two users, and gives uplink one.
-  Synapse is the heavier fallback.
+- **Matrix:** Conduit (single-binary Rust homeserver, from nixpkgs), a
+  real homeserver rather than a fake. The Rust tests start one per test
+  (`UPLINK_CONDUIT`, set by the dev shell and the checks; in the build
+  sandbox, through libredirect, since Conduit insists on reading
+  `/etc/resolv.conf`), register users, and play the other side with a
+  second matrix-sdk client. The `e2e` VM runs Conduit's NixOS service.
+  No separate `integration-matrix` VM test: the Rust tests cover the
+  sync task against the real thing, and `e2e` the deployment.
 
-**Frontend testing — no Playwright in MVP**
+**Frontend tests**
 
-- All frontend tests are vitest + jsdom against `@testing-library/preact`.
-- The backend can be booted in-process from a vitest setup file so WS
-  protocol tests run against a real backend talking to test fixtures.
-- Every interactive element gets a stable `data-testid` attribute. Tests
-  assert against testid + rendered text, not against component structure
-  or class names — this lets agentic refactors restructure components
-  without breaking tests.
-- **Hook for later:** `checks.<system>.e2e` is reserved in the flake. The
-  test runner is structured so that adding a Playwright leg later is
-  additive — same backend fixtures, same data setup — not a refactor.
-  Playwright in Nix requires pinning the browser binaries via
-  `playwright-driver.browsers` and setting `PLAYWRIGHT_BROWSERS_PATH` +
-  `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`; not done in MVP.
-
-**Why no full browser E2E in MVP**
-
-Browser-level rendering correctness is checked by hand during development.
-This trades coverage for harness simplicity; acceptable for a single-user
-tool. The risk is UI regressions from agentic refactors — mitigated by
-stable testids and component-level integration tests covering rendered
-output, but not eliminated. Revisit if regressions become a recurring
-problem.
+- Component and store tests are vitest + jsdom with
+  `@testing-library/preact`, against an in-memory fake of the server
+  (`web/src/test/server.ts`) that, like the real one, delivers an op's
+  log entry before its response. Tests find elements by role and
+  accessible name, as a user would, not by component structure.
+- The `e2e` check drives the real UI in Chromium (Playwright, browsers
+  from `playwright-driver.browsers`) against the real server in a VM,
+  with the keyboard, and saves screenshots.
 
 ### 15.11 M365 push mechanism is a moving target
 
@@ -2050,9 +2036,10 @@ visible. Routes (handled by `preact-iso`):
 | `/mail/:account/:label/:entry`         | Message view (thread view once threads exist) |
 | `/search/:terms`                       | Search results                         |
 | `/search/:terms/:entry`                | Message view, within the results       |
-| `/mail/compose/:draft`                 | Compose (new or continued draft)       |
-| `/matrix/:account/:room`               | Room timeline                          |
-| `/matrix/:account/space/:space`        | Space overview                         |
+| `/compose/:draft`                      | Compose (new or continued draft)       |
+| `/drafts`, `/outbox`                   | Drafts; mail being sent                |
+| `/rooms/:room`                         | Room timeline (uplink's room id)       |
+| `/matrix/:account/space/:space`        | Space overview (deferred)              |
 | `/calendar/:account`                   | Calendar (week/month)                  |
 | `/todos`                               | Todo list                              |
 | `/log`                                 | Transaction log (Undo UI)              |

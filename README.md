@@ -9,7 +9,9 @@ makes every action undoable. See `docs/VISION.md` for the goals and
 **Status:** Gmail mail can be read, searched, archived, labelled, starred
 and marked read/unread, with undo, and written (drafts saved as you type,
 synced across tabs), replied to, forwarded and sent, with undo-send.
-Microsoft 365, Matrix, calendar and tasks are in progress (SPEC §14).
+Matrix rooms (end-to-end encrypted ones too) can be read and written to,
+in plain text. Microsoft 365, calendar and tasks are in progress
+(SPEC §14).
 
 ## Try it
 
@@ -72,6 +74,21 @@ consent screen keeps warning that the app is unverified.
 
 uplink asks for the `gmail.modify` scope: read mail, change labels and
 send (it never deletes mail).
+
+## Connecting a Matrix account
+
+Add the account to `uplink.yaml` (see the commented example), then pair
+uplink with it as a new device:
+
+```sh
+./result/bin/uplink matrix pair --account alice-matrix
+```
+
+It asks for the account's password, then for its recovery key (or
+Secret Storage passphrase): with it, uplink's device is verified, so your
+other devices share encrypted rooms' keys with it. Leave it empty to
+skip. A running uplink starts syncing the account within a minute.
+Messages are plain text; other events show as their raw JSON.
 
 ## Running on NixOS
 

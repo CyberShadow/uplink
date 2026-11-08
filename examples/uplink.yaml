@@ -37,7 +37,14 @@ accounts:
       client_secret: "GOCSPX-xxxxxxxxxx"
       token_file:    ./data/accounts/alice-gmail.token   # written by `uplink oauth init`
 
-  # Not implemented yet; the server ignores these kinds with a warning.
+  # — Matrix — pair it once with `uplink matrix pair --account alice-matrix`.
+  # - id: alice-matrix
+  #   kind: matrix
+  #   homeserver: "https://matrix.example.org"
+  #   mxid: "@alice:example.org"
+  #   state_dir: ./data/matrix/alice-matrix
+  #
+  # Not implemented yet; the server ignores this kind with a warning.
   #
   # — Microsoft 365 —
   # - id: alice-m365
@@ -48,10 +55,3 @@ accounts:
   #     authority: "https://login.microsoftonline.com/common"
   #     resource: "https://graph.microsoft.com"
   #     token_file: ./data/accounts/alice-m365.token
-  #
-  # — Matrix —
-  # - id: alice-matrix
-  #   kind: matrix
-  #   homeserver: "https://matrix.example.org"
-  #   mxid: "@alice:example.org"
-  #   state_dir: ./data/matrix/alice-matrix
