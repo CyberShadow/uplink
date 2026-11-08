@@ -410,19 +410,22 @@ fn undo_error(e: UndoError) -> ServerError {
     }
 }
 
-async fn static_file_handler(uri: Uri) -> impl IntoResponse {
+/// Serves the SPA's files; any other path outside `/assets/` and `/api/`
+/// is one of the SPA's routes, so it gets `index.html`.
+async fn static_file_handler(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
-    match StaticFiles::get(path) {
-        Some(file) => {
-            let mime = mime_guess::from_path(path).first_or_octet_stream();
-            (
-                [(header::CONTENT_TYPE, mime.as_ref().to_owned())],
-                file.data.into_owned(),
-            )
-                .into_response()
-        }
-        None => StatusCode::NOT_FOUND.into_response(),
+    if let Some(file) = StaticFiles::get(path) {
+        let mime = mime_guess::from_path(path).first_or_octet_stream();
+        return (
+            [(header::CONTENT_TYPE, mime.as_ref().to_owned())],
+            file.data.into_owned(),
+        )
+            .into_response();
     }
+    if path.starts_with("assets/") || path.starts_with("api/") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    index_handler().await.into_response()
 }
 
 async fn basic_auth_middleware(
@@ -619,13 +622,11 @@ mod tests {
         assert!(!body.is_empty());
     }
 
-    #[tokio::test]
-    async fn unknown_path_returns_404() {
-        let app = build_app(test_state());
-        let response = app
+    async fn get_status(path: &str) -> StatusCode {
+        build_app(test_state())
             .oneshot(
                 Request::builder()
-                    .uri("/does-not-exist.txt")
+                    .uri(path)
                     .header(
                         header::AUTHORIZATION,
                         basic_auth_header(TEST_USER, TEST_PASS),
@@ -634,8 +635,22 @@ mod tests {
                     .unwrap(),
             )
             .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn spa_routes_load_the_app() {
+        assert_eq!(get_status("/mail/work/INBOX").await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn missing_assets_and_api_paths_return_404() {
+        assert_eq!(
+            get_status("/assets/missing.js").await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(get_status("/api/missing").await, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
