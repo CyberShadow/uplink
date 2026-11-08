@@ -1772,15 +1772,21 @@ script (e.g. inject a message on the provider side, watch it arrive,
 archive it, check the provider's labels, undo).
 
 - **Gmail:** [vercel-labs/emulate](https://github.com/vercel-labs/emulate)'s
-  Google emulator (`packages.emulate`, from its npm release) — stateful
-  Gmail REST plus Google OAuth. Spiked 2026-11-08: raw MIME import/get
-  round-trips byte-exact; `modify`, `batchModify`, `send`, `labels`,
-  `history` (all four change types) behave; the authorization-code flow
-  (with PKCE) can be driven unattended by posting its sign-in form, so
-  the test runs the real `uplink oauth init`; errors are Google-shaped.
-  Known gaps, to fix upstream rather than work around:
-  `users.getProfile` is missing (uplink needs its `historyId` to start
-  syncing), and a too-old `startHistoryId` returns 200 instead of 404.
+  Google emulator (`packages.emulate`) — stateful Gmail REST plus Google
+  OAuth. Spiked 2026-11-08: raw MIME import/get round-trips byte-exact;
+  `modify`, `batchModify`, `send`, `labels`, `history` (all four change
+  types) behave; the authorization-code flow (with PKCE) can be driven
+  unattended by posting its sign-in form, so the test runs the real
+  `uplink oauth init`; errors are Google-shaped.
+  Gaps are fixed in emulate itself, never worked around in uplink: we
+  build it from a pinned upstream commit plus `nix/emulate/patches/`,
+  each patch ready to upstream (code, emulate's own tests, docs). The
+  patches are exported from the `uplink` branch of a local clone and go
+  upstream once uplink's tests have validated them. So far: `0001` adds
+  `users.getProfile` (uplink's starting `historyId`) and a
+  `gmail_history_limit` seed option under which `history.list` answers
+  404 for a `startHistoryId` older than the retained history, so the
+  full-resync fallback is testable.
   uplink's Google endpoints (auth, token, API base) are configurable,
   defaulting to Google's.
 - **Real accounts.** A fake can diverge from the real service in

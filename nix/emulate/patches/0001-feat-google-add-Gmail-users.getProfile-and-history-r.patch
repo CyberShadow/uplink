@@ -1,0 +1,357 @@
+From 659e5d2c0a1a547ae27308595d63a8bd04104d91 Mon Sep 17 00:00:00 2001
+From: Claude Code <noreply@anthropic.com>
+Date: Sun, 8 Nov 2026 11:15:45 +0000
+Subject: [PATCH] feat(google): add Gmail users.getProfile and history
+ retention limit
+
+users.getProfile returns emailAddress, messagesTotal, threadsTotal and the
+current historyId, which Gmail clients use as the starting point for
+incremental sync.
+
+The new google.gmail_history_limit seed option keeps only the newest N
+history records per user. history.list rejects a startHistoryId older than
+the retained records with 404 NOT_FOUND, as Gmail does once history has
+expired, so clients can test their full-sync fallback.
+---
+ README.md                                     |  3 +
+ apps/web/content/docs/google.mdx              |  3 +
+ .../google/src/__tests__/google.test.ts       | 96 ++++++++++++++++++-
+ packages/@emulators/google/src/auth.ts        |  1 +
+ packages/@emulators/google/src/helpers.ts     | 20 ++++
+ packages/@emulators/google/src/index.ts       | 15 +++
+ .../@emulators/google/src/routes/history.ts   |  6 ++
+ .../@emulators/google/src/routes/profile.ts   | 21 ++++
+ skills/google/SKILL.md                        |  6 ++
+ 9 files changed, 170 insertions(+), 1 deletion(-)
+ create mode 100644 packages/@emulators/google/src/routes/profile.ts
+
+diff --git a/README.md b/README.md
+index 2a09bc6..34cbc56 100644
+--- a/README.md
++++ b/README.md
+@@ -981,6 +981,8 @@ Google ID tokens are RS256-signed JWTs. The discovery document advertises RS256,
+ 
+ Google authentication is permissive by default for local bearer-token workflows. Set `google.strict_scopes: true` in seed config to require emulator-issued, unexpired access tokens on Gmail, Calendar, Drive, and userinfo routes. Invalid credentials return `401 UNAUTHENTICATED`; missing method scopes return `403` with `insufficientPermissions`. Strict mode distinguishes read, write, send, settings, and metadata scopes, and userinfo includes only granted identity claims. Revoking an access or refresh token invalidates the linked access and refresh credentials. Discovery, signing keys, and the sign-in page remain public. This mode checks method scopes; resource-specific grants such as `drive.file` and Gmail add-on scopes are not modeled.
+ 
++Gmail history is kept indefinitely by default. Set `google.gmail_history_limit` to keep only the newest N history records per user; `history.list` then returns `404 NOT_FOUND` for a `startHistoryId` older than the retained records, as Gmail does once history has expired, so clients can exercise their full-sync fallback.
++
+ - `GET /o/oauth2/v2/auth` - authorization endpoint
+ - `POST /oauth2/token` - token exchange
+ - `GET /oauth2/v2/userinfo` - get user info
+@@ -999,6 +1001,7 @@ Google authentication is permissive by default for local bearer-token workflows.
+ - `POST /gmail/v1/users/:userId/threads/:id/modify` - add/remove labels across a thread
+ - `GET /gmail/v1/users/:userId/threads` and `GET /gmail/v1/users/:userId/threads/:id`
+ - `GET /gmail/v1/users/:userId/labels`, `POST /gmail/v1/users/:userId/labels`, `PATCH /gmail/v1/users/:userId/labels/:id`, `DELETE /gmail/v1/users/:userId/labels/:id`
++- `GET /gmail/v1/users/:userId/profile`
+ - `GET /gmail/v1/users/:userId/history`, `POST /gmail/v1/users/:userId/watch`, `POST /gmail/v1/users/:userId/stop`
+ - `GET /gmail/v1/users/:userId/settings/filters`, `POST /gmail/v1/users/:userId/settings/filters`, `DELETE /gmail/v1/users/:userId/settings/filters/:id`
+ - `GET /gmail/v1/users/:userId/settings/forwardingAddresses`, `GET /gmail/v1/users/:userId/settings/sendAs`
+diff --git a/apps/web/content/docs/google.mdx b/apps/web/content/docs/google.mdx
+index 5be77cf..f4c6c1a 100644
+--- a/apps/web/content/docs/google.mdx
++++ b/apps/web/content/docs/google.mdx
+@@ -17,6 +17,8 @@ Google ID tokens are RS256-signed JWTs. The discovery document advertises RS256,
+ 
+ Google authentication is permissive by default for local bearer-token workflows. Set `google.strict_scopes: true` in seed config to require emulator-issued, unexpired access tokens on Gmail, Calendar, Drive, and userinfo routes. Invalid credentials return `401 UNAUTHENTICATED`; missing method scopes return `403` with `insufficientPermissions`. Strict mode distinguishes read, write, send, settings, and metadata scopes, and userinfo includes only granted identity claims. Revoking an access or refresh token invalidates the linked access and refresh credentials. Discovery, signing keys, and the sign-in page remain public. This mode checks method scopes; resource-specific grants such as `drive.file` and Gmail add-on scopes are not modeled.
+ 
++Gmail history is kept indefinitely by default. Set `google.gmail_history_limit` to keep only the newest N history records per user; `history.list` then returns `404 NOT_FOUND` for a `startHistoryId` older than the retained records, as Gmail does once history has expired, so clients can exercise their full-sync fallback.
++
+ ## Gmail
+ 
+ - `GET /gmail/v1/users/:userId/messages` - list messages (`q`, `labelIds`, `maxResults`, `pageToken`)
+@@ -54,6 +56,7 @@ Google authentication is permissive by default for local bearer-token workflows.
+ 
+ ## Gmail History & Push
+ 
++- `GET /gmail/v1/users/:userId/profile` - get the mailbox profile, including the current history ID
+ - `GET /gmail/v1/users/:userId/history` - list history changes
+ - `POST /gmail/v1/users/:userId/watch` - set up push notifications
+ - `POST /gmail/v1/users/:userId/stop` - stop push notifications
+diff --git a/packages/@emulators/google/src/__tests__/google.test.ts b/packages/@emulators/google/src/__tests__/google.test.ts
+index 3322ed2..c5f49ba 100644
+--- a/packages/@emulators/google/src/__tests__/google.test.ts
++++ b/packages/@emulators/google/src/__tests__/google.test.ts
+@@ -172,7 +172,7 @@ function createTestApp() {
+     ],
+   });
+ 
+-  return { app };
++  return { app, store };
+ }
+ 
+ function authHeaders(extra?: Record<string, string>): Record<string, string> {
+@@ -489,6 +489,100 @@ describe("Google plugin integration", () => {
+     expect(deletedMessageRes.status).toBe(404);
+   });
+ 
++  it("returns the mailbox profile", async () => {
++    const getProfile = async () => {
++      const res = await app.request(`${base}/gmail/v1/users/me/profile`, { headers: authHeaders() });
++      expect(res.status).toBe(200);
++      return (await res.json()) as {
++        emailAddress: string;
++        messagesTotal: number;
++        threadsTotal: number;
++        historyId: string;
++      };
++    };
++
++    const before = await getProfile();
++    expect(before).toMatchObject({ emailAddress: "testuser@example.com", messagesTotal: 4, threadsTotal: 3 });
++
++    const importRes = await jsonRequest(app, "/gmail/v1/users/me/messages/import", {
++      method: "POST",
++      body: {
++        raw: buildRawMessage({ from: "a@example.com", to: "testuser@example.com", subject: "New", body_text: "x" }),
++        labelIds: ["INBOX"],
++      },
++    });
++    expect(importRes.status).toBe(200);
++    const imported = (await importRes.json()) as { id: string };
++
++    const after = await getProfile();
++    expect(after).toMatchObject({ messagesTotal: 5, threadsTotal: 4 });
++    expect(BigInt(after.historyId)).toBeGreaterThan(BigInt(before.historyId));
++
++    const historyRes = await app.request(`${base}/gmail/v1/users/me/history?startHistoryId=${before.historyId}`, {
++      headers: authHeaders(),
++    });
++    const history = (await historyRes.json()) as {
++      historyId: string;
++      history: Array<{ messagesAdded?: Array<{ message: { id: string } }> }>;
++    };
++    expect(history.historyId).toBe(after.historyId);
++    expect(history.history.flatMap((entry) => entry.messagesAdded ?? []).map((item) => item.message.id)).toEqual([
++      imported.id,
++    ]);
++
++    const otherUserRes = await app.request(`${base}/gmail/v1/users/someone@example.com/profile`, {
++      headers: authHeaders(),
++    });
++    expect(otherUserRes.status).toBe(404);
++  });
++
++  it("rejects history that has expired under the configured limit", async () => {
++    const { app, store } = createTestApp();
++    seedFromConfig(store, base, { gmail_history_limit: 2 });
++
++    const currentHistoryId = async () => {
++      const res = await app.request(`${base}/gmail/v1/users/me/profile`, { headers: authHeaders() });
++      return ((await res.json()) as { historyId: string }).historyId;
++    };
++    const star = async (starred: boolean) => {
++      const res = await jsonRequest(app, "/gmail/v1/users/me/messages/msg_invoice/modify", {
++        method: "POST",
++        body: starred ? { addLabelIds: ["STARRED"] } : { removeLabelIds: ["STARRED"] },
++      });
++      expect(res.status).toBe(200);
++    };
++    const historyStatus = async (startHistoryId: string) =>
++      (
++        await app.request(`${base}/gmail/v1/users/me/history?startHistoryId=${startHistoryId}`, {
++          headers: authHeaders(),
++        })
++      ).status;
++
++    const seeded = await currentHistoryId();
++    await star(true);
++    const starred = await currentHistoryId();
++    await star(false);
++
++    // Seeded records are discarded, but nothing after `seeded` is.
++    expect(await historyStatus(seeded)).toBe(200);
++    expect(await historyStatus("1")).toBe(404);
++
++    await star(true);
++    // The record at `starred` is now the newest discarded one.
++    expect(await historyStatus(seeded)).toBe(404);
++    expect(await historyStatus(starred)).toBe(200);
++
++    const res = await app.request(`${base}/gmail/v1/users/me/history?startHistoryId=${seeded}`, {
++      headers: authHeaders(),
++    });
++    expect(await res.json()).toMatchObject({ error: { code: 404, status: "NOT_FOUND" } });
++  });
++
++  it("rejects an invalid history limit", () => {
++    const { store } = createTestApp();
++    expect(() => seedFromConfig(store, base, { gmail_history_limit: 0 })).toThrow("gmail_history_limit");
++  });
++
+   it("tracks history entries after watch registration", async () => {
+     const watchRes = await jsonRequest(app, "/gmail/v1/users/me/watch", {
+       method: "POST",
+diff --git a/packages/@emulators/google/src/auth.ts b/packages/@emulators/google/src/auth.ts
+index 4bad0db..4876830 100644
+--- a/packages/@emulators/google/src/auth.ts
++++ b/packages/@emulators/google/src/auth.ts
+@@ -81,6 +81,7 @@ const routeScopes: Record<string, string[]> = {
+   "PATCH /gmail/v1/users/:userId/labels/:id": gmailLabels,
+   "DELETE /gmail/v1/users/:userId/labels/:id": gmailLabels,
+   "GET /gmail/v1/users/:userId/history": gmailRead,
++  "GET /gmail/v1/users/:userId/profile": [...gmailRead, ...googleScopes("gmail.compose")],
+   "POST /gmail/v1/users/:userId/watch": gmailRead,
+   "POST /gmail/v1/users/:userId/stop": gmailRead,
+   "GET /gmail/v1/users/:userId/settings/filters": gmailSettingsRead,
+diff --git a/packages/@emulators/google/src/helpers.ts b/packages/@emulators/google/src/helpers.ts
+index 79b3f70..b7f21ad 100644
+--- a/packages/@emulators/google/src/helpers.ts
++++ b/packages/@emulators/google/src/helpers.ts
+@@ -724,6 +724,26 @@ export function getCurrentHistoryId(gs: GoogleStore, userEmail: string): string
+   return historyIds.reduce((latest, current) => (compareHistoryIds(current, latest) > 0 ? current : latest));
+ }
+ 
++export const GMAIL_HISTORY_LIMIT_KEY = "google.gmail.historyLimit";
++
++/**
++ * Whether history.list can serve changes after startHistoryId, given that only
++ * the newest `historyLimit` history records are retained.
++ */
++export function isHistoryRetained(
++  gs: GoogleStore,
++  userEmail: string,
++  startHistoryId: string,
++  historyLimit: number | undefined,
++): boolean {
++  if (historyLimit === undefined) return true;
++  const recordIds = Array.from(new Set(gs.history.findBy("user_email", userEmail).map((event) => event.gmail_id))).sort(
++    compareHistoryIds,
++  );
++  const discarded = recordIds.slice(0, Math.max(0, recordIds.length - historyLimit));
++  return discarded.length === 0 || compareHistoryIds(startHistoryId, discarded[discarded.length - 1]) >= 0;
++}
++
+ export function listHistoryForUser(
+   gs: GoogleStore,
+   userEmail: string,
+diff --git a/packages/@emulators/google/src/index.ts b/packages/@emulators/google/src/index.ts
+index f2c4798..642572d 100644
+--- a/packages/@emulators/google/src/index.ts
++++ b/packages/@emulators/google/src/index.ts
+@@ -7,6 +7,7 @@ import {
+   findLabelById,
+   findLabelByName,
+   generateUid,
++  GMAIL_HISTORY_LIMIT_KEY,
+ } from "./helpers.js";
+ import { createCalendarEventRecord, createCalendarRecord } from "./calendar-helpers.js";
+ import { createDriveItemRecord } from "./drive-helpers.js";
+@@ -17,6 +18,7 @@ import { historyRoutes } from "./routes/history.js";
+ import { labelRoutes } from "./routes/labels.js";
+ import { messageRoutes } from "./routes/messages.js";
+ import { oauthRoutes } from "./routes/oauth.js";
++import { profileRoutes } from "./routes/profile.js";
+ import { settingsRoutes } from "./routes/settings.js";
+ import { threadRoutes } from "./routes/threads.js";
+ import { getGoogleStore } from "./store.js";
+@@ -116,6 +118,12 @@ export interface GoogleSeedDriveItem {
+ export interface GoogleSeedConfig {
+   port?: number;
+   strict_scopes?: boolean;
++  /**
++   * Number of history records kept per user. Older records are discarded, and
++   * history.list rejects a startHistoryId that predates them with 404, as Gmail
++   * does once history has expired. Unlimited by default.
++   */
++  gmail_history_limit?: number;
+   users?: GoogleSeedUser[];
+   oauth_clients?: Array<{
+     client_id: string;
+@@ -298,6 +306,12 @@ export function seedFromConfig(store: Store, _baseUrl: string, config: GoogleSee
+   if (config.strict_scopes !== undefined) {
+     store.setData("google.strict_scopes", config.strict_scopes);
+   }
++  if (config.gmail_history_limit !== undefined) {
++    if (!Number.isInteger(config.gmail_history_limit) || config.gmail_history_limit < 1) {
++      throw new Error("gmail_history_limit must be a positive integer");
++    }
++    store.setData(GMAIL_HISTORY_LIMIT_KEY, config.gmail_history_limit);
++  }
+ 
+   if (config.users) {
+     for (const user of config.users) {
+@@ -505,6 +519,7 @@ export const googlePlugin: ServicePlugin = {
+     messageRoutes(ctx);
+     draftRoutes(ctx);
+     historyRoutes(ctx);
++    profileRoutes(ctx);
+     threadRoutes(ctx);
+     labelRoutes(ctx);
+     settingsRoutes(ctx);
+diff --git a/packages/@emulators/google/src/routes/history.ts b/packages/@emulators/google/src/routes/history.ts
+index cb2fc06..e80a1f1 100644
+--- a/packages/@emulators/google/src/routes/history.ts
++++ b/packages/@emulators/google/src/routes/history.ts
+@@ -2,8 +2,10 @@ import type { RouteContext } from "@emulators/core";
+ import {
+   findMissingLabelIds,
+   getCurrentHistoryId,
++  GMAIL_HISTORY_LIMIT_KEY,
+   googleApiError,
+   isHistoryChangeType,
++  isHistoryRetained,
+   listHistoryForUser,
+   normalizeLimit,
+ } from "../helpers.js";
+@@ -32,6 +34,10 @@ export function historyRoutes({ app, store }: RouteContext): void {
+       return googleApiError(c, 400, "Start history ID is required.", "invalidArgument", "INVALID_ARGUMENT");
+     }
+ 
++    if (!isHistoryRetained(gs, authEmail, startHistoryId, store.getData<number>(GMAIL_HISTORY_LIMIT_KEY))) {
++      return googleApiError(c, 404, "Requested entity was not found.", "notFound", "NOT_FOUND");
++    }
++
+     const historyTypes = url.searchParams.getAll("historyTypes").filter(isHistoryChangeType);
+ 
+     return c.json(
+diff --git a/packages/@emulators/google/src/routes/profile.ts b/packages/@emulators/google/src/routes/profile.ts
+new file mode 100644
+index 0000000..4d4bf1b
+--- /dev/null
++++ b/packages/@emulators/google/src/routes/profile.ts
+@@ -0,0 +1,21 @@
++import type { RouteContext } from "@emulators/core";
++import { getCurrentHistoryId } from "../helpers.js";
++import { requireGmailUser } from "../route-helpers.js";
++import { getGoogleStore } from "../store.js";
++
++export function profileRoutes({ app, store }: RouteContext): void {
++  const gs = getGoogleStore(store);
++
++  app.get("/gmail/v1/users/:userId/profile", (c) => {
++    const authEmail = requireGmailUser(c);
++    if (authEmail instanceof Response) return authEmail;
++
++    const messages = gs.messages.findBy("user_email", authEmail);
++    return c.json({
++      emailAddress: authEmail,
++      messagesTotal: messages.length,
++      threadsTotal: new Set(messages.map((message) => message.thread_id)).size,
++      historyId: getCurrentHistoryId(gs, authEmail),
++    });
++  });
++}
+diff --git a/skills/google/SKILL.md b/skills/google/SKILL.md
+index 2f61e81..235ea94 100644
+--- a/skills/google/SKILL.md
++++ b/skills/google/SKILL.md
+@@ -183,6 +183,8 @@ When no OAuth clients are configured, the emulator accepts any `client_id`. With
+ 
+ Google authentication is permissive by default for local bearer-token workflows. Set `google.strict_scopes: true` in seed config to require emulator-issued, unexpired access tokens on Gmail, Calendar, Drive, and userinfo routes. Invalid credentials return `401 UNAUTHENTICATED`; missing method scopes return `403` with `insufficientPermissions`. Strict mode distinguishes read, write, send, settings, and metadata scopes, and userinfo includes only granted identity claims. Revoking an access or refresh token invalidates the linked access and refresh credentials. Discovery, signing keys, and the sign-in page remain public. This mode checks method scopes; resource-specific grants such as `drive.file` and Gmail add-on scopes are not modeled.
+ 
++Gmail history is kept indefinitely by default. Set `google.gmail_history_limit` to keep only the newest N history records per user; `history.list` then returns `404 NOT_FOUND` for a `startHistoryId` older than the retained records, as Gmail does once history has expired, so clients can exercise their full-sync fallback.
++
+ ### Hosted domain (hd) claim
+ 
+ Google Workspace accounts include an `hd` claim in ID tokens and userinfo responses identifying the user's hosted domain. The emulator derives this automatically from the user's email domain. Consumer domains (`gmail.com`, `googlemail.com`) omit the claim, matching real Google behavior.
+@@ -430,6 +432,10 @@ curl -X DELETE http://localhost:4002/gmail/v1/users/me/labels/Label_ops \
+ ### History & Watch
+ 
+ ```bash
++# Get the mailbox profile, including the current historyId
++curl http://localhost:4002/gmail/v1/users/me/profile \
++  -H "Authorization: Bearer $TOKEN"
++
+ # List history changes since a given historyId
+ curl "http://localhost:4002/gmail/v1/users/me/history?startHistoryId=1&historyTypes=messageAdded&maxResults=100" \
+   -H "Authorization: Bearer $TOKEN"
