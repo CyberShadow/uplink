@@ -124,6 +124,9 @@
         checks = {
           backend-test = craneLib.cargoTest (commonArgs // testEnv // {
             inherit cargoArtifacts;
+            # The sandbox has no system trust store, without which
+            # reqwest's platform verifier refuses to build a client.
+            nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.cacert ];
           });
 
           backend-lint = craneLib.cargoClippy (commonArgs // {
