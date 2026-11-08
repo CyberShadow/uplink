@@ -1,10 +1,9 @@
 //! Google OAuth: the one-time authorization (`uplink oauth init`) and
 //! access-token refresh (SPEC §13.2).
 
-use crate::seal::{self, MasterKey, Token};
 use anyhow::{bail, ensure, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     path::PathBuf,
@@ -17,6 +16,7 @@ use tokio::{
     sync::Mutex,
 };
 use uplink_config::GmailAccountConfig;
+use uplink_storage::seal::{self, MasterKey};
 use url::Url;
 
 pub const SCOPE: &str = "https://www.googleapis.com/auth/gmail.modify";
@@ -88,7 +88,7 @@ pub async fn authorize(
     let refresh_token = response
         .refresh_token
         .context("Google returned no refresh token")?;
-    seal::write_token(
+    seal::write(
         key,
         &account.id,
         &Token { refresh_token },
@@ -144,6 +144,13 @@ fn random_token() -> String {
 
 fn challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
+}
+
+/// What a token file holds, once unsealed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Token {
+    pub refresh_token: String,
 }
 
 #[derive(Deserialize)]
@@ -234,7 +241,7 @@ impl Credentials {
 
     async fn refresh(&self) -> Result<(String, Instant)> {
         let account = &self.account;
-        let stored = seal::read_token(&self.key, &account.id, &account.oauth.token_file)?;
+        let stored = seal::read::<Token>(&self.key, &account.id, &account.oauth.token_file)?;
         let requested = Instant::now();
         let response = token_request(
             &self.http,
@@ -250,7 +257,7 @@ impl Credentials {
         // Google may rotate the refresh token (SPEC §15.4).
         if let Some(refresh_token) = response.refresh_token {
             if refresh_token != stored.refresh_token {
-                seal::write_token(
+                seal::write(
                     &self.key,
                     &account.id,
                     &Token { refresh_token },

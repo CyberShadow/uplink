@@ -16,7 +16,6 @@ use crate::{
     },
     mailbox::{EntryLabels, LabelChange, LabelsPushed, MailboxObserved, NewEntry, ObservedLabel},
     parse::parse,
-    seal::MasterKey,
     store::{MailStore, VariantHash},
 };
 use anyhow::{Context, Result};
@@ -35,6 +34,7 @@ use uplink_protocol::{
     LogEntry, Source,
 };
 use uplink_storage::rusqlite::{params, Connection, OptionalExtension};
+use uplink_storage::seal::MasterKey;
 use uplink_tx_log::{Conflict, Dispatcher, Observation};
 
 pub const KIND: &str = "gmail";

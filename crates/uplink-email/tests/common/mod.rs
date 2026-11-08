@@ -13,10 +13,8 @@ use serde::Deserialize;
 use serde_json::json;
 use std::{path::Path, process::Stdio, sync::Arc, time::Duration};
 use uplink_config::{AccountConfig, Config, GmailAccountConfig, GmailOAuthConfig, GoogleEndpoints};
-use uplink_email::{
-    gmail::oauth::{self, Credentials},
-    seal::{self, MasterKey, Token},
-};
+use uplink_email::gmail::oauth::{self, Credentials, Token};
+use uplink_storage::seal::{self, MasterKey};
 
 pub struct Provider {
     pub account: GmailAccountConfig,
@@ -53,7 +51,7 @@ fn real_account() -> (GmailAccountConfig, Token) {
             .expect("the configuration has a master_key_file"),
     )
     .unwrap();
-    let token = seal::read_token(&key, &account.id, &account.oauth.token_file).unwrap();
+    let token = seal::read::<Token>(&key, &account.id, &account.oauth.token_file).unwrap();
     (account, token)
 }
 
@@ -83,7 +81,7 @@ impl Provider {
                 },
                 ..real
             };
-            seal::write_token(&key, &account.id, &token, &account.oauth.token_file).unwrap();
+            seal::write(&key, &account.id, &token, &account.oauth.token_file).unwrap();
             (account, None)
         } else {
             let (base, child) = start_emulate(dir, history_limit).await;

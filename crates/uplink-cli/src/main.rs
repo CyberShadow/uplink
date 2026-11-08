@@ -2,7 +2,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use uplink_config::{AccountConfig, Config};
-use uplink_email::{gmail::oauth, seal::MasterKey};
+use uplink_email::gmail::oauth;
+use uplink_storage::seal::MasterKey;
 
 /// uplink — self-hosted personal communication hub.
 #[derive(Parser)]

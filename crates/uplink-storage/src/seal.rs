@@ -1,4 +1,6 @@
-//! OAuth refresh tokens sealed at rest with the master key (SPEC §13.4).
+//! Secrets sealed at rest with the master key (SPEC §13.4): OAuth refresh
+//! tokens, Matrix sessions, and keys derived for stores that encrypt
+//! themselves.
 
 use anyhow::{bail, ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -6,7 +8,8 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
     ChaCha20Poly1305, Key, Nonce,
 };
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Serialize};
+use sha2::{Digest, Sha256};
 use std::{io::Write, path::Path};
 
 const KEY_BYTES: usize = 32;
@@ -46,20 +49,26 @@ impl MasterKey {
     }
 }
 
-/// What a token file holds, once unsealed.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Token {
-    pub refresh_token: String,
+impl MasterKey {
+    /// A key for `purpose` (e.g. a store's passphrase), derived from the
+    /// master key, so that it needs no storing of its own.
+    pub fn derive(&self, purpose: &str) -> [u8; KEY_BYTES] {
+        Sha256::new()
+            .chain_update(b"uplink key derivation\0")
+            .chain_update(self.0)
+            .chain_update(purpose.as_bytes())
+            .finalize()
+            .into()
+    }
 }
 
-/// Writes `token` to `path`, sealed for `account`: `nonce || ciphertext`.
-/// The account id is authenticated, so a token file only opens for the
-/// account it was written for. Replaces the file atomically.
-pub fn write_token(key: &MasterKey, account: &str, token: &Token, path: &Path) -> Result<()> {
+/// Writes `secret` to `path`, sealed for `account`: `nonce || ciphertext`.
+/// The account id is authenticated, so a file only opens for the account
+/// it was written for. Replaces the file atomically, with mode 0600.
+pub fn write<T: Serialize>(key: &MasterKey, account: &str, secret: &T, path: &Path) -> Result<()> {
     let mut nonce = [0u8; NONCE_BYTES];
     rand::fill(&mut nonce);
-    let plaintext = serde_json::to_vec(token)?;
+    let plaintext = serde_json::to_vec(secret)?;
     let ciphertext = ChaCha20Poly1305::new(&key.0)
         .encrypt(
             &Nonce::from(nonce),
@@ -68,10 +77,10 @@ pub fn write_token(key: &MasterKey, account: &str, token: &Token, path: &Path) -
                 aad: account.as_bytes(),
             },
         )
-        .map_err(|_| anyhow::anyhow!("sealing the token failed"))?;
+        .map_err(|_| anyhow::anyhow!("sealing failed"))?;
     let dir = path
         .parent()
-        .with_context(|| format!("token file {} has no directory", path.display()))?;
+        .with_context(|| format!("sealed file {} has no directory", path.display()))?;
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     // NamedTempFile is created with mode 0600.
     let mut file = tempfile::NamedTempFile::new_in(dir)?;
@@ -79,16 +88,16 @@ pub fn write_token(key: &MasterKey, account: &str, token: &Token, path: &Path) -
     file.write_all(&ciphertext)?;
     file.as_file().sync_all()?;
     file.persist(path)
-        .with_context(|| format!("writing token file {}", path.display()))?;
+        .with_context(|| format!("writing sealed file {}", path.display()))?;
     Ok(())
 }
 
-pub fn read_token(key: &MasterKey, account: &str, path: &Path) -> Result<Token> {
+pub fn read<T: DeserializeOwned>(key: &MasterKey, account: &str, path: &Path) -> Result<T> {
     let sealed =
-        std::fs::read(path).with_context(|| format!("reading token file {}", path.display()))?;
+        std::fs::read(path).with_context(|| format!("reading sealed file {}", path.display()))?;
     ensure!(
         sealed.len() > NONCE_BYTES,
-        "token file {} is truncated",
+        "sealed file {} is truncated",
         path.display()
     );
     let (nonce, ciphertext) = sealed.split_at(NONCE_BYTES);
@@ -101,12 +110,12 @@ pub fn read_token(key: &MasterKey, account: &str, path: &Path) -> Result<Token> 
         },
     ) else {
         bail!(
-            "token file {} does not open with this master key for account {account}",
+            "{} does not open with this master key for account {account}",
             path.display()
         );
     };
     serde_json::from_slice(&plaintext)
-        .with_context(|| format!("token file {} is malformed", path.display()))
+        .with_context(|| format!("sealed file {} is malformed", path.display()))
 }
 
 #[cfg(test)]
@@ -124,11 +133,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let key = key(dir.path(), "master.key");
         let path = dir.path().join("accounts/a.token");
-        let token = Token {
-            refresh_token: "1//secret".into(),
-        };
-        write_token(&key, "a", &token, &path).unwrap();
-        assert_eq!(read_token(&key, "a", &path).unwrap(), token);
+        let token = "1//secret".to_owned();
+        write(&key, "a", &token, &path).unwrap();
+        assert_eq!(read::<String>(&key, "a", &path).unwrap(), token);
         assert!(!std::fs::read(&path)
             .unwrap()
             .windows(6)
@@ -146,12 +153,18 @@ mod tests {
         let key1 = key(dir.path(), "1.key");
         let key2 = key(dir.path(), "2.key");
         let path = dir.path().join("a.token");
-        let token = Token {
-            refresh_token: "t".into(),
-        };
-        write_token(&key1, "a", &token, &path).unwrap();
-        assert!(read_token(&key2, "a", &path).is_err());
-        assert!(read_token(&key1, "b", &path).is_err());
+        write(&key1, "a", &"t", &path).unwrap();
+        assert!(read::<String>(&key2, "a", &path).is_err());
+        assert!(read::<String>(&key1, "b", &path).is_err());
+    }
+
+    #[test]
+    fn derived_keys_differ_by_purpose_and_master_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key1, key2) = (key(dir.path(), "1.key"), key(dir.path(), "2.key"));
+        assert_eq!(key1.derive("a"), key1.derive("a"));
+        assert_ne!(key1.derive("a"), key1.derive("b"));
+        assert_ne!(key1.derive("a"), key2.derive("a"));
     }
 
     #[test]

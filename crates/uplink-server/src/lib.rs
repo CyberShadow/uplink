@@ -29,9 +29,10 @@ use uplink_config::{
     AccountConfig, BasicAuthConfig, Config, ConfigChanged, ConfigSection, GmailAccountConfig,
     Watcher,
 };
-use uplink_email::{gmail::sync::Sync, query::ConfiguredAccount, seal::MasterKey, service::Mail};
+use uplink_email::{gmail::sync::Sync, query::ConfiguredAccount, service::Mail};
 use uplink_protocol::{ClientRequest, ErrorCode, ServerError, ServerResponse, TxLogId};
 use uplink_realtime::{Backend, Hub, Replay};
+use uplink_storage::seal::MasterKey;
 use uplink_tx_log::{Dispatcher, LogReader, Registry, UndoError};
 
 /// How far a session may lag the live stream before it is disconnected.

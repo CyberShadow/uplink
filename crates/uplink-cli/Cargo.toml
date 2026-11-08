@@ -8,6 +8,7 @@ name = "uplink"
 path = "src/main.rs"
 
 [dependencies]
+uplink-storage = { path = "../uplink-storage" }
 uplink-server = { path = "../uplink-server" }
 anyhow = "1"
 bcrypt = "0.17"

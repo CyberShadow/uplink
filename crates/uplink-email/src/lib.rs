@@ -6,7 +6,6 @@ pub mod gmail;
 pub mod mailbox;
 pub mod parse;
 pub mod query;
-pub mod seal;
 pub mod service;
 pub mod store;
 
