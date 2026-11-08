@@ -8,6 +8,8 @@
 
 #![allow(dead_code)]
 
+pub mod uplink;
+
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::Deserialize;
 use serde_json::json;
@@ -87,7 +89,15 @@ impl Provider {
             seal::write(&key, &account.id, &token, &account.oauth.token_file).unwrap();
             (account, None)
         } else {
-            let (base, child) = start_emulate(dir, history_limit).await;
+            let config = format!(
+                "google:\n{}  users:\n    - email: alice@example.com\n      name: Alice\n  \
+                 oauth_clients:\n    - client_id: uplink-test\n      client_secret: uplink-test-secret\n      \
+                 redirect_uris: [\"http://127.0.0.1/\"]\n",
+                history_limit
+                    .map(|l| format!("  gmail_history_limit: {l}\n"))
+                    .unwrap_or_default(),
+            );
+            let (base, child) = start_emulate(dir, "google", &config).await;
             let account = GmailAccountConfig {
                 id: "test".into(),
                 address: "alice@example.com".into(),
@@ -243,31 +253,25 @@ impl Provider {
     }
 }
 
-async fn start_emulate(dir: &Path, history_limit: Option<u32>) -> (String, tokio::process::Child) {
+/// Starts emulate's `service`, seeded with `config`; returns its base URL.
+pub async fn start_emulate(
+    dir: &Path,
+    service: &str,
+    config: &str,
+) -> (String, tokio::process::Child) {
     let emulate = std::env::var_os("UPLINK_EMULATE")
         .expect("UPLINK_EMULATE must name the emulate binary (the dev shell sets it)");
-    let config = dir.join("emulate.yaml");
-    std::fs::write(
-        &config,
-        format!(
-            "google:\n{}  users:\n    - email: alice@example.com\n      name: Alice\n  \
-             oauth_clients:\n    - client_id: uplink-test\n      client_secret: uplink-test-secret\n      \
-             redirect_uris: [\"http://127.0.0.1/\"]\n",
-            history_limit
-                .map(|l| format!("  gmail_history_limit: {l}\n"))
-                .unwrap_or_default(),
-        ),
-    )
-    .unwrap();
+    let config_file = dir.join(format!("emulate-{service}.yaml"));
+    std::fs::write(&config_file, config).unwrap();
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
         .unwrap()
         .port();
     let child = tokio::process::Command::new(emulate)
-        .args(["start", "--service", "google", "--port", &port.to_string()])
+        .args(["start", "--service", service, "--port", &port.to_string()])
         .arg("--config")
-        .arg(&config)
+        .arg(&config_file)
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())

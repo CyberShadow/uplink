@@ -2,195 +2,33 @@
 
 mod common;
 
-use common::{eventually, message, Provider};
-use std::{sync::Arc, time::Duration};
+use common::{
+    eventually, message,
+    uplink::{label_set, Uplink},
+    Provider,
+};
+use std::time::Duration;
 use uplink_email::{
-    account::SyncTask,
-    compose,
     gmail::{api::Gmail, oauth, sync::GmailSync},
-    mailbox,
     oauth::Credentials,
-    query::ConfiguredAccount,
-    service::Mail,
 };
-use uplink_protocol::{
-    compose::{DraftContent, DraftId, OutboxState},
-    mail::{EntryId, LabelId, MessageId},
-    ServerResponse,
-};
-use uplink_realtime::Hub;
-use uplink_storage::rusqlite::{Connection, OptionalExtension};
-use uplink_tx_log::{Dispatcher, Registry};
+use uplink_protocol::{compose::OutboxState, ServerResponse};
+use uplink_storage::rusqlite::OptionalExtension;
 
-const SEND_DELAY: Duration = Duration::from_millis(500);
-
-struct Uplink {
-    dir: tempfile::TempDir,
-    dispatcher: Dispatcher,
-    mail: Mail,
-}
-
-impl Uplink {
-    fn new() -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        let mut registry = Registry::new();
-        mailbox::register(&mut registry);
-        compose::register(&mut registry);
-        let dispatcher = Dispatcher::new(
-            uplink_storage::open(dir.path()).unwrap(),
-            registry,
-            Arc::new(Hub::new(1024)),
-        );
-        let mail = Mail::new(
-            dispatcher.clone(),
-            uplink_storage::open_reader(dir.path()).unwrap(),
-            dir.path(),
-            vec![ConfiguredAccount {
-                id: "test".into(),
-                address: "alice@example.com".into(),
-            }],
-            SEND_DELAY,
-        );
-        Self {
-            dir,
-            dispatcher,
-            mail,
-        }
-    }
-
-    fn reader(&self) -> Connection {
-        uplink_storage::open_reader(self.dir.path()).unwrap()
-    }
-
-    fn start_sync(&self, provider: &Provider) -> tokio::task::JoinHandle<()> {
-        let http = reqwest::Client::new();
-        let credentials = Credentials::new(
-            http.clone(),
-            oauth::grant(&provider.account),
-            provider.key.clone(),
-        );
-        tokio::spawn(
-            SyncTask::new(
-                GmailSync {
-                    gmail: Gmail::new(http, &provider.account.endpoints.api, credentials),
-                },
-                "test".into(),
-                provider.account.address.clone(),
-                self.dispatcher.clone(),
-                self.reader(),
-                self.dir.path(),
-                Duration::from_millis(100),
-            )
-            .run(),
-        )
-    }
-
-    /// The entry of the message whose subject starts with `tag`.
-    fn entry(&self, tag: &str) -> Option<EntryId> {
-        self.reader()
-            .query_row(
-                "SELECT e.id FROM mail_entry e JOIN message m ON m.id = e.message
-                 WHERE m.subject LIKE ?1 || ' %'",
-                [tag],
-                |r| Ok(EntryId(r.get(0)?)),
-            )
-            .optional()
-            .unwrap()
-    }
-
-    /// The entry's labels, as (external id, desired, observed).
-    fn labels(&self, entry: EntryId) -> Vec<(String, bool, bool)> {
-        self.reader()
-            .prepare(
-                "SELECT l.external_id, el.desired, el.observed
-                 FROM entry_label el JOIN label l ON l.id = el.label
-                 WHERE el.entry = ?1 ORDER BY 1",
-            )
-            .unwrap()
-            .query_map([entry.0], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap()
-    }
-
-    fn label(&self, external_id: &str) -> LabelId {
-        LabelId(
-            self.reader()
-                .query_row(
-                    "SELECT id FROM label WHERE external_id = ?1",
-                    [external_id],
-                    |r| r.get(0),
-                )
-                .unwrap(),
-        )
-    }
-
-    async fn outbox(&self) -> Vec<(i64, OutboxState)> {
-        let ServerResponse::Outbox { items, .. } = self.mail.list_outbox().await.unwrap() else {
-            panic!()
-        };
-        items.into_iter().map(|i| (i.id.0, i.state)).collect()
-    }
-
-    fn message_of(&self, entry: EntryId) -> (MessageId, String, Option<String>) {
-        self.reader()
-            .query_row(
-                "SELECT m.id, m.message_id, e.thread_id FROM mail_entry e
-                 JOIN message m ON m.id = e.message WHERE e.id = ?1",
-                [entry.0],
-                |r| Ok((MessageId(r.get(0)?), r.get(1)?, r.get(2)?)),
-            )
-            .unwrap()
-    }
-
-    fn external_id(&self, entry: EntryId) -> String {
-        self.reader()
-            .query_row(
-                "SELECT external_id FROM mail_entry WHERE id = ?1",
-                [entry.0],
-                |r| r.get(0),
-            )
-            .unwrap()
-    }
-
-    /// Creates a draft to `to` and sends it.
-    async fn send(&self, to: &str, subject: &str, in_reply_to: Option<MessageId>) -> i64 {
-        let id = DraftId(subject.into());
-        self.mail
-            .create_draft(
-                id.clone(),
-                "test".into(),
-                DraftContent {
-                    to: to.into(),
-                    cc: String::new(),
-                    bcc: String::new(),
-                    subject: subject.into(),
-                    body: "<p>Sent by the <b>uplink</b> tests.</p>".into(),
-                },
-                in_reply_to,
-            )
-            .await
-            .unwrap();
-        let ServerResponse::Dispatched { tx_log_id } = self.mail.send_draft(id).await.unwrap()
-        else {
-            panic!()
-        };
-        tx_log_id.0
-    }
-
-    fn log_len(&self) -> i64 {
-        self.reader()
-            .query_row("SELECT count(*) FROM tx_log", [], |r| r.get(0))
-            .unwrap()
-    }
-
-    async fn arrived(&self, tag: &str) -> EntryId {
-        eventually(&format!("{tag} to arrive"), || async { self.entry(tag) }).await
-    }
-}
-
-fn label_set(labels: &[(String, bool, bool)]) -> Vec<&str> {
-    labels.iter().map(|(l, _, _)| l.as_str()).collect()
+/// Gmail's sync task, polling quickly.
+fn start_sync(uplink: &Uplink, provider: &Provider) -> tokio::task::JoinHandle<()> {
+    let http = reqwest::Client::new();
+    let credentials = Credentials::new(
+        http.clone(),
+        oauth::grant(&provider.account),
+        provider.key.clone(),
+    );
+    uplink.start(
+        GmailSync {
+            gmail: Gmail::new(http, &provider.account.endpoints.api, credentials),
+        },
+        &provider.account.address,
+    )
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -200,7 +38,7 @@ async fn mirrors_the_mailbox_and_pushes_changes() {
 
     // Mail present before the first sync, and mail arriving afterwards.
     let first = provider.deliver(&message("first", "hello world")).await;
-    let sync = uplink.start_sync(&provider);
+    let sync = start_sync(&uplink, &provider);
     let first_entry = uplink.arrived("first").await;
     assert_eq!(
         uplink.labels(first_entry),
@@ -261,7 +99,7 @@ async fn mirrors_the_mailbox_and_pushes_changes() {
     sync.abort();
     let _ = sync.await;
     let settled = uplink.log_len();
-    let sync = uplink.start_sync(&provider);
+    let sync = start_sync(&uplink, &provider);
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(uplink.log_len(), settled, "the restarted sync re-synced");
     provider.deliver(&message("third", "after restart")).await;
@@ -281,7 +119,7 @@ async fn resyncs_fully_once_history_expired() {
     let provider = Provider::start(uplink.dir.path(), Some(3)).await;
     let kept = provider.deliver(&message("kept", "")).await;
     let deleted = provider.deliver(&message("deleted", "")).await;
-    let sync = uplink.start_sync(&provider);
+    let sync = start_sync(&uplink, &provider);
     let kept_entry = uplink.arrived("kept").await;
     uplink.arrived("deleted").await;
     sync.abort();
@@ -305,7 +143,7 @@ async fn resyncs_fully_once_history_expired() {
         .unwrap();
     assert_eq!(provider.history_status(&recorded).await, 404);
 
-    let sync = uplink.start_sync(&provider);
+    let sync = start_sync(&uplink, &provider);
     uplink.arrived("new").await;
     eventually("the deletion to be observed", || async {
         uplink.entry("deleted").is_none().then_some(())
@@ -327,7 +165,7 @@ async fn sends_mail_after_the_delay_unless_undone() {
     let provider = Provider::start(uplink.dir.path(), None).await;
     let me = provider.account.address.clone();
     provider.deliver(&message("original", "lunch?")).await;
-    let sync = uplink.start_sync(&provider);
+    let sync = start_sync(&uplink, &provider);
     let original_entry = uplink.arrived("original").await;
     let (original_message, _, original_thread) = uplink.message_of(original_entry);
 
@@ -371,7 +209,7 @@ async fn sends_mail_after_the_delay_unless_undone() {
         panic!()
     };
     assert_eq!(drafts[0].content.subject, undone);
-    tokio::time::sleep(SEND_DELAY * 3).await;
+    tokio::time::sleep(common::uplink::SEND_DELAY * 3).await;
     assert!(uplink.outbox().await.is_empty());
     assert!(uplink.entry("undone").is_none());
 
