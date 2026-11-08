@@ -1,5 +1,6 @@
 import { useEffect } from 'preact/hooks'
 import { useServices } from '../context'
+import { keepFocus } from '../keymap'
 import styles from './Overlay.module.css'
 
 const SHOWN_MS = 10_000
@@ -22,14 +23,19 @@ export function NoticeBar() {
       {notice.kind === 'done' ? (
         <>
           <span>{notice.description}</span>
-          <button type="button" onClick={() => mail.undo(notice.id)}>
+          <button type="button" onMouseDown={keepFocus} onClick={() => mail.undo(notice.id)}>
             Undo
           </button>
         </>
       ) : (
         <span>Failed: {notice.message}</span>
       )}
-      <button type="button" aria-label="Dismiss" onClick={() => (mail.notice.value = null)}>
+      <button
+        type="button"
+        aria-label="Dismiss"
+        onMouseDown={keepFocus}
+        onClick={() => (mail.notice.value = null)}
+      >
         ×
       </button>
     </div>

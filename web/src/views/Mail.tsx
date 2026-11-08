@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import type { Entry, Label, MessageContent } from '../generated/protocol'
 import { useServices } from '../context'
-import { useKeymap } from '../keymap'
+import { keepFocus, useKeymap } from '../keymap'
 import type { MailStore, View } from '../stores/mail'
 import { mailPath, searchPath } from './App'
 import { LabelPicker } from './LabelPicker'
@@ -150,6 +150,7 @@ function MessageList(props: { mail: MailStore; open: (entry: Entry) => void }) {
               type="checkbox"
               aria-label="Select"
               checked={isSelected}
+              onMouseDown={keepFocus}
               onClick={(event) => {
                 event.stopPropagation()
                 mail.toggleSelected(entry.id)

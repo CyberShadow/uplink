@@ -2,7 +2,7 @@
 // Views bind the actions that make sense for them; the help overlay lists
 // the whole map.
 
-import { useEffect, useRef } from 'preact/hooks'
+import { useLayoutEffect, useRef } from 'preact/hooks'
 import { tinykeys } from 'tinykeys'
 
 export type Action =
@@ -55,13 +55,21 @@ export const KEYMAP: Binding[] = [
   { action: 'help', keys: ['[Shift]+?'], label: '?', help: 'Keyboard shortcuts' },
 ]
 
+/** A mousedown handler for controls that should not take the focus from
+ * the shortcuts when clicked (a focused button would also take Enter). */
+export function keepFocus(event: MouseEvent) {
+  event.preventDefault()
+}
+
 /** Binds `actions` to their keys while the component is mounted. */
 export function useKeymap(actions: Partial<Record<Action, () => void>>) {
   // The handlers change with every render; the bindings need not.
   const current = useRef(actions)
   current.current = actions
   const bound = Object.keys(actions).sort().join()
-  useEffect(() => {
+  // At once, not after paint, so that keys pressed right after a view
+  // change reach its bindings.
+  useLayoutEffect(() => {
     const map: Record<string, (event: KeyboardEvent) => void> = {}
     for (const binding of KEYMAP) {
       if (!(binding.action in current.current)) continue

@@ -61,6 +61,8 @@ describe('mail', () => {
     await user.click(within(screen.getByRole('status')).getByRole('button', { name: 'Undo' }))
     await screen.findByText('Undid it')
     expect(subjects()).toEqual(['First', 'Second', 'Third'])
+    // The click left the focus alone: keys still drive the list.
+    expect(document.activeElement).toBe(document.body)
   })
 
   it('opens a message, reads it, and goes back to the list', async () => {
@@ -97,6 +99,17 @@ describe('mail', () => {
       '☐Projects',
       '☐Travel',
     ])
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    // The filter has the focus as soon as the picker renders, before
+    // effects run after paint, so typing straight on goes into it. (A
+    // native event: testing-library's flush effects at once.)
+    document.body.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'l', code: 'KeyL', bubbles: true }),
+    )
+    await new Promise((rendered) => setTimeout(rendered, 0))
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Filter labels' }))
     await user.keyboard('trav{Enter}')
     expect(screen.queryByRole('dialog')).toBeNull()
     const first = mail.list.value!.entries[0]

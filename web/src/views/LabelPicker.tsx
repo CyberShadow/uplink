@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'preact/hooks'
+import { useLayoutEffect, useRef, useState } from 'preact/hooks'
 import type { Entry, Label } from '../generated/protocol'
 import { useServices } from '../context'
 import styles from './Overlay.module.css'
@@ -9,7 +9,8 @@ export function LabelPicker(props: { targets: Entry[]; close: () => void }) {
   const [filter, setFilter] = useState('')
   const [highlight, setHighlight] = useState(0)
   const input = useRef<HTMLInputElement>(null)
-  useEffect(() => input.current?.focus(), [])
+  // At once, not after paint: keys typed right after `l` are the filter's.
+  useLayoutEffect(() => input.current?.focus(), [])
 
   const accounts = new Set(props.targets.map((e) => e.account))
   if (accounts.size > 1) {
