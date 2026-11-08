@@ -36,9 +36,10 @@ CREATE TABLE message_variant (
 CREATE INDEX message_variant_by_message ON message_variant(message);
 
 -- A message as it exists in an account (a Gmail message, a Graph item).
--- An account may hold several copies of one logical message.
+-- An account may hold several copies of one logical message. Entry and
+-- label ids are never reused, since log entries refer to them.
 CREATE TABLE mail_entry (
-  id           INTEGER PRIMARY KEY,
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
   account_id   TEXT NOT NULL REFERENCES account(id),
   external_id  TEXT NOT NULL,      -- Gmail message id / Graph message id
   message      INTEGER NOT NULL REFERENCES message(id),
@@ -51,7 +52,7 @@ CREATE INDEX mail_entry_by_message ON mail_entry(message);
 CREATE INDEX mail_entry_by_thread ON mail_entry(account_id, thread_id);
 
 CREATE TABLE label (
-  id           INTEGER PRIMARY KEY,
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
   account_id   TEXT NOT NULL REFERENCES account(id),
   external_id  TEXT NOT NULL,      -- Gmail label id ('INBOX', 'Label_1')
   name         TEXT NOT NULL,
