@@ -6,6 +6,7 @@ import base64
 import json
 import shlex
 import time
+from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urljoin, urlparse
 
 STATE = "/var/lib/uplink"
@@ -125,6 +126,15 @@ def in_folder(external_id):
     return entries(labels()[external_id]["id"])
 
 
+def utc(t):
+    return {"dateTime": t.strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": "UTC"}
+
+
+def events(days=10):
+    now = int(time.time() * 1000)
+    return ws({"type": "list_events", "from": now - 86_400_000, "to": now + days * 86_400_000})["events"]
+
+
 def tx_log_head():
     return int(machine.succeed(f"sqlite3 {STATE}/db/uplink.sqlite 'SELECT max(id) FROM tx_log'"))
 
@@ -136,6 +146,24 @@ with subtest("uplink oauth init stores a token from the pasted redirect"):
 
 alice = token_of("alice@example.com")
 
+# A calendar for the first sync to find: a series and a single event.
+today = datetime.now(timezone.utc).replace(hour=14, minute=0, second=0, microsecond=0)
+graph(alice, "POST", "/events", {
+    "subject": "Standup",
+    "start": utc(today),
+    "end": utc(today + timedelta(minutes=15)),
+    "recurrence": {
+        "pattern": {"type": "daily", "interval": 1},
+        "range": {"type": "numbered", "startDate": today.strftime("%Y-%m-%d"), "numberOfOccurrences": 3},
+    },
+})
+graph(alice, "POST", "/events", {
+    "subject": "Dentist",
+    "location": {"displayName": "Main Street"},
+    "start": utc(today + timedelta(days=5)),
+    "end": utc(today + timedelta(days=5, hours=1)),
+})
+
 with subtest("the first sync mirrors the mailbox"):
     report = deliver(alice, "Quarterly report", "Numbers are up this quarter")
     machine.systemctl("start uplink.service")
@@ -145,6 +173,14 @@ with subtest("the first sync mirrors the mailbox"):
     assert account()["provider"] == "m365"
     assert "Quarterly report" in in_folder("INBOX")
     assert labels()["ARCHIVE"]["folder"]
+
+with subtest("the first sync mirrors the calendar, with its series expanded"):
+    listed = eventually("the calendar", lambda: len(events()) == 4 and events())
+    standups = [e for e in listed if e["subject"] == "Standup"]
+    assert [e["start"] for e in standups] == [int((today + timedelta(days=d)).timestamp() * 1000) for d in range(3)], listed
+    assert all(e["recurring"] and not e["exception"] for e in standups), standups
+    [dentist] = [e for e in listed if e["subject"] == "Dentist"]
+    assert dentist["location"] == "Main Street" and not dentist["recurring"], dentist
 
 with subtest("new mail reaches the client within a poll interval"):
     machine.succeed(f"uplink-ws await entries_added {POLL + 10} >/tmp/await.json 2>/tmp/await.err &")
