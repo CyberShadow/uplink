@@ -148,6 +148,74 @@ describe('mail', () => {
     expect(within(rows()[0]).getByText('Travel')).toBeTruthy()
   })
 
+  it('moves to a label with v, out of the label on show', async () => {
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('v')
+    const dialog = screen.getByRole('dialog', { name: 'Move to' })
+    expect(within(dialog).getAllByRole('option').map((o) => o.textContent)).toEqual(['Projects', 'Travel'])
+    const first = client.mail.list.value!.entries[0]
+    await user.keyboard('proj{Enter}')
+    await waitFor(() => expect(subjects()).toEqual(['Second', 'Third']))
+    expect(server.labelsOf(first.id)).toContain(server.labelId('work', 'Projects'))
+    expect(server.labelsOf(first.id)).not.toContain(server.labelId('work', 'INBOX'))
+
+    // From a user label, back to the Inbox.
+    await user.keyboard('gl')
+    await user.keyboard('proj{Enter}')
+    await waitFor(() => expect(subjects()).toEqual(['First']))
+    await user.keyboard('v')
+    expect(
+      within(screen.getByRole('dialog', { name: 'Move to' }))
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['Inbox', 'Travel'])
+    await user.keyboard('inbox{Enter}')
+    await screen.findByText('No messages.')
+    expect(server.labelsOf(first.id)).toContain(server.labelId('work', 'INBOX'))
+    expect(server.labelsOf(first.id)).not.toContain(server.labelId('work', 'Projects'))
+  })
+
+  it('marks important with + or =, and not with -', async () => {
+    const user = await start('/mail/work/INBOX')
+    const important = server.labelId('work', 'IMPORTANT')
+    const first = client.mail.list.value!.entries[0]
+    await user.keyboard('+')
+    await waitFor(() => expect(server.labelsOf(first.id)).toContain(important))
+    await user.keyboard('-')
+    await waitFor(() => expect(server.labelsOf(first.id)).not.toContain(important))
+    await user.keyboard('=')
+    await waitFor(() => expect(server.labelsOf(first.id)).toContain(important))
+  })
+
+  it('selects read, unread, starred and unstarred messages with *', async () => {
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('s{Shift>}i{/Shift}')
+    await waitFor(() => expect(within(rows()[0]).getByTitle('Starred')).toBeTruthy())
+    const selected = () => [...client.mail.selected.value].map((id) => client.mail.list.value!.entries.find((e) => e.id === id)!.subject)
+    await user.keyboard('*r')
+    expect(selected()).toEqual(['First'])
+    await user.keyboard('*u')
+    expect(selected()).toEqual(['Second', 'Third'])
+    await user.keyboard('*s')
+    expect(selected()).toEqual(['First'])
+    await user.keyboard('*t')
+    expect(selected()).toEqual(['Second', 'Third'])
+  })
+
+  it('archives the open message with ] or [, opening the older or newer one', async () => {
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('j{Enter}')
+    await screen.findByText('Body of Second')
+    await user.keyboard(']')
+    await screen.findByText('Body of Third')
+    expect(server.labelsOf(client.mail.list.value!.entries[0].id)).toContain(server.labelId('work', 'INBOX'))
+    await user.keyboard('[[')
+    await screen.findByText('Body of First')
+    // Nothing newer: back to the list.
+    await user.keyboard('[[')
+    await screen.findByText('No messages.')
+  })
+
   it('stars with s and marks unread with Shift+u', async () => {
     const user = await start('/mail/work/INBOX')
     await user.keyboard('s')
@@ -221,6 +289,16 @@ describe('mail', () => {
     await user.keyboard('gt')
     expect(location.pathname).toBe('/mail/work/SENT')
     await screen.findByText('Outgoing')
+  })
+
+  it('takes g s as a sequence, without starring the message as s alone would', async () => {
+    const user = await start('/mail/work/INBOX')
+    const first = client.mail.list.value!.entries[0]
+    await user.keyboard('gs')
+    expect(location.pathname).toBe('/mail/work/STARRED')
+    await screen.findByText('No messages.')
+    expect(server.labelsOf(first.id)).not.toContain(server.labelId('work', 'STARRED'))
+    expect(server.requests.filter((r) => r.type === 'modify_labels')).toEqual([])
   })
 
   it('shows the shortcuts with ?', async () => {

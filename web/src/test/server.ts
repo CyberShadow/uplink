@@ -38,7 +38,7 @@ import { apply } from '../compose/splice'
 /** The Matrix account's user. */
 export const ME = '@me:example.org'
 
-const SYSTEM = ['INBOX', 'UNREAD', 'STARRED', 'SENT', 'DRAFT', 'TRASH', 'SPAM']
+const SYSTEM = ['INBOX', 'UNREAD', 'STARRED', 'IMPORTANT', 'SENT', 'DRAFT', 'TRASH', 'SPAM']
 const HIDING = ['TRASH', 'SPAM']
 
 interface Undoable {

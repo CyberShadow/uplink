@@ -348,6 +348,16 @@ export class MailStore {
     this.selected.value = new Set()
   }
 
+  /** Selects the loaded entries that have the system label `externalId`,
+   * or with `having` false, those that lack it. */
+  selectHaving(externalId: string, having: boolean) {
+    this.selected.value = new Set(
+      (this.list.value?.entries ?? [])
+        .filter((e) => e.labels.includes(this.systemLabel(e.account, externalId).id) === having)
+        .map((e) => e.id),
+    )
+  }
+
   // ── ops ─────────────────────────────────────────────────────────────────
 
   archive(entries: Entry[]) {
@@ -391,6 +401,19 @@ export class MailStore {
       const star = this.systemLabel(account, 'STARRED').id
       return starred ? { add: [], remove: [star] } : { add: [star], remove: [] }
     })
+  }
+
+  markImportant(entries: Entry[], important: boolean) {
+    return this.modify(entries, (account) => {
+      const label = this.systemLabel(account, 'IMPORTANT').id
+      return important ? { add: [label], remove: [] } : { add: [], remove: [label] }
+    })
+  }
+
+  /** Moves the entries, which are of `to`'s account, from `from` to `to`,
+   * as Gmail's "Move to" does. */
+  move(entries: Entry[], from: Label, to: Label) {
+    return this.modify(entries, () => ({ add: [to.id], remove: [from.id] }))
   }
 
   /** Adds `label` to the entries, or removes it if all have it already. */

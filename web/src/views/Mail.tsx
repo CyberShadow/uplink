@@ -7,7 +7,7 @@ import type { MailStore, View } from '../stores/mail'
 import { respond, type Response } from '../compose/reply'
 import { allMailPath, mailPath, searchPath } from './App'
 import { HtmlBody } from './HtmlBody'
-import { LabelPicker } from './LabelPicker'
+import { LabelPicker, MovePicker } from './LabelPicker'
 import { labelName } from './Nav'
 import { composePath } from './Outgoing'
 import { messagePath } from './Todos'
@@ -28,7 +28,7 @@ interface Props {
 export function Mail(props: Props) {
   const { mail, todos } = useServices()
   const { route } = useLocation()
-  const [picking, setPicking] = useState(false)
+  const [picking, setPicking] = useState<'label' | 'move' | null>(null)
 
   const { account, label, terms, message } = props
   const view: View = useMemo(
@@ -79,6 +79,14 @@ export function Mail(props: Props) {
     const sibling = entries[index + by]
     if (sibling) open(sibling)
   }
+  /** In a message, [ and ] archive it and open the newer or older one. */
+  const archiveAndOpen = (by: number) => {
+    if (!opened) return
+    const sibling = entries[entries.indexOf(opened) + by]
+    mail.archive([opened])
+    if (sibling) open(sibling)
+    else backToList()
+  }
   const ifTargets = (action: (targets: Entry[]) => void) => () => {
     if (targets.length > 0) action(targets)
   }
@@ -104,7 +112,10 @@ export function Mail(props: Props) {
       if (openId !== null) backToList()
     }),
     star: ifTargets((t) => mail.toggleStar(t)),
-    label: ifTargets(() => setPicking(true)),
+    important: ifTargets((t) => mail.markImportant(t, true)),
+    notImportant: ifTargets((t) => mail.markImportant(t, false)),
+    label: ifTargets(() => setPicking('label')),
+    move: ifTargets(() => setPicking('move')),
     flag: ifTargets((t) => {
       for (const entry of new Map(t.map((e) => [e.message, e])).values()) {
         todos.toggleFlag(entry.message, entry.subject ?? '(no subject)')
@@ -126,11 +137,17 @@ export function Mail(props: Props) {
           },
           selectAll: () => mail.selectAll(),
           selectNone: () => mail.selectNone(),
+          selectRead: () => mail.selectHaving('UNREAD', false),
+          selectUnread: () => mail.selectHaving('UNREAD', true),
+          selectStarred: () => mail.selectHaving('STARRED', true),
+          selectUnstarred: () => mail.selectHaving('STARRED', false),
         }
       : {
           ...common,
           next: () => openSibling(1),
           previous: () => openSibling(-1),
+          archiveNewer: () => archiveAndOpen(-1),
+          archiveOlder: () => archiveAndOpen(1),
           back: backToList,
         },
   )
@@ -144,7 +161,14 @@ export function Mail(props: Props) {
       ) : (
         <p class={styles.placeholder}>{list?.loaded ? 'This message is not in the list.' : 'Loading…'}</p>
       )}
-      {picking && <LabelPicker targets={targets} close={() => setPicking(false)} />}
+      {picking === 'label' && <LabelPicker targets={targets} close={() => setPicking(null)} />}
+      {picking === 'move' && (
+        <MovePicker
+          targets={targets}
+          from={view.kind === 'label' ? view.label : null}
+          close={() => setPicking(null)}
+        />
+      )}
     </>
   )
 }

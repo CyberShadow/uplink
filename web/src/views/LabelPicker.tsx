@@ -1,53 +1,42 @@
 import { useLayoutEffect, useRef, useState } from 'preact/hooks'
-import type { Entry, Label } from '../generated/protocol'
+import type { Account, Entry, Label } from '../generated/protocol'
 import { useServices } from '../context'
+import { labelName, navLabels } from './Nav'
 import styles from './Overlay.module.css'
 
-/** Toggles a user label on `targets`, which must share an account. */
-export function LabelPicker(props: { targets: Entry[]; close: () => void }) {
-  const { mail } = useServices()
+type Check = 'all' | 'some' | 'none'
+
+/** A filterable list of an account's labels, one to choose. */
+function Picker(props: {
+  name: string
+  placeholder: string
+  labels: Label[]
+  /** Shows a checkbox per label. */
+  check?: (label: Label) => Check
+  choose: (label: Label) => void
+  close: () => void
+}) {
   const [filter, setFilter] = useState('')
   const [highlight, setHighlight] = useState(0)
   const input = useRef<HTMLInputElement>(null)
-  // At once, not after paint: keys typed right after `l` are the filter's.
+  // At once, not after paint: keys typed right after the shortcut are the
+  // filter's.
   useLayoutEffect(() => input.current?.focus(), [])
 
-  const accounts = new Set(props.targets.map((e) => e.account))
-  if (accounts.size > 1) {
-    return (
-      <div class={styles.backdrop} onClick={props.close}>
-        <div class={styles.dialog} role="dialog" aria-label="Label">
-          <p>Labels belong to one account; select messages of one account to label them.</p>
-        </div>
-      </div>
-    )
-  }
-  const [account] = accounts
-  const labels = (mail.accounts.value?.find((a) => a.id === account)?.labels ?? [])
-    .filter((l) => !l.system && l.name.toLowerCase().includes(filter.toLowerCase()))
-    .sort((a, b) => a.name.localeCompare(b.name))
-
-  const toggle = (label: Label) => {
-    mail.toggleLabel(props.targets, label)
+  const labels = props.labels.filter((l) => labelName(l).toLowerCase().includes(filter.toLowerCase()))
+  const choose = (label: Label) => {
+    props.choose(label)
     props.close()
   }
-  const state = (label: Label) => {
-    const having = props.targets.filter((e) => e.labels.includes(label.id)).length
-    return having === 0 ? 'none' : having === props.targets.length ? 'all' : 'some'
-  }
+  const { check } = props
 
   return (
     <div class={styles.backdrop} onClick={props.close}>
-      <div
-        class={styles.dialog}
-        role="dialog"
-        aria-label="Label"
-        onClick={(event) => event.stopPropagation()}
-      >
+      <div class={styles.dialog} role="dialog" aria-label={props.name} onClick={(event) => event.stopPropagation()}>
         <input
           ref={input}
           class={styles.filter}
-          placeholder="Label as…"
+          placeholder={props.placeholder}
           aria-label="Filter labels"
           value={filter}
           onInput={(event) => {
@@ -58,7 +47,7 @@ export function LabelPicker(props: { targets: Entry[]; close: () => void }) {
             if (event.key === 'Escape') props.close()
             else if (event.key === 'ArrowDown') setHighlight((h) => Math.min(h + 1, labels.length - 1))
             else if (event.key === 'ArrowUp') setHighlight((h) => Math.max(h - 1, 0))
-            else if (event.key === 'Enter' && labels[highlight]) toggle(labels[highlight])
+            else if (event.key === 'Enter' && labels[highlight]) choose(labels[highlight])
             else return
             event.preventDefault()
           }}
@@ -69,17 +58,90 @@ export function LabelPicker(props: { targets: Entry[]; close: () => void }) {
               key={label.id}
               role="option"
               aria-selected={index === highlight}
-              aria-checked={{ all: true, some: 'mixed' as const, none: false }[state(label)]}
+              aria-checked={check && { all: true, some: 'mixed' as const, none: false }[check(label)]}
               class={index === highlight ? styles.highlighted : undefined}
-              onClick={() => toggle(label)}
+              onClick={() => choose(label)}
             >
-              <span class={styles.check}>{{ all: '☑', some: '⊟', none: '☐' }[state(label)]}</span>
-              {label.name}
+              {check && <span class={styles.check}>{{ all: '☑', some: '⊟', none: '☐' }[check(label)]}</span>}
+              {labelName(label)}
             </li>
           ))}
           {labels.length === 0 && <li class={styles.empty}>No labels</li>}
         </ul>
       </div>
     </div>
+  )
+}
+
+/** The account the targets share; labels belong to one. */
+function useTargetAccount(targets: Entry[]): Account | null {
+  const { mail } = useServices()
+  const accounts = new Set(targets.map((e) => e.account))
+  if (accounts.size > 1) return null
+  const [account] = accounts
+  return mail.accounts.value!.find((a) => a.id === account)!
+}
+
+function MixedAccounts(props: { name: string; close: () => void }) {
+  return (
+    <div class={styles.backdrop} onClick={props.close}>
+      <div class={styles.dialog} role="dialog" aria-label={props.name}>
+        <p>Labels belong to one account; select messages of one account to label them.</p>
+      </div>
+    </div>
+  )
+}
+
+/** Toggles a user label on `targets` (`l`). */
+export function LabelPicker(props: { targets: Entry[]; close: () => void }) {
+  const { mail } = useServices()
+  const account = useTargetAccount(props.targets)
+  if (!account) return <MixedAccounts name="Label" close={props.close} />
+  const check = (label: Label): Check => {
+    const having = props.targets.filter((e) => e.labels.includes(label.id)).length
+    return having === 0 ? 'none' : having === props.targets.length ? 'all' : 'some'
+  }
+  return (
+    <Picker
+      name="Label"
+      placeholder="Label as…"
+      labels={navLabels(account).user}
+      check={check}
+      choose={(label) => mail.toggleLabel(props.targets, label)}
+      close={props.close}
+    />
+  )
+}
+
+/** Moves `targets` out of the label on show, or else the Inbox, into a
+ * user label or the Inbox (`v`). */
+export function MovePicker(props: { targets: Entry[]; from: string | null; close: () => void }) {
+  const { mail } = useServices()
+  const account = useTargetAccount(props.targets)
+  if (!account) return <MixedAccounts name="Move to" close={props.close} />
+  const inbox = mail.systemLabel(account.id, 'INBOX')
+  const from = account.labels.find((l) => l.external_id === props.from && (l === inbox || !l.system)) ?? inbox
+  return (
+    <Picker
+      name="Move to"
+      placeholder="Move to…"
+      labels={[inbox, ...navLabels(account).user].filter((l) => l !== from)}
+      choose={(label) => mail.move(props.targets, from, label)}
+      close={props.close}
+    />
+  )
+}
+
+/** Goes to one of the account's labels (`g l`). */
+export function GoToLabel(props: { account: Account; go: (label: Label) => void; close: () => void }) {
+  const { system, user } = navLabels(props.account)
+  return (
+    <Picker
+      name="Go to label"
+      placeholder="Go to label…"
+      labels={[...system, ...user]}
+      choose={props.go}
+      close={props.close}
+    />
   )
 }

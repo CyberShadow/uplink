@@ -8,6 +8,7 @@ import { useKeymap } from '../keymap'
 import type { Client } from '../stores/client'
 import { Help } from './Help'
 import { History } from './History'
+import { GoToLabel } from './LabelPicker'
 import { Mail } from './Mail'
 import { Nav } from './Nav'
 import { NoticeBar } from './NoticeBar'
@@ -34,6 +35,7 @@ function Shell() {
   const { mail, drafts, matrix, todos, history, status } = useServices()
   const { route, path } = useLocation()
   const [help, setHelp] = useState(false)
+  const [goingToLabel, setGoingToLabel] = useState(false)
 
   /** The account on show, or else the first. */
   const account = () => {
@@ -52,6 +54,7 @@ function Shell() {
       const id = account()
       if (id) route(allMailPath(id))
     },
+    goLabel: () => setGoingToLabel(account() !== undefined),
     goDrafts: () => route('/drafts'),
     goTodos: () => route('/todos'),
     goHistory: () => route('/history'),
@@ -96,6 +99,13 @@ function Shell() {
       </main>
       <NoticeBar />
       {help && <Help close={() => setHelp(false)} />}
+      {goingToLabel && (
+        <GoToLabel
+          account={mail.accounts.value!.find((a) => a.id === account())!}
+          go={(label) => route(mailPath(account()!, label.external_id))}
+          close={() => setGoingToLabel(false)}
+        />
+      )}
     </div>
   )
 }

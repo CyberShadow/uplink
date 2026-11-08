@@ -1517,10 +1517,16 @@ Planned: calendar.
 Gmail's scheme. The notable choices we ARE picking:
 
 - `j`/`k` next/prev message (in a message: open the next/prev one).
-- `o`/`Enter` open, `x` select, `*a`/`*n` select all / none.
-- `gi`/`gs`/`gd`/`gt`/`ga` jump to Inbox / Starred / Drafts / Sent / All.
+- `o`/`Enter` open, `x` select, `*a`/`*n` select all / none, `*r`/`*u`
+  read / unread, `*s`/`*t` starred / unstarred.
+- `[`/`]` archive the open message and open the newer / older one.
+- `gi`/`gs`/`gd`/`gt`/`ga` jump to Inbox / Starred / Drafts / Sent / All;
+  `gl` to a label, from a filterable picker.
 - `Shift+i`/`Shift+u` mark read / unread, `l` label (a filterable picker
-  toggling a user label on the selection).
+  toggling a user label on the selection), `v` move to (a picker of user
+  labels and the Inbox: adds the one chosen, and removes the label on
+  show if it is a user label or the Inbox, else the Inbox), `+`/`=` and
+  `-` mark important / not important.
 - `c` compose, `r` reply, `a` reply-all, `f` forward.
 - `e` archive, `#` delete, `!` mark as spam, `s` star.
 - `/` focus search.
@@ -1537,6 +1543,7 @@ uplink's own drafts; Gmail's DRAFT label is listed as "Gmail drafts".
 Trash and `!` reports spam, or not spam (§8.1; M10). Opening a message marks it read, as Gmail does, without
 an undo notice. In a Matrix room (M7), `r` goes to the message box, where
 `Enter` sends, `Shift+Enter` breaks the line and `Esc` leaves.
+M10 added `*r *u *s *t [ ] v + = - gl`.
 `Shift+t` flags the targets for follow-up, or unflags them (M9; ⚑ marks
 flagged messages); `gk` goes to the to-dos, where `j`/`k` move, `a`
 focuses the box that adds one, `e` marks done or not, `#` deletes, and
@@ -1549,6 +1556,15 @@ double-clicking its title does).
   history is the better surface for the multi-step undo we support.
   Within the history (`gh`), `j`/`k` move and `z` undoes, or redoes, the
   focused entry.
+- **No `n`/`p`, `;`/`:`, `m`, `b`, `.`:** uplink shows messages, not
+  conversations, and has no mute, snooze or "more actions" menu.
+
+Sequences: all components' window bindings form one keymap with one
+pending sequence (`web/src/keymap.ts`), on tinykeys' key parsing and
+matching. A first press (`g`) thus keeps a binding of the second (`s`,
+star) from firing too, and a sequence that just fired leaves nothing
+half-matched behind (tinykeys' own handler does, so `*r` then `*u`
+typed within a second lost the second).
 
 ### 12.6 Client state
 
