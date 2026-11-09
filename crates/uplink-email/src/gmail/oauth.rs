@@ -108,11 +108,20 @@ async fn receive_redirect(listener: &TcpListener) -> Result<Url> {
 }
 
 /// Reads lines from stdin until one is a URL with a query; never returns
-/// once stdin is closed.
+/// once stdin is closed. Reads on a thread of its own, left blocked once
+/// the browser's redirect arrives: a read through tokio's stdin would keep
+/// the runtime from shutting down until a line was typed.
 pub async fn read_pasted_url() -> Result<Url> {
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    while let Some(line) = lines.next_line().await? {
-        match Url::parse(line.trim()) {
+    let (lines, mut pasted) = tokio::sync::mpsc::channel(1);
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lines() {
+            if lines.blocking_send(line).is_err() {
+                return;
+            }
+        }
+    });
+    while let Some(line) = pasted.recv().await {
+        match Url::parse(line?.trim()) {
             Ok(url) if url.query().is_some() => return Ok(url),
             _ => eprintln!("That is not the URL the browser was redirected to; try again."),
         }
