@@ -6,3 +6,4 @@ web/package-lock.json
 crates/uplink-server/static/*
 !crates/uplink-server/static/.gitkeep
 /data/
+/uplink.yaml
