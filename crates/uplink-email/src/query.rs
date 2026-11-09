@@ -38,7 +38,7 @@ pub fn accounts(
     for account in configured {
         let synced: bool = tx
             .query_row(
-                "SELECT sync_state IS NOT NULL FROM account WHERE id = ?1",
+                "SELECT synced FROM account WHERE id = ?1",
                 [&account.id],
                 |r| r.get(0),
             )

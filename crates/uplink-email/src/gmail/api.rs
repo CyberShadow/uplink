@@ -10,6 +10,11 @@ use base64::{
 };
 use reqwest::{Method, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use tokio::time::Instant;
 
 /// Gmail's base64url, with or without padding.
 const BASE64URL: GeneralPurpose = GeneralPurpose::new(
@@ -17,6 +22,29 @@ const BASE64URL: GeneralPurpose = GeneralPurpose::new(
     GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
 );
 
+/// Gmail's quota units a user's requests may spend each second, on
+/// average: Gmail allows 6,000 a minute per user (as Google's console
+/// shows; its documentation has said 15,000), and refuses requests
+/// beyond that for the rest of the minute.
+const UNITS_PER_SECOND: f64 = 80.0;
+/// Units that may be spent at once, after a pause.
+const UNITS_AT_ONCE: f64 = 400.0;
+/// The longest wait before trying again a request refused for rate; the
+/// waits double from a second up to this.
+const MAX_RATE_WAIT: Duration = Duration::from_secs(64);
+
+/// What each request costs, in quota units (Gmail's "Usage limits").
+mod cost {
+    pub const PROFILE: u32 = 1;
+    pub const LABELS: u32 = 1;
+    pub const MESSAGES: u32 = 5;
+    pub const MESSAGE: u32 = 5;
+    pub const HISTORY: u32 = 2;
+    pub const BATCH_MODIFY: u32 = 50;
+    pub const SEND: u32 = 100;
+}
+
+/// One account's client. Its clones share the account's quota.
 #[derive(Clone)]
 pub struct Gmail {
     http: reqwest::Client,
@@ -25,6 +53,62 @@ pub struct Gmail {
     /// `.../upload/gmail/v1/users/me`, for media.
     upload: String,
     credentials: Credentials,
+    pace: Arc<Pace>,
+}
+
+/// Keeps a user's requests within Gmail's quota: a token bucket of quota
+/// units, refilled at [`UNITS_PER_SECOND`] up to [`UNITS_AT_ONCE`].
+#[derive(Debug)]
+struct Pace(Mutex<Bucket>);
+
+#[derive(Debug)]
+struct Bucket {
+    /// Negative once requests are waiting for units.
+    units: f64,
+    at: Instant,
+}
+
+impl Pace {
+    fn new() -> Self {
+        Self(Mutex::new(Bucket {
+            units: UNITS_AT_ONCE,
+            at: Instant::now(),
+        }))
+    }
+
+    /// Spends `cost` units, waiting until they are there.
+    async fn spend(&self, cost: u32) {
+        let wait = {
+            let mut bucket = self.0.lock().expect("pace poisoned");
+            let now = Instant::now();
+            let refilled = (now - bucket.at).as_secs_f64() * UNITS_PER_SECOND;
+            bucket.units = (bucket.units + refilled).min(UNITS_AT_ONCE) - f64::from(cost);
+            bucket.at = now;
+            Duration::from_secs_f64((-bucket.units).max(0.0) / UNITS_PER_SECOND)
+        };
+        tokio::time::sleep(wait).await;
+    }
+}
+
+/// An answer to a request, read whole.
+struct Reply {
+    path: String,
+    status: StatusCode,
+    body: Vec<u8>,
+}
+
+impl Reply {
+    fn check(self) -> Result<Self> {
+        if self.status.is_success() {
+            return Ok(self);
+        }
+        bail!(
+            "{} failed with {}: {}",
+            self.path,
+            self.status,
+            String::from_utf8_lossy(&self.body)
+        )
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -128,11 +212,14 @@ impl Gmail {
             base: format!("{}/gmail/v1/users/me", api.trim_end_matches('/')),
             upload: format!("{}/upload/gmail/v1/users/me", api.trim_end_matches('/')),
             credentials,
+            pace: Arc::new(Pace::new()),
         }
     }
 
     pub async fn profile(&self) -> Result<Profile> {
-        self.get("/profile", &[]).await?.context("no profile")
+        self.get("/profile", &[], cost::PROFILE)
+            .await?
+            .context("no profile")
     }
 
     pub async fn labels(&self) -> Result<Vec<Label>> {
@@ -141,7 +228,10 @@ impl Gmail {
             #[serde(default)]
             labels: Vec<Label>,
         }
-        let labels: Labels = self.get("/labels", &[]).await?.context("no labels")?;
+        let labels: Labels = self
+            .get("/labels", &[], cost::LABELS)
+            .await?
+            .context("no labels")?;
         Ok(labels.labels)
     }
 
@@ -149,7 +239,7 @@ impl Gmail {
     pub async fn messages(&self, page_token: Option<&str>) -> Result<MessagePage> {
         let mut query = vec![("maxResults", "500"), ("includeSpamTrash", "true")];
         query.extend(page_token.map(|t| ("pageToken", t)));
-        self.get("/messages", &query)
+        self.get("/messages", &query, cost::MESSAGES)
             .await?
             .context("no message list")
     }
@@ -160,8 +250,12 @@ impl Gmail {
             Format::Minimal => "minimal",
             Format::Raw => "raw",
         };
-        self.get(&format!("/messages/{id}"), &[("format", format)])
-            .await
+        self.get(
+            &format!("/messages/{id}"),
+            &[("format", format)],
+            cost::MESSAGE,
+        )
+        .await
     }
 
     /// `None` if `start` is too old: history is no longer available from
@@ -173,14 +267,19 @@ impl Gmail {
     ) -> Result<Option<HistoryPage>> {
         let mut query = vec![("startHistoryId", start), ("maxResults", "500")];
         query.extend(page_token.map(|t| ("pageToken", t)));
-        self.get("/history", &query).await
+        self.get("/history", &query, cost::HISTORY).await
     }
 
     pub async fn batch_modify(&self, request: &BatchModify<'_>) -> Result<()> {
-        let response = self
-            .send(Method::POST, "/messages/batchModify", &[], Some(request))
-            .await?;
-        check(response).await?;
+        self.send(
+            Method::POST,
+            "/messages/batchModify",
+            &[],
+            Some(request),
+            cost::BATCH_MODIFY,
+        )
+        .await?
+        .check()?;
         Ok(())
     }
 
@@ -213,6 +312,7 @@ impl Gmail {
         let content_type = format!("multipart/related; boundary={boundary}");
         let url = format!("{}/messages/send?uploadType=multipart", self.upload);
         for retry in [false, true] {
+            self.pace.spend(cost::SEND).await;
             let token = self
                 .credentials
                 .access_token()
@@ -241,8 +341,8 @@ impl Gmail {
             }
             let body = response.text().await.unwrap_or_default();
             if status.is_server_error()
-                || status == StatusCode::TOO_MANY_REQUESTS
                 || status == StatusCode::UNAUTHORIZED
+                || refused_for_rate(status, body.as_bytes())
             {
                 return Err(SendError::NotSent(anyhow!(
                     "Gmail answered {status}: {body}"
@@ -258,28 +358,36 @@ impl Gmail {
         &self,
         path: &str,
         query: &[(&str, &str)],
+        cost: u32,
     ) -> Result<Option<T>> {
-        let response = self.send::<()>(Method::GET, path, query, None).await?;
-        if response.status() == StatusCode::NOT_FOUND {
+        let reply = self
+            .send::<()>(Method::GET, path, query, None, cost)
+            .await?;
+        if reply.status == StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        let response = check(response).await?;
-        let body = response.bytes().await?;
-        serde_json::from_slice(&body)
-            .with_context(|| format!("decoding {path}: {}", String::from_utf8_lossy(&body)))
+        let reply = reply.check()?;
+        serde_json::from_slice(&reply.body)
+            .with_context(|| format!("decoding {path}: {}", String::from_utf8_lossy(&reply.body)))
             .map(Some)
     }
 
-    /// Sends a request, refreshing the access token once if it is refused.
+    /// Sends a request costing `cost` quota units, within the quota:
+    /// refreshing the access token once if it is refused, and trying again
+    /// after a wait while it is refused for rate.
     async fn send<B: Serialize>(
         &self,
         method: Method,
         path: &str,
         query: &[(&str, &str)],
         body: Option<&B>,
-    ) -> Result<reqwest::Response> {
+        cost: u32,
+    ) -> Result<Reply> {
         let url = format!("{}{path}", self.base);
-        for retry in [false, true] {
+        let mut refreshed = false;
+        let mut wait = Duration::from_secs(1);
+        loop {
+            self.pace.spend(cost).await;
             let mut request = self
                 .http
                 .request(method.clone(), &url)
@@ -292,24 +400,61 @@ impl Gmail {
                 .send()
                 .await
                 .with_context(|| format!("{method} {path}"))?;
-            if response.status() == StatusCode::UNAUTHORIZED && !retry {
+            let status = response.status();
+            if status == StatusCode::UNAUTHORIZED && !refreshed {
+                refreshed = true;
                 self.credentials.invalidate().await;
                 continue;
             }
-            return Ok(response);
+            let reply = Reply {
+                path: path.to_owned(),
+                status,
+                body: response
+                    .bytes()
+                    .await
+                    .with_context(|| format!("{method} {path}"))?
+                    .into(),
+            };
+            if refused_for_rate(status, &reply.body) && wait <= MAX_RATE_WAIT {
+                tracing::info!("Gmail refused {method} {path} for rate; trying again in {wait:?}");
+                tokio::time::sleep(wait).await;
+                wait *= 2;
+                continue;
+            }
+            return Ok(reply);
         }
-        unreachable!("the second attempt returns")
     }
 }
 
-async fn check(response: reqwest::Response) -> Result<reqwest::Response> {
-    let status = response.status();
-    if status.is_success() {
-        return Ok(response);
+/// Whether Gmail refused a request for going over a rate limit: with 429,
+/// or with 403 and a rate limit's reason (as it does for the per-user
+/// quota).
+fn refused_for_rate(status: StatusCode, body: &[u8]) -> bool {
+    #[derive(Deserialize)]
+    struct Response {
+        error: Error,
     }
-    let url = response.url().path().to_owned();
-    let body = response.text().await.unwrap_or_default();
-    bail!("{url} failed with {status}: {body}")
+    #[derive(Deserialize)]
+    struct Error {
+        #[serde(default)]
+        errors: Vec<Reason>,
+    }
+    #[derive(Deserialize)]
+    struct Reason {
+        reason: String,
+    }
+    match status {
+        StatusCode::TOO_MANY_REQUESTS => true,
+        StatusCode::FORBIDDEN => serde_json::from_slice::<Response>(body).is_ok_and(|r| {
+            r.error.errors.iter().any(|e| {
+                matches!(
+                    e.reason.as_str(),
+                    "rateLimitExceeded" | "userRateLimitExceeded"
+                )
+            })
+        }),
+        _ => false,
+    }
 }
 
 /// The message of a Google API error response.
@@ -325,4 +470,49 @@ fn error_message(body: &str) -> Option<String> {
     serde_json::from_str::<Response>(body)
         .ok()
         .map(|r| r.error.message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn spends_at_once_while_the_budget_lasts_then_at_its_rate() {
+        let pace = Pace::new();
+        let start = Instant::now();
+        // 80 fetches at 5 units: 400 at once, then 80 a second.
+        for _ in 0..80 {
+            pace.spend(cost::MESSAGE).await;
+        }
+        assert_eq!(Instant::now() - start, Duration::ZERO);
+        for _ in 0..16 {
+            pace.spend(cost::MESSAGE).await;
+        }
+        assert_eq!(Instant::now() - start, Duration::from_secs(1));
+        // A pause refills the bucket, up to its size.
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        let start = Instant::now();
+        for _ in 0..81 {
+            pace.spend(cost::MESSAGE).await;
+        }
+        let waited = Instant::now() - start;
+        assert!(
+            waited > Duration::ZERO && waited <= Duration::from_millis(63),
+            "{waited:?}"
+        );
+    }
+
+    #[test]
+    fn tells_refusals_for_rate() {
+        // As Gmail refuses once a user's per-minute quota is spent.
+        let quota = br#"{"error": {"code": 403, "message": "Quota exceeded for quota metric 'Total Query Cost' and limit 'Units per minute per user' of service 'gmail.googleapis.com'",
+            "errors": [{"message": "Quota exceeded", "domain": "usageLimits", "reason": "rateLimitExceeded"}],
+            "status": "PERMISSION_DENIED"}}"#;
+        assert!(refused_for_rate(StatusCode::FORBIDDEN, quota));
+        let denied = br#"{"error": {"code": 403, "message": "Insufficient Permission",
+            "errors": [{"message": "Insufficient Permission", "domain": "global", "reason": "insufficientPermissions"}]}}"#;
+        assert!(!refused_for_rate(StatusCode::FORBIDDEN, denied));
+        assert!(refused_for_rate(StatusCode::TOO_MANY_REQUESTS, b""));
+        assert!(!refused_for_rate(StatusCode::BAD_REQUEST, quota));
+    }
 }

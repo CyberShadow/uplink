@@ -160,6 +160,53 @@ async fn resyncs_fully_once_history_expired() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn resumes_an_interrupted_listing() {
+    let uplink = Uplink::new(MailProvider::Gmail);
+    let provider = Provider::start(uplink.dir.path(), None).await;
+    let first = provider.deliver(&message("first", "")).await;
+    provider.deliver(&message("second", "")).await;
+    let sync = start_sync(&uplink, &provider);
+    let first_entry = uplink.arrived("first").await;
+    uplink.arrived("second").await;
+    sync.abort();
+    let _ = sync.await;
+
+    // As if the first listing had been interrupted once it had fetched
+    // both: it began at the history id now recorded, with nothing before.
+    let db = uplink_storage::open(uplink.dir.path()).unwrap();
+    db.execute(
+        "UPDATE account SET synced = 0, sync_state = json_object(
+           'listing_from', json_extract(sync_state, '$.history_id'), 'before', 0)",
+        [],
+    )
+    .unwrap();
+    let synced = || -> bool {
+        db.query_row("SELECT synced FROM account", [], |r| r.get(0))
+            .unwrap()
+    };
+    assert!(!synced());
+    // Changes while it was away, which the listing leaves to the polls.
+    provider.modify(&first, &["STARRED"], &[]).await;
+    provider.deliver(&message("third", "")).await;
+
+    let sync = start_sync(&uplink, &provider);
+    uplink.arrived("third").await;
+    eventually("the star to be observed", || async {
+        label_set(&uplink.labels(first_entry))
+            .contains(&"STARRED")
+            .then_some(())
+    })
+    .await;
+    assert!(synced());
+    let state: String = db
+        .query_row("SELECT sync_state FROM account", [], |r| r.get(0))
+        .unwrap();
+    assert!(state.starts_with(r#"{"history_id":"#), "{state}");
+    sync.abort();
+    provider.clean_up().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn sends_mail_after_the_delay_unless_undone() {
     let uplink = Uplink::new(MailProvider::Gmail);
     let provider = Provider::start(uplink.dir.path(), None).await;

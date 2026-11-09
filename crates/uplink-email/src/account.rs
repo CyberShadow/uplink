@@ -138,12 +138,30 @@ impl Account {
 
     /// External ids of the account's entries.
     pub async fn known(&self) -> Result<HashSet<String>> {
+        self.known_up_to(i64::MAX).await
+    }
+
+    /// External ids of the account's entries up to entry id `last`.
+    pub async fn known_up_to(&self, last: i64) -> Result<HashSet<String>> {
         let account = self.id.clone();
         self.read(move |conn| {
             Ok(conn
-                .prepare("SELECT external_id FROM mail_entry WHERE account_id = ?1")?
-                .query_map([account], |r| r.get(0))?
+                .prepare("SELECT external_id FROM mail_entry WHERE account_id = ?1 AND id <= ?2")?
+                .query_map(params![account, last], |r| r.get(0))?
                 .collect::<Result<_, _>>()?)
+        })
+        .await
+    }
+
+    /// The id of the last entry recorded, of any account; entries recorded
+    /// later have greater ids (`AUTOINCREMENT`).
+    pub async fn last_entry(&self) -> Result<i64> {
+        self.read(|conn| {
+            Ok(
+                conn.query_row("SELECT coalesce(max(id), 0) FROM mail_entry", [], |r| {
+                    r.get(0)
+                })?,
+            )
         })
         .await
     }

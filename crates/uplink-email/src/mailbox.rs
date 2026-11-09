@@ -50,9 +50,19 @@ pub struct MailboxObserved {
     pub updated: Vec<EntryLabels>,
     /// Entries no longer in the account, by external id.
     pub removed: Vec<String>,
-    /// Replaces the account's sync state: everything up to the point it
-    /// describes is now recorded.
-    pub sync_state: Option<serde_json::Value>,
+    /// Replaces the account's sync state.
+    pub sync_state: Option<SyncState>,
+}
+
+/// An account's sync state: the provider's own, and whether it describes
+/// a mirror of the mailbox.
+#[derive(Debug, Serialize)]
+pub enum SyncState {
+    /// A listing of the mailbox is under way, as far as this describes;
+    /// the account is not mirrored until it is done.
+    Listing(serde_json::Value),
+    /// Everything up to the point this describes is recorded.
+    Synced(serde_json::Value),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -185,9 +195,13 @@ impl Observation for MailboxObserved {
         }
 
         if let Some(state) = self.sync_state {
+            let (state, synced) = match state {
+                SyncState::Listing(state) => (state, false),
+                SyncState::Synced(state) => (state, true),
+            };
             tx.execute(
-                "UPDATE account SET sync_state = ?1 WHERE id = ?2",
-                params![state.to_string(), account],
+                "UPDATE account SET sync_state = ?1, synced = ?2 WHERE id = ?3",
+                params![state.to_string(), synced, account],
             )?;
         }
 

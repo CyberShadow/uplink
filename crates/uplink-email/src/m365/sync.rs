@@ -10,7 +10,9 @@
 use super::api::{Delta, Flag, FlagStatus, Graph, Importance, Message, MessageUpdate};
 use crate::{
     account::{Account, Pending, Provider, SendError, SyncTask},
-    mailbox::{EntryLabels, LabelChange, LabelsPushed, MailboxObserved, NewEntry, ObservedLabel},
+    mailbox::{
+        self, EntryLabels, LabelChange, LabelsPushed, MailboxObserved, NewEntry, ObservedLabel,
+    },
 };
 use anyhow::{bail, Context, Result};
 use futures_util::{stream, StreamExt, TryStreamExt};
@@ -210,7 +212,9 @@ impl Provider for M365Sync {
                 labels,
                 updated,
                 removed,
-                sync_state: Some(serde_json::to_value(sync_state).expect("sync state serializes")),
+                sync_state: Some(mailbox::SyncState::Synced(
+                    serde_json::to_value(sync_state).expect("sync state serializes"),
+                )),
                 ..observed()
             })
             .await

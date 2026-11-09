@@ -364,8 +364,10 @@ mismatch).
 CREATE TABLE account (
   id          TEXT PRIMARY KEY,
   kind        TEXT NOT NULL,       -- 'gmail' | 'm365' | 'matrix'
-  sync_state  TEXT                 -- per-kind JSON; NULL until the first
-                                   -- full sync has completed
+  sync_state  TEXT,                -- per-kind JSON; NULL until the first
+                                   -- sync has begun
+  synced      INTEGER NOT NULL     -- (V0013) the first listing is done, so
+              DEFAULT 0            -- the mailbox is mirrored
 );
 
 -- A logical message, identified by its Message-ID across accounts.
@@ -1081,7 +1083,20 @@ IMAP's per-folder copies, and a REST fake is practical to test against
   `messages.get?format=raw` for content, stored as variants (§4.4), most
   recent first. Each batch is one log entry. Record the profile's
   `historyId` *before* starting, so nothing that changes during the walk
-  is missed.
+  is missed. The listing resumes after an interruption: `sync_state`
+  holds `{listing_from, before}`, the history id it began at and the
+  last entry recorded before it. A resumed listing lists anew (page
+  tokens do not last), fetches only messages it has not, and fetches
+  labels again only of entries up to `before`, since the polls from
+  `listing_from` cover changes to those it fetched. Then the state
+  becomes `{history_id: listing_from}`, and the account `synced`.
+- **Quota**: Gmail allows a user 6,000 quota units a minute (as the
+  console shows a new project; the documentation has said 15,000) and
+  refuses with 403 `rateLimitExceeded` for the rest of the minute once
+  they are spent. `messages.get` costs 5, so a listing fetching 8 at a
+  time would spend that in seconds. Each account's requests are paced by
+  a token bucket of 80 units a second, 400 at once; a mailbox of 50,000
+  messages takes about 50 minutes to list.
 - **Incremental**: poll `history.list?startHistoryId=…` every 5 s (2
   quota units per call against 6,000 units/minute per user, so even 1 s
   polling is affordable) —
@@ -1270,7 +1285,11 @@ entries, and stay linear in the label's size. The ignored test
   surface in UI as "Reauthenticate <account>".
 - **Provider requests fail** (network, 5xx): retry with backoff (1s, 2s,
   4s, 8s, 16s, 30s, 60s cap). Log warning at 5 m of continuous failure.
-- **Gmail / Graph 429**: respect `Retry-After`. Backoff in the same units.
+- **Refused for rate**: Gmail's 429, or 403 with reason
+  `rateLimitExceeded`/`userRateLimitExceeded`, is tried again after 1 s,
+  2 s, … 64 s (Gmail sends no `Retry-After`), then fails the round,
+  which the sync's backoff retries. Graph's 429 fails the round, for now;
+  respecting its `Retry-After` comes with a real tenant to see it.
 
 ### 8.9 Displaying HTML mail
 

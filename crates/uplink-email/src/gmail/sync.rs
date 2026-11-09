@@ -7,7 +7,9 @@ use super::{
 };
 use crate::{
     account::{Account, Provider, SendError, SyncTask},
-    mailbox::{EntryLabels, LabelChange, LabelsPushed, MailboxObserved, NewEntry, ObservedLabel},
+    mailbox::{
+        EntryLabels, LabelChange, LabelsPushed, MailboxObserved, NewEntry, ObservedLabel, SyncState,
+    },
     oauth::Credentials,
 };
 use anyhow::Result;
@@ -32,12 +34,25 @@ const CONCURRENT_FETCHES: usize = 8;
 /// Gmail's limit for `batchModify`.
 const BATCH_MODIFY_MAX: usize = 1000;
 
-/// `account.sync_state` of a Gmail account: the mailbox is recorded up to
-/// this history id.
+/// `account.sync_state` of a Gmail account.
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SyncState {
-    history_id: String,
+#[serde(untagged)]
+enum State {
+    /// The mailbox is recorded up to this history id.
+    Synced { history_id: String },
+    /// The mailbox is being listed, which resumes after an interruption.
+    Listing(Listing),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Listing {
+    /// The history id when the listing began: the polls after it record
+    /// what changed from there.
+    listing_from: String,
+    /// The last entry recorded before the listing began. Those after it
+    /// were fetched by the listing, so the polls cover their changes; those
+    /// up to it may have changed unseen, and their labels are fetched anew.
+    before: i64,
 }
 
 /// The sync task of `config`'s account, storing mail under `data_root`.
@@ -70,12 +85,17 @@ impl Provider for GmailSync {
     const KIND: &'static str = KIND;
 
     async fn sync(&self, account: &Account) -> Result<()> {
-        let synced = match account.sync_state::<SyncState>().await? {
-            Some(state) => self.poll(account, &state.history_id).await?,
-            None => false,
-        };
-        if !synced {
-            self.full_sync(account).await?;
+        match account.sync_state::<State>().await? {
+            Some(State::Synced { history_id }) => {
+                if !self.poll(account, &history_id).await? {
+                    self.list(account, None).await?;
+                }
+            }
+            Some(State::Listing(listing)) => {
+                tracing::info!(account = account.id, "resuming the listing of the mailbox");
+                self.list(account, Some(listing)).await?;
+            }
+            None => self.list(account, None).await?,
         }
         Ok(())
     }
@@ -140,34 +160,51 @@ impl GmailSync {
                 added,
                 updated,
                 removed,
-                sync_state: Some(state(latest)),
+                sync_state: Some(synced(latest)),
             })
             .await
             .map(|()| true)
     }
 
-    /// Records the whole mailbox, as of the history id read first.
-    async fn full_sync(&self, account: &Account) -> Result<()> {
+    /// Records the whole mailbox, as of the history id read when the
+    /// listing began; continues `resumed` if given. A resumed listing
+    /// lists anew (Gmail's page tokens do not last) but fetches only what
+    /// it has not.
+    async fn list(&self, account: &Account, resumed: Option<Listing>) -> Result<()> {
         let gmail = &self.gmail;
-        let start = gmail.profile().await?.history_id;
+        let listing = match resumed {
+            Some(listing) => listing,
+            None => Listing {
+                listing_from: gmail.profile().await?.history_id,
+                before: account.last_entry().await?,
+            },
+        };
         account
             .observe(MailboxObserved {
                 labels: Some(self.labels().await?),
+                sync_state: Some(SyncState::Listing(
+                    serde_json::to_value(State::Listing(listing.clone())).expect("serializes"),
+                )),
                 ..observed()
             })
             .await?;
         let known = account.known().await?;
+        let earlier = account.known_up_to(listing.before).await?;
         let mut listed = HashSet::new();
         let mut page_token = None;
         loop {
             let page = gmail.messages(page_token.as_deref()).await?;
             let ids: Vec<String> = page.messages.into_iter().map(|m| m.id).collect();
             listed.extend(ids.iter().cloned());
-            let (old, new): (Vec<String>, Vec<String>) =
-                ids.into_iter().partition(|id| known.contains(id));
+            let new = ids
+                .iter()
+                .filter(|id| !known.contains(*id))
+                .cloned()
+                .collect();
             let added = self.fetch_new(account, new).await?;
             // Messages deleted since they were listed are recorded as
             // removed by the first poll, which starts before the listing.
+            let old = ids.into_iter().filter(|id| earlier.contains(id)).collect();
             let updated: Vec<EntryLabels> = self
                 .fetch_labels(old)
                 .await?
@@ -191,7 +228,7 @@ impl GmailSync {
         account
             .observe(MailboxObserved {
                 removed: known.difference(&listed).cloned().collect(),
-                sync_state: Some(state(start)),
+                sync_state: Some(synced(listing.listing_from)),
                 ..observed()
             })
             .await
@@ -300,8 +337,8 @@ async fn store(account: &Account, message: Message) -> Result<NewEntry> {
     })
 }
 
-fn state(history_id: String) -> serde_json::Value {
-    serde_json::to_value(SyncState { history_id }).expect("sync state serializes")
+fn synced(history_id: String) -> SyncState {
+    SyncState::Synced(serde_json::to_value(State::Synced { history_id }).expect("serializes"))
 }
 
 fn observed() -> MailboxObserved {
