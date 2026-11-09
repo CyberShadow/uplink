@@ -70,7 +70,12 @@ pub async fn serve(config_path: PathBuf) -> Result<()> {
         .with_context(|| format!("parsing bind address '{}'", config.server.bind))?;
 
     let listener = TcpListener::bind(&bind).await?;
-    info!("listening on https://{}", bind);
+    let scheme = if config.server.tls.is_some() {
+        "https"
+    } else {
+        "http"
+    };
+    info!("listening on {scheme}://{bind}");
 
     serve_with_listener(config, config_path, listener, services).await
 }
@@ -81,15 +86,10 @@ pub fn start_syncs(config: &Config, services: &Services) -> Result<()> {
     if config.accounts.is_empty() {
         return Ok(());
     }
-    let key = Arc::new(MasterKey::load(
-        config
-            .master_key_file
-            .as_ref()
-            .context("master_key_file is required with accounts")?,
-    )?);
+    let key = Arc::new(MasterKey::open(&config.master_key_file())?);
     let http = reqwest::Client::new();
     let dispatcher = &services.dispatcher;
-    let root = &config.data.root;
+    let root = &config.data_dir;
     for account in &config.accounts {
         match account {
             AccountConfig::Gmail(account) => {
@@ -143,7 +143,7 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
     uplink_email::compose::register(&mut registry);
     uplink_matrix::register(&mut registry);
     uplink_todos::register(&mut registry);
-    let root = &config.data.root;
+    let root = &config.data_dir;
     let dispatcher = Dispatcher::new(
         uplink_storage::open(root)?,
         registry,
@@ -200,19 +200,23 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
     })
 }
 
-/// Start accepting connections on `listener` using `config`.
-/// The `config_path` is watched for changes; cert/key files named in the
-/// initial TLS config are also watched.
+/// Start accepting connections on `listener` using `config`: over TLS if
+/// it has a certificate, else plain HTTP. The `config_path` is watched for
+/// changes; cert/key files named in the initial TLS config are also
+/// watched.
 pub async fn serve_with_listener(
     config: Config,
     config_path: PathBuf,
     listener: TcpListener,
     services: Services,
 ) -> Result<()> {
-    let tls_server_config =
-        build_tls_server_config_from_paths(&config.server.tls.cert, &config.server.tls.key)?;
-
-    let tls_holder: Arc<ArcSwap<ServerConfig>> = Arc::new(ArcSwap::from(tls_server_config));
+    let tls_holder: Option<Arc<ArcSwap<ServerConfig>>> = config
+        .server
+        .tls
+        .as_ref()
+        .map(|tls| build_tls_server_config_from_paths(&tls.cert, &tls.key))
+        .transpose()?
+        .map(|tls| Arc::new(ArcSwap::from(tls)));
 
     let basic_auth: Arc<ArcSwap<BasicAuthConfig>> =
         Arc::new(ArcSwap::from(Arc::new(config.server.basic_auth.clone())));
@@ -237,48 +241,49 @@ pub async fn serve_with_listener(
 
     loop {
         let (stream, peer_addr) = listener.accept().await?;
-
+        let app = app.clone();
+        let Some(tls_holder) = &tls_holder else {
+            tokio::spawn(serve_connection(stream, app, peer_addr));
+            continue;
+        };
         // Load the current TLS config for this connection; in-flight
         // connections keep their own Arc<ServerConfig> reference.
-        let current_sc = tls_holder.load_full();
-        let acceptor = TlsAcceptor::from(current_sc);
-        let tower_service = app.clone();
-
+        let acceptor = TlsAcceptor::from(tls_holder.load_full());
         tokio::spawn(async move {
             match acceptor.accept(stream).await {
-                Ok(tls_stream) => {
-                    let io = hyper_util::rt::TokioIo::new(tls_stream);
-                    let hyper_service =
-                        hyper::service::service_fn(move |req: Request<Incoming>| {
-                            tower_service.clone().call(req)
-                        });
-                    let result = hyper_util::server::conn::auto::Builder::new(
-                        hyper_util::rt::TokioExecutor::new(),
-                    )
-                    .serve_connection_with_upgrades(io, hyper_service)
-                    .await;
-                    if let Err(e) = result {
-                        tracing::debug!("connection error from {}: {}", peer_addr, e);
-                    }
-                }
-                Err(e) => {
-                    tracing::debug!("TLS handshake error from {}: {}", peer_addr, e)
-                }
+                Ok(tls_stream) => serve_connection(tls_stream, app, peer_addr).await,
+                Err(e) => tracing::debug!("TLS handshake error from {}: {}", peer_addr, e),
             }
         });
+    }
+}
+
+/// Serves HTTP on one connection, until it closes.
+async fn serve_connection<S>(stream: S, app: Router, peer_addr: SocketAddr)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let io = hyper_util::rt::TokioIo::new(stream);
+    let hyper_service =
+        hyper::service::service_fn(move |req: Request<Incoming>| app.clone().call(req));
+    let result = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
+        .serve_connection_with_upgrades(io, hyper_service)
+        .await;
+    if let Err(e) = result {
+        tracing::debug!("connection error from {}: {}", peer_addr, e);
     }
 }
 
 async fn config_reload_task(
     mut rx: tokio::sync::broadcast::Receiver<ConfigChanged>,
     config_path: PathBuf,
-    tls_holder: Arc<ArcSwap<ServerConfig>>,
+    tls_holder: Option<Arc<ArcSwap<ServerConfig>>>,
     basic_auth: Arc<ArcSwap<BasicAuthConfig>>,
 ) {
     loop {
         match rx.recv().await {
             Ok(event) => {
-                handle_config_changed(event, &config_path, &tls_holder, &basic_auth).await;
+                handle_config_changed(event, &config_path, tls_holder.as_ref(), &basic_auth).await;
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                 tracing::warn!("config: dropped {n} reload events (lagged)");
@@ -291,20 +296,26 @@ async fn config_reload_task(
 async fn handle_config_changed(
     event: ConfigChanged,
     config_path: &Path,
-    tls_holder: &Arc<ArcSwap<ServerConfig>>,
+    tls_holder: Option<&Arc<ArcSwap<ServerConfig>>>,
     basic_auth: &Arc<ArcSwap<BasicAuthConfig>>,
 ) {
     match event.section {
         ConfigSection::Tls => match Config::load(config_path) {
             Ok(cfg) => {
-                let cert_pem = match std::fs::read(&cfg.server.tls.cert) {
+                // A certificate is swapped live; turning TLS on or off is
+                // not.
+                let (Some(tls_holder), Some(tls)) = (tls_holder, &cfg.server.tls) else {
+                    tracing::warn!("config: tls turned on or off — restart required (ignored)");
+                    return;
+                };
+                let cert_pem = match std::fs::read(&tls.cert) {
                     Ok(b) => b,
                     Err(e) => {
                         tracing::error!("config: tls reload failed reading cert: {e:#}");
                         return;
                     }
                 };
-                let key_pem = match std::fs::read(&cfg.server.tls.key) {
+                let key_pem = match std::fs::read(&tls.key) {
                     Ok(b) => b,
                     Err(e) => {
                         tracing::error!("config: tls reload failed reading key: {e:#}");
@@ -695,13 +706,13 @@ fn unauthorized() -> Response {
 
 /// Load cert+key PEM files and build a `rustls::ServerConfig`.
 pub fn build_tls_server_config_from_paths(
-    cert_path: &str,
-    key_path: &str,
+    cert_path: &Path,
+    key_path: &Path,
 ) -> Result<Arc<ServerConfig>> {
-    let cert_bytes =
-        std::fs::read(cert_path).with_context(|| format!("reading TLS cert '{cert_path}'"))?;
-    let key_bytes =
-        std::fs::read(key_path).with_context(|| format!("reading TLS key '{key_path}'"))?;
+    let cert_bytes = std::fs::read(cert_path)
+        .with_context(|| format!("reading TLS cert {}", cert_path.display()))?;
+    let key_bytes = std::fs::read(key_path)
+        .with_context(|| format!("reading TLS key {}", key_path.display()))?;
 
     build_tls_server_config(&cert_bytes, &key_bytes)
 }

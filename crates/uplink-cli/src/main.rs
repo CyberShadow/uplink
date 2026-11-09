@@ -20,10 +20,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Write a configuration to start from (at `--config`), asking for the
+    /// web UI's user and password, and make its data directory.
+    Init,
     /// Run the server.
     Serve,
-    /// Print a new master key, for `master_key_file`.
-    Keygen,
     /// Print the bcrypt hash of a password read from standard input, for
     /// `server.basic_auth.password_bcrypt`.
     HashPassword,
@@ -70,11 +71,8 @@ async fn main() -> Result<()> {
         .init();
     let cli = Cli::parse();
     match cli.command {
+        Command::Init => init(&cli.config),
         Command::Serve => uplink_server::serve(cli.config).await,
-        Command::Keygen => {
-            println!("{}", MasterKey::generate());
-            Ok(())
-        }
         Command::HashPassword => {
             let mut password = String::new();
             std::io::stdin()
@@ -104,18 +102,13 @@ async fn matrix_pair(config_path: &std::path::Path, id: &str) -> Result<()> {
             _ => None,
         })
         .with_context(|| format!("no Matrix account {id} in {}", config_path.display()))?;
-    let key = MasterKey::load(
-        config
-            .master_key_file
-            .as_ref()
-            .context("master_key_file is required with Matrix accounts")?,
-    )?;
+    let key = MasterKey::open(&config.master_key_file())?;
     println!(
         "Pairing {} as {} on {}.",
         account.id, account.mxid, account.homeserver
     );
-    let mut secrets = Secrets::new();
-    let password = secrets.read("Password: ")?;
+    let mut prompt = Prompt::new();
+    let password = prompt.secret("Password: ")?;
     let device_name = format!("uplink ({})", account.id);
     let client = client::login(account, &key, &password, &device_name).await?;
     println!(
@@ -128,7 +121,7 @@ async fn matrix_pair(config_path: &std::path::Path, id: &str) -> Result<()> {
         "To verify the device, so that your other devices share keys with it, enter \
          the account's recovery key or Secret Storage passphrase. Leave it empty to skip."
     );
-    let recovery = secrets.read("Recovery key or passphrase: ")?;
+    let recovery = prompt.secret("Recovery key or passphrase: ")?;
     if recovery.trim().is_empty() {
         println!("Skipped: the device is not verified.");
     } else if client::import_secrets(&client, recovery.trim()).await? {
@@ -140,25 +133,108 @@ async fn matrix_pair(config_path: &std::path::Path, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Secrets typed at a terminal without echo, or else read from standard
-/// input a line each, for scripts.
-struct Secrets(Option<std::io::Lines<std::io::StdinLock<'static>>>);
+/// Answers typed at a terminal (secrets without echo), or else read from
+/// standard input a line each, for scripts.
+struct Prompt(Option<std::io::Lines<std::io::StdinLock<'static>>>);
 
-impl Secrets {
+impl Prompt {
     fn new() -> Self {
         use std::io::{BufRead, IsTerminal};
         let stdin = std::io::stdin();
         Self((!stdin.is_terminal()).then(|| stdin.lock().lines()))
     }
 
-    fn read(&mut self, prompt: &str) -> Result<String> {
+    fn secret(&mut self, prompt: &str) -> Result<String> {
         match &mut self.0 {
             None => Ok(rpassword::prompt_password(prompt)?),
-            Some(lines) => Ok(lines
-                .next()
-                .with_context(|| format!("standard input ended before: {prompt}"))??),
+            Some(_) => self.piped(prompt),
         }
     }
+
+    fn line(&mut self, prompt: &str) -> Result<String> {
+        match &mut self.0 {
+            None => {
+                use std::io::Write;
+                print!("{prompt}");
+                std::io::stdout().flush()?;
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)?;
+                Ok(line.trim_end_matches(['\r', '\n']).to_owned())
+            }
+            Some(_) => self.piped(prompt),
+        }
+    }
+
+    fn piped(&mut self, prompt: &str) -> Result<String> {
+        let lines = self.0.as_mut().expect("piped");
+        Ok(lines
+            .next()
+            .with_context(|| format!("standard input ended before: {prompt}"))??)
+    }
+}
+
+/// The configuration `uplink init` writes: the example's, with the web
+/// UI's user and password hash.
+fn initial_config(user: &str, password_bcrypt: &str) -> String {
+    let template = include_str!("../../../examples/uplink.yaml");
+    let quoted = |s: &str| serde_json::to_string(s).expect("serializes");
+    [
+        ("    user: alice\n", format!("    user: {}\n", quoted(user))),
+        (
+            "    # bcrypt hash of \"uplink\". Make another with: uplink hash-password\n",
+            "    # bcrypt hash of the password. Make another with: uplink hash-password\n".into(),
+        ),
+        (
+            "    password_bcrypt: \"$2b$12$Z5QelJuvdiqVHbPGIlx/d.zNmaHFLs5vXr41y3ucCcBkndL6tErju\"\n",
+            format!("    password_bcrypt: {}\n", quoted(password_bcrypt)),
+        ),
+    ]
+    .into_iter()
+    .fold(template.to_owned(), |text, (from, to)| {
+        assert!(text.contains(from), "the example has {from:?}");
+        text.replace(from, &to)
+    })
+}
+
+/// Writes a configuration to start from at `config_path`, unless one is
+/// there (an empty file is not one), and makes its data directory with
+/// the master key.
+fn init(config_path: &std::path::Path) -> Result<()> {
+    anyhow::ensure!(
+        std::fs::read_to_string(config_path).map_or(true, |text| text.trim().is_empty()),
+        "{} exists; edit it, or remove it first",
+        config_path.display()
+    );
+    let mut prompt = Prompt::new();
+    let default_user = std::env::var("USER").unwrap_or_default();
+    let user = match prompt.line(&format!("User name for the web UI [{default_user}]: "))? {
+        user if user.is_empty() => default_user,
+        user => user,
+    };
+    anyhow::ensure!(!user.is_empty(), "no user name");
+    let password = prompt.secret("Password: ")?;
+    anyhow::ensure!(!password.is_empty(), "no password");
+    anyhow::ensure!(
+        prompt.secret("The password again: ")? == password,
+        "the passwords differ"
+    );
+    std::fs::write(
+        config_path,
+        initial_config(&user, &bcrypt::hash(&password, 12)?),
+    )
+    .with_context(|| format!("writing {}", config_path.display()))?;
+    let config = Config::load(config_path)?;
+    MasterKey::open(&config.master_key_file())?;
+    println!(
+        "Wrote {}, and made {} with its master key.\n\
+         Add accounts to it (see its comments), authorize each with `uplink oauth init` or\n\
+         `uplink matrix pair`, and start the server with `uplink serve`: it listens on\n\
+         http://{}/.",
+        config_path.display(),
+        config.data_dir.display(),
+        config.server.bind,
+    );
+    Ok(())
 }
 
 async fn oauth_init(config_path: &std::path::Path, id: &str) -> Result<()> {
@@ -168,12 +244,7 @@ async fn oauth_init(config_path: &std::path::Path, id: &str) -> Result<()> {
         .iter()
         .find(|account| account.id() == id)
         .with_context(|| format!("no account {id} in {}", config_path.display()))?;
-    let key = MasterKey::load(
-        config
-            .master_key_file
-            .as_ref()
-            .context("master_key_file is required with OAuth accounts")?,
-    )?;
+    let key = MasterKey::open(&config.master_key_file())?;
     let token_file = match account {
         AccountConfig::Gmail(account) => {
             gmail_oauth::authorize(
@@ -235,4 +306,23 @@ async fn m365_init(account: &M365AccountConfig, key: &MasterKey) -> Result<()> {
         }
     };
     m365_oauth::redeem(&reqwest::Client::new(), account, key, &code).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_initial_config_has_the_user_and_password() {
+        let dir = std::env::temp_dir().join(format!("uplink-init-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("uplink.yaml");
+        let hash = bcrypt::hash("secret", 4).unwrap();
+        std::fs::write(&path, initial_config("o'neil \"x\"", &hash)).unwrap();
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.server.basic_auth.user, "o'neil \"x\"");
+        assert!(bcrypt::verify("secret", &config.server.basic_auth.password_bcrypt).unwrap());
+        assert_eq!(config.server.tls, None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

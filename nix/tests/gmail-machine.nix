@@ -1,7 +1,7 @@
 # A machine running uplink from the NixOS module next to vercel-labs/emulate
 # as the Gmail and Google OAuth fake, with an account set up for it. The
-# uplink service is left stopped: tests start it once they have a master
-# key and a token (gmail_helpers.py).
+# uplink service is left stopped: tests start it once they have a token
+# (gmail_helpers.py).
 { pkgs, uplinkModule, emulate }:
 
 let
@@ -49,7 +49,6 @@ in
             password_bcrypt = "$2y$10$f6FV2hxq2bDQpdC9Agjf3.41Cw0OIwOPjFgnboZw0NFMP1hkv6Uwa";
           };
         };
-        master_key_file = "/var/lib/uplink/master.key";
         send_delay_secs = 2;
         accounts = [
           {
@@ -59,7 +58,6 @@ in
             oauth = {
               client_id = "uplink-test";
               client_secret = "uplink-test-secret";
-              token_file = "/var/lib/uplink/accounts/alice-gmail.token";
             };
             endpoints = {
               auth = "${google}/o/oauth2/v2/auth";

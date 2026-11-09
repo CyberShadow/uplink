@@ -47,7 +47,6 @@ pkgs.testers.nixosTest {
             password_bcrypt = "$2y$10$f6FV2hxq2bDQpdC9Agjf3.41Cw0OIwOPjFgnboZw0NFMP1hkv6Uwa";
           };
         };
-        master_key_file = "/var/lib/uplink/master.key";
         send_delay_secs = 2;
         accounts = [
           {
@@ -58,13 +57,12 @@ pkgs.testers.nixosTest {
               client_id = "d3590ed6-52b3-4102-aeff-aad2292ab01c";
               authority = "${microsoft}/common";
               resource = microsoft;
-              token_file = "/var/lib/uplink/accounts/alice-m365.token";
             };
           }
         ];
       };
     };
-    # Started by the test, once it has a master key and a token.
+    # Started by the test, once it has a token.
     systemd.services.uplink.wantedBy = lib.mkForce [ ];
 
     systemd.services.emulate = {

@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub server: ServerConfig,
-    pub data: DataConfig,
-    #[serde(default)]
-    pub master_key_file: Option<PathBuf>,
+    /// Where uplink keeps everything (SPEC §4.1): the database, mail, the
+    /// master key, accounts' tokens and Matrix stores. Created on first
+    /// use.
+    pub data_dir: PathBuf,
     #[serde(default)]
     pub accounts: Vec<AccountConfig>,
     /// How long sent mail waits in the outbox, during which sending can be
@@ -28,19 +29,22 @@ fn default_send_delay_secs() -> u32 {
 pub struct ServerConfig {
     #[serde(default = "default_bind")]
     pub bind: String,
-    pub tls: TlsConfig,
+    /// Without it, plain HTTP: for behind a reverse proxy that terminates
+    /// TLS, or on loopback.
+    #[serde(default)]
+    pub tls: Option<TlsConfig>,
     pub basic_auth: BasicAuthConfig,
 }
 
 fn default_bind() -> String {
-    "0.0.0.0:8443".to_string()
+    "127.0.0.1:8443".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TlsConfig {
-    pub cert: String,
-    pub key: String,
+    pub cert: PathBuf,
+    pub key: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -48,12 +52,6 @@ pub struct TlsConfig {
 pub struct BasicAuthConfig {
     pub user: String,
     pub password_bcrypt: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DataConfig {
-    pub root: PathBuf,
 }
 
 /// Account configuration — tagged by `kind`.
@@ -71,6 +69,18 @@ impl AccountConfig {
             AccountConfig::Gmail(account) => &account.id,
             AccountConfig::M365(account) => &account.id,
             AccountConfig::Matrix(account) => &account.id,
+        }
+    }
+
+    /// Sets the paths under `data_dir` that are the account's.
+    fn place(&mut self, data_dir: &Path) {
+        let token_file = |id: &str| data_dir.join("accounts").join(format!("{id}.token"));
+        match self {
+            AccountConfig::Gmail(account) => account.oauth.token_file = token_file(&account.id),
+            AccountConfig::M365(account) => account.oauth.token_file = token_file(&account.id),
+            AccountConfig::Matrix(account) => {
+                account.state_dir = data_dir.join("matrix").join(&account.id)
+            }
         }
     }
 }
@@ -112,6 +122,8 @@ impl Default for GoogleEndpoints {
 pub struct GmailOAuthConfig {
     pub client_id: String,
     pub client_secret: String,
+    /// `<data_dir>/accounts/<id>.token`.
+    #[serde(skip)]
     pub token_file: PathBuf,
 }
 
@@ -120,16 +132,34 @@ pub struct GmailOAuthConfig {
 pub struct M365AccountConfig {
     pub id: String,
     pub address: String,
+    /// The Outlook desktop client's sign-in unless set; tests point it at
+    /// a fake.
+    #[serde(default)]
     pub oauth: M365OAuthConfig,
 }
 
+/// How uplink signs in to Microsoft 365 (SPEC §13.3).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, default)]
 pub struct M365OAuthConfig {
     pub client_id: String,
     pub authority: String,
     pub resource: String,
+    /// `<data_dir>/accounts/<id>.token`.
+    #[serde(skip)]
     pub token_file: PathBuf,
+}
+
+impl Default for M365OAuthConfig {
+    /// As Outlook for Windows signs in.
+    fn default() -> Self {
+        Self {
+            client_id: "d3590ed6-52b3-4102-aeff-aad2292ab01c".into(),
+            authority: "https://login.microsoftonline.com/common".into(),
+            resource: "https://graph.microsoft.com".into(),
+            token_file: PathBuf::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -138,15 +168,42 @@ pub struct MatrixAccountConfig {
     pub id: String,
     pub homeserver: String,
     pub mxid: String,
+    /// `<data_dir>/matrix/<id>`: matrix-rust-sdk's stores and the session.
+    #[serde(skip)]
     pub state_dir: PathBuf,
 }
 
 impl Config {
     pub fn load(path: &Path) -> Result<Config> {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading config file {}", path.display()))?;
-        let config: Config = serde_yaml::from_str(&text).with_context(|| "parsing config YAML")?;
+        let text = std::fs::read_to_string(path).with_context(|| {
+            format!(
+                "reading config file {} (`uplink init` writes one)",
+                path.display()
+            )
+        })?;
+        anyhow::ensure!(
+            !text.trim().is_empty(),
+            "config file {} is empty (`uplink init` writes one)",
+            path.display()
+        );
+        let mut config: Config = serde_yaml::from_str(&text)
+            .with_context(|| format!("parsing config file {}", path.display()))?;
+        // Relative paths are relative to the file's directory.
+        let base = path.parent().expect("a file has a parent");
+        config.data_dir = base.join(&config.data_dir);
+        if let Some(tls) = &mut config.server.tls {
+            tls.cert = base.join(&tls.cert);
+            tls.key = base.join(&tls.key);
+        }
+        for account in &mut config.accounts {
+            account.place(&config.data_dir);
+        }
         Ok(config)
+    }
+
+    /// Seals accounts' secrets; made on first use.
+    pub fn master_key_file(&self) -> PathBuf {
+        self.data_dir.join("master.key")
     }
 }
 
@@ -176,7 +233,7 @@ pub fn diff_config_sections(old: &Config, new: &Config) -> Vec<ConfigSection> {
     if old.server.bind != new.server.bind {
         changed.push(ConfigSection::Bind);
     }
-    if old.data != new.data {
+    if old.data_dir != new.data_dir {
         changed.push(ConfigSection::Data);
     }
     if old.send_delay_secs != new.send_delay_secs {
@@ -237,10 +294,14 @@ impl Watcher {
         // Derive the initial cert/key paths and watch their parent directories
         // if they differ from the config's parent (so cert renewal in a
         // separate directory also fires a reload).
-        let cert_path = PathBuf::from(&initial_config.server.tls.cert);
-        let key_path = PathBuf::from(&initial_config.server.tls.key);
+        let tls_paths: Vec<PathBuf> = initial_config
+            .server
+            .tls
+            .iter()
+            .flat_map(|tls| [tls.cert.clone(), tls.key.clone()])
+            .collect();
 
-        for tls_path in [&cert_path, &key_path] {
+        for tls_path in &tls_paths {
             if let Some(parent) = tls_path.parent() {
                 if parent != config_parent && parent.exists() {
                     if let Err(e) = file_watcher.watch(parent, notify::RecursiveMode::NonRecursive)
@@ -252,7 +313,7 @@ impl Watcher {
         }
 
         let thread = std::thread::spawn(move || {
-            watcher_thread(config_path, cert_path, key_path, initial_config, evt_rx, tx);
+            watcher_thread(config_path, tls_paths, initial_config, evt_rx, tx);
         });
 
         Ok(Self {
@@ -264,8 +325,7 @@ impl Watcher {
 
 fn watcher_thread(
     config_path: PathBuf,
-    cert_path: PathBuf,
-    key_path: PathBuf,
+    tls_paths: Vec<PathBuf>,
     initial_config: Config,
     evt_rx: std::sync::mpsc::Receiver<notify::Result<notify::Event>>,
     tx: tokio::sync::broadcast::Sender<ConfigChanged>,
@@ -276,8 +336,10 @@ fn watcher_thread(
     // differences (symlinks, /proc/self/fd, etc.) between what we registered
     // and what notify returns in event.paths.
     let config_name = config_path.file_name().map(std::ffi::OsStr::to_os_string);
-    let cert_name = cert_path.file_name().map(std::ffi::OsStr::to_os_string);
-    let key_name = key_path.file_name().map(std::ffi::OsStr::to_os_string);
+    let tls_names: Vec<std::ffi::OsString> = tls_paths
+        .iter()
+        .filter_map(|p| p.file_name().map(std::ffi::OsStr::to_os_string))
+        .collect();
 
     loop {
         let event = match evt_rx.recv() {
@@ -312,9 +374,9 @@ fn watcher_thread(
                 .any(|p| p.file_name() == Some(n.as_os_str()))
         });
         let tls_file_touched = all_paths.iter().any(|p| {
-            let f = p.file_name();
-            cert_name.as_deref().is_some_and(|n| f == Some(n))
-                || key_name.as_deref().is_some_and(|n| f == Some(n))
+            tls_names
+                .iter()
+                .any(|n| p.file_name() == Some(n.as_os_str()))
         });
 
         if config_touched {
@@ -356,7 +418,31 @@ mod tests {
     fn example_config_parses() {
         let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/uplink.yaml");
         let config = Config::load(&example).unwrap();
-        assert_eq!(config.accounts.len(), 1);
+        assert!(config.accounts.is_empty());
+        assert_eq!(config.data_dir, example.parent().unwrap().join("./data"));
+        // Its commented accounts, and TLS, are right once uncommented.
+        let uncommented = std::fs::read_to_string(&example)
+            .unwrap()
+            .replace("accounts: []", "accounts:")
+            .replace("  # tls:", "  tls:")
+            .replace("  #   ", "    ")
+            .replace("  # - ", "  - ");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("uplink.yaml");
+        std::fs::write(&path, uncommented).unwrap();
+        let config = Config::load(&path).unwrap();
+        assert_eq!(
+            config
+                .accounts
+                .iter()
+                .map(AccountConfig::id)
+                .collect::<Vec<_>>(),
+            ["alice-gmail", "alice-m365", "alice-matrix"]
+        );
+        assert_eq!(
+            config.server.tls.unwrap().cert,
+            PathBuf::from("/path/to/cert.pem")
+        );
     }
     use std::io::Write;
 
@@ -373,10 +459,7 @@ server:
     user: alice
     password_bcrypt: "$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
-data:
-  root: /var/lib/uplink
-
-master_key_file: /etc/uplink/master.key
+data_dir: /var/lib/uplink
 
 accounts:
   - id: alice-gmail
@@ -385,33 +468,29 @@ accounts:
     oauth:
       client_id:     "1234.apps.googleusercontent.com"
       client_secret: "GOCSPX-xxxxxxxxxx"
-      token_file:    /var/lib/uplink/accounts/alice-gmail.token
 
   - id: alice-m365
     kind: m365
     address: alice@example.com
-    oauth:
-      client_id: "d3590ed6-52b3-4102-aeff-aad2292ab01c"
-      authority: "https://login.microsoftonline.com/common"
-      resource: "https://graph.microsoft.com"
-      token_file: /var/lib/uplink/accounts/alice-m365.token
 
   - id: alice-matrix
     kind: matrix
     homeserver: "https://matrix.example.org"
     mxid: "@alice:example.org"
-    state_dir: /var/lib/uplink/matrix/alice-matrix
 "#;
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(yaml.as_bytes()).unwrap();
         let cfg = Config::load(f.path()).unwrap();
 
         assert_eq!(cfg.server.bind, "0.0.0.0:8443");
-        assert_eq!(cfg.server.tls.cert, "/etc/uplink/cert.pem");
-        assert_eq!(cfg.data.root, PathBuf::from("/var/lib/uplink"));
         assert_eq!(
-            cfg.master_key_file,
-            Some(PathBuf::from("/etc/uplink/master.key"))
+            cfg.server.tls.as_ref().unwrap().cert,
+            Path::new("/etc/uplink/cert.pem")
+        );
+        assert_eq!(cfg.data_dir, PathBuf::from("/var/lib/uplink"));
+        assert_eq!(
+            cfg.master_key_file(),
+            PathBuf::from("/var/lib/uplink/master.key")
         );
         assert_eq!(cfg.accounts.len(), 3);
 
@@ -420,19 +499,31 @@ accounts:
         };
         assert_eq!(g.id, "alice-gmail");
         assert_eq!(g.oauth.client_secret, "GOCSPX-xxxxxxxxxx");
+        assert_eq!(
+            g.oauth.token_file,
+            PathBuf::from("/var/lib/uplink/accounts/alice-gmail.token")
+        );
 
         let AccountConfig::M365(ref m) = cfg.accounts[1] else {
             panic!("expected m365 account");
         };
+        // Signed in as Outlook, unless said otherwise.
         assert_eq!(
-            m.oauth.authority,
-            "https://login.microsoftonline.com/common"
+            m.oauth,
+            M365OAuthConfig {
+                token_file: PathBuf::from("/var/lib/uplink/accounts/alice-m365.token"),
+                ..M365OAuthConfig::default()
+            }
         );
 
         let AccountConfig::Matrix(ref mx) = cfg.accounts[2] else {
             panic!("expected matrix account");
         };
         assert_eq!(mx.mxid, "@alice:example.org");
+        assert_eq!(
+            mx.state_dir,
+            PathBuf::from("/var/lib/uplink/matrix/alice-matrix")
+        );
     }
 
     #[test]
@@ -446,8 +537,7 @@ server:
   basic_auth:
     user: alice
     password_bcrypt: "$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-data:
-  root: /tmp/uplink
+data_dir: /tmp/uplink
 "#;
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(yaml.as_bytes()).unwrap();
@@ -455,8 +545,7 @@ data:
         assert_eq!(cfg.server.bind, "127.0.0.1:8443");
         assert_eq!(cfg.server.basic_auth.user, "alice");
         assert!(cfg.accounts.is_empty());
-        assert_eq!(cfg.data.root, PathBuf::from("/tmp/uplink"));
-        assert!(cfg.master_key_file.is_none());
+        assert_eq!(cfg.data_dir, PathBuf::from("/tmp/uplink"));
     }
 
     #[test]
@@ -469,13 +558,33 @@ server:
   basic_auth:
     user: alice
     password_bcrypt: "$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-data:
-  root: /tmp/uplink
+data_dir: /tmp/uplink
 "#;
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(yaml.as_bytes()).unwrap();
         let cfg = Config::load(f.path()).unwrap();
-        assert_eq!(cfg.server.bind, "0.0.0.0:8443");
+        assert_eq!(cfg.server.bind, "127.0.0.1:8443");
+    }
+
+    #[test]
+    fn tls_is_optional() {
+        let yaml = r#"
+server:
+  basic_auth:
+    user: alice
+    password_bcrypt: "$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+data_dir: /tmp/uplink
+"#;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(yaml.as_bytes()).unwrap();
+        assert_eq!(Config::load(f.path()).unwrap().server.tls, None);
+    }
+
+    #[test]
+    fn an_empty_file_points_to_init() {
+        let f = tempfile::NamedTempFile::new().unwrap();
+        let err = Config::load(f.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("uplink init"), "{err:#}");
     }
 
     #[test]
@@ -488,8 +597,7 @@ server:
   basic_auth:
     user: alice
     password_bcrypt: "$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-data:
-  root: /tmp/uplink
+data_dir: /tmp/uplink
 accounts:
   - id: bad
     kind: exchange
@@ -515,8 +623,7 @@ server:
   basic_auth:
     user: alice
     password_bcrypt: "$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-data:
-  root: /tmp/uplink
+data_dir: /tmp/uplink
 accounts:
   - id: alice-gmail
     kind: gmail
@@ -538,8 +645,7 @@ server:
     user: alice
     password_bcrypt: "$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
   unknown_top_level_key: oops
-data:
-  root: /tmp/uplink
+data_dir: /tmp/uplink
 "#;
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(yaml.as_bytes()).unwrap();
@@ -552,20 +658,17 @@ data:
         Config {
             server: ServerConfig {
                 bind: "0.0.0.0:8443".into(),
-                tls: TlsConfig {
+                tls: Some(TlsConfig {
                     cert: "/tmp/cert.pem".into(),
                     key: "/tmp/key.pem".into(),
-                },
+                }),
                 basic_auth: BasicAuthConfig {
                     user: "alice".into(),
                     password_bcrypt: "hash".into(),
                 },
             },
-            data: DataConfig {
-                root: PathBuf::from("/tmp/uplink"),
-            },
+            data_dir: PathBuf::from("/tmp/uplink"),
             send_delay_secs: 10,
-            master_key_file: None,
             accounts: vec![],
         }
     }
@@ -580,7 +683,7 @@ data:
     fn diff_detects_tls_change() {
         let old = base_config();
         let mut new = old.clone();
-        new.server.tls.cert = "/tmp/cert2.pem".into();
+        new.server.tls.as_mut().unwrap().cert = "/tmp/cert2.pem".into();
         assert_eq!(diff_config_sections(&old, &new), vec![ConfigSection::Tls]);
     }
 
@@ -607,7 +710,7 @@ data:
     fn diff_detects_data_change() {
         let old = base_config();
         let mut new = old.clone();
-        new.data.root = PathBuf::from("/tmp/elsewhere");
+        new.data_dir = PathBuf::from("/tmp/elsewhere");
         assert_eq!(diff_config_sections(&old, &new), vec![ConfigSection::Data]);
     }
 
@@ -632,7 +735,7 @@ data:
 
     fn write_minimal_config(path: &Path, cert: &str, key: &str, bind: &str) {
         let yaml = format!(
-            "server:\n  bind: \"{bind}\"\n  tls:\n    cert: \"{cert}\"\n    key: \"{key}\"\n  basic_auth:\n    user: alice\n    password_bcrypt: \"$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"\ndata:\n  root: /tmp/uplink\n"
+            "server:\n  bind: \"{bind}\"\n  tls:\n    cert: \"{cert}\"\n    key: \"{key}\"\n  basic_auth:\n    user: alice\n    password_bcrypt: \"$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"\ndata_dir: /tmp/uplink\n"
         );
         std::fs::write(path, yaml).unwrap();
     }
@@ -689,7 +792,7 @@ data:
         // Rewrite the config with a changed password_bcrypt, keeping bind
         // the same so only BasicAuth shows up in the diff.
         let new_yaml = format!(
-            "server:\n  bind: \"127.0.0.1:8443\"\n  tls:\n    cert: \"{}\"\n    key: \"{}\"\n  basic_auth:\n    user: alice\n    password_bcrypt: \"NEWHASH\"\ndata:\n  root: /tmp/uplink\n",
+            "server:\n  bind: \"127.0.0.1:8443\"\n  tls:\n    cert: \"{}\"\n    key: \"{}\"\n  basic_auth:\n    user: alice\n    password_bcrypt: \"NEWHASH\"\ndata_dir: /tmp/uplink\n",
             cert_path.display(),
             key_path.display()
         );
@@ -762,7 +865,7 @@ data:
         // Add an account to the config, keeping bind the same so only
         // Accounts shows up in the diff.
         let new_yaml = format!(
-            "server:\n  bind: \"127.0.0.1:8443\"\n  tls:\n    cert: \"{cert}\"\n    key: \"{key}\"\n  basic_auth:\n    user: alice\n    password_bcrypt: \"$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"\ndata:\n  root: /tmp/uplink\naccounts:\n  - id: mx\n    kind: matrix\n    homeserver: \"https://matrix.example.org\"\n    mxid: \"@alice:example.org\"\n    state_dir: /tmp/mx\n",
+            "server:\n  bind: \"127.0.0.1:8443\"\n  tls:\n    cert: \"{cert}\"\n    key: \"{key}\"\n  basic_auth:\n    user: alice\n    password_bcrypt: \"$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"\ndata_dir: /tmp/uplink\naccounts:\n  - id: mx\n    kind: matrix\n    homeserver: \"https://matrix.example.org\"\n    mxid: \"@alice:example.org\"\n",
             cert = cert_path.display(),
             key = key_path.display()
         );

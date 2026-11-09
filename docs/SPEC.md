@@ -209,82 +209,70 @@ whether to take effect immediately, lazily, or require restart.
 
 ### 3.2 Annotated example
 
-```yaml
-# uplink.yaml
+`uplink init` writes `examples/uplink.yaml` (the reference, with every
+account kind commented in it) with the user and password it asks for,
+and makes the data directory with the master key. Only what cannot be
+derived is configured: paths under the data directory are fixed (§4.1),
+and Microsoft 365's sign-in is the Outlook client's unless set. Relative
+paths are relative to the file's directory.
 
-# ── server ──────────────────────────────────────────────────────────────
+```yaml
 server:
-  bind: "0.0.0.0:8443"
+  bind: "127.0.0.1:8443"         # default
+  # Optional: without it, plain HTTP, for a reverse proxy in front that
+  # terminates TLS (§13.6).
   tls:
     cert: /etc/uplink/cert.pem    # PEM, full chain
     key:  /etc/uplink/key.pem     # PEM, encrypted is rejected
   basic_auth:
     user: alice
-    # bcrypt hash with cost ≥10. uplink rejects plaintext.
+    # bcrypt hash with cost ≥10 (`uplink hash-password`). uplink rejects
+    # plaintext.
     password_bcrypt: "$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
-# ── data location ───────────────────────────────────────────────────────
-data:
-  root: /var/lib/uplink          # contains db/, mail/, matrix/, accounts/
+# Everything uplink keeps (§4.1), including the master key and tokens.
+data_dir: /var/lib/uplink
 
-# ── master key ──────────────────────────────────────────────────────────
-# 32-byte random key, base64. Used to seal OAuth refresh tokens at rest.
-# Generate with: uplink keygen > master.key
-master_key_file: /etc/uplink/master.key
-
-# ── sending ─────────────────────────────────────────────────────────────
 # How long sent mail waits in the outbox, during which sending can be
 # undone (§6.7). Default 10.
 send_delay_secs: 10
 
-# ── accounts ────────────────────────────────────────────────────────────
 accounts:
-
-  # — Gmail —
+  # — Gmail — with the user's own Google Cloud project (Desktop app OAuth
+  # client); scope gmail.modify (read, label, send; no permanent delete).
   - id: alice-gmail
     kind: gmail
     address: alice@gmail.com
-    # OAuth2: user brings their own Google Cloud project (Desktop app
-    # OAuth client). Paste client_id + client_secret here.
-    # Required scope: https://www.googleapis.com/auth/gmail.modify
-    # (read, label, send; no permanent delete)
     oauth:
       client_id:     "1234.apps.googleusercontent.com"
       client_secret: "GOCSPX-xxxxxxxxxx"
-      # path where uplink stores the encrypted refresh token
-      token_file:    /var/lib/uplink/accounts/alice-gmail.token
 
-  # — Microsoft 365 (work) —
+  # — Microsoft 365 (work) — signed in as the Outlook desktop public
+  # client, v1 AAD endpoint with `resource=` (§13.3). `oauth` (client_id,
+  # authority, resource) defaults to Outlook's and Graph's; tests point it
+  # at a fake.
   - id: alice-m365
     kind: m365
     address: alice@example.com
-    # Impersonate the Outlook desktop public client. No client_secret;
-    # uses the v1 AAD endpoint with `resource=` (no PKCE, no scope=) —
-    # see SPEC §13.3. Granted permissions are determined by Outlook
-    # desktop's pre-authorisation, not requested per-call. The Outlook
-    # client_id is the documented escape hatch on locked-down tenants.
-    oauth:
-      client_id: "d3590ed6-52b3-4102-aeff-aad2292ab01c"
-      authority: "https://login.microsoftonline.com/common"
-      resource: "https://graph.microsoft.com"
-      token_file: /var/lib/uplink/accounts/alice-m365.token
 
-  # — Matrix —
+  # — Matrix — the device is created once by `uplink matrix pair` (§9.4).
+  # No password in YAML.
   - id: alice-matrix
     kind: matrix
     homeserver: "https://matrix.example.org"
     mxid: "@alice:example.org"
-    # The device is created once by `uplink matrix pair` (§9.4), which
-    # seals its session here; matrix-rust-sdk keeps its stores here too.
-    # No password in YAML.
-    state_dir: /var/lib/uplink/matrix/alice-matrix
 ```
+
+An empty or missing file is refused with a pointer to `uplink init`;
+unknown fields are refused, so a field that went away (`data.root`,
+`master_key_file`, `token_file`, `state_dir`, in configurations written
+before these were derived) is reported rather than ignored.
 
 ### 3.3 Hot-reload semantics
 
 | Section change | Action |
 |---|---|
-| `server.tls.cert` / `key` | Reload PEMs, swap `Arc<rustls::ServerConfig>`. No connection drops. |
+| `server.tls.cert` / `key` | Reload PEMs, swap `Arc<rustls::ServerConfig>`. No connection drops. Adding or removing `tls` needs a restart. |
 | `server.basic_auth` | Update in-memory hash. New requests authenticate against new hash. |
 | `accounts[].oauth.*` | Re-issue refresh token if file changed; restart that account's sync task. |
 | `accounts[]` add/remove | Spawn / shut down sync task. Push `AccountListChanged` to clients. |
@@ -309,7 +297,8 @@ init` needs no restart.
 ### 4.1 On-disk layout
 
 ```
-$DATA/
+$DATA/                                # data_dir
+├── master.key                        # made on first use (§13.4)
 ├── db/
 │   ├── uplink.sqlite                 # main DB
 │   ├── uplink.sqlite-wal
@@ -317,7 +306,7 @@ $DATA/
 ├── mail/
 │   └── <sha256>/<sha256>.eml         # content-addressed; 2-char shard dir
 ├── matrix/
-│   └── <account_id>/                 # opaque matrix-rust-sdk state store
+│   └── <account_id>/                 # matrix-rust-sdk stores, sealed session
 └── accounts/
     └── <account_id>.token            # sealed OAuth refresh token
 ```
@@ -1322,10 +1311,10 @@ files to drafts: §7.4.
 
 `matrix-sdk` 0.19 (matrix-rust-sdk, the crate Element X uses), with E2EE,
 one client per account. Its stores (state, crypto, event cache) are
-SQLite under the account's `state_dir`, encrypted with a passphrase
+SQLite under the account's directory (`matrix/<id>` under the data directory), encrypted with a passphrase
 derived from the master key (`MasterKey::derive("matrix-store:<id>")`).
 The SDK does not keep the session (access token, device id); uplink seals
-it in `state_dir/session.sealed` (§13.4).
+it in `session.sealed` there (§13.4).
 
 The account's sync task (`uplink_matrix::sync`) runs two loops on the
 client:
@@ -1393,7 +1382,7 @@ account's other devices trust it; left empty, the device stays
 unverified. Typed at a terminal, both are read without echo; otherwise
 a line each from standard input, for scripts. A running uplink picks
 the paired account up within a minute (its sync task retries restoring
-the session with backoff). To pair again, delete `state_dir`: its stores
+the session with backoff). To pair again, delete that directory: its stores
 belong to the old device.
 
 This is a CLI flow and not a SPA flow because cross-signing setup is
@@ -1557,7 +1546,8 @@ beyond preact-iso. No CSS framework — hand-written CSS modules.
 ### 12.2 Vite config
 
 `web/vite.config.ts`: the dev server (port 5173) proxies `/api` and `/ws`
-to the TLS server on `127.0.0.1:8443`. Its page is not under uplink's basic
+to the server on `127.0.0.1:8443`, as `uplink init` configures it (plain
+HTTP). Its page is not under uplink's basic
 auth, so the proxy adds the credentials from `UPLINK_DEV_AUTH=user:password`.
 `vite build` writes to `crates/uplink-server/static/`, which the binary
 embeds; in production the SPA's WebSocket connects to the same origin.
@@ -1771,9 +1761,12 @@ requires the URN-form redirect URI:
 
 ### 13.4 Sealing OAuth secrets at rest
 
-- `master.key` is a 32-byte file generated once by `uplink keygen` and
-  stored at `master_key_file` (default `/etc/uplink/master.key`, mode 0400
-  owned by the uplink user).
+- `master.key` is 32 random bytes (base64) in the data directory, made
+  by whichever command first needs it (`init`, `oauth init`, `matrix
+  pair`, `serve` with accounts): mode 0600, written to a temporary file
+  and linked into place without replacing one made meanwhile. Its path
+  is not configurable: the user found the options for it and the token
+  files more to set up than they were worth.
 - Token files contain `nonce || chacha20poly1305(master_key, nonce,
   refresh_token)`, with the account id as associated data, so a token
   file opens only for the account it was written for. Written to a
@@ -1783,15 +1776,15 @@ requires the URN-form redirect URI:
   reduction. A `cat` of a token file on a debugging session, a misplaced
   backup tarball, a btrfs snapshot copied to a less-secure machine — none
   of these alone yield a working OAuth token. The master.key is one extra
-  file the attacker must also exfiltrate, and on a well-configured system
-  it can live on a different filesystem with stricter ACLs (e.g.
-  `/run/secrets/`).
+  file the attacker must also exfiltrate (a backup that leaves it out
+  leaves the tokens sealed).
 - Costs: ~50 LOC. Worth it.
 
 ### 13.5 Matrix credentials
 
 The session (access token, device id) is sealed with the master key in
-the account's `state_dir` (§9.1, §13.4). matrix-rust-sdk's stores there
+the account's directory, `matrix/<id>` under the data directory (§9.1,
+§13.4). matrix-rust-sdk's stores there
 are encrypted with a passphrase derived from the master key; the crypto
 store holds the device's keys and, once paired with the recovery key,
 the cross-signing keys. No password is stored anywhere: it is typed
@@ -1799,6 +1792,10 @@ into `uplink matrix pair` once.
 
 ### 13.6 TLS
 
+- Optional. Without `server.tls`, uplink serves plain HTTP: the expected
+  deployment is behind a reverse proxy that terminates TLS (Caddy), with
+  uplink on loopback, which is the default `bind`. The SPA connects its
+  WebSocket with `ws:` or `wss:` as the page was loaded.
 - `rustls` (via `tokio-rustls`). Loads cert+key from
   `server.tls.cert`/`key` at startup.
 - Hot-reload: file watcher fires on cert change, reloads PEM, swaps the
@@ -2401,7 +2398,7 @@ would add a third subscription — out of scope for MVP.
 | `mail-builder`            | Outbound MIME assembly                                     |
 | `ammonia`                 | Server-side HTML sanitizer                                 |
 | `reqwest`                 | HTTPS, including the OAuth token requests                  |
-| `clap`                    | CLI (`serve`, `keygen`, `oauth init`)                      |
+| `clap`                    | CLI (`init`, `serve`, `oauth init`, `matrix pair`, …)      |
 | `matrix-sdk`              | Matrix client with E2EE                                    |
 | `notify`                  | inotify config reload                                      |
 | `chacha20poly1305`        | OAuth token sealing                                        |

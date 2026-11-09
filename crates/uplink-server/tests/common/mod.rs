@@ -136,7 +136,7 @@ pub const PASSWORD: &str = "testpass";
 /// `data` directory next to the config file.
 pub fn write_config(config_path: &Path, cert_path: &Path, key_path: &Path) {
     let yaml = format!(
-        "server:\n  bind: \"127.0.0.1:0\"\n  tls:\n    cert: {cert}\n    key: {key}\n  basic_auth:\n    user: {USER}\n    password_bcrypt: \"$2b$04$G1zE/xiQeRXdPalTbG/Quu55uU6n5a9ICljrYbTpceT/qklM.0yay\"\ndata:\n  root: {data}\n",
+        "server:\n  bind: \"127.0.0.1:0\"\n  tls:\n    cert: {cert}\n    key: {key}\n  basic_auth:\n    user: {USER}\n    password_bcrypt: \"$2b$04$G1zE/xiQeRXdPalTbG/Quu55uU6n5a9ICljrYbTpceT/qklM.0yay\"\ndata_dir: {data}\n",
         cert = cert_path.display(),
         key = key_path.display(),
         data = config_path.parent().unwrap().join("data").display(),

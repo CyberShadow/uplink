@@ -41,6 +41,7 @@ fn real_account() -> (GmailAccountConfig, Token) {
     let id = std::env::var("UPLINK_TEST_GMAIL_ACCOUNT")
         .expect("UPLINK_TEST_GMAIL_ACCOUNT names the account in UPLINK_TEST_GMAIL_CONFIG");
     let config = Config::load(Path::new(&path)).unwrap();
+    let key = MasterKey::load(&config.master_key_file()).unwrap();
     let account = config
         .accounts
         .into_iter()
@@ -49,13 +50,7 @@ fn real_account() -> (GmailAccountConfig, Token) {
             _ => None,
         })
         .unwrap_or_else(|| panic!("no Gmail account {id} in {}", path.display()));
-    let key = MasterKey::load(
-        config
-            .master_key_file
-            .as_ref()
-            .expect("the configuration has a master_key_file"),
-    )
-    .unwrap();
+
     let token = seal::read::<Token>(&key, &account.id, &account.oauth.token_file).unwrap();
     (account, token)
 }
@@ -65,8 +60,7 @@ impl Provider {
     /// history records (only emulated tests may ask for it).
     pub async fn start(dir: &Path, history_limit: Option<u32>) -> Self {
         let key_path = dir.join("master.key");
-        std::fs::write(&key_path, MasterKey::generate()).unwrap();
-        let key = Arc::new(MasterKey::load(&key_path).unwrap());
+        let key = Arc::new(MasterKey::open(&key_path).unwrap());
         let token_file = dir.join("accounts/test.token");
         let http = reqwest::Client::new();
 

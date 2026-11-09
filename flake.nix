@@ -62,7 +62,8 @@
           name = "source";
           filter = path: type:
             pkgs.lib.hasSuffix ".sql" path
-            # A test checks that the example configuration parses.
+            # `uplink init` writes the example configuration, which a test
+            # checks parses.
             || pkgs.lib.hasSuffix "/examples/uplink.yaml" path
             || craneLib.filterCargoSources path type;
         };

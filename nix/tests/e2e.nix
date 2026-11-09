@@ -35,7 +35,6 @@ pkgs.testers.nixosTest {
         kind = "matrix";
         homeserver = "http://127.0.0.1:6167";
         mxid = "@alice:localhost";
-        state_dir = "/var/lib/uplink/matrix/alice-matrix";
       }
     ];
     environment.variables = {

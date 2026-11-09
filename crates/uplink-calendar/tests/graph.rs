@@ -34,8 +34,7 @@ impl Setup {
         let dir = tempfile::tempdir().unwrap();
         let (base, emulate) = start_emulate(dir.path()).await;
         let key_path = dir.path().join("master.key");
-        std::fs::write(&key_path, MasterKey::generate()).unwrap();
-        let key = Arc::new(MasterKey::load(&key_path).unwrap());
+        let key = Arc::new(MasterKey::open(&key_path).unwrap());
         let account = M365AccountConfig {
             id: "test".into(),
             address: "alice@example.com".into(),

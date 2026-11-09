@@ -35,12 +35,11 @@ def sign_in(params):
 
 
 def authorize_uplink():
-    """Makes a master key and runs `uplink oauth init`, consenting in the
-    emulator."""
+    """Runs `uplink oauth init`, consenting in the emulator; the master key
+    is made on the way."""
     machine.wait_for_unit("emulate.service")
     machine.wait_for_open_port(4002)
     machine.succeed(f"install -d -m 0700 -o uplink -g uplink {STATE}")
-    machine.succeed(f"runuser -u uplink -- sh -c 'uplink keygen > {STATE}/master.key'")
     machine.succeed(
         "runuser -u uplink -- sh -c 'uplink --config /etc/uplink/uplink.yaml "
         "oauth init --account alice-gmail </dev/null >/tmp/oauth.log 2>&1 &'"
@@ -57,6 +56,7 @@ def authorize_uplink():
     machine.succeed(f"curl -sf {shlex.quote(redirect)}")
     machine.wait_until_succeeds("grep -q Authorized /tmp/oauth.log")
     machine.succeed(f"test -s {STATE}/accounts/alice-gmail.token")
+    machine.succeed(f"test $(stat -c %a {STATE}/master.key) = 600")
 
 
 def start_uplink():

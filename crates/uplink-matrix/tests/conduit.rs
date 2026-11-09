@@ -117,8 +117,7 @@ impl Uplink {
     fn new(homeserver: &Homeserver) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let key_path = dir.path().join("master.key");
-        std::fs::write(&key_path, MasterKey::generate()).unwrap();
-        let key = Arc::new(MasterKey::load(&key_path).unwrap());
+        let key = Arc::new(MasterKey::open(&key_path).unwrap());
         let mut registry = Registry::new();
         uplink_matrix::register(&mut registry);
         let dispatcher = Dispatcher::new(

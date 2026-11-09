@@ -44,8 +44,7 @@ impl Microsoft {
         )
         .await;
         let key_path = dir.join("master.key");
-        std::fs::write(&key_path, MasterKey::generate()).unwrap();
-        let key = Arc::new(MasterKey::load(&key_path).unwrap());
+        let key = Arc::new(MasterKey::open(&key_path).unwrap());
         let account = M365AccountConfig {
             id: "test".into(),
             address: ALICE.into(),

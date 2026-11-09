@@ -24,26 +24,29 @@ You need [Nix](https://nixos.org/download) with flakes.
 
 ```sh
 nix build                      # result/bin/uplink, with the web UI built in
-cp examples/uplink.yaml uplink.yaml
-./result/bin/uplink keygen > master.key && chmod 600 master.key
+./result/bin/uplink init       # writes uplink.yaml, asking for a user and password
 ```
 
-Then set up a Gmail account (next section), and:
+`uplink init` writes `uplink.yaml` (a copy of `examples/uplink.yaml`,
+with your user and password hash) and makes its data directory, `data`,
+with the master key that seals accounts' tokens. Add an account to it
+(the next sections), and:
 
 ```sh
 ./result/bin/uplink oauth init --account alice-gmail   # once per account
 ./result/bin/uplink serve
 ```
 
-Open <https://localhost:8443/> and accept the certificate warning: the
-example uses a public, self-signed development certificate
-(`examples/dev-cert.pem`). Sign in as `alice` with the password `uplink`.
-To choose your own password, put the output of
-`echo 'your password' | ./result/bin/uplink hash-password` in
+Open <http://localhost:8443/> and sign in. The server listens on
+loopback only, without TLS, as `init` configures it; to reach it from
+elsewhere, put a reverse proxy that terminates TLS in front of it (e.g.
+Caddy: `reverse_proxy 127.0.0.1:8443`), or give it a certificate of its
+own (`server.tls`). To change the password, put the output of
+`echo 'new password' | ./result/bin/uplink hash-password` in
 `server.basic_auth.password_bcrypt`.
 
 `uplink` reads `uplink.yaml` in the current directory; pass `--config PATH`
-otherwise. Data goes to `data.root` (`./data` in the example).
+otherwise. Relative paths in it are relative to its directory.
 
 Press `?` in the UI for the keyboard shortcuts.
 
@@ -59,8 +62,9 @@ Gmail access goes through an OAuth client that you register yourself
    Branding / Audience): user type *External*, and add your Gmail address
    under *Test users*.
 4. Create an **OAuth client** (Google Auth Platform → Clients → Create
-   client) of type *Desktop app*. Copy its client id and secret into the
-   account's `oauth` section in `uplink.yaml`, and set `address` and `id`.
+   client) of type *Desktop app*. In `uplink.yaml`, uncomment the Gmail
+   account (dropping the `[]` after `accounts:`), set `id` (any name) and
+   `address`, and copy the client's id and secret into its `oauth`.
 5. Run `uplink oauth init --account ID`, open the URL it prints, sign in,
    and accept. Google warns that the app is unverified: it is your own
    client, so continue. uplink receives the authorization on a local port,
@@ -84,7 +88,7 @@ empties after 30 days.
 ## Connecting a Microsoft 365 account
 
 uplink signs in as the Outlook desktop client, so there is nothing to
-register (SPEC §13.3). Uncomment the `alice-m365` account in
+register (SPEC §13.3). Uncomment the Microsoft 365 account in
 `uplink.yaml`, set `id` and `address`, and run:
 
 ```sh
@@ -134,12 +138,12 @@ The flake provides a module that runs uplink as a systemd service:
           services.uplink = {
             enable = true;
             settings = {
+              # Behind a reverse proxy terminating TLS; or add
+              # tls = { cert = "/path/cert.pem"; key = "/path/key.pem"; };
               server = {
-                bind = "0.0.0.0:8443";
-                tls = { cert = "/var/lib/uplink/cert.pem"; key = "/var/lib/uplink/key.pem"; };
+                bind = "127.0.0.1:8443";
                 basic_auth = { user = "alice"; password_bcrypt = "$2b$12$..."; };
               };
-              master_key_file = "/var/lib/uplink/master.key";
               accounts = [{
                 id = "alice-gmail";
                 kind = "gmail";
@@ -147,7 +151,6 @@ The flake provides a module that runs uplink as a systemd service:
                 oauth = {
                   client_id = "....apps.googleusercontent.com";
                   client_secret = "GOCSPX-...";
-                  token_file = "/var/lib/uplink/accounts/alice-gmail.token";
                 };
               }];
             };
@@ -159,14 +162,13 @@ The flake provides a module that runs uplink as a systemd service:
 }
 ```
 
-The configuration lands in the Nix store, world-readable, so keep secrets
-(TLS key, master key, tokens) in the files it points to. Data lives in
-`/var/lib/uplink` (the service's state directory). The service fails until
-the master key exists; as root:
+The configuration lands in the Nix store, world-readable. The secrets
+are not in it: the master key and accounts' tokens are in the data
+directory, `/var/lib/uplink` (the service's state directory), and a TLS
+key would be in a file it points to. Authorize each account, as root:
 
 ```sh
 install -d -m 700 -o uplink -g uplink /var/lib/uplink   # if the service has not run yet
-sudo -u uplink sh -c 'uplink keygen > /var/lib/uplink/master.key'
 sudo -u uplink uplink --config /etc/uplink/uplink.yaml oauth init --account alice-gmail
 systemctl restart uplink
 ```

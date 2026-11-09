@@ -44,12 +44,11 @@ def sign_in(authorize_url, user="alice@example.com"):
 
 
 def authorize_uplink():
-    """Makes a master key and runs `uplink oauth init`, pasting what the
-    sign-in redirected to."""
+    """Runs `uplink oauth init`, pasting what the sign-in redirected to;
+    the master key is made on the way."""
     machine.wait_for_unit("emulate.service")
     machine.wait_for_open_port(4003)
     machine.succeed(f"install -d -m 0700 -o uplink -g uplink {STATE}")
-    machine.succeed(f"runuser -u uplink -- sh -c 'uplink keygen > {STATE}/master.key'")
     machine.succeed("touch /tmp/pasted")
     machine.succeed(
         "(tail -f /tmp/pasted | runuser -u uplink -- uplink --config /etc/uplink/uplink.yaml "

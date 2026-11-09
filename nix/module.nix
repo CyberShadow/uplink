@@ -8,7 +8,9 @@
 # The configuration is written to /etc/uplink/uplink.yaml, where the CLI
 # finds it too: `sudo -u uplink uplink --config /etc/uplink/uplink.yaml
 # oauth init --account ...`. It ends up in the Nix store, world-readable,
-# so keep secrets (TLS key, master key, tokens) in files it points to.
+# so keep secrets out of it: the master key and tokens are in the data
+# directory, and the TLS key (if uplink terminates TLS) in a file it
+# points to.
 { defaultPackage }:
 { config, lib, pkgs, ... }:
 
@@ -30,7 +32,7 @@ in
     settings = lib.mkOption {
       type = format.type;
       description = ''
-        Contents of uplink.yaml (docs/SPEC.md §3). `data.root` defaults
+        Contents of uplink.yaml (docs/SPEC.md §3). `data_dir` defaults
         to the service's state directory.
       '';
     };
@@ -44,7 +46,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    services.uplink.settings.data.root = lib.mkDefault "/var/lib/uplink";
+    services.uplink.settings.data_dir = lib.mkDefault "/var/lib/uplink";
 
     environment.etc."uplink/uplink.yaml".source = format.generate "uplink.yaml" cfg.settings;
     environment.systemPackages = [ cfg.package ];

@@ -4615,6 +4615,7 @@ dependencies = [
  "clap",
  "reqwest",
  "rpassword",
+ "serde_json",
  "tokio",
  "tracing-subscriber",
  "uplink-config",

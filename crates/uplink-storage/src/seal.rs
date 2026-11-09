@@ -26,10 +26,34 @@ impl std::fmt::Debug for MasterKey {
 
 impl MasterKey {
     /// A new key, in the form [`MasterKey::load`] reads.
-    pub fn generate() -> String {
+    fn generate() -> String {
         let mut key = [0u8; KEY_BYTES];
         rand::fill(&mut key);
         STANDARD.encode(key)
+    }
+
+    /// The key at `path`, made there first if there is none: readable by
+    /// its owner only, and never replacing one made meanwhile.
+    pub fn open(path: &Path) -> Result<Self> {
+        if !path.exists() {
+            let dir = path
+                .parent()
+                .with_context(|| format!("master key {} has no directory", path.display()))?;
+            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+            // NamedTempFile is created with mode 0600.
+            let mut file = tempfile::NamedTempFile::new_in(dir)?;
+            file.write_all(Self::generate().as_bytes())?;
+            file.as_file().sync_all()?;
+            match file.persist_noclobber(path) {
+                Ok(_) => {}
+                Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => {
+                    return Err(e.error)
+                        .with_context(|| format!("writing master key {}", path.display()))
+                }
+            }
+        }
+        Self::load(path)
     }
 
     pub fn load(path: &Path) -> Result<Self> {
@@ -145,6 +169,23 @@ mod tests {
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
         );
+    }
+
+    #[test]
+    fn a_master_key_is_made_on_first_use() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data/master.key");
+        let made = MasterKey::open(&path).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let token = dir.path().join("a.token");
+        write(&made, "a", &"t", &token).unwrap();
+        // Opened again, it is the same key.
+        let opened = MasterKey::open(&path).unwrap();
+        assert_eq!(read::<String>(&opened, "a", &token).unwrap(), "t");
     }
 
     #[test]
