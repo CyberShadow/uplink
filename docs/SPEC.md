@@ -1584,6 +1584,13 @@ account: its request is allowed 10 minutes (the SDK times a sync out
 30 seconds after its long poll, and the first sync's long poll is set to
 that).
 
+uplink keeps where it synced to (`account.sync_state`) and names the
+token in every sync; the SDK's own copy is forgotten when the session is
+restored. The SDK skips a response whose `next_batch` is the token it
+has, taking it for one it processed; but a first sync that ends where the
+last one did (nothing happened since, as after pairing) is not that one,
+and has every room.
+
 The timeline is ordered by sync arrival. uplink only syncs forward, so
 the first sync brings the latest events of each room, and a gappy
 (`limited`) sync leaves a gap; backfilling with `/messages` is deferred.

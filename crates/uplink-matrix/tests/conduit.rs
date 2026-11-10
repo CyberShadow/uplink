@@ -664,8 +664,6 @@ async fn spaces_list_their_rooms_and_avatars_are_served() {
     let dir = tempfile::tempdir().unwrap();
     let homeserver = Homeserver::start(dir.path()).await;
     let alice_phone = homeserver.register(dir.path(), "alice").await;
-    let uplink = Uplink::new(&homeserver);
-    let _sync = uplink.pair_and_sync().await;
     let create = |space: bool, name: &'static str| {
         let alice_phone = alice_phone.clone();
         async move {
@@ -708,6 +706,9 @@ async fn spaces_list_their_rooms_and_avatars_are_served() {
     };
     list(&first, "b").await;
 
+    // Paired after: the first sync ends where pairing synced to.
+    let uplink = Uplink::new(&homeserver);
+    let _sync = uplink.pair_and_sync().await;
     let synced = eventually("uplink to see the space", || async {
         uplink
             .room(space.room_id())

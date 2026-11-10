@@ -20,7 +20,7 @@ use matrix_sdk::{
         events::room::MediaSource,
         OwnedMxcUri, UInt,
     },
-    store::RoomLoadSettings,
+    store::{RoomLoadSettings, StateStoreDataKey},
     Client,
 };
 use std::{
@@ -104,6 +104,16 @@ pub async fn restore(account: &MatrixAccountConfig, key: &MasterKey) -> Result<C
     })?;
     check_user(account, &session)?;
     let client = build(account, key).await?;
+    // uplink keeps where it synced to (`account.sync_state`), and names the
+    // token in every sync. The SDK's own copy would only have it skip the
+    // response of a first sync that ends where it last synced to (nothing
+    // happened since), taking it for one it had processed: and with it
+    // every room, which a first sync records.
+    client
+        .state_store()
+        .remove_kv_data(StateStoreDataKey::SyncToken)
+        .await
+        .context("forgetting the SDK's sync token")?;
     client
         .matrix_auth()
         .restore_session(session, RoomLoadSettings::default())
