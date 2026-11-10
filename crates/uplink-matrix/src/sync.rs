@@ -46,6 +46,12 @@ use uplink_tx_log::{Conflict, Dispatcher, Observation};
 
 /// How long a `/sync` long poll waits for something to happen.
 const LONG_POLL: Duration = Duration::from_secs(30);
+/// The long poll of the first `/sync`. Without a token there is always
+/// something to answer with, every room, so the homeserver does not wait;
+/// but building that answer can take it minutes on a large account. The
+/// SDK allows a sync request its long poll on top of the usual request
+/// timeout (30 seconds), so this is what lets the first sync finish.
+const FIRST_SYNC: Duration = Duration::from_secs(600);
 /// How often the sender checks for work when nothing wakes it.
 const SEND_INTERVAL: Duration = Duration::from_secs(30);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
@@ -166,7 +172,7 @@ impl Syncer {
                 Some(token) => SyncToken::Specific(token),
                 None => SyncToken::NoToken,
             })
-            .timeout(if first { Duration::ZERO } else { LONG_POLL });
+            .timeout(if first { FIRST_SYNC } else { LONG_POLL });
         let response = self.client.sync_once(settings).await?;
         let next_batch = response.next_batch.clone();
         let rooms = self.observe(response, first).await?;

@@ -1562,6 +1562,12 @@ heard of — as its raw JSON, collapsed under its type. This is the "fail
 open" invariant from the ROADMAP: don't drop, don't crash, display
 verbatim.
 
+The first sync has no token, so the homeserver answers at once, but
+building an answer with every room can take it minutes on a large
+account: its request is allowed 10 minutes (the SDK times a sync out
+30 seconds after its long poll, and the first sync's long poll is set to
+that).
+
 The timeline is ordered by sync arrival. uplink only syncs forward, so
 the first sync brings the latest events of each room, and a gappy
 (`limited`) sync leaves a gap; backfilling with `/messages` is deferred.
