@@ -115,13 +115,37 @@ pub enum OutboxState {
     Failed,
 }
 
+/// Where a mail being sent is (SPEC §6.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum SendState {
+    /// Waiting for the send delay to pass; cancelling takes it back.
+    Queued,
+    /// Being handed to the provider.
+    Sending,
+    /// Handed over, but whether the provider took it is not known yet;
+    /// `error` says why. Settled by observing the provider's sent mail.
+    Unknown,
+    /// Accepted by the provider; listed until its copy is synced back.
+    Sent,
+    /// Refused by the provider, or unbuildable; `error` says why. Needs a
+    /// decision: cancelling returns the draft.
+    Refused,
+}
+
+/// A mail being sent, or sent and not yet synced back, or sent though no
+/// longer wanted (needing a decision).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct OutboxItem {
     pub id: OutboxId,
     pub account: String,
     pub draft: Draft,
-    pub state: OutboxState,
+    pub state: SendState,
+    /// Whether it is to be sent: `false` once cancelled while it could no
+    /// longer be taken back for sure. Sent, it needs a decision: keeping
+    /// it sent.
+    pub wanted: bool,
     pub error: Option<String>,
     /// When it is sent, ms since the Unix epoch.
     pub not_before: i64,

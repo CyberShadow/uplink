@@ -212,7 +212,8 @@ async fn sending_is_undone_while_queued() {
     let (sent, item) = queue(&db).await;
     assert!(db.drafts().is_empty());
     let [queued] = &db.outbox()[..] else { panic!() };
-    assert_eq!(queued.state, OutboxState::Queued);
+    assert_eq!(queued.state, SendState::Queued);
+    assert!(queued.wanted);
     assert_eq!(queued.draft.content.subject, "Lunch");
 
     let mut live = db.hub.subscribe();
@@ -237,23 +238,37 @@ async fn sending_is_undone_while_queued() {
         panic!()
     };
     assert_ne!(requeued.id, item);
-    let delay: Vec<i64> = db.query("SELECT delay_ms FROM mail_outbox");
+    let delay: Vec<i64> = db.query("SELECT delay_ms FROM mail_send");
     assert_eq!(delay, [10_000]);
 }
 
-#[tokio::test]
-async fn sending_cannot_be_undone_once_started() {
-    let db = Db::new();
-    let (sent, item) = queue(&db).await;
+async fn start(db: &Db, item: OutboxId) {
     db.dispatcher
         .observe("a".into(), SendStarted { item })
         .await
         .unwrap();
-    let undo = db.dispatcher.undo(sent).await;
-    assert!(
-        matches!(&undo, Err(UndoError::Conflict { conflict, .. }) if conflict.0 == "the message is being sent"),
-        "{undo:?}"
-    );
+}
+
+async fn fail(db: &Db, item: OutboxId, outcome: SendOutcome) {
+    db.dispatcher
+        .observe("a".into(), SendFailed { item, outcome })
+        .await
+        .unwrap();
+}
+
+/// What the outbox shows of the send: its state and whether it is wanted.
+fn shown(db: &Db) -> Vec<(SendState, bool)> {
+    db.outbox().iter().map(|i| (i.state, i.wanted)).collect()
+}
+
+/// Once handed to the provider, a send cancelled is taken back if it did
+/// not go out; a refused one waits for the user, who takes it back at
+/// once; one whose outcome is unknown is sent again once known not sent.
+#[tokio::test]
+async fn sends_handed_over_are_settled_by_their_outcome() {
+    let db = Db::new();
+    let (sent, item) = queue(&db).await;
+    start(&db, item).await;
     // Claimed once only.
     let again = db
         .dispatcher
@@ -262,33 +277,103 @@ async fn sending_cannot_be_undone_once_started() {
         .unwrap_err();
     assert!(again.is::<Conflict>());
 
-    // A transient failure requeues it, cancellable again; a permanent one
-    // fails it, and cancelling returns the draft for fixing.
-    db.dispatcher
-        .observe("a".into(), SendFailed { item, error: None })
-        .await
-        .unwrap();
-    assert_eq!(db.outbox()[0].state, OutboxState::Queued);
-    db.dispatcher
-        .observe("a".into(), SendStarted { item })
-        .await
-        .unwrap();
-    db.dispatcher
-        .observe(
-            "a".into(),
-            SendFailed {
-                item,
-                error: Some("Invalid To header".into()),
-            },
-        )
-        .await
-        .unwrap();
-    let [failed] = &db.outbox()[..] else { panic!() };
-    assert_eq!(failed.state, OutboxState::Failed);
-    assert_eq!(failed.error.as_deref(), Some("Invalid To header"));
+    // Cancelled while being sent: no longer wanted, until the outcome.
+    let cancel = db.dispatcher.undo(sent).await.unwrap();
+    assert_eq!(shown(&db), [(SendState::Sending, false)]);
+    assert_eq!(
+        db.query::<String>(&format!(
+            "SELECT description FROM tx_log WHERE id = {}",
+            cancel.0
+        )),
+        ["Cancelled sending 'Lunch', which may have gone out"]
+    );
+    // Not sent after all: taken back.
+    fail(&db, item, SendOutcome::NotSent).await;
+    assert!(db.outbox().is_empty());
+    assert_eq!(db.drafts().len(), 1);
+
+    // Refused: it waits; cancelling takes it back at once.
+    let (sent, item) = {
+        let sent = db
+            .dispatch(SendDraft {
+                id: DraftId("d".into()),
+                delay_ms: 10_000,
+            })
+            .await;
+        (sent, db.outbox()[0].id)
+    };
+    start(&db, item).await;
+    fail(&db, item, SendOutcome::Refused("Invalid To header".into())).await;
+    let [refused] = &db.outbox()[..] else {
+        panic!()
+    };
+    assert_eq!((refused.state, refused.wanted), (SendState::Refused, true));
+    assert_eq!(refused.error.as_deref(), Some("Invalid To header"));
     db.dispatcher.undo(sent).await.unwrap();
     assert!(db.outbox().is_empty());
     assert_eq!(db.drafts().len(), 1);
+
+    // Unknown: once known not sent, it is sent again.
+    let sent = db
+        .dispatch(SendDraft {
+            id: DraftId("d".into()),
+            delay_ms: 10_000,
+        })
+        .await;
+    let item = db.outbox()[0].id;
+    start(&db, item).await;
+    fail(&db, item, SendOutcome::Unknown("timed out".into())).await;
+    let [unknown] = &db.outbox()[..] else {
+        panic!()
+    };
+    assert_eq!((unknown.state, unknown.wanted), (SendState::Unknown, true));
+    assert_eq!(unknown.error.as_deref(), Some("timed out"));
+    db.dispatcher
+        .observe("a".into(), SendNotFound { item })
+        .await
+        .unwrap();
+    assert_eq!(shown(&db), [(SendState::Queued, true)]);
+
+    // And cancelled while unknown, known not sent, it is taken back.
+    start(&db, item).await;
+    fail(&db, item, SendOutcome::Unknown("timed out".into())).await;
+    db.dispatcher.undo(sent).await.unwrap();
+    assert_eq!(shown(&db), [(SendState::Unknown, false)]);
+    db.dispatcher
+        .observe("a".into(), SendNotFound { item })
+        .await
+        .unwrap();
+    assert!(db.outbox().is_empty());
+    assert_eq!(db.drafts().len(), 1);
+}
+
+/// The provider's copy, as synced: the message as sent, with a header
+/// added, in Sent.
+async fn sync_copy(db: &Db, raw_sent: &[u8]) {
+    let mut copy = b"X-Provider: 1\r\n".to_vec();
+    copy.extend(raw_sent);
+    db.observe(
+        "a",
+        observed(
+            labels(&["SENT"]),
+            vec![new_entry(&db.store(), "g1", &["SENT"], &copy)],
+            vec![],
+            &[],
+        ),
+    )
+    .await;
+}
+
+fn built(message_id: &str) -> Vec<u8> {
+    build_message(
+        "a@x",
+        &content("Bob <b@x>", "Lunch", "<p>noon?</p>"),
+        vec![],
+        message_id,
+        &ReplyContext::default(),
+        1_800_000_000,
+    )
+    .unwrap()
 }
 
 #[tokio::test]
@@ -296,20 +381,9 @@ async fn sent_mail_joins_its_provider_copy() {
     let db = Db::new();
     let store = db.store();
     let (sent, item) = queue(&db).await;
-    let message_id: Vec<String> = db.query("SELECT message_id FROM mail_outbox");
-    db.dispatcher
-        .observe("a".into(), SendStarted { item })
-        .await
-        .unwrap();
-    let raw_sent = build_message(
-        "a@x",
-        &content("Bob <b@x>", "Lunch", "<p>noon?</p>"),
-        vec![],
-        &message_id[0],
-        &ReplyContext::default(),
-        1_800_000_000,
-    )
-    .unwrap();
+    let message_id: Vec<String> = db.query("SELECT message_id FROM mail_send");
+    start(&db, item).await;
+    let raw_sent = built(&message_id[0]);
     db.dispatcher
         .observe(
             "a".into(),
@@ -322,28 +396,13 @@ async fn sent_mail_joins_its_provider_copy() {
         )
         .await
         .unwrap();
-    assert_eq!(db.outbox()[0].state, OutboxState::Sent);
+    assert_eq!(shown(&db), [(SendState::Sent, true)]);
     let messages: Vec<String> = db.query("SELECT message_id FROM message");
     assert_eq!(messages, message_id);
-    assert!(matches!(
-        db.dispatcher.undo(sent).await,
-        Err(UndoError::Conflict { .. })
-    ));
 
     // The provider adds headers: a second variant of the same message.
-    let mut copy = b"X-Provider: 1\r\n".to_vec();
-    copy.extend(&raw_sent);
     let mut live = db.hub.subscribe();
-    db.observe(
-        "a",
-        observed(
-            labels(&["SENT"]),
-            vec![new_entry(&store, "g1", &["SENT"], &copy)],
-            vec![],
-            &[],
-        ),
-    )
-    .await;
+    sync_copy(&db, &raw_sent).await;
     let events = live.recv().await.unwrap().events.clone();
     assert!(
         events.contains(&ServerEvent::OutboxChanged(
@@ -356,6 +415,30 @@ async fn sent_mail_joins_its_provider_copy() {
     assert!(db.outbox().is_empty());
     let variants: Vec<i64> = db.query("SELECT count(*) FROM message_variant GROUP BY message");
     assert_eq!(variants, [2]);
+
+    // Undoing the send now can't take it back: it needs a decision, which
+    // keeping it sent (undoing the undo) makes.
+    let cancel = db.dispatcher.undo(sent).await.unwrap();
+    assert_eq!(shown(&db), [(SendState::Sent, false)]);
+    db.dispatcher.undo(cancel).await.unwrap();
+    assert!(db.outbox().is_empty());
+}
+
+/// A send whose outcome is unknown is sent if its copy turns up in Sent.
+#[tokio::test]
+async fn an_unknown_send_is_settled_by_its_copy() {
+    let db = Db::new();
+    let (_, item) = queue(&db).await;
+    let message_id: Vec<String> = db.query("SELECT message_id FROM mail_send");
+    start(&db, item).await;
+    fail(&db, item, SendOutcome::Unknown("timed out".into())).await;
+    sync_copy(&db, &built(&message_id[0])).await;
+    assert!(db.outbox().is_empty());
+    let settled: Vec<String> = db.query(
+        "SELECT state || ' ' || synced || ' ' || (message = (SELECT id FROM message))
+         FROM mail_send",
+    );
+    assert_eq!(settled, ["sent 1 1"]);
 }
 
 #[test]

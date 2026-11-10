@@ -693,6 +693,7 @@ impl Backend for Services {
             }
             ClientRequest::SendDraft { draft } => self.mail.send_draft(draft).await,
             ClientRequest::CancelSend { item } => self.mail.cancel_send(item).await,
+            ClientRequest::KeepSent { item } => self.mail.keep_sent(item).await,
             ClientRequest::ListOutbox => self.mail.list_outbox().await,
             ClientRequest::KeepObserved { account, op } => {
                 self.mail.keep_observed(account, op).await

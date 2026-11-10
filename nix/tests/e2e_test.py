@@ -99,7 +99,7 @@ with subtest("a reply written in the UI is sent after the delay, in the thread")
     assert message["threadId"] == lunch["threadId"], (message["threadId"], lunch)
     eventually(
         "the sent copy to be synced back, emptying the outbox",
-        lambda: machine.succeed(f"sqlite3 {STATE}/db/uplink.sqlite 'SELECT count(*) FROM mail_outbox'").strip() == "0",
+        lambda: machine.succeed(f"sqlite3 {STATE}/db/uplink.sqlite 'SELECT count(*) FROM mail_send WHERE NOT synced OR NOT wanted'").strip() == "0",
     )
 
 with subtest("a Matrix invitation is joined from the UI; the room shows messages, raw JSON, and sends"):

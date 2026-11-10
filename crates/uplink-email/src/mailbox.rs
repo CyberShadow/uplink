@@ -179,11 +179,9 @@ impl Observation for MailboxObserved {
         let mut label_changes = vec![];
 
         let mut added = vec![];
-        let mut synced_back = vec![];
         for new in self.added {
             let labels = resolve(&new.labels)?;
             let entry = insert_entry(tx, account, new)?;
-            synced_back.extend(compose::entry_synced(tx, account, entry)?);
             for label in labels {
                 set_label_row(tx, entry, label, true, true, None)?;
                 label_changes.push(LabelState {
@@ -199,7 +197,6 @@ impl Observation for MailboxObserved {
             description.push(format!("received {}", messages(added.len())));
             events.push(ServerEvent::EntriesAdded(EntriesAdded { entries: added }));
         }
-        events.extend(synced_back);
 
         let mut relabelled = 0;
         // Whether what was pending changed: reconciled, or gone with its
@@ -240,6 +237,8 @@ impl Observation for MailboxObserved {
                 entries: removed,
             }));
         }
+        // Mail sent from the account may have been synced back.
+        reconciled |= compose::sends_synced(tx, account)?;
         if reconciled {
             events.push(outbox_changed(account));
         }

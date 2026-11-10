@@ -161,8 +161,14 @@ pub enum ClientRequest {
     SendDraft {
         draft: DraftId,
     },
-    /// Take a queued or failed item out of the outbox, back into drafts.
+    /// Take a mail being sent back, into drafts: at once if it has not
+    /// been handed to the provider, or if the provider refuses it; if it
+    /// went out, it needs a decision (SPEC §6.7).
     CancelSend {
+        item: OutboxId,
+    },
+    /// Keep a mail sent though cancelled: resolves it.
+    KeepSent {
         item: OutboxId,
     },
     /// What is not yet reconciled with the providers: per mail account

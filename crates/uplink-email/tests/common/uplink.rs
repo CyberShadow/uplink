@@ -10,7 +10,7 @@ use uplink_email::{
     service::Mail,
 };
 use uplink_protocol::{
-    compose::{DraftContent, DraftId, OutboxState},
+    compose::{DraftContent, DraftId, SendState},
     mail::{EntryId, LabelId, MailProvider, MessageId},
     ServerResponse,
 };
@@ -151,7 +151,7 @@ impl Uplink {
         )
     }
 
-    pub async fn outbox(&self) -> Vec<(i64, OutboxState)> {
+    pub async fn outbox(&self) -> Vec<(i64, SendState)> {
         let ServerResponse::Outbox { accounts, .. } = self.mail.list_outbox().await.unwrap() else {
             panic!()
         };

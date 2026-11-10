@@ -16,7 +16,7 @@ use uplink_email::{
     m365::{api::Graph, oauth, sync::M365Sync},
     oauth::Credentials,
 };
-use uplink_protocol::{compose::OutboxState, mail::MailProvider, ServerResponse};
+use uplink_protocol::{compose::SendState, mail::MailProvider, ServerResponse};
 use uplink_storage::seal::MasterKey;
 
 const ALICE: &str = "alice@example.com";
@@ -416,7 +416,7 @@ async fn sends_mail_keeping_its_message_id() {
     uplink.send(BOB, &reply, Some(original_message)).await;
     assert!(matches!(
         &uplink.outbox().await[..],
-        [(_, OutboxState::Queued)]
+        [(_, SendState::Queued)]
     ));
     let reply_entry = uplink.arrived("reply").await;
     let (_, reply_message_id, reply_thread) = uplink.message_of(reply_entry);

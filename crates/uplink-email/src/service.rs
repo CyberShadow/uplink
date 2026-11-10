@@ -2,8 +2,8 @@
 
 use crate::{
     compose::{
-        self, AttachToDraft, CancelSend, DeleteDraft, DetachFromDraft, EditDraft, PutDraft,
-        SendDraft,
+        self, AttachToDraft, CancelSend, DeleteDraft, DetachFromDraft, EditDraft, KeepSent,
+        PutDraft, SendDraft,
     },
     mailbox::{LabelChange, SetLabels},
     outbox,
@@ -432,6 +432,10 @@ impl Mail {
 
     pub async fn cancel_send(&self, item: OutboxId) -> Response {
         self.dispatcher.answer(CancelSend { item }).await
+    }
+
+    pub async fn keep_sent(&self, item: OutboxId) -> Response {
+        self.dispatcher.answer(KeepSent { item }).await
     }
 
     pub async fn list_outbox(&self) -> Response {

@@ -67,6 +67,7 @@ fn main() {
         DraftField,
         Splice,
         OutboxState,
+        SendState,
         OutboxItem,
         AccountOutbox,
         Failing,

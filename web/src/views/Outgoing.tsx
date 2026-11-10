@@ -108,9 +108,14 @@ function AccountSection(props: { account: AccountOutbox; provider: MailProvider 
             </span>
             <span />
             <span class={outgoing.actions}>
-              {(item.state === 'queued' || item.state === 'failed') && (
+              {item.wanted && item.state !== 'sent' && (
                 <button type="button" onMouseDown={keepFocus} onClick={() => drafts.cancelSend(item.id)}>
-                  {item.state === 'queued' ? 'Cancel' : 'Back to drafts'}
+                  {item.state === 'refused' ? 'Back to drafts' : 'Cancel'}
+                </button>
+              )}
+              {!item.wanted && item.state === 'sent' && (
+                <button type="button" onMouseDown={keepFocus} onClick={() => drafts.keepSent(item.id)}>
+                  Keep it sent
                 </button>
               )}
             </span>
@@ -185,10 +190,12 @@ function state(item: OutboxItem): string {
       return `sending in ${seconds} s`
     }
     case 'sending':
-      return 'sending…'
+      return item.wanted ? 'sending…' : 'sending; cancelling if it does not go out'
+    case 'unknown':
+      return `may have been sent (${item.error}); checking${item.wanted ? '' : ', cancelling if it was not'}`
     case 'sent':
-      return 'sent'
-    case 'failed':
+      return item.wanted ? 'sent; waiting for its copy' : 'sent before the cancel could take it back'
+    case 'refused':
       return `not sent: ${item.error}`
   }
 }

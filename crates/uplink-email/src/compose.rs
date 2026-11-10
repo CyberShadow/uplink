@@ -1,12 +1,12 @@
-//! Drafts and the mail outbox, and the log entries that change them
-//! (SPEC §6.7, §7).
+//! Drafts and mail sends, and the log entries that change them (SPEC
+//! §6.7, §7).
 //!
 //! A draft is edited by splices, each based on the revision it was
 //! computed against, so a stale edit from another tab is refused rather
-//! than applied in the wrong place. Sending moves the draft into the
-//! outbox, from which the account's sync task sends it once the send delay
-//! has passed; until it claims the item, the send can be undone, which
-//! returns the draft.
+//! than applied in the wrong place. Sending turns the draft into a send,
+//! which the account's sync task hands to the provider once the send
+//! delay has passed; until it claims the send, cancelling takes it back
+//! for sure, returning the draft.
 //!
 //! Files are attached by uploading them to the blob store, then attaching
 //! the blob, as an op of its own beside the text's splices (§7.4).
@@ -27,13 +27,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use uplink_protocol::{
     compose::{
         BlobId, Draft, DraftAttachment, DraftAttachmentId, DraftContent, DraftEdited, DraftField,
-        DraftId, DraftsChanged, OutboxId, OutboxItem, OutboxState, Splice,
+        DraftId, DraftsChanged, OutboxId, OutboxItem, SendState, Splice,
     },
-    mail::{EntryId, MessageId},
+    mail::MessageId,
     ServerEvent,
 };
 use uplink_storage::rusqlite::{params, OptionalExtension, Row, Transaction};
-use uplink_tx_log::{Applied, Conflict, Inverse, Observation, Observed, Op, Registry};
+use uplink_tx_log::{this_entry, Applied, Conflict, Inverse, Observation, Observed, Op, Registry};
 
 pub fn register(registry: &mut Registry) {
     registry.register::<PutDraft>();
@@ -43,6 +43,7 @@ pub fn register(registry: &mut Registry) {
     registry.register::<DetachFromDraft>();
     registry.register::<SendDraft>();
     registry.register::<CancelSend>();
+    registry.register::<KeepSent>();
 }
 
 // ── drafts ────────────────────────────────────────────────────────────────
@@ -449,49 +450,60 @@ fn byte_offset(text: &str, units: u32) -> Option<usize> {
     (counted == units).then_some(text.len())
 }
 
-// ── outbox ────────────────────────────────────────────────────────────────
+// ── sends ─────────────────────────────────────────────────────────────────
+//
+// A send is desired state (SPEC §6.7): wanted, or no longer, and what the
+// provider made of it, observed. Cancelling a send the provider has not
+// been handed (or refused) takes it back at once; one handed over is
+// taken back only if the provider refuses it, and if it went out, it
+// needs the user's decision: keeping it sent.
 
-const OUTBOX_COLUMNS: &str = "id, account_id, draft, state, error, not_before";
+const SEND_COLUMNS: &str = "id, account_id, draft, state, wanted, error, not_before";
 
-fn outbox_row(r: &Row) -> uplink_storage::rusqlite::Result<OutboxItem> {
+fn send_row(r: &Row) -> uplink_storage::rusqlite::Result<OutboxItem> {
     let draft: String = r.get(2)?;
     let state: String = r.get(3)?;
     Ok(OutboxItem {
         id: OutboxId(r.get(0)?),
         account: r.get(1)?,
-        draft: serde_json::from_str(&draft).expect("outbox drafts deserialize"),
+        draft: serde_json::from_str(&draft).expect("sent drafts deserialize"),
         state: match state.as_str() {
-            "queued" => OutboxState::Queued,
-            "sending" => OutboxState::Sending,
-            "sent" => OutboxState::Sent,
-            "failed" => OutboxState::Failed,
-            _ => unreachable!("the schema allows no outbox state {state}"),
+            "queued" => SendState::Queued,
+            "sending" => SendState::Sending,
+            "unknown" => SendState::Unknown,
+            "sent" => SendState::Sent,
+            "refused" => SendState::Refused,
+            _ => unreachable!("the schema allows no send state {state}"),
         },
-        error: r.get(4)?,
-        not_before: r.get(5)?,
+        wanted: r.get(4)?,
+        error: r.get(5)?,
+        not_before: r.get(6)?,
     })
 }
 
+/// The sends not yet reconciled: not yet synced back, or no longer
+/// wanted.
 pub(crate) fn outbox(tx: &Transaction) -> Result<Vec<OutboxItem>> {
     Ok(tx
         .prepare(&format!(
-            "SELECT {OUTBOX_COLUMNS} FROM mail_outbox ORDER BY not_before, id"
+            "SELECT {SEND_COLUMNS} FROM mail_send WHERE NOT synced OR NOT wanted
+             ORDER BY not_before, id"
         ))?
-        .query_map([], outbox_row)?
+        .query_map([], send_row)?
         .collect::<Result<_, _>>()?)
 }
 
-fn outbox_item(tx: &Transaction, id: OutboxId) -> Result<Option<OutboxItem>> {
+fn send(tx: &Transaction, id: OutboxId) -> Result<Option<OutboxItem>> {
     Ok(tx
         .query_row(
-            &format!("SELECT {OUTBOX_COLUMNS} FROM mail_outbox WHERE id = ?1"),
+            &format!("SELECT {SEND_COLUMNS} FROM mail_send WHERE id = ?1"),
             [id.0],
-            outbox_row,
+            send_row,
         )
         .optional()?)
 }
 
-/// Moves a draft into the outbox, to be sent `delay_ms` from now.
+/// Queues a draft to be sent `delay_ms` from now.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SendDraft {
@@ -503,12 +515,14 @@ impl Op for SendDraft {
     const KIND: &'static str = "mail.send";
 
     fn apply(self, tx: &Transaction) -> Result<Applied> {
+        let this = this_entry(tx)?;
         let draft = delete_draft(tx, &self.id)?;
         let message_id = new_message_id(&draft.account);
         let item = OutboxId(tx.query_row(
-            "INSERT INTO mail_outbox
-               (account_id, draft, message_id, delay_ms, not_before, state)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'queued')
+            "INSERT INTO mail_send
+               (account_id, draft, message_id, delay_ms, not_before, wanted, desired_by,
+                state, synced)
+             VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, 'queued', 0)
              RETURNING id",
             params![
                 draft.account,
@@ -516,6 +530,7 @@ impl Op for SendDraft {
                 message_id,
                 self.delay_ms,
                 now_ms() + self.delay_ms,
+                this.0,
             ],
             |r| r.get(0),
         )?);
@@ -534,7 +549,10 @@ fn new_message_id(account: &str) -> String {
     format!("{random}@{account}.uplink")
 }
 
-/// Takes a queued or failed item out of the outbox, restoring its draft.
+/// Takes a send back: at once, restoring its draft, if the provider has
+/// not been handed it or refused it; otherwise it is no longer wanted,
+/// which the provider's refusal fulfils, and its going out makes a
+/// decision for the user.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CancelSend {
@@ -545,34 +563,85 @@ impl Op for CancelSend {
     const KIND: &'static str = "mail.cancel_send";
 
     fn apply(self, tx: &Transaction) -> Result<Applied> {
-        let item =
-            outbox_item(tx, self.item)?.ok_or_else(|| Conflict("the message was sent".into()))?;
+        let item = send(tx, self.item)?
+            .ok_or_else(|| Conflict("the message was sent again since".into()))?;
+        ensure!(
+            item.wanted,
+            Conflict("sending it is already being cancelled".into())
+        );
+        let title = title(&item.draft.content);
         match item.state {
-            OutboxState::Queued | OutboxState::Failed => {}
-            OutboxState::Sending => bail!(Conflict("the message is being sent".into())),
-            OutboxState::Sent => bail!(Conflict("the message was sent".into())),
+            SendState::Queued | SendState::Refused => {
+                let delay_ms = take_back(tx, &item)?;
+                Ok(Applied {
+                    description: format!("Cancelled sending {title}"),
+                    inverse: Inverse::of(&SendDraft {
+                        id: item.draft.id.clone(),
+                        delay_ms,
+                    }),
+                    events: vec![
+                        drafts_changed(&item.draft.id),
+                        outbox_changed(&item.account),
+                    ],
+                })
+            }
+            SendState::Sending | SendState::Unknown | SendState::Sent => {
+                set_wanted(tx, self.item, false)?;
+                Ok(Applied {
+                    description: format!("Cancelled sending {title}, which may have gone out"),
+                    inverse: Inverse::of(&KeepSent { item: self.item }),
+                    events: vec![outbox_changed(&item.account)],
+                })
+            }
         }
-        let delay_ms: i64 = tx.query_row(
-            "DELETE FROM mail_outbox WHERE id = ?1 RETURNING delay_ms",
-            [self.item.0],
-            |r| r.get(0),
-        )?;
-        insert_draft(tx, &item.draft)?;
+    }
+}
+
+/// Wants a send cancelled when it could no longer be taken back for sure
+/// again: resolves one that went out regardless.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeepSent {
+    pub item: OutboxId,
+}
+
+impl Op for KeepSent {
+    const KIND: &'static str = "mail.keep_sent";
+
+    fn apply(self, tx: &Transaction) -> Result<Applied> {
+        let item = send(tx, self.item)?
+            .filter(|i| !i.wanted)
+            .ok_or_else(|| Conflict("sending it is no longer being cancelled".into()))?;
+        set_wanted(tx, self.item, true)?;
         Ok(Applied {
-            description: format!("Cancelled sending {}", title(&item.draft.content)),
-            inverse: Inverse::of(&SendDraft {
-                id: item.draft.id.clone(),
-                delay_ms,
-            }),
-            events: vec![
-                drafts_changed(&item.draft.id),
-                outbox_changed(&item.account),
-            ],
+            description: format!("Kept {} sent", title(&item.draft.content)),
+            inverse: Inverse::of(&CancelSend { item: self.item }),
+            events: vec![outbox_changed(&item.account)],
         })
     }
 }
 
-/// An outbox item due to be sent.
+fn set_wanted(tx: &Transaction, item: OutboxId, wanted: bool) -> Result<()> {
+    tx.execute(
+        "UPDATE mail_send SET wanted = ?1, desired_by = ?2 WHERE id = ?3",
+        params![wanted, this_entry(tx)?.0, item.0],
+    )?;
+    Ok(())
+}
+
+/// Takes back a send the provider does not have: deletes it, restoring
+/// its draft; returns the send delay it was queued with.
+fn take_back(tx: &Transaction, item: &OutboxItem) -> Result<i64> {
+    let delay_ms = tx.query_row(
+        "DELETE FROM mail_send WHERE id = ?1 RETURNING delay_ms",
+        [item.id.0],
+        |r| r.get(0),
+    )?;
+    insert_draft(tx, &item.draft)?;
+    Ok(delay_ms)
+}
+
+/// A send due to be handed to the provider.
 #[derive(Debug, Clone)]
 pub struct Due {
     pub item: OutboxId,
@@ -580,7 +649,7 @@ pub struct Due {
     pub message_id: String,
 }
 
-/// The account's queued items whose time has come, and when the next
+/// The account's queued sends whose time has come, and when the next
 /// one comes due.
 pub(crate) fn due(
     conn: &uplink_storage::rusqlite::Connection,
@@ -589,7 +658,7 @@ pub(crate) fn due(
 ) -> Result<(Vec<Due>, Option<i64>)> {
     let due = conn
         .prepare(
-            "SELECT id, draft, message_id FROM mail_outbox
+            "SELECT id, draft, message_id FROM mail_send
              WHERE account_id = ?1 AND state = 'queued' AND not_before <= ?2
              ORDER BY not_before, id",
         )?
@@ -597,13 +666,13 @@ pub(crate) fn due(
             let draft: String = r.get(1)?;
             Ok(Due {
                 item: OutboxId(r.get(0)?),
-                draft: serde_json::from_str(&draft).expect("outbox drafts deserialize"),
+                draft: serde_json::from_str(&draft).expect("sent drafts deserialize"),
                 message_id: r.get(2)?,
             })
         })?
         .collect::<Result<_, _>>()?;
     let next = conn.query_row(
-        "SELECT min(not_before) FROM mail_outbox
+        "SELECT min(not_before) FROM mail_send
          WHERE account_id = ?1 AND state = 'queued' AND not_before > ?2",
         params![account, now],
         |r| r.get(0),
@@ -611,21 +680,37 @@ pub(crate) fn due(
     Ok((due, next))
 }
 
-/// Items the account's sync task claimed but did not finish: it was
+/// Sends the account's sync task claimed but did not finish: it was
 /// interrupted, and they may or may not have gone out.
 pub(crate) fn interrupted(
     conn: &uplink_storage::rusqlite::Connection,
     account: &str,
 ) -> Result<Vec<OutboxId>> {
     Ok(conn
-        .prepare("SELECT id FROM mail_outbox WHERE account_id = ?1 AND state = 'sending'")?
+        .prepare("SELECT id FROM mail_send WHERE account_id = ?1 AND state = 'sending'")?
         .query_map([account], |r| Ok(OutboxId(r.get(0)?)))?
         .collect::<Result<_, _>>()?)
 }
 
-/// The sync task is about to hand an item to the provider: from now on,
-/// it can no longer be cancelled. Refused with a [`Conflict`] if the item
-/// is no longer queued.
+/// The account's sends whose outcome is unknown, attempted before `time`
+/// (unix ms).
+pub(crate) fn unknown_before(
+    conn: &uplink_storage::rusqlite::Connection,
+    account: &str,
+    time: i64,
+) -> Result<Vec<OutboxId>> {
+    Ok(conn
+        .prepare(
+            "SELECT id FROM mail_send
+             WHERE account_id = ?1 AND state = 'unknown' AND attempted_at < ?2",
+        )?
+        .query_map(params![account, time], |r| Ok(OutboxId(r.get(0)?)))?
+        .collect::<Result<_, _>>()?)
+}
+
+/// The sync task is about to hand a send to the provider: from now on, a
+/// cancel can no longer take it back at once. Refused with a [`Conflict`]
+/// if it is no longer queued.
 #[derive(Debug, Serialize)]
 pub struct SendStarted {
     pub item: OutboxId,
@@ -635,10 +720,13 @@ impl Observation for SendStarted {
     const KIND: &'static str = "mail.send_started";
 
     fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
-        let item = outbox_item(tx, self.item)?
-            .filter(|i| i.state == OutboxState::Queued)
+        let item = send(tx, self.item)?
+            .filter(|i| i.state == SendState::Queued)
             .ok_or_else(|| Conflict("no longer queued".into()))?;
-        set_state(tx, self.item, "sending", None)?;
+        tx.execute(
+            "UPDATE mail_send SET state = 'sending', attempted_at = ?1 WHERE id = ?2",
+            params![now_ms(), self.item.0],
+        )?;
         Ok(Observed {
             description: format!("Sending {}", title(&item.draft.content)),
             events: vec![outbox_changed(account)],
@@ -646,7 +734,7 @@ impl Observation for SendStarted {
     }
 }
 
-/// The provider accepted an item. The message as sent is now in the mail
+/// The provider accepted a send. The message as sent is now in the mail
 /// store; recording it creates the logical message, which the provider's
 /// copy joins once synced (SPEC §8.6).
 #[derive(Debug, Serialize)]
@@ -662,9 +750,9 @@ impl Observation for SendSucceeded {
     const KIND: &'static str = "mail.send_succeeded";
 
     fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
-        let item = outbox_item(tx, self.item)?.context("the outbox item is gone")?;
+        let item = send(tx, self.item)?.context("the send is gone")?;
         ensure!(
-            item.state == OutboxState::Sending,
+            item.state == SendState::Sending,
             "{:?} is not being sent",
             self.item
         );
@@ -680,88 +768,149 @@ impl Observation for SendSucceeded {
             None => insert_variant(tx, account, &self.variant, self.size_bytes, &self.parsed)?,
         };
         tx.execute(
-            "UPDATE mail_outbox SET state = 'sent', message = ?1 WHERE id = ?2",
+            "UPDATE mail_send SET state = 'sent', message = ?1 WHERE id = ?2",
             params![message.0, self.item.0],
         )?;
         // The provider's copy may have been synced already.
-        let mut events = vec![outbox_changed(account)];
-        events.extend(synced_back(tx, account, message)?);
+        sends_synced(tx, account)?;
+        let title = title(&item.draft.content);
         Ok(Observed {
-            description: format!("Sent {}", title(&item.draft.content)),
-            events,
+            description: if item.wanted {
+                format!("Sent {title}")
+            } else {
+                format!("Sent {title} before the cancel could take it back")
+            },
+            events: vec![outbox_changed(account)],
         })
     }
 }
 
-/// Sending an item failed. With an `error`, it was not sent and will not
-/// be retried; without, it goes back to the queue to be retried.
+/// What came of handing a send to the provider, if not its acceptance.
+#[derive(Debug, Serialize)]
+pub enum SendOutcome {
+    /// Not sent, for a passing reason: to be tried again.
+    NotSent,
+    /// Refused by the provider, or unbuildable, for this reason.
+    Refused(String),
+    /// The provider may or may not have taken it, as this says.
+    Unknown(String),
+}
+
+/// Handing a send to the provider did not get it accepted. A send no
+/// longer wanted that did not go out is taken back.
 #[derive(Debug, Serialize)]
 pub struct SendFailed {
     pub item: OutboxId,
-    pub error: Option<String>,
+    pub outcome: SendOutcome,
 }
 
 impl Observation for SendFailed {
     const KIND: &'static str = "mail.send_failed";
 
     fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
-        let item = outbox_item(tx, self.item)?.context("the outbox item is gone")?;
+        let item = send(tx, self.item)?.context("the send is gone")?;
         ensure!(
-            item.state == OutboxState::Sending,
+            item.state == SendState::Sending,
             "{:?} is not being sent",
             self.item
         );
         let title = title(&item.draft.content);
-        let description = match &self.error {
-            Some(error) => {
-                set_state(tx, self.item, "failed", Some(error))?;
-                format!("Failed to send {title}: {error}")
+        let mut events = vec![outbox_changed(account)];
+        let description = match self.outcome {
+            SendOutcome::Unknown(error) => {
+                set_state(tx, self.item, "unknown", Some(&error))?;
+                format!("Sending {title} may have failed: {error}")
             }
-            None => {
+            SendOutcome::NotSent | SendOutcome::Refused(_) if !item.wanted => {
+                take_back(tx, &item)?;
+                events.push(drafts_changed(&item.draft.id));
+                format!("Took back {title}: it did not go out")
+            }
+            SendOutcome::NotSent => {
                 set_state(tx, self.item, "queued", None)?;
                 format!("Failed to send {title}; will retry")
+            }
+            SendOutcome::Refused(error) => {
+                set_state(tx, self.item, "refused", Some(&error))?;
+                format!("Failed to send {title}: {error}")
             }
         };
         Ok(Observed {
             description,
-            events: vec![outbox_changed(account)],
+            events,
         })
     }
 }
 
+/// A send whose outcome was unknown did not go out: a sync begun since
+/// the attempt would have seen the provider's copy. It is sent again, or,
+/// no longer wanted, taken back.
+#[derive(Debug, Serialize)]
+pub struct SendNotFound {
+    pub item: OutboxId,
+}
+
+impl Observation for SendNotFound {
+    const KIND: &'static str = "mail.send_not_found";
+
+    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
+        let item = send(tx, self.item)?.context("the send is gone")?;
+        ensure!(
+            item.state == SendState::Unknown,
+            "{:?}'s outcome is known",
+            self.item
+        );
+        let title = title(&item.draft.content);
+        let mut events = vec![outbox_changed(account)];
+        let description = if item.wanted {
+            set_state(tx, self.item, "queued", None)?;
+            format!("{} did not go out; sending it again", capitalize(&title))
+        } else {
+            take_back(tx, &item)?;
+            events.push(drafts_changed(&item.draft.id));
+            format!("Took back {title}: it did not go out")
+        };
+        Ok(Observed {
+            description,
+            events,
+        })
+    }
+}
+
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
 fn set_state(tx: &Transaction, item: OutboxId, state: &str, error: Option<&str>) -> Result<()> {
     tx.execute(
-        "UPDATE mail_outbox SET state = ?1, error = ?2 WHERE id = ?3",
+        "UPDATE mail_send SET state = ?1, error = ?2 WHERE id = ?3",
         params![state, error, item.0],
     )?;
     Ok(())
 }
 
-/// Removes the account's sent items whose provider copy has been synced:
-/// they are mail like any other now.
-fn synced_back(tx: &Transaction, account: &str, message: MessageId) -> Result<Option<ServerEvent>> {
-    let removed = tx.execute(
-        "DELETE FROM mail_outbox
-         WHERE account_id = ?1 AND message = ?2 AND state = 'sent'
-           AND EXISTS (SELECT 1 FROM mail_entry WHERE account_id = ?1 AND message = ?2)",
-        params![account, message.0],
+/// Records the account's sends whose copy the provider has, in Sent, as
+/// synced: sent, whatever was known of them, and reconciled if wanted.
+/// Returns whether there were any.
+pub(crate) fn sends_synced(tx: &Transaction, account: &str) -> Result<bool> {
+    let synced = tx.execute(
+        "UPDATE mail_send
+         SET state = 'sent', error = NULL, synced = 1,
+             message = (SELECT m.id FROM message m WHERE m.message_id = mail_send.message_id)
+         WHERE account_id = ?1 AND NOT synced AND state IN ('unknown', 'sent')
+           AND EXISTS (
+             SELECT 1 FROM message m
+             JOIN mail_entry e ON e.message = m.id AND e.account_id = ?1
+             JOIN entry_label el ON el.entry = e.id AND el.observed
+             JOIN label l ON l.id = el.label AND l.external_id = 'SENT'
+             WHERE m.message_id = mail_send.message_id)",
+        [account],
     )?;
-    Ok((removed > 0).then(|| outbox_changed(account)))
-}
-
-/// After an entry was recorded: its message may be one sent from the
-/// account.
-pub(crate) fn entry_synced(
-    tx: &Transaction,
-    account: &str,
-    entry: EntryId,
-) -> Result<Option<ServerEvent>> {
-    let message: i64 = tx.query_row(
-        "SELECT message FROM mail_entry WHERE id = ?1",
-        [entry.0],
-        |r| r.get(0),
-    )?;
-    synced_back(tx, account, MessageId(message))
+    Ok(synced > 0)
 }
 
 // ── outgoing messages ─────────────────────────────────────────────────────

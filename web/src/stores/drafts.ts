@@ -198,6 +198,11 @@ export class DraftStore {
     return this.ops.dispatch({ type: 'cancel_send', item })
   }
 
+  /** Resolves a send that went out though cancelled by keeping it sent. */
+  keepSent(item: OutboxId) {
+    return this.ops.dispatch({ type: 'keep_sent', item })
+  }
+
   /** Resolves `op`'s refused changes in `account` by keeping what the
    * provider has. */
   keepObserved(account: string, op: TxLogId | null) {
@@ -223,12 +228,12 @@ export function outboxCount(outbox: readonly AccountOutbox[]): number {
 }
 
 /** Whether something in the outbox needs the user: an account failing,
- * or something refused. */
+ * something refused, or mail sent though cancelled. */
 export function outboxNeedsAttention(outbox: readonly AccountOutbox[]): boolean {
   return outbox.some(
     (account) =>
       account.failing !== null ||
       account.changes.some((c) => c.refused.length > 0) ||
-      account.sends.some((s) => s.state === 'failed'),
+      account.sends.some((s) => s.state === 'refused' || (s.state === 'sent' && !s.wanted)),
   )
 }

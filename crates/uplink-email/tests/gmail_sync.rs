@@ -12,7 +12,7 @@ use uplink_email::{
     gmail::{api::Gmail, oauth, sync::GmailSync},
     oauth::Credentials,
 };
-use uplink_protocol::{compose::OutboxState, mail::MailProvider, ServerResponse};
+use uplink_protocol::{compose::SendState, mail::MailProvider, ServerResponse};
 use uplink_storage::rusqlite::OptionalExtension;
 
 /// Gmail's sync task, polling quickly.
@@ -282,7 +282,7 @@ async fn sends_mail_after_the_delay_unless_undone() {
     uplink.send(&me, &reply, Some(original_message)).await;
     assert!(matches!(
         &uplink.outbox().await[..],
-        [(_, OutboxState::Queued)]
+        [(_, SendState::Queued)]
     ));
     let reply_entry = uplink.arrived("reply").await;
     let (_, reply_message_id, reply_thread) = uplink.message_of(reply_entry);
@@ -290,12 +290,11 @@ async fn sends_mail_after_the_delay_unless_undone() {
     assert_eq!(reply_thread, original_thread);
     let outbox_message_id: Option<String> = uplink
         .reader()
-        .query_row("SELECT message_id FROM mail_outbox", [], |r| r.get(0))
+        .query_row("SELECT message_id FROM mail_send", [], |r| r.get(0))
         .optional()
         .unwrap();
-    // Gone from the outbox once synced back; until then, it's the same
-    // message.
-    assert!(outbox_message_id.is_none_or(|id| id == reply_message_id));
+    // The send and its copy are the same message.
+    assert_eq!(outbox_message_id, Some(reply_message_id));
     eventually("the outbox to empty", || async {
         uplink.outbox().await.is_empty().then_some(())
     })

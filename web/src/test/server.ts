@@ -243,6 +243,14 @@ export class FakeServer implements Requester, Blobs {
     this.observe(account, [{ type: 'outbox_changed', accounts: [account] }])
   }
 
+  /** Mail the provider sent though cancelled meanwhile (SPEC §6.7). */
+  sentThoughCancelled(account: string, subject: string) {
+    const content = { to: 'bob@example.org', cc: '', bcc: '', subject, body: '' }
+    const draft = { id: `sent-${this.nextOutbox}`, account, content, attachments: [], in_reply_to: null, revision: 0, updated_at: 0 }
+    this.outbox.push({ id: this.nextOutbox++, account, draft, state: 'sent', wanted: false, error: null, not_before: 0 })
+    this.observe(account, [{ type: 'outbox_changed', accounts: [account] }])
+  }
+
   /** The homeserver sends an outbox item, and sync echoes it. */
   echo(item: number) {
     const index = this.matrixOutbox.findIndex((i) => i.id === item)
@@ -474,7 +482,7 @@ export class FakeServer implements Requester, Blobs {
         const draft = this.drafts.get(body.draft)!
         this.drafts.delete(body.draft)
         const id = this.nextOutbox++
-        this.outbox.push({ id, account: draft.account, draft, state: 'queued', error: null, not_before: Date.now() + 10_000 })
+        this.outbox.push({ id, account: draft.account, draft, state: 'queued', wanted: true, error: null, not_before: Date.now() + 10_000 })
         const response = this.dispatched(`Sent '${draft.content.subject}'`, [
           { type: 'drafts_changed', drafts: [draft.id] },
           { type: 'outbox_changed', accounts: [draft.account] },
@@ -484,6 +492,12 @@ export class FakeServer implements Requester, Blobs {
       }
       case 'cancel_send':
         return { type: 'dispatched', tx_log_id: this.cancelSend(body.item, 'Cancelled sending') }
+      case 'keep_sent': {
+        // Sent and synced, it leaves the outbox once wanted again.
+        const index = this.outbox.findIndex((i) => i.id === body.item && i.state === 'sent' && !i.wanted)
+        const [kept] = this.outbox.splice(index, 1)
+        return this.dispatched('Kept it sent', [{ type: 'outbox_changed', accounts: [kept.account] }])
+      }
       case 'list_rooms':
         return {
           type: 'rooms',

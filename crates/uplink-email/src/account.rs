@@ -10,8 +10,8 @@
 
 use crate::{
     compose::{
-        self, build_message, now_ms, Due, File, ReplyContext, SendFailed, SendStarted,
-        SendSucceeded,
+        self, build_message, now_ms, Due, File, ReplyContext, SendFailed, SendNotFound,
+        SendOutcome, SendStarted, SendSucceeded,
     },
     mailbox::PushFailing,
     parse::{parse, Parsed},
@@ -35,6 +35,10 @@ use uplink_storage::rusqlite::{params, Connection, OptionalExtension};
 use uplink_tx_log::{Conflict, Dispatcher, Observation};
 
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
+/// How long after a send's attempt began a sync must begin to settle its
+/// unknown outcome (SPEC §6.7): by then the provider is done with the
+/// request, whatever became of the connection.
+const SETTLE_AFTER: i64 = 5 * 60 * 1000;
 
 /// What is particular to a provider.
 pub trait Provider: Send + Sync + 'static {
@@ -267,6 +271,8 @@ impl<P: Provider> SyncTask<P> {
         // Whether the last run left the account failing: not known until
         // read, which may fail too.
         let mut failing = None;
+        // When the last sync that recorded all there was began (unix ms).
+        let mut synced_since = None;
         loop {
             let step = async {
                 if failing.is_none() {
@@ -276,7 +282,7 @@ impl<P: Provider> SyncTask<P> {
                     self.recover().await?;
                     recovered = true;
                 }
-                self.step().await
+                self.step(&mut synced_since).await
             };
             match step.await {
                 Ok((more, next_due)) => {
@@ -332,11 +338,35 @@ impl<P: Provider> SyncTask<P> {
     }
 
     /// Syncs (a step), pushes and sends; returns whether the sync has more
-    /// to do at once, and when the next queued mail is due.
-    async fn step(&self) -> Result<(bool, Option<i64>)> {
+    /// to do at once, and when the next queued mail is due. `synced_since`:
+    /// when the last sync that recorded all there was began.
+    async fn step(&self, synced_since: &mut Option<i64>) -> Result<(bool, Option<i64>)> {
+        let began = now_ms();
         let more = self.provider.sync(&self.account).await?;
+        if !more {
+            *synced_since = Some(began);
+        }
         self.provider.push(&self.account).await?;
+        if let Some(since) = *synced_since {
+            self.settle_unknown(since).await?;
+        }
         Ok((more, self.send_due().await?))
+    }
+
+    /// Settles the sends whose outcome was unknown, attempted long enough
+    /// before a sync that began at `synced_since` and recorded all there
+    /// was: had they gone out, it would have seen their copy, and they
+    /// would be sent.
+    async fn settle_unknown(&self, synced_since: i64) -> Result<()> {
+        let account = self.account.id.clone();
+        let unknown = self
+            .account
+            .read(move |conn| compose::unknown_before(conn, &account, synced_since - SETTLE_AFTER))
+            .await?;
+        for item in unknown {
+            self.account.observe(SendNotFound { item }).await?;
+        }
+        Ok(())
     }
 
     /// Until the poll interval passes, mail is due (unix ms), or the user
@@ -362,7 +392,8 @@ impl<P: Provider> SyncTask<P> {
         }
     }
 
-    /// Fails the mail a previous run of the task was interrupted sending.
+    /// Records the outcome of mail a previous run of the task was
+    /// interrupted sending as unknown.
     async fn recover(&self) -> Result<()> {
         let account = self.account.id.clone();
         let interrupted = self
@@ -373,7 +404,7 @@ impl<P: Provider> SyncTask<P> {
             self.account
                 .observe(SendFailed {
                     item,
-                    error: Some("interrupted while sending: it may have been sent".into()),
+                    outcome: SendOutcome::Unknown("interrupted while sending".into()),
                 })
                 .await?;
         }
@@ -407,15 +438,26 @@ impl<P: Provider> SyncTask<P> {
                 }
                 Err(SendError::NotSent(e)) => {
                     self.account
-                        .observe(SendFailed { item, error: None })
+                        .observe(SendFailed {
+                            item,
+                            outcome: SendOutcome::NotSent,
+                        })
                         .await?;
                     return Err(e.context("sending mail"));
                 }
-                Err(e) => {
+                Err(SendError::Rejected(reason)) => {
                     self.account
                         .observe(SendFailed {
                             item,
-                            error: Some(e.to_string()),
+                            outcome: SendOutcome::Refused(reason),
+                        })
+                        .await?
+                }
+                Err(SendError::Unknown(e)) => {
+                    self.account
+                        .observe(SendFailed {
+                            item,
+                            outcome: SendOutcome::Unknown(format!("{e:#}")),
                         })
                         .await?
                 }

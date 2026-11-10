@@ -775,6 +775,17 @@ describe('outbox', () => {
     )
     expect(within(section).getByText(/^2 messages waiting$/)).toBeTruthy()
   })
+
+  it('asks about mail sent though cancelled, until kept sent', async () => {
+    const user = await start('/outbox')
+    server.sentThoughCancelled('work', 'Lunch')
+    const section = await screen.findByRole('region', { name: 'work' })
+    expect(within(section).getByText('sent before the cancel could take it back')).toBeTruthy()
+    const count = within(screen.getByRole('link', { name: /Outbox/ })).getByText('1')
+    expect(count.title).toBe('Something needs your attention')
+    await user.click(within(section).getByRole('button', { name: 'Keep it sent' }))
+    await screen.findByText('The outbox is empty: everything you did is at the providers.')
+  })
 })
 
 describe('matrix', () => {

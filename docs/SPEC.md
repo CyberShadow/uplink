@@ -491,7 +491,7 @@ CREATE TABLE matrix_event (
   encryption   TEXT NOT NULL,        -- 'none' | 'decrypted' | 'undecryptable'
   UNIQUE (room, event_id)
 );
-CREATE TABLE matrix_send (     -- (V0019: was matrix_outbox)
+CREATE TABLE matrix_send (     -- (V0020: was matrix_outbox)
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   room         INTEGER NOT NULL REFERENCES matrix_room(id),
   body         TEXT NOT NULL,
@@ -575,9 +575,9 @@ CREATE TABLE mail_send (
   wanted         INTEGER NOT NULL,          -- desired: 0 once cancelled while it can't be taken back
   desired_by     INTEGER NOT NULL REFERENCES tx_log(id), -- the op that set `wanted`
   state          TEXT NOT NULL,             -- 'queued' | 'sending' | 'unknown' | 'sent' | 'refused'
-  attempted_at   INTEGER,                   -- unix ms; set iff unknown
+  attempted_at   INTEGER,                   -- unix ms: when the last attempt began
   provider_draft TEXT,                      -- M365: the draft it is sent as (§8.4)
-  error          TEXT,                      -- set iff refused
+  error          TEXT,                      -- set iff refused or unknown: why
   message        INTEGER REFERENCES message(id), -- set iff sent: the local copy
   synced         INTEGER NOT NULL           -- the provider's copy is observed: out of the outbox
 );
@@ -814,8 +814,8 @@ than it buffers is closed; the client reconnects and resumes.
 - One request per op kind the client can dispatch, answered with the
   tx_log id: `ModifyLabels { entries, add, remove }` covers archive,
   label, mark read and star; `CreateDraft`, `EditDraft { draft, revision,
-  splice }`, `DeleteDraft`, `SendDraft`, `CancelSend { send }`,
-  `KeepSent { send }` (§6.7, §7); `KeepObserved { op }` — a refused
+  splice }`, `DeleteDraft`, `SendDraft`, `CancelSend { item }`,
+  `KeepSent { item }` (§6.7, §7); `KeepObserved { op }` — a refused
   change taken back to what the provider has (§6.6);
   `SendMatrixMessage { room, body }`, `CancelMatrixSend { send }`,
   `KeepMatrixSent { send }`,
@@ -1045,9 +1045,9 @@ makes the send unwanted, and is never refused:
 - before the reconciler has claimed the send, it is fulfilled at once:
   the send goes, and the draft is back. The send delay is therefore a
   reliable undo-send window;
-- once claimed (`sending`, the push in flight) or sent, it is a pending
-  difference that only the provider's refusal fulfils (then the draft is
-  back). If the message went out, it is irreconcilable ("sent before the
+- once claimed (`sending`, the push in flight; `unknown`) or sent, it is
+  a pending difference that only an outcome of not sent or refused
+  fulfils (then the draft is back). If the message went out, it is irreconcilable ("sent before the
   undo"), resolved by keeping it sent (`mail.keep_sent`), which makes the
   send wanted again; the draft stays gone.
 
@@ -1065,8 +1065,11 @@ that a cancel knows whether it can still be fulfilled locally. Then:
 - outcome unknown (a timeout; the process stopped while `sending`):
   `unknown`, until the provider is observed:
   - Gmail files the sent copy in accepting `messages.send`, so a sync
-    completed after the attempt tells: the Message-ID's copy in Sent
-    means `sent`; none means it did not go out, and it is queued again;
+    that recorded all there was tells, if it began long enough
+    (5 minutes) after the attempt that the provider is done with the
+    request: the Message-ID's copy in Sent means `sent`; none means it
+    did not go out, and it is queued again (or, no longer wanted, the
+    draft is back);
   - Graph sends a draft created first, by its id (§8.4): reading that
     draft tells, at once.
 
