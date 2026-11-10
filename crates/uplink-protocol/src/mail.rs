@@ -50,9 +50,9 @@ pub struct Label {
     pub system: bool,
     /// One of the account's folders, of which an entry is in exactly one.
     pub folder: bool,
-    /// Entries carrying the label (as desired).
+    /// Conversations with an entry carrying the label (as desired).
     pub total: u32,
-    /// Of those, the ones also labelled `UNREAD`.
+    /// Of those, the ones with an entry carrying it and `UNREAD` too.
     pub unread: u32,
 }
 
@@ -76,6 +76,40 @@ pub struct Entry {
     pub labels: Vec<LabelId>,
 }
 
+/// A conversation as a list shows it: the entries of one account's
+/// thread (Gmail's `threadId`, Microsoft 365's `conversationId`), or an
+/// entry without one by itself, as far as the list's scope goes: the
+/// entries in Trash, in a list of Trash; else those not in Trash or Spam.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Conversation {
+    /// Its newest entry: the row shows it, and the list is ordered by it.
+    pub latest: Entry,
+    /// Its other entries, oldest first.
+    pub earlier: Vec<Member>,
+    /// Who sent its entries, each once, in the order they first did.
+    pub senders: Vec<Sender>,
+    /// Whether any of its entries has attachments.
+    pub has_attachments: bool,
+}
+
+/// An entry of a conversation other than its latest.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Member {
+    pub id: EntryId,
+    pub message: MessageId,
+    /// Labels as desired.
+    pub labels: Vec<LabelId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Sender {
+    pub name: Option<String>,
+    pub addr: Option<String>,
+}
+
 /// What a message list is of.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -88,7 +122,8 @@ pub enum EntryList {
     Inbox,
 }
 
-/// Where a page of a message list ends; lists run newest first.
+/// Where a page of a message list ends: its last conversation's latest
+/// entry. Lists run newest first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ListPosition {

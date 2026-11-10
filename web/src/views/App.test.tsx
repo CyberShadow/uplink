@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { Entry } from '../generated/protocol'
 import { Client } from '../stores/client'
+import { conversationKey } from '../stores/mail'
 import { FakeServer } from '../test/server'
 import { App } from './App'
 
@@ -50,6 +51,87 @@ describe('mail', () => {
     expect(within(nav).getByRole('link', { name: 'Projects' })).toBeTruthy()
   })
 
+  describe('conversations', () => {
+    /** A thread of three in the Inbox: Alice's, the user's reply, and
+     * Bob's; the reply not in the Inbox. */
+    function thread() {
+      const first = server.deliver('work', 'Plans', ['INBOX'], 't1')
+      first.from_name = 'Alice Smith'
+      first.from_addr = 'alice@example.org'
+      const reply = server.deliver('work', 'Re: Plans', ['SENT'], 't1')
+      reply.from_name = null
+      reply.from_addr = 'work@example.com'
+      const last = server.deliver('work', 'Re: Plans', ['INBOX', 'UNREAD'], 't1')
+      return [first, reply, last]
+    }
+
+    it('lists a thread as one row, by its latest', async () => {
+      thread()
+      await start('/mail/work/INBOX')
+      expect(subjects()).toEqual(['Re: Plans', 'First', 'Second', 'Third'])
+      expect(rows()[0].querySelector('[class*=from]')!.textContent).toBe('Alice, me, Bob 3')
+      expect(rows()[0].className).toMatch(/unread/)
+    })
+
+    it('stars the latest message, and unstars every one', async () => {
+      const [first, reply, last] = thread()
+      const starred = server.labelId('work', 'STARRED')
+      first.labels.push(starred)
+      reply.labels.push(starred)
+      const user = await start('/mail/work/INBOX')
+      await user.keyboard('s')
+      await waitFor(() => expect(server.labelsOf(first.id)).not.toContain(starred))
+      expect(server.labelsOf(reply.id)).not.toContain(starred)
+      await user.keyboard('s')
+      await waitFor(() => expect(server.labelsOf(last.id)).toContain(starred))
+      expect(server.labelsOf(first.id)).not.toContain(starred)
+    })
+
+    it('archives every message, and marks the latest unread', async () => {
+      const [first, reply, last] = thread()
+      const unread = server.labelId('work', 'UNREAD')
+      last.labels = last.labels.filter((l) => l !== unread)
+      const user = await start('/mail/work/INBOX')
+      await user.keyboard('{Shift>}u{/Shift}')
+      await waitFor(() => expect(server.labelsOf(last.id)).toContain(unread))
+      expect(server.labelsOf(first.id)).not.toContain(unread)
+      await user.keyboard('e')
+      await waitFor(() => expect(subjects()).toEqual(['First', 'Second', 'Third']))
+      expect(server.lastDescription()).toBe('Changed 3 messages')
+      expect(server.labelsOf(first.id)).not.toContain(server.labelId('work', 'INBOX'))
+      expect(server.labelsOf(reply.id)).toEqual([server.labelId('work', 'SENT')])
+    })
+
+    it('opens with the latest and the unread expanded, reading them', async () => {
+      const [first, , last] = thread()
+      const unread = server.labelId('work', 'UNREAD')
+      first.labels.push(unread)
+      const user = await start('/mail/work/INBOX')
+      await user.keyboard('{Enter}')
+      const messages = within(await screen.findByRole('list', { name: 'Conversation' })).getAllByRole('listitem')
+      expect(messages).toHaveLength(3)
+      const expanded = () => messages.map((m) => m.querySelector('section')!.getAttribute('aria-expanded'))
+      expect(expanded()).toEqual(['true', 'false', 'true'])
+      await screen.findByText('Body of Plans')
+      await waitFor(() => expect(server.labelsOf(last.id)).not.toContain(unread))
+      expect(server.labelsOf(first.id)).not.toContain(unread)
+      // Its header toggles one.
+      await user.click(messages[1].querySelector('header')!)
+      expect(expanded()).toEqual(['true', 'true', 'true'])
+    })
+
+    it('replies to the latest message', async () => {
+      const [, , last] = thread()
+      const user = await start('/mail/work/INBOX')
+      await user.keyboard('{Enter}')
+      await screen.findByRole('list', { name: 'Conversation' })
+      await user.keyboard('r')
+      await waitFor(() => expect(server.requests.some((r) => r.type === 'create_draft')).toBe(true))
+      const draft = server.requests.find((r) => r.type === 'create_draft')!
+      expect(draft).toMatchObject({ in_reply_to: last.message })
+    })
+  })
+
   it('keeps moving while j or k is held, but archives once while e is', async () => {
     server.deliver('work', 'Zeroth')
     await start('/mail/work/INBOX')
@@ -90,7 +172,7 @@ describe('mail', () => {
     await user.keyboard('j{Enter}')
     expect(await screen.findByText('Body of Second')).toBeTruthy()
     expect(location.pathname).toMatch(/^\/mail\/work\/INBOX\/\d+$/)
-    const second = client.mail.list.value!.entries.find((e) => e.subject === 'Second')!
+    const second = client.mail.list.value!.conversations.find((c) => c.latest.subject === 'Second')!.latest
     expect(server.labelsOf(second.id)).not.toContain(server.labelId('work', 'UNREAD'))
     // Reading quietly: no notice.
     expect(screen.queryByRole('status')).toBeNull()
@@ -160,7 +242,7 @@ describe('mail', () => {
     expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Filter labels' }))
     await user.keyboard('trav{Enter}')
     expect(screen.queryByRole('dialog')).toBeNull()
-    const first = client.mail.list.value!.entries[0]
+    const first = client.mail.list.value!.conversations[0].latest
     expect(server.labelsOf(first.id)).toContain(server.labelId('work', 'Travel'))
     expect(within(rows()[0]).getByText('Travel')).toBeTruthy()
   })
@@ -170,7 +252,7 @@ describe('mail', () => {
     await user.keyboard('v')
     const dialog = screen.getByRole('dialog', { name: 'Move to' })
     expect(within(dialog).getAllByRole('option').map((o) => o.textContent)).toEqual(['Projects', 'Travel'])
-    const first = client.mail.list.value!.entries[0]
+    const first = client.mail.list.value!.conversations[0].latest
     await user.keyboard('proj{Enter}')
     await waitFor(() => expect(subjects()).toEqual(['Second', 'Third']))
     expect(server.labelsOf(first.id)).toContain(server.labelId('work', 'Projects'))
@@ -195,7 +277,7 @@ describe('mail', () => {
   it('marks important with + or =, and not with -', async () => {
     const user = await start('/mail/work/INBOX')
     const important = server.labelId('work', 'IMPORTANT')
-    const first = client.mail.list.value!.entries[0]
+    const first = client.mail.list.value!.conversations[0].latest
     await user.keyboard('+')
     await waitFor(() => expect(server.labelsOf(first.id)).toContain(important))
     await user.keyboard('-')
@@ -208,7 +290,7 @@ describe('mail', () => {
     const user = await start('/mail/work/INBOX')
     await user.keyboard('s{Shift>}i{/Shift}')
     await waitFor(() => expect(within(rows()[0]).getByTitle('Starred')).toBeTruthy())
-    const selected = () => [...client.mail.selected.value].map((id) => client.mail.list.value!.entries.find((e) => e.id === id)!.subject)
+    const selected = () => [...client.mail.selected.value].map((key) => client.mail.list.value!.conversations.find((c) => conversationKey(c) === key)!.latest.subject)
     await user.keyboard('*r')
     expect(selected()).toEqual(['First'])
     await user.keyboard('*u')
@@ -225,7 +307,7 @@ describe('mail', () => {
     await screen.findByText('Body of Second')
     await user.keyboard(']')
     await screen.findByText('Body of Third')
-    expect(server.labelsOf(client.mail.list.value!.entries[0].id)).toContain(server.labelId('work', 'INBOX'))
+    expect(server.labelsOf(client.mail.list.value!.conversations[0].latest.id)).toContain(server.labelId('work', 'INBOX'))
     await user.keyboard('[[')
     await screen.findByText('Body of First')
     // Nothing newer: back to the list.
@@ -239,7 +321,7 @@ describe('mail', () => {
     expect(star().getAttribute('aria-pressed')).toBe('false')
     await user.click(star())
     await waitFor(() => expect(star().getAttribute('aria-pressed')).toBe('true'))
-    expect(server.labelsOf(client.mail.list.value!.entries[1].id)).toContain(server.labelId('work', 'STARRED'))
+    expect(server.labelsOf(client.mail.list.value!.conversations[1].latest.id)).toContain(server.labelId('work', 'STARRED'))
     expect(location.pathname).toBe('/mail/work/INBOX')
     await user.click(star())
     await waitFor(() => expect(star().getAttribute('aria-pressed')).toBe('false'))
@@ -329,7 +411,7 @@ describe('mail', () => {
 
   it('takes g s as a sequence, without starring the message as s alone would', async () => {
     const user = await start('/mail/work/INBOX')
-    const first = client.mail.list.value!.entries[0]
+    const first = client.mail.list.value!.conversations[0].latest
     await user.keyboard('gs')
     expect(location.pathname).toBe('/mail/work/STARRED')
     await screen.findByText('No messages.')
@@ -470,7 +552,7 @@ describe('compose', () => {
     expect((subject as HTMLInputElement).value).toBe('Re: First')
     expect((screen.getByRole('textbox', { name: 'To' }) as HTMLInputElement).value).toBe('Bob <bob@example.org>')
     const [draft] = server.drafts.values()
-    expect(draft.in_reply_to).toBe(client.mail.list.value!.entries[0].message)
+    expect(draft.in_reply_to).toBe(client.mail.list.value!.conversations[0].latest.message)
     expect(draft.content.body).toContain('<blockquote><p>Body of First</p></blockquote>')
     await user.keyboard('{Escape}')
     await screen.findByText('Body of First')

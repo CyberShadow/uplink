@@ -118,7 +118,7 @@ def labels():
 
 def entries(label):
     page = ws({"type": "list_entries", "list": {"type": "label", "label": label}, "after": None, "limit": 100})
-    return {entry["subject"]: entry for entry in page["entries"]}
+    return {c["latest"]["subject"]: c["latest"] for c in page["conversations"]}
 
 
 def in_folder(external_id):

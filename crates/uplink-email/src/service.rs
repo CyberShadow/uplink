@@ -89,10 +89,10 @@ impl Mail {
                         return Err(error(ErrorCode::NotFound, format!("no label {}", label.0)));
                     }
                 }
-                let page = query::entries(conn, &list, after, limit).map_err(internal)?;
-                Ok(ServerResponse::Entries {
+                let page = query::conversations(conn, &list, after, limit).map_err(internal)?;
+                Ok(ServerResponse::Conversations {
                     as_of: page.as_of,
-                    entries: page.entries,
+                    conversations: page.conversations,
                     next: page.next,
                 })
             })
@@ -106,10 +106,11 @@ impl Mail {
         }
         self.reader
             .read(move |conn| {
-                let (as_of, entries) = query::search(conn, &query, limit).map_err(internal)?;
-                Ok(ServerResponse::Entries {
+                let (as_of, conversations) =
+                    query::search(conn, &query, limit).map_err(internal)?;
+                Ok(ServerResponse::Conversations {
                     as_of,
-                    entries,
+                    conversations,
                     next: None,
                 })
             })
@@ -124,11 +125,18 @@ impl Mail {
                     .ok_or_else(|| {
                         error(ErrorCode::NotFound, format!("no message {}", message.0))
                     })?;
-                Ok(ServerResponse::Entries {
-                    as_of,
-                    entries,
-                    next: None,
-                })
+                Ok(ServerResponse::Entries { as_of, entries })
+            })
+            .await
+    }
+
+    pub async fn list_conversation(&self, entry: EntryId) -> Response {
+        self.reader
+            .read(move |conn| {
+                let (as_of, entries) = query::conversation(conn, entry)
+                    .map_err(internal)?
+                    .ok_or_else(|| error(ErrorCode::NotFound, format!("no entry {}", entry.0)))?;
+                Ok(ServerResponse::Entries { as_of, entries })
             })
             .await
     }

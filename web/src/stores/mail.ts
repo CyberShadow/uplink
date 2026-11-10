@@ -9,6 +9,7 @@ import { batch, computed, signal } from '@preact/signals'
 import type {
   Account,
   ClientRequest,
+  Conversation,
   Entry,
   EntryId,
   Label,
@@ -57,8 +58,50 @@ export interface List {
   view: View
   /** Whether the first response is in. */
   loaded: boolean
-  entries: Entry[]
+  conversations: Conversation[]
   next: ListPosition | null
+}
+
+/** An entry as actions take it. */
+export type Item = Pick<Entry, 'id' | 'message' | 'labels'>
+
+/** A conversation's entries, as actions take them: oldest first. */
+export interface Thread {
+  account: string
+  /** Its latest entry's, as a to-do flagging it is titled. */
+  subject: string | null
+  entries: Item[]
+}
+
+export function threadOf(conversation: Conversation): Thread {
+  const { latest } = conversation
+  return { account: latest.account, subject: latest.subject, entries: [...conversation.earlier, latest] }
+}
+
+/** Identifies a conversation while its entries come and go. */
+export function conversationKey(conversation: Conversation): string {
+  const { latest } = conversation
+  return latest.thread_id === null ? `#${latest.id}` : `${latest.account}/${latest.thread_id}`
+}
+
+export function hasEntry(conversation: Conversation, entry: EntryId): boolean {
+  return conversation.latest.id === entry || conversation.earlier.some((m) => m.id === entry)
+}
+
+/** An entry as a conversation by itself, as a message's entries are. */
+function alone(entry: Entry): Conversation {
+  return {
+    latest: entry,
+    earlier: [],
+    senders: [{ name: entry.from_name, addr: entry.from_addr }],
+    has_attachments: entry.has_attachments,
+  }
+}
+
+/** The conversation open: its entries, all of them, oldest first. */
+export interface Open {
+  entry: EntryId
+  entries: Entry[] | null
 }
 
 type Load = 'reload' | 'more'
@@ -66,9 +109,10 @@ type Load = 'reload' | 'more'
 export class MailStore {
   readonly accounts = signal<Account[] | null>(null)
   readonly list = signal<List | null>(null)
-  /** The entry j/k move between and single-entry actions apply to. */
-  readonly focus = signal<EntryId | null>(null)
-  readonly selected = signal<ReadonlySet<EntryId>>(new Set())
+  /** The conversation j/k move between and single actions apply to. */
+  readonly focus = signal<string | null>(null)
+  readonly selected = signal<ReadonlySet<string>>(new Set())
+  readonly open = signal<Open | null>(null)
   readonly error = signal<string | null>(null)
 
   readonly labels = computed(() => {
@@ -79,12 +123,13 @@ export class MailStore {
     return byId
   })
 
-  /** The entries actions apply to: the selection, or else the focused one. */
-  readonly targets = computed((): Entry[] => {
-    const entries = this.list.value?.entries ?? []
+  /** The conversations actions apply to: the selection, or else the
+   * focused one. */
+  readonly targets = computed((): Conversation[] => {
+    const conversations = this.list.value?.conversations ?? []
     const selected = this.selected.value
-    if (selected.size > 0) return entries.filter((e) => selected.has(e.id))
-    return entries.filter((e) => e.id === this.focus.value)
+    if (selected.size > 0) return conversations.filter((c) => selected.has(conversationKey(c)))
+    return conversations.filter((c) => conversationKey(c) === this.focus.value)
   })
 
   private accountsLoading = false
@@ -93,6 +138,8 @@ export class MailStore {
   private listStale = false
   /** Bumped when the view changes, so responses for an old one are dropped. */
   private generation = 0
+  /** Likewise, for the conversation open. */
+  private openGeneration = 0
 
   constructor(
     private readonly server: Requester,
@@ -105,6 +152,7 @@ export class MailStore {
   reset() {
     this.invalidateAccounts()
     this.invalidateList()
+    this.loadOpen()
   }
 
   apply(entry: LogEntry) {
@@ -112,10 +160,12 @@ export class MailStore {
       switch (event.type) {
         case 'entries_added':
           this.invalidateList()
+          // It may be a reply in the conversation open.
+          this.loadOpen()
           break
         case 'entries_removed': {
           const gone = new Set(event.entries)
-          this.updateList((entries) => entries.filter((e) => !gone.has(e.id)))
+          this.removeEntries(gone)
           break
         }
         case 'labels_changed':
@@ -139,74 +189,113 @@ export class MailStore {
     }
   }
 
+  /** Whether the view's conversations include an entry with `labels`:
+   * those in Trash, in a list of Trash (or Spam); else those in neither. */
+  inScope(view: View, labels: LabelId[]): boolean {
+    if (view.kind === 'message') return true
+    const shown = view.kind === 'label' ? this.labelOf(view) : undefined
+    if (shown && HIDING.has(shown.external_id)) return labels.includes(shown.id)
+    return !labels.some((l) => HIDING.has(this.labels.value.get(l)!.external_id))
+  }
+
+  private removeEntries(gone: Set<EntryId>) {
+    let stale = false
+    this.updateList((conversations) =>
+      conversations.flatMap((c) => {
+        const earlier = c.earlier.filter((m) => !gone.has(m.id))
+        if (!gone.has(c.latest.id)) return [{ ...c, earlier }]
+        // Which is its latest now, only the server knows.
+        if (earlier.length > 0) stale = true
+        return []
+      }),
+    )
+    if (stale) this.invalidateList()
+    const open = this.open.value
+    if (open?.entries) this.open.value = { ...open, entries: open.entries.filter((e) => !gone.has(e.id)) }
+  }
+
   private applyLabelChanges(changes: { entry: EntryId; label: LabelId; desired: boolean }[]) {
-    const list = this.list.value
-    if (!list) return
-    const shown = list.view.kind === 'label' ? this.labelOf(list.view) : null
-    // The labels that put an entry on the list, if the list is of labels.
-    const listing: ((label: LabelId) => boolean) | null =
-      list.view.kind === 'inbox'
-        ? (label) => this.labels.value.get(label)!.external_id === 'INBOX'
-        : shown
-          ? (label) => label === shown.id
-          : null
     const byEntry = new Map<EntryId, typeof changes>()
     for (const change of changes) {
       byEntry.set(change.entry, [...(byEntry.get(change.entry) ?? []), change])
     }
-    // Trash and Spam hide entries from every other list, and from search.
-    const hides = list.view.kind !== 'message' && !(shown && HIDING.has(shown.external_id))
-    const hiding = (label: LabelId) => HIDING.has(this.labels.value.get(label)!.external_id)
-    const present = new Set(list.entries.map((e) => e.id))
-    const joins = (c: (typeof changes)[number]) =>
-      (!!listing && listing(c.label) && c.desired) || (hides && hiding(c.label) && !c.desired)
-    if (changes.some((c) => !present.has(c.entry) && joins(c))) {
-      // An entry may have joined the list on show; only the server knows
-      // whether, and where.
-      this.invalidateList()
+    const relabel = <T extends { id: EntryId; labels: LabelId[] }>(item: T): T => {
+      const own = byEntry.get(item.id)
+      if (!own) return item
+      const labels = new Set(item.labels)
+      for (const change of own) {
+        if (change.desired) labels.add(change.label)
+        else labels.delete(change.label)
+      }
+      return { ...item, labels: [...labels] }
     }
-    this.updateList((entries) =>
-      entries.flatMap((entry) => {
-        const own = byEntry.get(entry.id)
-        if (!own) return [entry]
-        const labels = new Set(entry.labels)
-        for (const change of own) {
-          if (change.desired) labels.add(change.label)
-          else labels.delete(change.label)
-        }
-        if (listing && ![...labels].some(listing)) return []
-        if (hides && [...labels].some(hiding)) return []
-        return [{ ...entry, labels: [...labels] }]
-      }),
-    )
-  }
+    const open = this.open.value
+    if (open?.entries) this.open.value = { ...open, entries: open.entries.map(relabel) }
 
-  /** Replaces the list's entries, keeping focus and selection on the
-   * entries that remain; focus moves to the next one if its entry left. */
-  private updateList(update: (entries: Entry[]) => Entry[]) {
     const list = this.list.value
     if (!list) return
-    const entries = update(list.entries)
+    const { view } = list
+    const shown = view.kind === 'label' ? this.labelOf(view) : null
+    // The labels that put a conversation on the list, if it is of labels.
+    const listing: ((label: LabelId) => boolean) | null =
+      view.kind === 'inbox'
+        ? (label) => this.labels.value.get(label)!.external_id === 'INBOX'
+        : shown
+          ? (label) => label === shown.id
+          : null
+    const present = new Set(list.conversations.flatMap((c) => threadOf(c).entries.map((e) => e.id)))
+    // Leaving Trash or Spam brings an entry into scope, except in theirs.
+    const hides = view.kind !== 'message' && !(shown && HIDING.has(shown.external_id))
+    const hiding = (label: LabelId) => HIDING.has(this.labels.value.get(label)!.external_id)
+    const joins = (c: (typeof changes)[number]) =>
+      (!!listing && listing(c.label) && c.desired) || (hides && hiding(c.label) && !c.desired)
+    let stale = changes.some((c) => !present.has(c.entry) && joins(c))
+    this.updateList((conversations) =>
+      conversations.flatMap((c) => {
+        if (![c.latest, ...c.earlier].some((e) => byEntry.has(e.id))) return [c]
+        const latest = relabel(c.latest)
+        const earlier = c.earlier.map(relabel).filter((m) => this.inScope(view, m.labels))
+        const latestIn = this.inScope(view, latest.labels)
+        if (!latestIn && earlier.length === 0) return []
+        const entries = latestIn ? [...earlier, latest] : earlier
+        if (listing && !entries.some((e) => e.labels.some(listing))) return []
+        // Which is its latest now, only the server knows.
+        if (!latestIn) stale = true
+        return [{ ...c, latest, earlier }]
+      }),
+    )
+    // An entry may have joined the list on show; only the server knows
+    // whether, and where.
+    if (stale) this.invalidateList()
+  }
+
+  /** Replaces the list's conversations, keeping focus and selection on
+   * those that remain; focus moves to the next one if its own left. */
+  private updateList(update: (conversations: Conversation[]) => Conversation[]) {
+    const list = this.list.value
+    if (!list) return
+    const conversations = update(list.conversations)
     batch(() => {
-      this.list.value = { ...list, entries }
-      this.keepFocus(list.entries, entries)
+      this.list.value = { ...list, conversations }
+      this.keepFocus(list.conversations, conversations)
     })
   }
 
-  private keepFocus(before: Entry[], after: Entry[]) {
-    const ids = new Set(after.map((e) => e.id))
+  private keepFocus(before: Conversation[], after: Conversation[]) {
+    const keys = new Set(after.map(conversationKey))
     const focus = this.focus.value
     if (focus === null) {
-      this.focus.value = after[0]?.id ?? null
-    } else if (!ids.has(focus)) {
-      // The first entry after the old focus that is still listed.
-      const index = before.findIndex((e) => e.id === focus)
-      const next = before.slice(index + 1).find((e) => ids.has(e.id))
-      this.focus.value = next?.id ?? after.at(-1)?.id ?? null
+      this.focus.value = after[0] ? conversationKey(after[0]) : null
+    } else if (!keys.has(focus)) {
+      // The first conversation after the old focus that is still listed.
+      const index = before.findIndex((c) => conversationKey(c) === focus)
+      const next = before.slice(index + 1).find((c) => keys.has(conversationKey(c)))
+      const last = after.at(-1)
+      this.focus.value = next ? conversationKey(next) : last ? conversationKey(last) : null
     }
     const selected = this.selected.value
-    if ([...selected].some((id) => !ids.has(id))) {
-      this.selected.value = new Set([...selected].filter((id) => ids.has(id)))
+    if ([...selected].some((key) => !keys.has(key))) {
+      this.selected.value = new Set([...selected].filter((key) => keys.has(key)))
     }
   }
 
@@ -257,7 +346,7 @@ export class MailStore {
     if (this.list.value && sameView(this.list.value.view, view)) return
     this.generation++
     batch(() => {
-      this.list.value = { view, loaded: false, entries: [], next: null }
+      this.list.value = { view, loaded: false, conversations: [], next: null }
       this.focus.value = null
       this.selected.value = new Set()
     })
@@ -296,21 +385,27 @@ export class MailStore {
       return
     }
     this.listLoad = load
-    let response
+    let page: { conversations: Conversation[]; next: ListPosition | null } | undefined
     try {
-      response = await query(this.server, request, 'entries')
+      if (request.type === 'list_message_entries') {
+        const response = await query(this.server, request, 'entries')
+        page = { conversations: response.entries.map(alone), next: null }
+      } else {
+        page = await query(this.server, request, 'conversations')
+      }
     } catch (error) {
       this.error.value = (error as Error).message
     }
     if (generation !== this.generation) return
     this.listLoad = null
-    if (response) {
+    if (page) {
       const current = this.list.value!
-      const entries =
-        load === 'reload' ? response.entries : [...current.entries, ...response.entries]
+      const conversations =
+        load === 'reload' ? page.conversations : [...current.conversations, ...page.conversations]
+      const next = page.next
       batch(() => {
-        this.list.value = { ...current, loaded: true, entries, next: response.next }
-        this.keepFocus(current.entries, entries)
+        this.list.value = { ...current, loaded: true, conversations, next }
+        this.keepFocus(current.conversations, conversations)
       })
     }
     this.pumpList()
@@ -320,7 +415,7 @@ export class MailStore {
   private listRequest(list: List, load: Load): ClientRequest | null {
     // A reload covers what is already listed, so the user's place stays.
     const limit =
-      load === 'reload' ? Math.min(Math.max(list.entries.length, PAGE), MAX_PAGE) : PAGE
+      load === 'reload' ? Math.min(Math.max(list.conversations.length, PAGE), MAX_PAGE) : PAGE
     const after = load === 'reload' ? null : list.next
     if (list.view.kind === 'search') {
       return { type: 'search', query: list.view.query, limit }
@@ -338,112 +433,147 @@ export class MailStore {
     return label ? { type: 'list_entries', list: { type: 'label', label: label.id }, after, limit } : null
   }
 
+  // ── the conversation open ───────────────────────────────────────────────
+
+  /** Opens the entry's conversation, or with `null` closes it. */
+  showConversation(entry: EntryId | null) {
+    if ((this.open.value?.entry ?? null) === entry) return
+    this.openGeneration++
+    this.open.value = entry === null ? null : { entry, entries: null }
+    this.loadOpen()
+  }
+
+  private async loadOpen() {
+    const open = this.open.value
+    if (!open) return
+    const generation = this.openGeneration
+    let entries: Entry[] | undefined
+    try {
+      entries = (await query(this.server, { type: 'list_conversation', entry: open.entry }, 'entries')).entries
+    } catch (error) {
+      this.error.value = (error as Error).message
+    }
+    if (generation !== this.openGeneration || !entries) return
+    this.open.value = { ...open, entries }
+  }
+
   // ── focus and selection ─────────────────────────────────────────────────
 
   moveFocus(by: number) {
-    const entries = this.list.value?.entries ?? []
-    if (entries.length === 0) return
-    const index = entries.findIndex((e) => e.id === this.focus.value)
-    const next = Math.min(Math.max(index + by, 0), entries.length - 1)
-    this.focus.value = entries[next].id
-    if (next >= entries.length - 10) this.loadMore()
+    const conversations = this.list.value?.conversations ?? []
+    if (conversations.length === 0) return
+    const index = conversations.findIndex((c) => conversationKey(c) === this.focus.value)
+    const next = Math.min(Math.max(index + by, 0), conversations.length - 1)
+    this.focus.value = conversationKey(conversations[next])
+    if (next >= conversations.length - 10) this.loadMore()
   }
 
-  toggleSelected(id: EntryId) {
+  toggleSelected(key: string) {
     const selected = new Set(this.selected.value)
-    if (!selected.delete(id)) selected.add(id)
+    if (!selected.delete(key)) selected.add(key)
     this.selected.value = selected
   }
 
   selectAll() {
-    this.selected.value = new Set((this.list.value?.entries ?? []).map((e) => e.id))
+    this.selected.value = new Set((this.list.value?.conversations ?? []).map(conversationKey))
   }
 
   selectNone() {
     this.selected.value = new Set()
   }
 
-  /** Selects the loaded entries that have the system label `externalId`,
-   * or with `having` false, those that lack it. */
+  /** Selects the loaded conversations with an entry that has the system
+   * label `externalId`, or with `having` false, those without. */
   selectHaving(externalId: string, having: boolean) {
     this.selected.value = new Set(
-      (this.list.value?.entries ?? [])
-        .filter((e) => e.labels.includes(this.systemLabel(e.account, externalId).id) === having)
-        .map((e) => e.id),
+      (this.list.value?.conversations ?? [])
+        .filter((c) => this.having(threadOf(c), externalId) === having)
+        .map(conversationKey),
     )
   }
 
-  // ── ops ─────────────────────────────────────────────────────────────────
+  /** Whether an entry of the thread has the system label `externalId`. */
+  having(thread: Thread, externalId: string): boolean {
+    const label = this.systemLabel(thread.account, externalId).id
+    return thread.entries.some((e) => e.labels.includes(label))
+  }
 
-  archive(entries: Entry[]) {
-    return this.modify(entries, (account) => ({
+  // ── ops ─────────────────────────────────────────────────────────────────
+  // On conversations, as Gmail's are: on all their entries, but for
+  // starring and marking unread, which take the latest.
+
+  archive(threads: Thread[]) {
+    return this.modify(all(threads), (account) => ({
       add: [],
       remove: [this.systemLabel(account, 'INBOX').id],
     }))
   }
 
-  /** Moves the entries to Trash, which hides them elsewhere. */
-  trash(entries: Entry[]) {
-    return this.modify(entries, (account) => ({ add: [this.systemLabel(account, 'TRASH').id], remove: [] }))
+  /** Moves the threads to Trash, which hides them elsewhere. */
+  trash(threads: Thread[]) {
+    return this.modify(all(threads), (account) => ({ add: [this.systemLabel(account, 'TRASH').id], remove: [] }))
   }
 
-  /** Reports the entries as spam, or, if all are spam already, moves them
+  /** Reports the threads as spam, or, if all are spam already, moves them
    * back to the Inbox, as Gmail's "Not spam" does. */
-  toggleSpam(entries: Entry[]) {
-    const spam = entries.every((e) => e.labels.includes(this.systemLabel(e.account, 'SPAM').id))
-    return this.modify(entries, (account) => {
+  toggleSpam(threads: Thread[]) {
+    const items = all(threads)
+    const spam = items.every((e) => e.labels.includes(this.systemLabel(e.account, 'SPAM').id))
+    return this.modify(items, (account) => {
       const label = this.systemLabel(account, 'SPAM').id
       return spam ? { add: [this.systemLabel(account, 'INBOX').id], remove: [label] } : { add: [label], remove: [] }
     })
   }
 
-  /** `quiet` leaves the notice alone, as when opening a message reads it. */
-  markRead(entries: Entry[], read: boolean, quiet = false) {
-    return this.modify(
-      entries,
-      (account) => {
-        const unread = this.systemLabel(account, 'UNREAD').id
-        return read ? { add: [], remove: [unread] } : { add: [unread], remove: [] }
-      },
-      quiet,
-    )
+  /** Read marks every entry; unread, the latest. `quiet` leaves the notice
+   * alone, as when opening a conversation reads it. */
+  markRead(threads: Thread[], read: boolean, quiet = false) {
+    const unread = (account: string) => this.systemLabel(account, 'UNREAD').id
+    if (read) {
+      const items = all(threads).filter((e) => e.labels.includes(unread(e.account)))
+      return this.modify(items, (account) => ({ add: [], remove: [unread(account)] }), quiet)
+    }
+    return this.modify(latest(threads), (account) => ({ add: [unread(account)], remove: [] }), quiet)
   }
 
-  /** Stars the entries, or unstars them if all are starred already. */
-  toggleStar(entries: Entry[]) {
-    const starred = entries.every((e) => e.labels.includes(this.systemLabel(e.account, 'STARRED').id))
-    return this.modify(entries, (account) => {
-      const star = this.systemLabel(account, 'STARRED').id
-      return starred ? { add: [], remove: [star] } : { add: [star], remove: [] }
-    })
+  /** If every thread has a star, unstars them all; else stars the latest
+   * entry of those without. */
+  toggleStar(threads: Thread[]) {
+    const star = (account: string) => this.systemLabel(account, 'STARRED').id
+    if (threads.every((t) => this.having(t, 'STARRED'))) {
+      const items = all(threads).filter((e) => e.labels.includes(star(e.account)))
+      return this.modify(items, (account) => ({ add: [], remove: [star(account)] }))
+    }
+    const unstarred = threads.filter((t) => !this.having(t, 'STARRED'))
+    return this.modify(latest(unstarred), (account) => ({ add: [star(account)], remove: [] }))
   }
 
-  markImportant(entries: Entry[], important: boolean) {
-    return this.modify(entries, (account) => {
+  markImportant(threads: Thread[], important: boolean) {
+    return this.modify(all(threads), (account) => {
       const label = this.systemLabel(account, 'IMPORTANT').id
       return important ? { add: [label], remove: [] } : { add: [], remove: [label] }
     })
   }
 
-  /** Moves the entries, which are of `to`'s account, from `from` to `to`,
+  /** Moves the threads, which are of `to`'s account, from `from` to `to`,
    * as Gmail's "Move to" does. */
-  move(entries: Entry[], from: Label, to: Label) {
-    return this.modify(entries, () => ({ add: [to.id], remove: [from.id] }))
+  move(threads: Thread[], from: Label, to: Label) {
+    return this.modify(all(threads), () => ({ add: [to.id], remove: [from.id] }))
   }
 
-  /** Adds `label` to the entries, or removes it if all have it already. */
-  toggleLabel(entries: Entry[], label: Label) {
-    const all = entries.every((e) => e.labels.includes(label.id))
-    return this.modify(entries, () => (all ? { add: [], remove: [label.id] } : { add: [label.id], remove: [] }))
+  /** Adds `label` to the threads, or removes it if each has it already. */
+  toggleLabel(threads: Thread[], label: Label) {
+    const each = threads.every((t) => t.entries.some((e) => e.labels.includes(label.id)))
+    return this.modify(all(threads), () => (each ? { add: [], remove: [label.id] } : { add: [label.id], remove: [] }))
   }
 
-  /** One op per account, since labels belong to one. */
+  /** One op per account, since labels belong to one; none for no entries. */
   private async modify(
-    entries: Entry[],
+    items: AccountItem[],
     labels: (account: string) => { add: LabelId[]; remove: LabelId[] },
     quiet = false,
   ) {
-    const byAccount = Map.groupBy(entries, (e) => e.account)
+    const byAccount = Map.groupBy(items, (e) => e.account)
     await Promise.all(
       [...byAccount].map(([account, own]) =>
         this.ops.dispatch(
@@ -466,4 +596,14 @@ export class MailStore {
       return null
     }
   }
+}
+
+type AccountItem = Item & { account: string }
+
+function all(threads: Thread[]): AccountItem[] {
+  return threads.flatMap((t) => t.entries.map((e) => ({ ...e, account: t.account })))
+}
+
+function latest(threads: Thread[]): AccountItem[] {
+  return threads.map((t) => ({ ...t.entries.at(-1)!, account: t.account }))
 }

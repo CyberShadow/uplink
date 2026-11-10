@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
-import type { Entry, Label, MessageContent } from '../generated/protocol'
+import type { Conversation, Entry, EntryId, Label, MessageContent, Sender } from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus, useKeymap } from '../keymap'
-import type { MailStore, View } from '../stores/mail'
+import { conversationKey, hasEntry, threadOf, type MailStore, type Thread, type View } from '../stores/mail'
 import { respond, type Response } from '../compose/reply'
 import { allMailPath, inboxPath, mailPath, searchPath } from './App'
 import { HtmlBody } from './HtmlBody'
@@ -26,8 +26,8 @@ interface Props {
   message?: string
 }
 
-/** A label's or a search's list, or one of its messages; or a message by
- * itself, as a to-do links to it. */
+/** A label's or a search's list, or one of its conversations; or a
+ * message's conversation, as a to-do links to it. */
 export function Mail(props: Props) {
   const { mail, todos } = useServices()
   const { route } = useLocation()
@@ -65,36 +65,48 @@ export function Mail(props: Props) {
   }
 
   const list = mail.list.value
-  const entries = list?.entries ?? []
-  // A message by itself is open as soon as one of its entries is in.
+  const conversations = list?.conversations ?? []
+  // A message's conversation is open as soon as one of its entries is in.
   const openId =
-    view.kind === 'message' ? (entries[0]?.id ?? null) : props.entry === undefined ? null : Number(props.entry)
-  const opened = openId === null ? undefined : entries.find((e) => e.id === openId)
-  const targets = openId === null ? mail.targets.value : opened ? [opened] : []
+    view.kind === 'message'
+      ? (conversations[0]?.latest.id ?? null)
+      : props.entry === undefined
+        ? null
+        : Number(props.entry)
+  const opened = openId === null ? undefined : conversations.find((c) => hasEntry(c, openId))
+  useEffect(() => mail.showConversation(opened ? openId : null), [mail, opened, openId])
+  // Of the conversation open, the entries in the list's scope.
+  const shown = mail.open.value?.entries?.filter((e) => mail.inScope(view, e.labels)) ?? null
+  const openThread: Thread | null =
+    opened && shown && shown.length > 0
+      ? { account: opened.latest.account, subject: shown.at(-1)!.subject, entries: shown }
+      : null
+  const targets: Thread[] =
+    openId === null ? mail.targets.value.map(threadOf) : openThread ? [openThread] : []
 
   useEffect(() => {
-    if (openId !== null) mail.focus.value = openId
-  }, [mail, openId])
+    if (opened) mail.focus.value = conversationKey(opened)
+  }, [mail, opened])
 
-  const open = (entry: Entry) => {
-    mail.focus.value = entry.id
-    route(pathFor(entry.id))
+  const open = (conversation: Conversation) => {
+    mail.focus.value = conversationKey(conversation)
+    route(pathFor(conversation.latest.id))
   }
-  /** In a message, j and k open the next or previous one. */
+  /** In a conversation, j and k open the next or previous one. */
   const openSibling = (by: number) => {
-    const index = entries.findIndex((e) => e.id === openId)
-    const sibling = entries[index + by]
+    if (!opened) return
+    const sibling = conversations[conversations.indexOf(opened) + by]
     if (sibling) open(sibling)
   }
-  /** In a message, [ and ] archive it and open the newer or older one. */
+  /** In a conversation, [ and ] archive it and open the newer or older one. */
   const archiveAndOpen = (by: number) => {
-    if (!opened) return
-    const sibling = entries[entries.indexOf(opened) + by]
-    mail.archive([opened])
+    if (!opened || !openThread) return
+    const sibling = conversations[conversations.indexOf(opened) + by]
+    mail.archive([openThread])
     if (sibling) open(sibling)
     else backToList()
   }
-  const ifTargets = (action: (targets: Entry[]) => void) => () => {
+  const ifTargets = (action: (targets: Thread[]) => void) => () => {
     if (targets.length > 0) action(targets)
   }
   // A message by itself has no list: back is where it was opened from.
@@ -123,9 +135,12 @@ export function Mail(props: Props) {
     notImportant: ifTargets((t) => mail.markImportant(t, false)),
     label: ifTargets(() => setPicking('label')),
     move: ifTargets(() => setPicking('move')),
+    // Unflags a conversation's flagged messages, or else flags its latest.
     flag: ifTargets((t) => {
-      for (const entry of new Map(t.map((e) => [e.message, e])).values()) {
-        todos.toggleFlag(entry.message, entry.subject ?? '(no subject)')
+      for (const thread of t) {
+        const flagged = thread.entries.filter((e) => todos.flagged.value.has(e.message))
+        const messages = flagged.length > 0 ? flagged.map((e) => e.message) : [thread.entries.at(-1)!.message]
+        for (const message of new Set(messages)) todos.toggleFlag(message, thread.subject ?? '(no subject)')
       }
     }),
   }
@@ -136,7 +151,7 @@ export function Mail(props: Props) {
           next: () => mail.moveFocus(1),
           previous: () => mail.moveFocus(-1),
           open: () => {
-            const focused = entries.find((e) => e.id === mail.focus.value)
+            const focused = conversations.find((c) => conversationKey(c) === mail.focus.value)
             if (focused) open(focused)
           },
           select: () => {
@@ -163,10 +178,12 @@ export function Mail(props: Props) {
     <>
       {openId === null ? (
         <MessageList mail={mail} open={open} />
-      ) : opened ? (
-        <MessageView mail={mail} entry={opened} />
+      ) : openThread ? (
+        <ConversationView key={conversationKey(opened!)} mail={mail} thread={openThread} entries={shown!} />
       ) : (
-        <p class={styles.placeholder}>{list?.loaded ? 'This message is not in the list.' : 'Loading…'}</p>
+        <p class={styles.placeholder}>
+          {list?.loaded && !opened ? 'This conversation is not in the list.' : 'Loading…'}
+        </p>
       )}
       {picking === 'label' && <LabelPicker targets={targets} close={() => setPicking(null)} />}
       {picking === 'move' && (
@@ -180,7 +197,7 @@ export function Mail(props: Props) {
   )
 }
 
-function MessageList(props: { mail: MailStore; open: (entry: Entry) => void }) {
+function MessageList(props: { mail: MailStore; open: (conversation: Conversation) => void }) {
   const { mail } = props
   const { todos } = useServices()
   const list = mail.list.value
@@ -190,11 +207,12 @@ function MessageList(props: { mail: MailStore; open: (entry: Entry) => void }) {
   }, [mail.focus.value])
 
   if (!list?.loaded) return <p class={styles.placeholder}>Loading…</p>
-  if (list.entries.length === 0) return <p class={styles.placeholder}>No messages.</p>
+  if (list.conversations.length === 0) return <p class={styles.placeholder}>No messages.</p>
   // With several accounts, each row says whose it is.
   const accounts = mail.accounts.value ?? []
   const address = (account: string) =>
     accounts.length > 1 ? accounts.find((a) => a.id === account)!.address : null
+  const own = (account: string) => accounts.find((a) => a.id === account)?.address ?? ''
   return (
     <ul
       class={styles.list}
@@ -204,25 +222,29 @@ function MessageList(props: { mail: MailStore; open: (entry: Entry) => void }) {
         if (el.scrollTop + el.clientHeight > el.scrollHeight - 200) mail.loadMore()
       }}
     >
-      {list.entries.map((entry) => {
-        const isFocused = entry.id === mail.focus.value
-        const isFlagged = todos.flagged.value.has(entry.message)
-        const isSelected = mail.selected.value.has(entry.id)
+      {list.conversations.map((conversation) => {
+        const key = conversationKey(conversation)
+        const thread = threadOf(conversation)
+        const { latest } = conversation
+        const isFocused = key === mail.focus.value
+        const isFlagged = thread.entries.some((e) => todos.flagged.value.has(e.message))
+        const isSelected = mail.selected.value.has(key)
+        const count = thread.entries.length
         return (
           <li
-            key={entry.id}
+            key={key}
             ref={isFocused ? focused : undefined}
             class={[
               styles.row,
               isFocused && styles.focused,
               isSelected && styles.selected,
-              isUnread(mail, entry) && styles.unread,
+              mail.having(thread, 'UNREAD') && styles.unread,
             ]
               .filter(Boolean)
               .join(' ')}
             aria-current={isFocused || undefined}
             aria-selected={isSelected}
-            onClick={() => props.open(entry)}
+            onClick={() => props.open(conversation)}
           >
             <input
               type="checkbox"
@@ -231,27 +253,30 @@ function MessageList(props: { mail: MailStore; open: (entry: Entry) => void }) {
               onMouseDown={keepFocus}
               onClick={(event) => {
                 event.stopPropagation()
-                mail.toggleSelected(entry.id)
+                mail.toggleSelected(key)
               }}
             />
-            <Star mail={mail} entry={entry} />
-            <span class={styles.from}>{sender(entry)}</span>
+            <Star mail={mail} thread={thread} />
+            <span class={styles.from}>
+              {senders(conversation.senders, own(latest.account))}
+              {count > 1 && <span class={styles.count}> {count}</span>}
+            </span>
             <span class={styles.summary}>
               {isFlagged && <Flag />}
-              {address(entry.account) && <span class={styles.account}>{address(entry.account)}</span>}
-              <LabelChips mail={mail} entry={entry} />
-              <span class={styles.subject}>{entry.subject ?? '(no subject)'}</span>
-              <span class={styles.snippet}> — {entry.snippet}</span>
+              {address(latest.account) && <span class={styles.account}>{address(latest.account)}</span>}
+              <LabelChips mail={mail} thread={thread} />
+              <span class={styles.subject}>{latest.subject ?? '(no subject)'}</span>
+              <span class={styles.snippet}> — {latest.snippet}</span>
             </span>
             <span class={styles.clip}>
-              {entry.has_attachments && (
+              {conversation.has_attachments && (
                 <span title="Has attachments">
                   <Icon name="paperclip" />
                 </span>
               )}
             </span>
-            <time class={styles.date} dateTime={new Date(entry.received_at).toISOString()}>
-              {brief(entry.received_at)}
+            <time class={styles.date} dateTime={new Date(latest.received_at).toISOString()}>
+              {brief(latest.received_at)}
             </time>
           </li>
         )
@@ -260,80 +285,136 @@ function MessageList(props: { mail: MailStore; open: (entry: Entry) => void }) {
   )
 }
 
-function MessageView(props: { mail: MailStore; entry: Entry }) {
-  const { mail, entry } = props
+/** A conversation's senders, as Gmail's rows name them: the one by name;
+ * several by first names, `me` for the account's own address, the first
+ * and the last two if there are many. */
+export function senders(list: Sender[], own: string): string {
+  const name = (s: Sender, brief: boolean) => {
+    if (s.addr && s.addr.toLowerCase() === own.toLowerCase()) return 'me'
+    const full = s.name ?? s.addr ?? '(unknown sender)'
+    return brief && s.name ? s.name.split(/\s+/)[0] : full
+  }
+  if (list.length === 1) return name(list[0], false)
+  const names = list.map((s) => name(s, true))
+  return (names.length > 3 ? [names[0], '…', ...names.slice(-2)] : names).join(', ')
+}
+
+/** The conversation open: its messages oldest first, the unread ones and
+ * the latest expanded. */
+function ConversationView(props: { mail: MailStore; thread: Thread; entries: Entry[] }) {
+  const { mail, thread, entries } = props
   const { drafts, todos } = useServices()
   const { route } = useLocation()
-  // `null` if it failed to load.
-  const [content, setContent] = useState<MessageContent | null | undefined>(undefined)
-
-  const message = entry.message
-  useEffect(() => {
-    let current = true
-    setContent(undefined)
-    mail.loadMessage(message).then((loaded) => current && setContent(loaded))
-    return () => {
-      current = false
-    }
-  }, [mail, message])
+  const latest = entries.at(-1)!
 
   const responder = (kind: Response) => async () => {
+    const content = await mail.loadMessage(latest.message)
     if (!content) return
-    const own = mail.accounts.value?.find((a) => a.id === entry.account)?.address ?? ''
+    const own = mail.accounts.value?.find((a) => a.id === latest.account)?.address ?? ''
     const draft = respond(kind, content, own)
-    const id = await drafts.create(entry.account, draft.content, draft.inReplyTo)
+    const id = await drafts.create(latest.account, draft.content, draft.inReplyTo)
     if (!id) return
     route(composePath(id))
     if (kind === 'forward') await drafts.attachForwarded(id, content)
   }
   useKeymap({ reply: responder('reply'), replyAll: responder('replyAll'), forward: responder('forward') })
 
-  // Opening a message reads it.
-  const unread = isUnread(mail, entry)
+  // Opening a conversation reads it, and so does mail arriving in it. The
+  // thread is made anew each render; whether it is unread is the change.
+  const unread = mail.having(thread, 'UNREAD')
+  const current = useRef(thread)
+  current.current = thread
   useEffect(() => {
-    if (unread) mail.markRead([entry], true, true)
-  }, [mail, entry, unread])
+    if (unread) mail.markRead([current.current], true, true)
+  }, [mail, unread])
+
+  // Which are expanded, by entry; as opened, until toggled.
+  const [expanded, setExpanded] = useState<ReadonlyMap<EntryId, boolean>>(new Map())
+  const [initially] = useState(() => {
+    const label = mail.systemLabel(thread.account, 'UNREAD').id
+    return new Set(entries.filter((e) => e.labels.includes(label)).map((e) => e.id))
+  })
+  const isExpanded = (entry: Entry) =>
+    expanded.get(entry.id) ?? (entry === latest || initially.has(entry.id))
 
   return (
     <article class={styles.message}>
       <h1 class={styles.messageSubject}>
-        <Star mail={mail} entry={entry} />
-        {entry.subject ?? '(no subject)'} {todos.flagged.value.has(entry.message) && <Flag />}
-        <LabelChips mail={mail} entry={entry} />
+        <Star mail={mail} thread={thread} />
+        {latest.subject ?? '(no subject)'}{' '}
+        {thread.entries.some((e) => todos.flagged.value.has(e.message)) && <Flag />}
+        <LabelChips mail={mail} thread={thread} />
       </h1>
-      {content === undefined ? (
-        <p class={styles.placeholder}>Loading…</p>
-      ) : content === null ? (
-        <p class={styles.placeholder}>The message could not be loaded.</p>
-      ) : (
-        <>
-          <dl class={styles.headers}>
-            <dt>From</dt>
-            <dd>{address(content.from_name, content.from_addr)}</dd>
-            {content.to_addrs.length > 0 && (
-              <>
-                <dt>To</dt>
-                <dd>{content.to_addrs.join(', ')}</dd>
-              </>
-            )}
-            {content.cc_addrs.length > 0 && (
-              <>
-                <dt>Cc</dt>
-                <dd>{content.cc_addrs.join(', ')}</dd>
-              </>
-            )}
-            <dt>Date</dt>
-            <dd>{dateTime(content.date_sent === null ? entry.received_at : content.date_sent * 1000)}</dd>
-          </dl>
-          <Attachments message={content} />
-          {content.body_html === null ? (
-            <pre class={styles.body}>{content.body_text}</pre>
-          ) : (
-            <HtmlBody html={content.body_html} />
-          )}
-        </>
-      )}
+      <ol class={styles.conversation} aria-label="Conversation">
+        {entries.map((entry) => (
+          <li key={entry.id}>
+            <ConversationMessage
+              mail={mail}
+              entry={entry}
+              expanded={isExpanded(entry)}
+              toggle={() => setExpanded(new Map(expanded).set(entry.id, !isExpanded(entry)))}
+            />
+          </li>
+        ))}
+      </ol>
     </article>
+  )
+}
+
+/** One message of a conversation: collapsed, its sender, snippet and
+ * date; expanded, all of it. */
+function ConversationMessage(props: { mail: MailStore; entry: Entry; expanded: boolean; toggle: () => void }) {
+  const { mail, entry, expanded } = props
+  // `null` if it failed to load.
+  const [content, setContent] = useState<MessageContent | null | undefined>(undefined)
+  const message = entry.message
+  useEffect(() => {
+    if (!expanded) return
+    let current = true
+    mail.loadMessage(message).then((loaded) => current && setContent(loaded))
+    return () => {
+      current = false
+    }
+  }, [mail, message, expanded])
+  const date = content?.date_sent ? content.date_sent * 1000 : entry.received_at
+  return (
+    <section class={expanded ? styles.expanded : undefined} aria-expanded={expanded}>
+      <header class={styles.messageHeader} onClick={props.toggle}>
+        <span class={styles.from}>{address(entry.from_name, entry.from_addr)}</span>
+        {!expanded && <span class={styles.snippet}>{entry.snippet}</span>}
+        <time class={styles.date}>{dateTime(date)}</time>
+        <Star mail={mail} thread={{ account: entry.account, subject: entry.subject, entries: [entry] }} />
+      </header>
+      {expanded &&
+        (content === undefined ? (
+          <p class={styles.placeholder}>Loading…</p>
+        ) : content === null ? (
+          <p class={styles.placeholder}>The message could not be loaded.</p>
+        ) : (
+          <>
+            <dl class={styles.headers}>
+              {content.to_addrs.length > 0 && (
+                <>
+                  <dt>To</dt>
+                  <dd>{content.to_addrs.join(', ')}</dd>
+                </>
+              )}
+              {content.cc_addrs.length > 0 && (
+                <>
+                  <dt>Cc</dt>
+                  <dd>{content.cc_addrs.join(', ')}</dd>
+                </>
+              )}
+            </dl>
+            <Attachments message={content} />
+            {content.body_html === null ? (
+              <pre class={styles.body}>{content.body_text}</pre>
+            ) : (
+              <HtmlBody html={content.body_html} />
+            )}
+          </>
+        ))}
+    </section>
   )
 }
 
@@ -355,9 +436,11 @@ function Attachments(props: { message: MessageContent }) {
   )
 }
 
-/** The entry's labels worth showing beside it: the user's own. */
-function LabelChips(props: { mail: MailStore; entry: Entry }) {
-  const labels = props.entry.labels
+/** The labels worth showing beside a conversation: the user's own, of
+ * any of its entries. */
+function LabelChips(props: { mail: MailStore; thread: Thread }) {
+  const ids = new Set(props.thread.entries.flatMap((e) => e.labels))
+  const labels = [...ids]
     .map((id) => props.mail.labels.value.get(id))
     .filter((l): l is Label => l !== undefined && !l.system)
   return (
@@ -371,10 +454,10 @@ function LabelChips(props: { mail: MailStore; entry: Entry }) {
   )
 }
 
-/** Whether the entry is starred, and a button to star or unstar it. */
-function Star(props: { mail: MailStore; entry: Entry }) {
-  const { mail, entry } = props
-  const starred = entry.labels.includes(mail.systemLabel(entry.account, 'STARRED').id)
+/** Whether the thread has a star, and a button to toggle it. */
+function Star(props: { mail: MailStore; thread: Thread }) {
+  const { mail, thread } = props
+  const starred = mail.having(thread, 'STARRED')
   return (
     <button
       type="button"
@@ -385,7 +468,7 @@ function Star(props: { mail: MailStore; entry: Entry }) {
       onMouseDown={keepFocus}
       onClick={(event) => {
         event.stopPropagation()
-        mail.toggleStar([entry])
+        mail.toggleStar([thread])
       }}
     >
       <Icon name="star" filled={starred} />
@@ -399,14 +482,6 @@ function Flag() {
       ⚑
     </a>
   )
-}
-
-function isUnread(mail: MailStore, entry: Entry): boolean {
-  return entry.labels.some((id) => mail.labels.value.get(id)?.external_id === 'UNREAD')
-}
-
-function sender(entry: Entry): string {
-  return entry.from_name ?? entry.from_addr ?? '(unknown sender)'
 }
 
 function address(name: string | null, addr: string | null): string {

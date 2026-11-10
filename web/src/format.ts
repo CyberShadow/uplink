@@ -1,4 +1,4 @@
-// Dates and times, one way throughout (SPEC §12.9): YYYY-MM-DD and 24-hour
+// Dates and times, one way throughout (SPEC §12.10): YYYY-MM-DD and 24-hour
 // HH:MM, in the browser's time zone, whatever its locale's conventions.
 
 const pad = (n: number) => String(n).padStart(2, '0')

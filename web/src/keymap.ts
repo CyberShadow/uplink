@@ -72,11 +72,11 @@ export interface Binding {
 }
 
 export const KEYMAP: Binding[] = [
-  { action: 'next', keys: ['j'], label: 'j', help: 'Next message (in the calendar: the next week or agenda)', repeats: true },
-  { action: 'previous', keys: ['k'], label: 'k', help: 'Previous message (in the calendar: the previous week or agenda)', repeats: true },
-  { action: 'open', keys: ['o', 'Enter'], label: 'o, Enter', help: 'Open message' },
+  { action: 'next', keys: ['j'], label: 'j', help: 'Next conversation (in the calendar: the next week or agenda)', repeats: true },
+  { action: 'previous', keys: ['k'], label: 'k', help: 'Previous conversation (in the calendar: the previous week or agenda)', repeats: true },
+  { action: 'open', keys: ['o', 'Enter'], label: 'o, Enter', help: 'Open conversation' },
   { action: 'back', keys: ['u'], label: 'u', help: 'Back to the list' },
-  { action: 'select', keys: ['x'], label: 'x', help: 'Select message' },
+  { action: 'select', keys: ['x'], label: 'x', help: 'Select conversation' },
   { action: 'selectAll', keys: ['[Shift]+* a'], label: '* a', help: 'Select all' },
   { action: 'selectNone', keys: ['[Shift]+* n'], label: '* n', help: 'Select none' },
   { action: 'selectRead', keys: ['[Shift]+* r'], label: '* r', help: 'Select read' },
@@ -84,8 +84,8 @@ export const KEYMAP: Binding[] = [
   { action: 'selectStarred', keys: ['[Shift]+* s'], label: '* s', help: 'Select starred' },
   { action: 'selectUnstarred', keys: ['[Shift]+* t'], label: '* t', help: 'Select unstarred' },
   { action: 'archive', keys: ['e'], label: 'e', help: 'Archive' },
-  { action: 'archiveNewer', keys: ['['], label: '[', help: 'Archive, and open the newer message (in a message)' },
-  { action: 'archiveOlder', keys: [']'], label: ']', help: 'Archive, and open the older message (in a message)' },
+  { action: 'archiveNewer', keys: ['['], label: '[', help: 'Archive, and open the newer conversation (in one)' },
+  { action: 'archiveOlder', keys: [']'], label: ']', help: 'Archive, and open the older conversation (in one)' },
   { action: 'markRead', keys: ['Shift+i'], label: 'Shift+i', help: 'Mark as read' },
   { action: 'markUnread', keys: ['Shift+u'], label: 'Shift+u', help: 'Mark as unread' },
   { action: 'star', keys: ['s'], label: 's', help: 'Star or unstar' },

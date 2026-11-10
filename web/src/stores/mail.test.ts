@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { FakeServer } from '../test/server'
 import { Client } from './client'
 import type { MailStore } from './mail'
-import { PAGE } from './mail'
+import { PAGE, conversationKey, threadOf } from './mail'
 
 let server: FakeServer
 let client: Client
@@ -16,8 +16,8 @@ beforeEach(() => {
   server.attach(client)
 })
 
-const subjects = () => mail.list.value?.entries.map((e) => e.subject)
-const focused = () => mail.list.value?.entries.find((e) => e.id === mail.focus.value)?.subject
+const subjects = () => mail.list.value?.conversations.map((c) => c.latest.subject)
+const focused = () => mail.list.value?.conversations.find((c) => conversationKey(c) === mail.focus.value)?.latest.subject
 
 async function showInbox() {
   mail.reset()
@@ -43,7 +43,7 @@ describe('MailStore', () => {
     mail.moveFocus(1)
     expect(focused()).toBe('Second')
 
-    await mail.archive(mail.targets.value)
+    await mail.archive(mail.targets.value.map(threadOf))
     expect(server.labelsOf(second.id)).not.toContain(server.labelId('work', 'INBOX'))
     expect(subjects()).toEqual(['First', 'Third'])
     expect(focused()).toBe('Third')
@@ -72,7 +72,7 @@ describe('MailStore', () => {
     server.relabel(lunch.id, server.labelId('work', 'Projects'), true)
     await vi.waitFor(() => expect(subjects()).toEqual(['Lunch']))
     server.relabel(lunch.id, server.labelId('work', 'UNREAD'), false)
-    expect(mail.list.value!.entries[0].labels).not.toContain(server.labelId('work', 'UNREAD'))
+    expect(mail.list.value!.conversations[0].latest.labels).not.toContain(server.labelId('work', 'UNREAD'))
     await vi.waitFor(() =>
       expect(mail.labels.value.get(server.labelId('work', 'INBOX'))?.unread).toBe(0),
     )
@@ -101,9 +101,9 @@ describe('MailStore', () => {
   it('loads further pages', async () => {
     for (let i = 0; i < PAGE + 5; i++) server.deliver('work', `Message ${i}`)
     await showInbox()
-    expect(mail.list.value!.entries).toHaveLength(PAGE)
+    expect(mail.list.value!.conversations).toHaveLength(PAGE)
     mail.loadMore()
-    await vi.waitFor(() => expect(mail.list.value!.entries).toHaveLength(PAGE + 5))
+    await vi.waitFor(() => expect(mail.list.value!.conversations).toHaveLength(PAGE + 5))
     expect(mail.list.value!.next).toBeNull()
   })
 
@@ -116,7 +116,7 @@ describe('MailStore', () => {
     await vi.waitFor(() => expect(subjects()).toHaveLength(2))
     mail.selectAll()
 
-    await mail.archive(mail.targets.value)
+    await mail.archive(mail.targets.value.map(threadOf))
     const ops = server.requests.filter((r) => r.type === 'modify_labels')
     expect(ops).toEqual([
       expect.objectContaining({ remove: [server.labelId('home', 'INBOX')] }),

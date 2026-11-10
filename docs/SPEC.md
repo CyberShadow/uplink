@@ -597,9 +597,18 @@ CREATE INDEX tx_log_by_ts ON tx_log(ts DESC);
 - **Variants are addressed by hash**: `mail/<sha256[0:2]>/<sha256>.eml`,
   so no path is stored. Message-IDs are stored without angle brackets.
 - **No threads table.** `thread_id` is per account in `mail_entry`. Threading
-  is whatever the provider tells us (Gmail `threadId`, M365 `conversationId`).
-  We don't synthesize threads when the provider doesn't give them — MVP
-  scope.
+  is whatever the provider tells us (Gmail `threadId`, M365 `conversationId`):
+  Gmail's own grouping, subject-based included, and its cap of 100
+  messages a thread. We don't synthesize threads when the provider
+  doesn't give them; an entry without one is a conversation by itself.
+- **Lists are of conversations**, as Gmail's are (in its Conversation
+  view, the only one uplink has): a conversation is the entries of one
+  account's thread in the list's *scope* (in a list of Trash or Spam,
+  the entries with that label; in any other, those in neither). A list
+  holds the conversations with an entry that is on it (has its label, or
+  matches the search), ordered by their newest entry in scope, which need
+  not be on it itself: a reply the user sent brings a conversation in the
+  Inbox to the top. Label counts are of conversations too.
 - **Flags are labels.** Gmail already models read and starred as system
   labels (`UNREAD`, `STARRED`), so there is one desired/observed
   mechanism, not two. M365's `isRead` and flag status will map onto the
@@ -734,9 +743,19 @@ than it buffers is closed; the client reconnects and resumes.
 `ClientRequest` variants (MVP):
 
 - `ListAccounts` — mail accounts with their labels and counts.
-- `ListEntries { list, after, limit }` — a page of a list, newest first:
-  of a label, or an account's All Mail (§8.1).
-- `Search { query, limit }` — FTS5 cross-account search.
+- `ListEntries { list, after, limit }` — a page of a list's
+  conversations (§4), newest first: of a label, every account's Inbox,
+  or an account's All Mail (§8.1). Each has its newest entry in full,
+  the others' ids, messages and labels (enough to act on them and follow
+  label changes), its senders, and whether any has attachments; a page
+  ends at its last conversation's newest entry.
+- `Search { query, limit }` — FTS5 cross-account search: the
+  conversations with an entry that matches.
+- `ListConversation { entry }` — the entries of the entry's conversation,
+  in Trash and Spam too (the client keeps the list's scope), oldest
+  first: the conversation view's.
+- `ListMessageEntries { message }` — a message's entries, in every
+  account: a to-do's message.
 - `LoadMessage { message }` — headers, the text body, and the sanitized
   HTML body if there is one (§8.9).
 - `ListRooms` — Matrix accounts and their rooms with unread counts;
@@ -1581,7 +1600,7 @@ Vitest runs from the same config (jsdom).
 src/views/
 ├── App.tsx                # shell: header, nav, routes, notice bar
 ├── Nav.tsx                # drafts/outbox, mail labels, Matrix rooms
-├── Mail.tsx               # message list and message view
+├── Mail.tsx               # conversation list and conversation view
 ├── HtmlBody.tsx           # sandboxed HTML mail (§8.9)
 ├── Icon.tsx               # the Lucide icons used, vendored (ISC)
 ├── LabelPicker.tsx
@@ -1640,8 +1659,9 @@ double-clicking its title does).
   history is the better surface for the multi-step undo we support.
   Within the history (`gh`), `j`/`k` move and `z` undoes, or redoes, the
   focused entry.
-- **No `n`/`p`, `;`/`:`, `m`, `b`, `.`:** uplink shows messages, not
-  conversations, and has no mute, snooze or "more actions" menu.
+- **No `;`/`:`, `m`, `b`, `.`:** uplink has no mute, snooze or "more
+  actions" menu. No `n`/`p` (a conversation's next or previous message)
+  yet.
 
 Sequences: all components' window bindings form one keymap with one
 pending sequence (`web/src/keymap.ts`), on tinykeys' key parsing and
@@ -1691,18 +1711,33 @@ compose window.
 
 ---
 
-### 12.8 Look
+### 12.8 Conversations
 
-Gmail's, in light and dark (as the system is). Message rows: a
-checkbox, a star that toggles Starred, the sender, the user's labels,
-subject and snippet, a paperclip if files are attached (not inline
-images), and the date, small. Unread rows are bold on a background of
+Actions apply to conversations (§4), from the list and from the
+conversation view, to their entries in the list's scope, as Gmail's do:
+archive, delete, spam, label, move, mark important and mark read to all
+of them; mark unread to the latest. Star: if each has a star, every
+star goes; else the latest of those without one gets one. Each message
+in the view has a star of its own. A row is unread if any entry is,
+names its senders (`me` for the account's own address; by first names
+if several), counts its messages, and shows the user's labels of any.
+The view lists the messages oldest first, the unread ones and the
+latest expanded (a header toggles one); opening it reads them all, and
+replying, forwarding and flagging (`Shift+t`, or unflagging the flagged
+ones) take the latest.
+
+### 12.9 Look
+
+Gmail's, in light and dark (as the system is). Conversation rows: a
+checkbox, a star that toggles Starred (§12.8), the senders and count,
+the user's labels, the latest's subject and snippet, a paperclip if
+files are attached to any (not inline images), and the date, small. Unread rows are bold on a background of
 their own; read ones recede (in the dark theme, onto the page's
 near-black). No Important markers: Gmail's guesses, which `+` and `-`
 still set. In the nav, system labels have Gmail's icons, the user's own
 labels a tag, and Microsoft 365's folders a folder.
 
-### 12.9 Dates and times
+### 12.10 Dates and times
 
 One format throughout, `web/src/format.ts`: `YYYY-MM-DD` and 24-hour
 `HH:MM`, in the browser's time zone. Not the browser locale's
@@ -2376,12 +2411,12 @@ visible. Routes (handled by `preact-iso`):
 | Route                                  | Content pane                           |
 |----------------------------------------|----------------------------------------|
 | `/`                                    | Home / dashboard                       |
-| `/mail/:account/:label`                | Message list (of a label, by provider id, e.g. `INBOX`) |
-| `/mail/:account/:label/:entry`         | Message view (thread view once threads exist) |
-| `/all/:account`, `/all/:account/:entry` | All Mail, and a message in it          |
+| `/mail/:account/:label`                | Conversation list (of a label, by provider id, e.g. `INBOX`) |
+| `/mail/:account/:label/:entry`         | The entry's conversation               |
+| `/all/:account`, `/all/:account/:entry` | All Mail, and a conversation in it     |
 | `/search/:terms`                       | Search results                         |
-| `/search/:terms/:entry`                | Message view, within the results       |
-| `/message/:message`                    | A message by itself (from a to-do)     |
+| `/search/:terms/:entry`                | A conversation, within the results     |
+| `/message/:message`                    | A message's conversation (from a to-do) |
 | `/compose/:draft`                      | Compose (new or continued draft)       |
 | `/drafts`, `/outbox`                   | Drafts; mail being sent                |
 | `/rooms/:room`                         | Room timeline (uplink's room id)       |

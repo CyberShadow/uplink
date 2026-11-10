@@ -10,6 +10,7 @@ import type {
   Account,
   CalendarEvent,
   ClientRequest,
+  Conversation,
   Draft,
   OutboxItem,
   Splice,
@@ -26,6 +27,7 @@ import type {
   Room,
   RoomEvent,
   RoomId,
+  Sender,
   ServerEvent,
   TimelinePage,
   Todo,
@@ -120,14 +122,15 @@ export class FakeServer implements Requester, Blobs {
     return label.id
   }
 
-  /** Adds a message, as syncing would; returns its entry. */
-  deliver(account: string, subject: string, labels: string[] = ['INBOX', 'UNREAD']): Entry {
+  /** Adds a message, as syncing would, in `thread` if given; returns its
+   * entry. */
+  deliver(account: string, subject: string, labels: string[] = ['INBOX', 'UNREAD'], thread?: string): Entry {
     const id = this.nextEntry++
     const entry: Entry = {
       id,
       account,
       message: id,
-      thread_id: null,
+      thread_id: thread ?? null,
       received_at: 1_700_000_000_000 + id * 60_000,
       subject,
       from_addr: 'bob@example.org',
@@ -292,38 +295,45 @@ export class FakeServer implements Requester, Blobs {
         return { type: 'accounts', as_of: this.head(), accounts: this.listAccounts() }
       case 'list_entries': {
         const list = body.list
-        const all = this.sorted().filter((e) => {
-          switch (list.type) {
-            case 'label':
-              return (
-                e.labels.includes(list.label) &&
-                (HIDING.includes(this.labelById(list.label).external_id) || !this.hidden(e))
-              )
-            case 'all_mail':
-              return e.account === list.account && !this.hidden(e)
-            case 'inbox':
-              return e.labels.some((l) => this.labelById(l).external_id === 'INBOX') && !this.hidden(e)
-          }
-        })
-        const start = body.after
-          ? all.findIndex((e) => e.id === body.after!.entry) + 1
-          : 0
+        const trash = list.type === 'label' && HIDING.includes(this.labelById(list.label).external_id)
+        const all = this.conversations(
+          (e) => (trash && list.type === 'label' ? e.labels.includes(list.label) : !this.hidden(e)),
+          (e) => {
+            switch (list.type) {
+              case 'label':
+                return e.labels.includes(list.label)
+              case 'all_mail':
+                return e.account === list.account
+              case 'inbox':
+                return e.labels.some((l) => this.labelById(l).external_id === 'INBOX')
+            }
+          },
+        )
+        const start = body.after ? all.findIndex((c) => c.latest.id === body.after!.entry) + 1 : 0
         const page = all.slice(start, start + body.limit)
-        const last = page.at(-1)
+        const last = page.at(-1)?.latest
         const more = start + body.limit < all.length
         return {
-          type: 'entries',
+          type: 'conversations',
           as_of: this.head(),
-          entries: page.map((e) => ({ ...e })),
+          conversations: page,
           next: more && last ? { received_at: last.received_at, entry: last.id } : null,
         }
       }
       case 'search': {
         const query = body.query.toLowerCase()
-        const found = this.sorted().filter(
-          (e) => !this.hidden(e) && `${e.subject} ${e.snippet}`.toLowerCase().includes(query),
+        const found = this.conversations(
+          (e) => !this.hidden(e),
+          (e) => `${e.subject} ${e.snippet}`.toLowerCase().includes(query),
         )
-        return { type: 'entries', as_of: this.head(), entries: found.slice(0, body.limit), next: null }
+        return { type: 'conversations', as_of: this.head(), conversations: found.slice(0, body.limit), next: null }
+      }
+      case 'list_conversation': {
+        const entry = this.entries.find((e) => e.id === body.entry)!
+        const entries = this.sorted()
+          .reverse()
+          .filter((e) => e.id === entry.id || (entry.thread_id !== null && e.account === entry.account && e.thread_id === entry.thread_id))
+        return { type: 'entries', as_of: this.head(), entries: entries.map((e) => ({ ...e })) }
       }
       case 'load_message': {
         const entry = this.entries.find((e) => e.message === body.message)!
@@ -465,7 +475,6 @@ export class FakeServer implements Requester, Blobs {
           type: 'entries',
           as_of: this.head(),
           entries: this.sorted().filter((e) => e.message === body.message).map((e) => ({ ...e })),
-          next: null,
         }
       case 'list_events':
         return {
@@ -671,6 +680,32 @@ export class FakeServer implements Requester, Blobs {
     return [...this.entries].sort((a, b) => b.received_at - a.received_at || b.id - a.id)
   }
 
+  /** The conversations of the entries in scope, of which one matches;
+   * newest first, as the server lists them. */
+  private conversations(scope: (e: Entry) => boolean, matches: (e: Entry) => boolean): Conversation[] {
+    const byKey = new Map<string, Entry[]>()
+    for (const entry of this.sorted().reverse().filter(scope)) {
+      const key = entry.thread_id === null ? `#${entry.id}` : `${entry.account}/${entry.thread_id}`
+      byKey.set(key, [...(byKey.get(key) ?? []), entry])
+    }
+    return [...byKey.values()]
+      .filter((entries) => entries.some(matches))
+      .map((entries) => {
+        const latest = entries.at(-1)!
+        const senders: Sender[] = []
+        for (const e of entries) {
+          if (!senders.some((s) => s.addr === e.from_addr)) senders.push({ name: e.from_name, addr: e.from_addr })
+        }
+        return {
+          latest: { ...latest },
+          earlier: entries.slice(0, -1).map((e) => ({ id: e.id, message: e.message, labels: [...e.labels] })),
+          senders,
+          has_attachments: entries.some((e) => e.has_attachments),
+        }
+      })
+      .sort((a, b) => b.latest.received_at - a.latest.received_at || b.latest.id - a.latest.id)
+  }
+
   private labelById(id: LabelId): Label {
     return this.accounts.flatMap((a) => a.labels).find((l) => l.id === id)!
   }
@@ -691,10 +726,13 @@ export class FakeServer implements Requester, Blobs {
         labels: account.labels.map((label) => {
           const showsHidden = HIDING.includes(label.external_id)
           const having = this.entries.filter((e) => e.labels.includes(label.id) && (showsHidden || !this.hidden(e)))
+          // Conversations, as the server counts.
+          const count = (entries: Entry[]) =>
+            new Set(entries.map((e) => (e.thread_id === null ? `#${e.id}` : e.thread_id))).size
           return {
             ...label,
-            total: having.length,
-            unread: having.filter((e) => e.labels.includes(unread)).length,
+            total: count(having),
+            unread: count(having.filter((e) => e.labels.includes(unread))),
           }
         }),
       }

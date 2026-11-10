@@ -554,6 +554,7 @@ impl Backend for Services {
             ClientRequest::ListMessageEntries { message } => {
                 self.mail.list_message_entries(message).await
             }
+            ClientRequest::ListConversation { entry } => self.mail.list_conversation(entry).await,
             ClientRequest::LoadMessage { message } => self.mail.load_message(message).await,
             ClientRequest::ModifyLabels {
                 entries,

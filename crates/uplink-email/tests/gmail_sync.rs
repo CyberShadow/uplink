@@ -83,13 +83,16 @@ async fn mirrors_the_mailbox_and_pushes_changes() {
 
     // Search covers subject, body and sender.
     for query in ["second", "quixot", "tester@uplink"] {
-        let ServerResponse::Entries { entries, .. } =
+        let ServerResponse::Conversations { conversations, .. } =
             uplink.mail.search(query.into(), 10).await.unwrap()
         else {
             panic!()
         };
         assert!(
-            entries.iter().any(|e| e.id == second_entry),
+            conversations
+                .iter()
+                .any(|c| c.latest.id == second_entry
+                    || c.earlier.iter().any(|m| m.id == second_entry)),
             "{query} does not find the message"
         );
     }

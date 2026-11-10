@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'preact/hooks'
-import type { Account, Entry, Label } from '../generated/protocol'
+import type { Account, Label } from '../generated/protocol'
+import type { Thread } from '../stores/mail'
 import { useServices } from '../context'
 import { labelName, navLabels } from './Nav'
 import styles from './Overlay.module.css'
@@ -75,9 +76,9 @@ function Picker(props: {
 }
 
 /** The account the targets share; labels belong to one. */
-function useTargetAccount(targets: Entry[]): Account | null {
+function useTargetAccount(targets: Thread[]): Account | null {
   const { mail } = useServices()
-  const accounts = new Set(targets.map((e) => e.account))
+  const accounts = new Set(targets.map((t) => t.account))
   if (accounts.size > 1) return null
   const [account] = accounts
   return mail.accounts.value!.find((a) => a.id === account)!
@@ -94,12 +95,12 @@ function MixedAccounts(props: { name: string; close: () => void }) {
 }
 
 /** Toggles a user label on `targets` (`l`); folders are moved to instead. */
-export function LabelPicker(props: { targets: Entry[]; close: () => void }) {
+export function LabelPicker(props: { targets: Thread[]; close: () => void }) {
   const { mail } = useServices()
   const account = useTargetAccount(props.targets)
   if (!account) return <MixedAccounts name="Label" close={props.close} />
   const check = (label: Label): Check => {
-    const having = props.targets.filter((e) => e.labels.includes(label.id)).length
+    const having = props.targets.filter((t) => t.entries.some((e) => e.labels.includes(label.id))).length
     return having === 0 ? 'none' : having === props.targets.length ? 'all' : 'some'
   }
   return (
@@ -118,7 +119,7 @@ export function LabelPicker(props: { targets: Entry[]; close: () => void }) {
 /** Moves `targets` out of the label on show, or else the Inbox, into a
  * user label or the Inbox (`v`); or, if the account has folders, into
  * another folder. */
-export function MovePicker(props: { targets: Entry[]; from: string | null; close: () => void }) {
+export function MovePicker(props: { targets: Thread[]; from: string | null; close: () => void }) {
   const { mail } = useServices()
   const account = useTargetAccount(props.targets)
   if (!account) return <MixedAccounts name="Move to" close={props.close} />

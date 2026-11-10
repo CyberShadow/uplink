@@ -94,16 +94,23 @@ pub enum ClientRequest {
     },
     /// The configured mail accounts and their labels.
     ListAccounts,
-    /// A page of the list, newest first, starting after `after`.
+    /// A page of the list's conversations, newest first, starting after
+    /// `after`.
     ListEntries {
         list: EntryList,
         after: Option<ListPosition>,
         limit: u32,
     },
-    /// Full-text search across all accounts, newest first.
+    /// Full-text search across all accounts: the conversations with a
+    /// match, newest first.
     Search {
         query: String,
         limit: u32,
+    },
+    /// The entries of the entry's conversation, in Trash and Spam too,
+    /// oldest first.
+    ListConversation {
+        entry: EntryId,
     },
     /// The message's entries, in every account, newest first.
     ListMessageEntries {
@@ -231,11 +238,15 @@ pub enum ServerResponse {
         as_of: TxLogId,
         accounts: Vec<mail::Account>,
     },
+    Conversations {
+        as_of: TxLogId,
+        conversations: Vec<mail::Conversation>,
+        /// Where the next page starts, if there may be one.
+        next: Option<ListPosition>,
+    },
     Entries {
         as_of: TxLogId,
         entries: Vec<mail::Entry>,
-        /// Where the next page starts, if there may be one.
-        next: Option<ListPosition>,
     },
     Message {
         message: mail::MessageContent,
@@ -288,6 +299,7 @@ impl ServerResponse {
         match self {
             Self::Undone { tx_log_id } | Self::Dispatched { tx_log_id } => Some(*tx_log_id),
             Self::Accounts { as_of, .. }
+            | Self::Conversations { as_of, .. }
             | Self::Entries { as_of, .. }
             | Self::Drafts { as_of, .. }
             | Self::Outbox { as_of, .. }

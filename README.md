@@ -6,7 +6,8 @@ keyboard-driven web UI with Gmail's shortcuts, and a transaction log that
 makes every action undoable. See `docs/VISION.md` for the goals and
 `docs/SPEC.md` for the design.
 
-**Status:** Gmail and Microsoft 365 mail can be read (attachments too), searched,
+**Status:** Gmail and Microsoft 365 mail can be read by conversation, as
+Gmail groups it (attachments too), searched,
 archived, labelled, starred, marked read/unread, trashed and reported as
 spam, with undo, and written (drafts saved as you type, synced across
 tabs, with files attached), replied to, forwarded and sent, with

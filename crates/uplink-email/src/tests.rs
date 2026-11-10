@@ -781,6 +781,11 @@ pub(crate) mod service {
             observed(labels(&["INBOX", "UNREAD"]), vec![], vec![], &[]),
         )
         .await;
+        mail_of(db)
+    }
+
+    /// The service over `db`, with accounts `a` and `b`.
+    pub(crate) fn mail_of(db: &Db) -> Mail {
         Mail::new(
             db.dispatcher.clone(),
             db.reader(),
@@ -802,10 +807,13 @@ pub(crate) mod service {
     }
 
     fn subjects(response: &ServerResponse) -> Vec<String> {
-        let ServerResponse::Entries { entries, .. } = response else {
+        let ServerResponse::Conversations { conversations, .. } = response else {
             panic!("{response:?}")
         };
-        entries.iter().map(|e| e.subject.clone().unwrap()).collect()
+        conversations
+            .iter()
+            .map(|c| c.latest.subject.clone().unwrap())
+            .collect()
     }
 
     #[tokio::test]
@@ -827,6 +835,184 @@ pub(crate) mod service {
         assert!(!accounts[0].synced);
     }
 
+    /// A list's rows are conversations, each of the entries of a thread in
+    /// the list's scope, listed by its newest whether or not that matches.
+    #[tokio::test]
+    async fn lists_are_of_conversations() {
+        use uplink_protocol::mail::{Conversation, Sender};
+        let db = Db::new();
+        let store = db.store();
+        // (id, thread, labels, sender, received_at)
+        let mail: &[(&str, &str, &[&str], &str, i64)] = &[
+            ("x1", "t1", &["INBOX"], "Alice <alice@x>", 1000),
+            ("x2", "t1", &["SENT"], "a@x", 2000),
+            ("x3", "t1", &["INBOX", "UNREAD"], "Bob <bob@x>", 3000),
+            ("y1", "t2", &["INBOX"], "Alice <ALICE@x>", 1500),
+            ("z1", "t3", &["TRASH"], "Carol <carol@x>", 4000),
+            ("z2", "t3", &["INBOX"], "Carol <carol@x>", 500),
+            ("w1", "t4", &["SENT"], "a@x", 5000),
+        ];
+        let entries = mail
+            .iter()
+            .map(|&(id, thread, labels, from, received_at)| {
+                let mut e = new_entry(
+                    &store,
+                    id,
+                    labels,
+                    &raw(&format!("{id}@x"), from, DATE, id, &format!("body of {id}")),
+                );
+                e.thread_id = Some(thread.into());
+                e.received_at = received_at;
+                e
+            })
+            .collect();
+        db.observe(
+            "a",
+            observed(
+                labels(&["INBOX", "UNREAD", "SENT", "TRASH", "SPAM"]),
+                entries,
+                vec![],
+                &[],
+            ),
+        )
+        .await;
+        let mail = mail_of(&db);
+        let ids = |response: ServerResponse| -> Vec<Vec<String>> {
+            let ServerResponse::Conversations { conversations, .. } = response else {
+                panic!("{response:?}")
+            };
+            conversations
+                .iter()
+                .map(|c: &Conversation| {
+                    let mut ids: Vec<_> = c.earlier.iter().map(|m| m.id).collect();
+                    ids.push(c.latest.id);
+                    let external = |id: EntryId| {
+                        db.reader()
+                            .query_row(
+                                "SELECT external_id FROM mail_entry WHERE id = ?1",
+                                [id.0],
+                                |r| r.get::<_, String>(0),
+                            )
+                            .unwrap()
+                    };
+                    ids.into_iter().map(external).collect()
+                })
+                .collect()
+        };
+        let list = |label: &str, after, limit| {
+            mail.list_entries(
+                EntryList::Label {
+                    label: db.label("a", label),
+                },
+                after,
+                limit,
+            )
+        };
+        // Bob's reply puts t1 first; z1, in Trash, is not part of t3 here.
+        assert_eq!(
+            ids(list("INBOX", None, 10).await.unwrap()),
+            [vec!["x1", "x2", "x3"], vec!["y1"], vec!["z2"]]
+        );
+        assert_eq!(
+            ids(list("SENT", None, 10).await.unwrap()),
+            [vec!["w1"], vec!["x1", "x2", "x3"]]
+        );
+        assert_eq!(ids(list("TRASH", None, 10).await.unwrap()), [vec!["z1"]]);
+        let all = || {
+            mail.list_entries(
+                EntryList::AllMail {
+                    account: "a".into(),
+                },
+                None,
+                10,
+            )
+        };
+        assert_eq!(
+            ids(all().await.unwrap()),
+            [vec!["w1"], vec!["x1", "x2", "x3"], vec!["y1"], vec!["z2"]]
+        );
+        // Page by page, each conversation once.
+        for list in [
+            EntryList::Label {
+                label: db.label("a", "INBOX"),
+            },
+            EntryList::AllMail {
+                account: "a".into(),
+            },
+        ] {
+            let mut paged = vec![];
+            let mut after = None;
+            loop {
+                let response = mail.list_entries(list.clone(), after, 1).await.unwrap();
+                let ServerResponse::Conversations { next, .. } = &response else {
+                    panic!()
+                };
+                after = *next;
+                paged.extend(ids(response));
+                if after.is_none() {
+                    break;
+                }
+            }
+            let ServerResponse::Conversations { conversations, .. } =
+                mail.list_entries(list.clone(), None, 10).await.unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!(paged.len(), conversations.len(), "{list:?}");
+        }
+        // Senders once each, as first seen; attachments of any.
+        let ServerResponse::Conversations { conversations, .. } =
+            list("INBOX", None, 1).await.unwrap()
+        else {
+            panic!()
+        };
+        let sender = |name: Option<&str>, addr: &str| Sender {
+            name: name.map(Into::into),
+            addr: Some(addr.into()),
+        };
+        assert_eq!(
+            conversations[0].senders,
+            [
+                sender(Some("Alice"), "alice@x"),
+                sender(None, "a@x"),
+                sender(Some("Bob"), "bob@x")
+            ]
+        );
+        assert_eq!(conversations[0].earlier[1].labels, [db.label("a", "SENT")]);
+        // Search finds the conversation of a match.
+        let ServerResponse::Conversations { conversations, .. } =
+            mail.search("x2".into(), 10).await.unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(conversations.len(), 1);
+        assert_eq!(conversations[0].latest.id, db.entry("x3"));
+        // A conversation's entries, Trash's too, oldest first.
+        let ServerResponse::Entries { entries, .. } =
+            mail.list_conversation(db.entry("z2")).await.unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(
+            entries.iter().map(|e| e.id).collect::<Vec<_>>(),
+            [db.entry("z2"), db.entry("z1")]
+        );
+        assert_eq!(
+            mail.list_conversation(EntryId(999)).await.unwrap_err().code,
+            ErrorCode::NotFound
+        );
+        // Counts are of conversations: t1, t2 and t3 in the Inbox, one unread.
+        let ServerResponse::Accounts { accounts, .. } = mail.list_accounts().await.unwrap() else {
+            panic!()
+        };
+        let inbox = accounts[0]
+            .labels
+            .iter()
+            .find(|l| l.external_id == "INBOX")
+            .unwrap();
+        assert_eq!((inbox.total, inbox.unread), (3, 1));
+    }
+
     #[tokio::test]
     async fn entries_page_newest_first() {
         let db = Db::new();
@@ -837,7 +1023,7 @@ pub(crate) mod service {
             .await
             .unwrap();
         assert_eq!(subjects(&first), ["Subject 5", "Subject 4"]);
-        let ServerResponse::Entries {
+        let ServerResponse::Conversations {
             next: Some(next), ..
         } = first
         else {
@@ -855,14 +1041,15 @@ pub(crate) mod service {
             .await
             .unwrap();
         assert_eq!(subjects(&rest), ["Subject 3", "Subject 2", "Subject 1"]);
-        let ServerResponse::Entries {
+        let ServerResponse::Conversations {
             next: None,
-            entries,
+            conversations,
             ..
         } = rest
         else {
             panic!()
         };
+        let entries: Vec<_> = conversations.into_iter().map(|c| c.latest).collect();
         assert_eq!(entries[0].labels, [inbox, db.label("a", "UNREAD")]);
         assert_eq!(entries[0].snippet, "body number3 common");
         assert_eq!(
@@ -948,7 +1135,7 @@ pub(crate) mod service {
                 "Subject 1"
             ]
         );
-        let ServerResponse::Entries { next, .. } = inbox(None, 3).await.unwrap() else {
+        let ServerResponse::Conversations { next, .. } = inbox(None, 3).await.unwrap() else {
             panic!()
         };
         assert_eq!(
@@ -1066,7 +1253,7 @@ pub(crate) mod service {
         )
         .await;
         let message = message_of(&db, "m2");
-        let ServerResponse::Entries { entries, next, .. } =
+        let ServerResponse::Entries { entries, .. } =
             mail.list_message_entries(message).await.unwrap()
         else {
             panic!()
@@ -1075,7 +1262,6 @@ pub(crate) mod service {
         accounts.sort();
         assert_eq!(accounts, ["a", "b"]);
         assert!(entries.iter().all(|e| e.message == message));
-        assert_eq!(next, None);
         assert_eq!(
             mail.list_message_entries(uplink_protocol::mail::MessageId(999))
                 .await
@@ -1168,7 +1354,8 @@ pub(crate) mod service {
 /// `b` (even and odd ids), as a mailbox looks to the queries: some words
 /// very common and most rare (word `i` drawn with weight about 1/i), most
 /// messages in the Inbox, a fifth unread, one in fifty in Trash.
-fn fill(conn: &mut Connection, messages: i64) {
+/// `thread`: the thread of message `id`, if any.
+fn fill(conn: &mut Connection, messages: i64, thread: fn(i64) -> Option<String>) {
     let words: Vec<String> = (0..5000).map(|i| format!("w{i}")).collect();
     let mut seed = 1u64;
     let mut random = move || {
@@ -1222,9 +1409,10 @@ fn fill(conn: &mut Connection, messages: i64) {
         let account = if id % 2 == 0 { "a" } else { "b" };
         let entry: i64 = tx
             .query_row(
-                "INSERT INTO mail_entry (account_id, external_id, message, variant, received_at)
-                 VALUES (?1, ?2, ?2, ?2, ?2 * 1000) RETURNING id",
-                params![account, id],
+                "INSERT INTO mail_entry (account_id, external_id, message, variant, received_at,
+                                         thread_id)
+                 VALUES (?1, ?2, ?2, ?2, ?2 * 1000, ?3) RETURNING id",
+                params![account, id, thread(id)],
                 |r| r.get(0),
             )
             .unwrap();
@@ -1259,7 +1447,7 @@ fn large_lists_and_searches_page_in_order() {
 
     let dir = tempfile::tempdir().unwrap();
     let mut conn = uplink_storage::open(dir.path()).unwrap();
-    fill(&mut conn, 6000);
+    fill(&mut conn, 6000, |_| None);
     let plain = |conn: &Connection, sql: &str| -> Vec<i64> {
         conn.prepare(sql)
             .unwrap()
@@ -1314,8 +1502,8 @@ fn large_lists_and_searches_page_in_order() {
         let mut listed = vec![];
         let mut after = None;
         loop {
-            let page = query::entries(&mut conn, &list, after, 250).unwrap();
-            listed.extend(page.entries.iter().map(|e| e.id.0));
+            let page = query::conversations(&mut conn, &list, after, 250).unwrap();
+            listed.extend(page.conversations.iter().map(|c| c.latest.id.0));
             match page.next {
                 Some(next) => after = Some(next),
                 None => break,
@@ -1342,9 +1530,159 @@ fn large_lists_and_searches_page_in_order() {
             .unwrap()
             .1
             .iter()
-            .map(|e| e.id.0)
+            .map(|c| c.latest.id.0)
             .collect();
         assert_eq!(found, expected, "{words}");
+    }
+}
+
+/// Threads of up to 7 messages, of one account each (`fill` alternates
+/// accounts), and some messages by themselves.
+fn threads(id: i64) -> Option<String> {
+    (id % 11 != 0).then(|| format!("t{}-{}", id % 2, id / 14))
+}
+
+/// Threaded lists, walked or sorted, list the conversations a plain model
+/// of them does, page by page.
+#[test]
+fn large_threaded_lists_page_in_order() {
+    use crate::query;
+    use std::collections::{BTreeMap, BTreeSet};
+    use uplink_protocol::mail::EntryList;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = uplink_storage::open(dir.path()).unwrap();
+    fill(&mut conn, 6000, threads);
+    struct Row {
+        id: i64,
+        account: String,
+        thread: Option<String>,
+        received_at: i64,
+        labels: BTreeSet<String>,
+    }
+    let mut rows: Vec<Row> = conn
+        .prepare("SELECT id, account_id, thread_id, received_at FROM mail_entry")
+        .unwrap()
+        .query_map([], |r| {
+            Ok(Row {
+                id: r.get(0)?,
+                account: r.get(1)?,
+                thread: r.get(2)?,
+                received_at: r.get(3)?,
+                labels: BTreeSet::new(),
+            })
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    for row in &mut rows {
+        row.labels = conn
+            .prepare(
+                "SELECT l.external_id FROM entry_label el JOIN label l ON l.id = el.label
+                 WHERE el.entry = ?1 AND el.desired",
+            )
+            .unwrap()
+            .query_map([row.id], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+    }
+    let label = |name: &str| -> i64 {
+        conn.query_row(
+            "SELECT id FROM label WHERE account_id = 'a' AND external_id = ?1",
+            [name],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let hidden = |r: &Row| r.labels.contains("TRASH") || r.labels.contains("SPAM");
+    // Each list: its scope, and what puts a conversation on it.
+    type Test<'a> = (
+        EntryList,
+        Box<dyn Fn(&Row) -> bool + 'a>,
+        Box<dyn Fn(&Row) -> bool + 'a>,
+    );
+    let tests: Vec<Test> = vec![
+        // 3000 entries: walked.
+        (
+            EntryList::Label {
+                label: LabelId(label("INBOX")),
+            },
+            Box::new(|r: &Row| !hidden(r)),
+            Box::new(|r: &Row| r.account == "a" && r.labels.contains("INBOX")),
+        ),
+        // 600: sorted.
+        (
+            EntryList::Label {
+                label: LabelId(label("UNREAD")),
+            },
+            Box::new(|r: &Row| !hidden(r)),
+            Box::new(|r: &Row| r.account == "a" && r.labels.contains("UNREAD")),
+        ),
+        // 60: sorted, of Trash alone.
+        (
+            EntryList::Label {
+                label: LabelId(label("TRASH")),
+            },
+            Box::new(|r: &Row| r.labels.contains("TRASH")),
+            Box::new(|r: &Row| r.account == "a" && r.labels.contains("TRASH")),
+        ),
+        (
+            EntryList::AllMail {
+                account: "b".into(),
+            },
+            Box::new(|r: &Row| !hidden(r)),
+            Box::new(|r: &Row| r.account == "b"),
+        ),
+        // Every account's: walked.
+        (
+            EntryList::Inbox,
+            Box::new(|r: &Row| !hidden(r)),
+            Box::new(|r: &Row| r.labels.contains("INBOX")),
+        ),
+    ];
+    for (list, scope, matches) in tests {
+        // Conversations by their newest entry, newest first, with their
+        // entries oldest first.
+        let mut conversations: BTreeMap<(String, String), Vec<&Row>> = BTreeMap::new();
+        for row in rows.iter().filter(|r| scope(r)) {
+            let key = match &row.thread {
+                Some(t) => (row.account.clone(), t.clone()),
+                None => (row.account.clone(), format!("#{}", row.id)),
+            };
+            conversations.entry(key).or_default().push(row);
+        }
+        let mut expected: Vec<Vec<i64>> = conversations
+            .into_values()
+            .filter(|c| c.iter().any(|r| matches(r)))
+            .map(|mut c| {
+                c.sort_by_key(|r| (r.received_at, r.id));
+                c.iter().map(|r| r.id).collect()
+            })
+            .collect();
+        expected.sort_by_key(|c| {
+            let latest = &rows[rows
+                .iter()
+                .position(|r| r.id == *c.last().unwrap())
+                .unwrap()];
+            std::cmp::Reverse((latest.received_at, latest.id))
+        });
+        let mut listed = vec![];
+        let mut after = None;
+        loop {
+            let page = query::conversations(&mut conn, &list, after, 250).unwrap();
+            listed.extend(page.conversations.iter().map(|c| {
+                let mut ids: Vec<i64> = c.earlier.iter().map(|m| m.id.0).collect();
+                ids.push(c.latest.id.0);
+                ids
+            }));
+            match page.next {
+                Some(next) => after = Some(next),
+                None => break,
+            }
+        }
+        assert_eq!(listed.len(), expected.len(), "{list:?}");
+        assert_eq!(listed, expected, "{list:?}");
     }
 }
 
@@ -1362,7 +1700,7 @@ fn speed_of_search_and_listing() {
     let dir = tempfile::tempdir().unwrap();
     let mut conn = uplink_storage::open(dir.path()).unwrap();
     let started = Instant::now();
-    fill(&mut conn, MESSAGES);
+    fill(&mut conn, MESSAGES, threads);
     eprintln!("set up {MESSAGES} messages in {:?}", started.elapsed());
 
     let inbox: i64 = conn
@@ -1388,7 +1726,7 @@ fn speed_of_search_and_listing() {
         });
     }
     time("Inbox, first page", &mut |conn| {
-        query::entries(
+        query::conversations(
             conn,
             &EntryList::Label {
                 label: LabelId(inbox),
@@ -1397,11 +1735,11 @@ fn speed_of_search_and_listing() {
             100,
         )
         .unwrap()
-        .entries
+        .conversations
         .len()
     });
     time("All Mail, first page", &mut |conn| {
-        query::entries(
+        query::conversations(
             conn,
             &EntryList::AllMail {
                 account: "a".into(),
@@ -1410,7 +1748,7 @@ fn speed_of_search_and_listing() {
             100,
         )
         .unwrap()
-        .entries
+        .conversations
         .len()
     });
     time("accounts and counts", &mut |conn| {
@@ -1466,10 +1804,11 @@ async fn attachments_are_indexed_for_messages_stored_before() {
     let listed = |conn: &mut Connection| -> Vec<(String, bool)> {
         let inbox = db.label("a", "INBOX");
         let mut entries: Vec<_> =
-            query::entries(conn, &EntryList::Label { label: inbox }, None, 10)
+            query::conversations(conn, &EntryList::Label { label: inbox }, None, 10)
                 .unwrap()
-                .entries
+                .conversations
                 .into_iter()
+                .map(|c| c.latest)
                 .map(|e| {
                     (
                         e.snippet.chars().take(2).collect::<String>(),

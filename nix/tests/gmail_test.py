@@ -18,7 +18,7 @@ def label_ids():
 
 def entries(label):
     page = ws({"type": "list_entries", "list": {"type": "label", "label": label}, "after": None, "limit": 100})
-    return {entry["subject"]: entry for entry in page["entries"]}
+    return {c["latest"]["subject"]: c["latest"] for c in page["conversations"]}
 
 
 def tx_log_head():
@@ -74,7 +74,7 @@ with subtest("search covers subject, body and sender"):
         ("quixot", {"Lunch on Friday"}),
         ("bob@example.org", {"Quarterly report", "Lunch on Friday"}),
     ]:
-        found = {e["subject"] for e in ws({"type": "search", "query": query, "limit": 10})["entries"]}
+        found = {c["latest"]["subject"] for c in ws({"type": "search", "query": query, "limit": 10})["conversations"]}
         assert found == expected, (query, found)
 
 with subtest("a restart loses nothing and resumes from the stored historyId"):
