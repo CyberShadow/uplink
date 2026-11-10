@@ -13,10 +13,20 @@
 
 .nav a {
   display: flex;
-  justify-content: space-between;
-  padding: 3px 16px;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 16px;
   border-radius: 0 16px 16px 0;
   margin-right: 8px;
+}
+
+.nav a svg {
+  flex: none;
+  color: var(--muted);
+}
+
+.nav a.current svg {
+  color: inherit;
 }
 
 .nav a:hover {
@@ -46,6 +56,7 @@
 }
 
 .name {
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

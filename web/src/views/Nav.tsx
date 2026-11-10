@@ -4,20 +4,21 @@ import { useServices } from '../context'
 import { allMailPath, inboxPath, mailPath } from './App'
 import { roomPath } from './Room'
 import styles from './Nav.module.css'
+import { Icon, type IconName } from './Icon'
 
 /** The system labels worth a place in the nav, in Gmail's order; Microsoft
  * 365's well-known folders have the ids of the Gmail labels that mean the
  * same, and an Archive besides. */
-const SYSTEM: Record<string, string> = {
-  INBOX: 'Inbox',
-  STARRED: 'Starred',
-  IMPORTANT: 'Important',
-  SENT: 'Sent',
+const SYSTEM: Record<string, { name: string; icon: IconName }> = {
+  INBOX: { name: 'Inbox', icon: 'inbox' },
+  STARRED: { name: 'Starred', icon: 'star' },
+  IMPORTANT: { name: 'Important', icon: 'chevrons-right' },
+  SENT: { name: 'Sent', icon: 'send' },
   // uplink's own drafts are in Drafts, above the accounts.
-  DRAFT: 'drafts',
-  ARCHIVE: 'Archive',
-  SPAM: 'Spam',
-  TRASH: 'Trash',
+  DRAFT: { name: 'drafts', icon: 'file' },
+  ARCHIVE: { name: 'Archive', icon: 'archive' },
+  SPAM: { name: 'Spam', icon: 'octagon-x' },
+  TRASH: { name: 'Trash', icon: 'trash' },
 }
 
 const PROVIDER: Record<MailProvider, string> = { gmail: 'Gmail', m365: 'Outlook' }
@@ -37,31 +38,40 @@ export function navLabels(account: Account): { system: Label[]; user: Label[] } 
 export function labelName(account: Account, label: Label): string {
   if (!label.system) return label.name
   if (label.external_id === 'DRAFT') return `${PROVIDER[account.provider]} drafts`
-  return SYSTEM[label.external_id] ?? label.name
+  return SYSTEM[label.external_id]?.name ?? label.name
+}
+
+/** Gmail's icons for its system labels; one for user labels, and one for
+ * Microsoft 365's own folders. */
+function labelIcon(label: Label): IconName {
+  if (label.system) return SYSTEM[label.external_id]!.icon
+  return label.folder ? 'folder' : 'tag'
 }
 
 export function Nav() {
   const { mail, drafts, matrix, todos } = useServices()
   const { path } = useLocation()
-  const link = (href: string, name: string, count: number) => {
+  const link = (href: string, icon: IconName, name: string, count: number) => {
     const current = path === href || path.startsWith(`${href}/`)
     return (
       <li key={href}>
         <a href={href} class={current ? styles.current : undefined} aria-current={current ? 'page' : undefined}>
-          <span>{name}</span>
+          <Icon name={icon} />
+          <span class={styles.name}>{name}</span>
           {count > 0 && <span class={styles.count}>{count}</span>}
         </a>
       </li>
     )
   }
   const labelLink = (account: Account, label: Label) =>
-    link(mailPath(account.id, label.external_id), labelName(account, label), label.unread)
+    link(mailPath(account.id, label.external_id), labelIcon(label), labelName(account, label), label.unread)
   return (
     <nav class={styles.nav}>
       <ul>
         {(mail.accounts.value?.length ?? 0) > 1 &&
           link(
             inboxPath(),
+            'inbox',
             'All inboxes',
             mail.accounts.value!.reduce(
               (unread, account) =>
@@ -69,11 +79,11 @@ export function Nav() {
               0,
             ),
           )}
-        {link('/drafts', 'Drafts', drafts.drafts.value?.size ?? 0)}
-        {link('/outbox', 'Outbox', drafts.outbox.value?.length ?? 0)}
-        {link('/history', 'History', 0)}
-        {link('/todos', 'To-dos', todos.todos.value?.filter((t) => t.done_at === null).length ?? 0)}
-        {link('/calendar', 'Calendar', 0)}
+        {link('/drafts', 'file', 'Drafts', drafts.drafts.value?.size ?? 0)}
+        {link('/outbox', 'clock-arrow-up', 'Outbox', drafts.outbox.value?.length ?? 0)}
+        {link('/history', 'undo-2', 'History', 0)}
+        {link('/todos', 'list-todo', 'To-dos', todos.todos.value?.filter((t) => t.done_at === null).length ?? 0)}
+        {link('/calendar', 'calendar', 'Calendar', 0)}
       </ul>
       {mail.accounts.value?.map((account) => (
         <section key={account.id}>
@@ -83,7 +93,7 @@ export function Nav() {
           </h2>
           <ul>
             {navLabels(account).system.map((label) => labelLink(account, label))}
-            {link(allMailPath(account.id), 'All Mail', 0)}
+            {link(allMailPath(account.id), 'mails', 'All Mail', 0)}
             {navLabels(account).user.map((label) => labelLink(account, label))}
           </ul>
         </section>
