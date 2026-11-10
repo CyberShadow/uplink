@@ -44,6 +44,7 @@ function document(html: string, remote: boolean, dark: boolean): string {
   // origin.
   const images = remote ? `data: ${location.origin}` : 'data:'
   return `<!doctype html><html${dark ? ' class="dark"' : ''}><head><meta charset="utf-8"><meta name="darkreader-lock">
+<meta http-equiv="x-dns-prefetch-control" content="off">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${images}; style-src 'unsafe-inline'">
 <base target="_blank">
 <style>${STYLE}</style>
@@ -73,8 +74,9 @@ export function HtmlBody(props: { html: string }) {
         ref={frame}
         class={styles.html}
         title="Message body"
-        // Same origin, without scripts, so that the frame can be measured;
-        // popups, so that links open.
+        // Same origin, without scripts, so that the frame can be measured
+        // (with scripts too, the mail could lift its own sandbox); popups,
+        // so that links open.
         sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
         srcdoc={document(props.html, remote, dark)}
         onLoad={fit}

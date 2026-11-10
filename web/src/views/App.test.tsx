@@ -222,8 +222,11 @@ describe('mail', () => {
     const user = await start('/mail/work/INBOX')
     await user.keyboard('{Enter}')
     const frame = (await screen.findByTitle('Message body')) as HTMLIFrameElement
+    // Never scripts: with allow-same-origin, they could lift the sandbox.
     expect(frame.getAttribute('sandbox')).not.toContain('allow-scripts')
     expect(frame.srcdoc).toContain(html)
+    // Nor lookups of the hosts linked to, which tell DNS servers it was read.
+    expect(frame.srcdoc).toContain('<meta http-equiv="x-dns-prefetch-control" content="off">')
     expect(frame.srcdoc).toContain('img-src data:;')
     await user.click(screen.getByRole('button', { name: 'Show them' }))
     expect(frame.srcdoc).toContain(`img-src data: ${location.origin};`)
