@@ -45,6 +45,7 @@ fn main() {
         Label,
         Entry,
         Conversation,
+        ListingProgress,
         Member,
         Sender,
         ListPosition,

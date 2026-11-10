@@ -19,6 +19,7 @@ import type {
   Label,
   LabelId,
   LabelState,
+  ListingProgress,
   MailProvider,
   LogEntry,
   MatrixAccount,
@@ -279,6 +280,9 @@ export class FakeServer implements Requester, Blobs {
     this.blobs.set(blob, size)
     return { blob, size }
   }
+
+  /** Accounts whose first sync is under way, with its progress if known. */
+  readonly syncing = new Map<string, ListingProgress | null>()
 
   /** Runs before the next request is handled, as if it happened while
    * the request was on its way. */
@@ -722,7 +726,8 @@ export class FakeServer implements Requester, Blobs {
         id: account.id,
         address: account.address,
         provider: account.provider,
-        synced: true,
+        synced: !this.syncing.has(account.id),
+        listing: this.syncing.get(account.id) ?? null,
         labels: account.labels.map((label) => {
           const showsHidden = HIDING.includes(label.external_id)
           const having = this.entries.filter((e) => e.labels.includes(label.id) && (showsHidden || !this.hidden(e)))

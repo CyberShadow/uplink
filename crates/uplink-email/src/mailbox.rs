@@ -89,9 +89,13 @@ pub struct MailboxObserved {
 /// a mirror of the mailbox.
 #[derive(Debug, Serialize)]
 pub enum SyncState {
-    /// A listing of the mailbox is under way, as far as this describes;
-    /// the account is not mirrored until it is done.
-    Listing(serde_json::Value),
+    /// A listing of the mailbox is under way, as far as `state` describes;
+    /// the account is not mirrored until it is done. `total`: how many
+    /// messages the mailbox holds, if the provider says.
+    Listing {
+        state: serde_json::Value,
+        total: Option<u32>,
+    },
     /// Everything up to the point this describes is recorded.
     Synced(serde_json::Value),
 }
@@ -226,13 +230,14 @@ impl Observation for MailboxObserved {
         }
 
         if let Some(state) = self.sync_state {
-            let (state, synced) = match state {
-                SyncState::Listing(state) => (state, false),
-                SyncState::Synced(state) => (state, true),
+            let (state, synced, total) = match state {
+                SyncState::Listing { state, total } => (state, false, total),
+                SyncState::Synced(state) => (state, true, None),
             };
             tx.execute(
-                "UPDATE account SET sync_state = ?1, synced = ?2 WHERE id = ?3",
-                params![state.to_string(), synced, account],
+                "UPDATE account SET sync_state = ?1, synced = ?2, listing_total = ?3
+                 WHERE id = ?4",
+                params![state.to_string(), synced, total, account],
             )?;
         }
 

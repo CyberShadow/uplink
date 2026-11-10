@@ -28,7 +28,20 @@ pub struct Account {
     pub provider: MailProvider,
     /// Whether the first full sync has completed.
     pub synced: bool,
+    /// Until then, how far it has got, if the provider says how far it
+    /// goes.
+    pub listing: Option<ListingProgress>,
     pub labels: Vec<Label>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ListingProgress {
+    /// Messages stored.
+    pub stored: u32,
+    /// Messages the mailbox held as the listing began, Spam and Trash
+    /// included, which the listing is not: it ends a little short.
+    pub total: u32,
 }
 
 /// Who keeps a mail account.

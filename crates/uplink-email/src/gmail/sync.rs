@@ -172,19 +172,23 @@ impl GmailSync {
     /// it has not.
     async fn list(&self, account: &Account, resumed: Option<Listing>) -> Result<()> {
         let gmail = &self.gmail;
+        // Its total, for the progress shown, is as of now.
+        let profile = gmail.profile().await?;
         let listing = match resumed {
             Some(listing) => listing,
             None => Listing {
-                listing_from: gmail.profile().await?.history_id,
+                listing_from: profile.history_id,
                 before: account.last_entry().await?,
             },
         };
         account
             .observe(MailboxObserved {
                 labels: Some(self.labels().await?),
-                sync_state: Some(SyncState::Listing(
-                    serde_json::to_value(State::Listing(listing.clone())).expect("serializes"),
-                )),
+                sync_state: Some(SyncState::Listing {
+                    state: serde_json::to_value(State::Listing(listing.clone()))
+                        .expect("serializes"),
+                    total: Some(profile.messages_total),
+                }),
                 ..observed()
             })
             .await?;

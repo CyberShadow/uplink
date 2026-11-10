@@ -356,7 +356,10 @@ CREATE TABLE account (
   sync_state  TEXT,                -- per-kind JSON; NULL until the first
                                    -- sync has begun
   synced      INTEGER NOT NULL     -- (V0013) the first listing is done, so
-              DEFAULT 0            -- the mailbox is mirrored
+              DEFAULT 0,           -- the mailbox is mirrored
+  listing_total INTEGER            -- (V0015) while it is not: the messages
+                                   -- the mailbox held as it began (Gmail's
+                                   -- profile, Spam and Trash included)
 );
 
 -- A logical message, identified by its Message-ID across accounts.
@@ -742,7 +745,10 @@ than it buffers is closed; the client reconnects and resumes.
 
 `ClientRequest` variants (MVP):
 
-- `ListAccounts` — mail accounts with their labels and counts.
+- `ListAccounts` — mail accounts with their labels and counts, and,
+  until an account's first listing is done, how far it has got: the
+  messages stored of `listing_total`, which the nav shows as a
+  percentage.
 - `ListEntries { list, after, limit }` — a page of a list's
   conversations (§4), newest first: of a label, every account's Inbox,
   or an account's All Mail (§8.1). Each has its newest entry in full,
@@ -1732,8 +1738,9 @@ Gmail's, in light and dark (as the system is). Conversation rows: a
 checkbox, a star that toggles Starred (§12.8), the senders and count,
 the user's labels, the latest's subject and snippet, a paperclip if
 files are attached to any (not inline images), and the date, small. Unread rows are bold on a background of
-their own; read ones recede (in the dark theme, onto the page's
-near-black). No Important markers: Gmail's guesses, which `+` and `-`
+their own; read ones recede, their text dimmer (in the dark theme,
+onto the page's near-black). The font is Gmail's (`Google Sans`, else
+Roboto, Helvetica, Arial), narrower than most systems' own. No Important markers: Gmail's guesses, which `+` and `-`
 still set. In the nav, system labels have Gmail's icons, the user's own
 labels a tag, and Microsoft 365's folders a folder.
 
@@ -1744,7 +1751,8 @@ One format throughout, `web/src/format.ts`: `YYYY-MM-DD` and 24-hour
 conventions: those come from the OS's regional settings, which Firefox
 and glibc read differently (`LC_TIME=en_DK` gives ISO dates in a
 terminal, but `10/11/2026, 11.51` in a page), and uplink has one user.
-Message lists show the time for today's mail and the date otherwise;
+Message lists abbreviate, as Gmail's do: the time for today's mail, the
+day and month (`9 Nov`) for this year's, and the date otherwise;
 weekday names, in the calendar, are English. A preference can come
 later.
 

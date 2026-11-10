@@ -88,7 +88,12 @@ export type Account = { id: string, address: string, provider: MailProvider,
 /**
  * Whether the first full sync has completed.
  */
-synced: boolean, labels: Array<Label>, };
+synced: boolean, 
+/**
+ * Until then, how far it has got, if the provider says how far it
+ * goes.
+ */
+listing: ListingProgress | null, labels: Array<Label>, };
 
 /**
  * Who keeps a mail account.
@@ -157,6 +162,17 @@ senders: Array<Sender>,
  * Whether any of its entries has attachments.
  */
 has_attachments: boolean, };
+
+export type ListingProgress = { 
+/**
+ * Messages stored.
+ */
+stored: number, 
+/**
+ * Messages the mailbox held as the listing began, Spam and Trash
+ * included, which the listing is not: it ends a little short.
+ */
+total: number, };
 
 /**
  * An entry of a conversation other than its latest.

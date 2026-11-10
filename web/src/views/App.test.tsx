@@ -42,6 +42,16 @@ const focusedSubject = () =>
     ?.querySelector('[class*=subject]')!.textContent
 
 describe('mail', () => {
+  it('shows how far an account\'s first sync has got', async () => {
+    server.syncing.set('work', { stored: 4321, total: 10000 })
+    server.addAccount('home')
+    server.syncing.set('home', null)
+    await start()
+    const nav = screen.getByRole('navigation')
+    expect(within(nav).getByTitle('4,321 of about 10,000 messages').textContent).toBe(' (syncing, 43%)')
+    expect(within(nav).getByText('(syncing)')).toBeTruthy()
+  })
+
   it('opens the first Inbox, with labels in the nav', async () => {
     await start()
     expect(location.pathname).toBe('/mail/work/INBOX')

@@ -120,6 +120,8 @@ impl Reply {
 pub struct Profile {
     pub email_address: String,
     pub history_id: String,
+    /// In every label, Spam and Trash too.
+    pub messages_total: u32,
 }
 
 #[derive(Debug, Deserialize)]

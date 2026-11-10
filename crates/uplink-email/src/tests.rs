@@ -835,6 +835,45 @@ pub(crate) mod service {
         assert!(!accounts[0].synced);
     }
 
+    #[tokio::test]
+    async fn accounts_report_the_first_listings_progress() {
+        use crate::mailbox::SyncState;
+        use uplink_protocol::mail::ListingProgress;
+        let db = Db::new();
+        let mail = mail_with(&db).await;
+        let listing = |mail: &Mail| {
+            let mail = mail.clone();
+            async move {
+                let ServerResponse::Accounts { accounts, .. } = mail.list_accounts().await.unwrap()
+                else {
+                    panic!()
+                };
+                (accounts[0].synced, accounts[0].listing)
+            }
+        };
+        assert_eq!(listing(&mail).await, (false, None));
+        let mut state = observed(None, vec![], vec![], &[]);
+        state.sync_state = Some(SyncState::Listing {
+            state: serde_json::json!({}),
+            total: Some(12),
+        });
+        db.observe("a", state).await;
+        assert_eq!(
+            listing(&mail).await,
+            (
+                false,
+                Some(ListingProgress {
+                    stored: 5,
+                    total: 12
+                })
+            )
+        );
+        let mut state = observed(None, vec![], vec![], &[]);
+        state.sync_state = Some(SyncState::Synced(serde_json::json!({})));
+        db.observe("a", state).await;
+        assert_eq!(listing(&mail).await, (true, None));
+    }
+
     /// A list's rows are conversations, each of the entries of a thread in
     /// the list's scope, listed by its newest whether or not that matches.
     #[tokio::test]

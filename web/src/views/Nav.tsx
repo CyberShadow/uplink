@@ -1,5 +1,5 @@
 import { useLocation } from 'preact-iso'
-import type { Account, Label, MailProvider } from '../generated/protocol'
+import type { Account, Label, ListingProgress, MailProvider } from '../generated/protocol'
 import { useServices } from '../context'
 import { allMailPath, inboxPath, mailPath } from './App'
 import { roomPath } from './Room'
@@ -48,6 +48,21 @@ function labelIcon(label: Label): IconName {
   return label.folder ? 'folder' : 'tag'
 }
 
+/** A mail account's first sync, and how far it has got if known. Its
+ * total includes Spam and Trash, which it skips: it ends short of 100%. */
+function Syncing(props: { listing: ListingProgress | null }) {
+  const { listing } = props
+  if (!listing) return <span class={styles.syncing}> (syncing)</span>
+  const percent = Math.min(99, Math.floor((listing.stored / Math.max(listing.total, 1)) * 100))
+  const count = (n: number) => n.toLocaleString('en-US')
+  return (
+    <span class={styles.syncing} title={`${count(listing.stored)} of about ${count(listing.total)} messages`}>
+      {' '}
+      (syncing, {percent}%)
+    </span>
+  )
+}
+
 export function Nav() {
   const { mail, drafts, matrix, todos } = useServices()
   const { path } = useLocation()
@@ -89,7 +104,7 @@ export function Nav() {
         <section key={account.id}>
           <h2 class={styles.account} title={account.id}>
             {account.address}
-            {!account.synced && <span class={styles.syncing}> (syncing)</span>}
+            {!account.synced && <Syncing listing={account.listing} />}
           </h2>
           <ul>
             {navLabels(account).system.map((label) => labelLink(account, label))}

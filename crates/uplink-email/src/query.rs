@@ -4,8 +4,8 @@
 use anyhow::{Context, Result};
 use uplink_protocol::{
     mail::{
-        Conversation, Entry, EntryId, EntryList, Label, LabelId, ListPosition, MailProvider,
-        Member, MessageId, Sender,
+        Conversation, Entry, EntryId, EntryList, Label, LabelId, ListPosition, ListingProgress,
+        MailProvider, Member, MessageId, Sender,
     },
     TxLogId,
 };
@@ -41,14 +41,25 @@ pub fn accounts(
     let as_of = as_of(&tx)?;
     let mut accounts = vec![];
     for account in configured {
-        let synced: bool = tx
+        let (synced, total): (bool, Option<u32>) = tx
             .query_row(
-                "SELECT synced FROM account WHERE id = ?1",
+                "SELECT synced, listing_total FROM account WHERE id = ?1",
                 [&account.id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?
-            .unwrap_or(false);
+            .unwrap_or((false, None));
+        let listing = match total {
+            Some(total) => Some(ListingProgress {
+                stored: tx.query_row(
+                    "SELECT count(*) FROM mail_entry WHERE account_id = ?1",
+                    [&account.id],
+                    |r| r.get(0),
+                )?,
+                total,
+            }),
+            None => None,
+        };
         // Per label, so each count is of its own index entries; what Trash
         // and Spam hide is found once. Conversations are counted, as Gmail
         // does: an entry without a thread is one by itself.
@@ -96,6 +107,7 @@ pub fn accounts(
             address: account.address.clone(),
             provider: account.provider,
             synced,
+            listing,
             labels,
         });
     }
