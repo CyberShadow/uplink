@@ -116,7 +116,17 @@
         # instances run from the checkout keep to their own; its `data_dir`
         # is the state directory below (an absolute path: relative ones are
         # relative to the configuration's directory).
-        service = pkgs.writeTextDir "cs-uplink.service" ''
+        #
+        # The out-link also carries bin/uplink, the CLI on the service's
+        # configuration (`uplink oauth init --account …`), which the dotfiles
+        # put on the PATH the same way.
+        service = pkgs.symlinkJoin { name = "cs-uplink-units"; paths = [ serviceUnit serviceCli ]; };
+
+        serviceCli = pkgs.writeShellScriptBin "uplink" ''
+          exec ${pkgs.lib.getExe uplinkBin} --config "''${XDG_CONFIG_HOME:-$HOME/.config}/cs-uplink/uplink.yaml" "$@"
+        '';
+
+        serviceUnit = pkgs.writeTextDir "cs-uplink.service" ''
           [Unit]
           Description=uplink — mail, Matrix, calendar and tasks in one web client
           Documentation=file://${self}/README.md
