@@ -7,6 +7,7 @@ import type { MatrixOutboxItem, MembershipChange, Room, RoomEvent } from '../gen
 import { useServices } from '../context'
 import { keepFocus, useKeymap } from '../keymap'
 import styles from './Room.module.css'
+import { dateTime } from '../format'
 
 export function roomPath(room: number): string {
   return `/rooms/${room}`
@@ -129,7 +130,7 @@ function Event(props: { event: RoomEvent }) {
   )
   const time = (
     <time class={styles.time} dateTime={new Date(event.ts).toISOString()}>
-      {new Date(event.ts).toLocaleString()}
+      {dateTime(event.ts)}
     </time>
   )
   if (event.body !== null && event.msgtype !== null && TEXT.has(event.msgtype)) {

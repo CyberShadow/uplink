@@ -12,6 +12,7 @@ import { composePath } from './Outgoing'
 import { messagePath } from './Todos'
 import styles from './Mail.module.css'
 import { fileSize } from './size'
+import { brief, dateTime } from '../format'
 
 // Route params; preact-iso's own `query` prop is the URL's query string.
 interface Props {
@@ -241,7 +242,7 @@ function MessageList(props: { mail: MailStore; open: (entry: Entry) => void }) {
               <span class={styles.snippet}> — {entry.snippet}</span>
             </span>
             <time class={styles.date} dateTime={new Date(entry.received_at).toISOString()}>
-              {shortDate(entry.received_at)}
+              {brief(entry.received_at)}
             </time>
           </li>
         )
@@ -312,7 +313,7 @@ function MessageView(props: { mail: MailStore; entry: Entry }) {
               </>
             )}
             <dt>Date</dt>
-            <dd>{new Date(content.date_sent === null ? entry.received_at : content.date_sent * 1000).toLocaleString()}</dd>
+            <dd>{dateTime(content.date_sent === null ? entry.received_at : content.date_sent * 1000)}</dd>
           </dl>
           <Attachments message={content} />
           {content.body_html === null ? (
@@ -387,14 +388,3 @@ function address(name: string | null, addr: string | null): string {
   return name ?? addr ?? '(unknown)'
 }
 
-function shortDate(ms: number): string {
-  const date = new Date(ms)
-  const now = new Date()
-  if (date.toDateString() === now.toDateString()) {
-    return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
-  }
-  if (date.getFullYear() === now.getFullYear()) {
-    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-  }
-  return date.toLocaleDateString()
-}

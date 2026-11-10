@@ -1678,6 +1678,17 @@ compose window.
 
 ---
 
+### 12.8 Dates and times
+
+One format throughout, `web/src/format.ts`: `YYYY-MM-DD` and 24-hour
+`HH:MM`, in the browser's time zone. Not the browser locale's
+conventions: those come from the OS's regional settings, which Firefox
+and glibc read differently (`LC_TIME=en_DK` gives ISO dates in a
+terminal, but `10/11/2026, 11.51` in a page), and uplink has one user.
+Message lists show the time for today's mail and the date otherwise;
+weekday names, in the calendar, are English. A preference can come
+later.
+
 ## 13. Authentication & secrets
 
 ### 13.1 Browser auth

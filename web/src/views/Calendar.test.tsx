@@ -10,7 +10,7 @@ import { today } from './Calendar'
 let server: FakeServer
 let client: Client
 
-// The tests run in New York (src/test/setup.ts), where November is UTC−5.
+// The tests run in New York (vite.config.ts), where November is UTC−5.
 beforeEach(() => {
   server = new FakeServer()
   server.addM365Account('work', [])
@@ -41,9 +41,9 @@ const allDay = (name: string) =>
 describe('calendar', () => {
   it('shows the week from Monday, at local times', async () => {
     await start('/calendar/week/2026-11-11')
-    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Week of 9 November 2026')
-    await waitFor(() => expect(timed('Tuesday 10 November')).toHaveLength(3))
-    const [review, standup, lunch] = timed('Tuesday 10 November')
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Week of 2026-11-09')
+    await waitFor(() => expect(timed('Tuesday 2026-11-10')).toHaveLength(3))
+    const [review, standup, lunch] = timed('Tuesday 2026-11-10')
     expect(standup.textContent).toBe('10:00 Standup ↻')
     expect(review.textContent).toBe('10:00 Review · Room 4')
     expect(lunch.textContent).toBe('12:00 Lunch')
@@ -54,25 +54,25 @@ describe('calendar', () => {
     expect(lunch.style.width).toBe('100%')
     expect(lunch.style.top).toBe(`${12 * 40}px`)
     // An all-day event is on its date, though that starts earlier in UTC.
-    expect(allDay('Thursday 12 November')).toEqual(['Offsite'])
-    expect(allDay('Wednesday 11 November')).toEqual([])
-    expect(allDay('Friday 13 November')).toEqual([])
+    expect(allDay('Thursday 2026-11-12')).toEqual(['Offsite'])
+    expect(allDay('Wednesday 2026-11-11')).toEqual([])
+    expect(allDay('Friday 2026-11-13')).toEqual([])
     // 03:00 UTC on Monday is Sunday evening here.
-    expect(timed('Sunday 15 November').map((e) => e.textContent)).toEqual(['22:00 Late call'])
+    expect(timed('Sunday 2026-11-15').map((e) => e.textContent)).toEqual(['22:00 Late call'])
   })
 
   it('moves by week with j and k, to today with t, and between views with a and w', async () => {
     const user = await start('/calendar/week/2026-11-11')
     await user.keyboard('j')
     expect(location.pathname).toBe('/calendar/week/2026-11-16')
-    await screen.findByRole('heading', { name: 'Week of 16 November 2026' })
-    expect(timed('Monday 16 November')).toEqual([])
+    await screen.findByRole('heading', { name: 'Week of 2026-11-16' })
+    expect(timed('Monday 2026-11-16')).toEqual([])
     await user.keyboard('kk')
     expect(location.pathname).toBe('/calendar/week/2026-11-02')
     await user.keyboard('a')
     expect(location.pathname).toBe('/calendar/agenda/2026-11-02')
-    await screen.findByRole('heading', { name: 'From 2 November 2026' })
-    await waitFor(() => expect(screen.getByRole('region', { name: 'Tuesday 10 November' })).toBeTruthy())
+    await screen.findByRole('heading', { name: 'From 2026-11-02' })
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Tuesday 2026-11-10' })).toBeTruthy())
     await user.keyboard('j')
     expect(location.pathname).toBe('/calendar/agenda/2026-11-16')
     await user.keyboard('w')
@@ -83,26 +83,26 @@ describe('calendar', () => {
 
   it('lists the days with events in the agenda', async () => {
     await start('/calendar/agenda/2026-11-10')
-    const tuesday = await screen.findByRole('region', { name: 'Tuesday 10 November' })
+    const tuesday = await screen.findByRole('region', { name: 'Tuesday 2026-11-10' })
     expect(within(tuesday).getAllByRole('listitem').map((e) => e.textContent)).toEqual([
       '10:00–10:15Standup ↻',
       '10:00–11:00Review · Room 4',
       '12:00–13:00Lunch',
     ])
     expect(
-      within(day('Thursday 12 November'))
+      within(day('Thursday 2026-11-12'))
         .getAllByRole('listitem')
         .map((e) => e.textContent),
     ).toEqual(['All dayOffsite'])
-    expect(screen.queryByRole('region', { name: 'Wednesday 11 November' })).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Wednesday 2026-11-11' })).toBeNull()
   })
 
   it('shows what changed when a sync says the calendar did', async () => {
     await start('/calendar/week/2026-11-11')
-    await waitFor(() => expect(timed('Wednesday 11 November')).toEqual([]))
+    await waitFor(() => expect(timed('Wednesday 2026-11-11')).toEqual([]))
     server.addEvent('work', 'Planning', '2026-11-11T19:00:00Z', '2026-11-11T20:00:00Z', { exception: true })
     server.calendarSynced('work')
-    await waitFor(() => expect(timed('Wednesday 11 November').map((e) => e.textContent)).toEqual(['14:00 Planning ↻*']))
+    await waitFor(() => expect(timed('Wednesday 2026-11-11').map((e) => e.textContent)).toEqual(['14:00 Planning ↻*']))
   })
 
   it('is a link in the nav, and g c away', async () => {

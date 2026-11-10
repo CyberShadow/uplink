@@ -6,6 +6,7 @@ import type { HistoryEntry } from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus, useKeymap } from '../keymap'
 import styles from './History.module.css'
+import { dateTime } from '../format'
 
 export function History() {
   const { history, ops } = useServices()
@@ -68,7 +69,7 @@ function Item(props: {
       onClick={props.onFocus}
     >
       <time class={styles.time} dateTime={new Date(entry.ts).toISOString()}>
-        {new Date(entry.ts).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })}
+        {dateTime(entry.ts)}
       </time>
       <span class={styles.description}>{entry.description}</span>
       {undone ? (

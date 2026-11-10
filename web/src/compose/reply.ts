@@ -1,6 +1,7 @@
 // Drafts replying to or forwarding a message.
 
 import type { DraftContent, MessageContent, MessageId } from '../generated/protocol'
+import { dateTime } from '../format'
 
 export type Response = 'reply' | 'replyAll' | 'forward'
 
@@ -15,7 +16,7 @@ export const EMPTY: DraftContent = { to: '', cc: '', bcc: '', subject: '', body:
 export function respond(kind: Response, message: MessageContent, own: string): NewDraft {
   const subject = message.subject ?? ''
   const sender = message.from_addr ? mailbox(message.from_name, message.from_addr) : ''
-  const date = new Date((message.date_sent ?? 0) * 1000).toLocaleString()
+  const date = dateTime((message.date_sent ?? 0) * 1000)
   if (kind === 'forward') {
     const header = [
       '---------- Forwarded message ---------',

@@ -6,6 +6,7 @@ import type { Draft, OutboxItem } from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus, useKeymap } from '../keymap'
 import styles from './Mail.module.css'
+import { dateTime } from '../format'
 
 export function composePath(draft: string): string {
   return `/compose/${encodeURIComponent(draft)}`
@@ -47,7 +48,7 @@ export function Drafts() {
             <span class={styles.subject}>{draft.content.subject || '(no subject)'}</span>
           </span>
           <time class={styles.date} dateTime={new Date(draft.updated_at).toISOString()}>
-            {new Date(draft.updated_at).toLocaleString()}
+            {dateTime(draft.updated_at)}
           </time>
         </li>
       ))}

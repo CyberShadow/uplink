@@ -2,6 +2,7 @@ import { useEffect } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import type { CalendarEvent } from '../generated/protocol'
 import { useServices } from '../context'
+import { date as dateString, time } from '../format'
 import { useKeymap } from '../keymap'
 import styles from './Calendar.module.css'
 
@@ -22,11 +23,6 @@ function midnight(date: string): Date {
   return new Date(y, m - 1, d)
 }
 
-function dateString(day: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${day.getFullYear()}-${pad(day.getMonth() + 1)}-${pad(day.getDate())}`
-}
-
 function addDays(day: Date, days: number): Date {
   return new Date(day.getFullYear(), day.getMonth(), day.getDate() + days)
 }
@@ -40,13 +36,7 @@ function weekStart(day: Date): Date {
   return addDays(day, -((day.getDay() + 6) % 7))
 }
 
-function time(ms: number): string {
-  const t = new Date(ms)
-  return `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`
-}
-
-const dayName = (day: Date) =>
-  day.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })
+const dayName = (day: Date) => `${day.toLocaleDateString('en-GB', { weekday: 'long' })} ${dateString(day)}`
 
 /** Whether the event is on the (local) day: an all-day event by its UTC
  * dates, which are the days it is on wherever one is; a timed one if it
@@ -84,10 +74,7 @@ export function Calendar(props: { view?: string; date?: string }) {
   })
 
   const events = calendar.events.value
-  const title =
-    view === 'week'
-      ? `Week of ${first.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}`
-      : `From ${first.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}`
+  const title = `${view === 'week' ? 'Week of' : 'From'} ${dateString(first)}`
   return (
     <section class={styles.calendar} aria-label="Calendar">
       <header class={styles.header}>
