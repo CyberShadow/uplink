@@ -160,6 +160,7 @@ impl Uplink {
         tokio::spawn(
             Sync::new(
                 &self.account,
+                self.matrix.clients(),
                 self.key.clone(),
                 self.dispatcher.clone(),
                 self.dir.path(),
@@ -642,4 +643,102 @@ async fn a_failed_pairing_leaves_nothing_behind_and_can_be_retried() {
     client::pair(&uplink.account, &uplink.key, PASSWORD, "uplink")
         .await
         .unwrap();
+}
+
+/// An 8×8 PNG.
+const PNG: [u8; 74] = [
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x08, 0x02, 0x00, 0x00, 0x00, 0x4b, 0x6d, 0x29,
+    0xdc, 0x00, 0x00, 0x00, 0x11, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x38, 0x63, 0x6c, 0x8c,
+    0x15, 0x31, 0x0c, 0x2d, 0x09, 0x00, 0x0a, 0xca, 0x4c, 0x81, 0xd5, 0x4f, 0xd8, 0x6e, 0x00, 0x00,
+    0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+];
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spaces_list_their_rooms_and_avatars_are_served() {
+    use matrix_sdk::ruma::{
+        api::client::room::create_room::v3::{CreationContent, Request as CreateRoom},
+        serde::Raw,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let homeserver = Homeserver::start(dir.path()).await;
+    let alice_phone = homeserver.register(dir.path(), "alice").await;
+    let uplink = Uplink::new(&homeserver);
+    let _sync = uplink.pair_and_sync().await;
+    let create = |space: bool, name: &'static str| {
+        let alice_phone = alice_phone.clone();
+        async move {
+            let mut request = CreateRoom::new();
+            request.name = Some(name.into());
+            if space {
+                request.creation_content = Some(
+                    Raw::<CreationContent>::from_json_string(r#"{"type":"m.space"}"#.into())
+                        .unwrap(),
+                );
+            }
+            alice_phone.create_room(request).await.unwrap()
+        }
+    };
+    let space = create(true, "Space").await;
+    let first = create(false, "First").await;
+    let avatar = alice_phone
+        .media()
+        .upload(&"image/png".parse().unwrap(), PNG.to_vec(), None)
+        .await
+        .unwrap()
+        .content_uri;
+    space
+        .send_state_event_raw("m.room.avatar", "", json!({ "url": avatar }))
+        .await
+        .unwrap();
+    let list = |child: &matrix_sdk::Room, order: &'static str| {
+        let space = space.clone();
+        let child = child.room_id().to_owned();
+        async move {
+            space
+                .send_state_event_raw(
+                    "m.space.child",
+                    child.as_str(),
+                    json!({ "via": ["localhost"], "order": order }),
+                )
+                .await
+                .unwrap();
+        }
+    };
+    list(&first, "b").await;
+
+    let synced = eventually("uplink to see the space", || async {
+        uplink
+            .room(space.room_id())
+            .await
+            .filter(|r| r.space && r.avatar.is_some() && !r.children.is_empty())
+    })
+    .await;
+    assert_eq!(synced.children, vec![first.room_id().to_string()]);
+    assert_eq!(synced.avatar.as_deref(), Some(avatar.as_str()));
+    assert!(!uplink.room(first.room_id()).await.unwrap().space);
+
+    // A room listed later, before the first by its order.
+    let second = create(false, "Second").await;
+    list(&second, "a").await;
+    eventually("uplink to see the second child", || async {
+        let children = uplink.room(space.room_id()).await?.children;
+        (children == vec![second.room_id().to_string(), first.room_id().to_string()]).then_some(())
+    })
+    .await;
+
+    let (mime, image) = uplink
+        .matrix
+        .avatar(synced.id, avatar.to_string())
+        .await
+        .unwrap();
+    assert_eq!(mime, "image/png");
+    assert!(!image.is_empty());
+    let other = uplink
+        .matrix
+        .avatar(synced.id, "mxc://localhost/other".into())
+        .await
+        .unwrap_err();
+    assert_eq!(other.code, uplink_protocol::ErrorCode::NotFound);
 }

@@ -64,6 +64,15 @@ pub struct Room {
     pub pending: Option<MembershipChange>,
     /// Why the homeserver refused the last change asked for.
     pub membership_error: Option<String>,
+    /// Whether the room is a space.
+    pub space: bool,
+    /// `mxc://server/media`: the room's avatar, or of a direct chat without
+    /// one, the other user's. Served at
+    /// `/api/rooms/{id}/avatar/{server}/{media}`.
+    pub avatar: Option<String>,
+    /// Of a space, the Matrix ids of the rooms it lists, joined or not, in
+    /// the space's order.
+    pub children: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -123,8 +132,8 @@ pub struct MatrixOutboxItem {
 
 // ── events ────────────────────────────────────────────────────────────────
 
-/// Rooms appeared, or their name, membership, unread count or read
-/// marker changed.
+/// Rooms appeared, or their name, membership, avatar, children, unread
+/// count or read marker changed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RoomsChanged {

@@ -11,22 +11,22 @@ use crate::{
     client,
     membership::{self, MembershipChanged},
     outbox::{self, SendFailed, SendStarted, SendSucceeded},
-    rooms::{self, ObservedEvent, ObservedRoom, ReceiptSent, Synced},
+    rooms::{self, ObservedEvent, ObservedRoom, ReceiptSent, SpaceChild, Synced},
 };
 use anyhow::{Context, Result};
 use matrix_sdk::{
     config::{SyncSettings, SyncToken},
-    deserialized_responses::{TimelineEvent, TimelineEventKind},
+    deserialized_responses::{RawAnySyncOrStrippedState, TimelineEvent, TimelineEventKind},
     ruma::{
         api::client::{
             filter::{FilterDefinition, RoomEventFilter},
             receipt::create_receipt::v3::ReceiptType,
             sync::sync_events::v3::Filter,
         },
-        events::{receipt::ReceiptThread, room::message::RoomMessageEventContent},
+        events::{receipt::ReceiptThread, room::message::RoomMessageEventContent, StateEventType},
         EventId, OwnedTransactionId, RoomId, UserId,
     },
-    sync::SyncResponse,
+    sync::{State, SyncResponse},
     Client, Room,
 };
 use std::{
@@ -58,20 +58,24 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
 pub struct Sync {
     account: MatrixAccountConfig,
+    clients: client::Clients,
     key: Arc<MasterKey>,
     dispatcher: Dispatcher,
     data_root: std::path::PathBuf,
 }
 
 impl Sync {
+    /// `clients`: where to put the account's client once restored.
     pub fn new(
         account: &MatrixAccountConfig,
+        clients: client::Clients,
         key: Arc<MasterKey>,
         dispatcher: Dispatcher,
         data_root: &Path,
     ) -> Self {
         Self {
             account: account.clone(),
+            clients,
             key,
             dispatcher,
             data_root: data_root.to_owned(),
@@ -85,6 +89,7 @@ impl Sync {
             client::restore(&self.account, &self.key).await
         })
         .await;
+        self.clients.insert(&id, client.clone());
         let reader = |what| {
             uplink_storage::open_reader(&self.data_root)
                 .map(|conn| Arc::new(Mutex::new(conn)))
@@ -190,16 +195,24 @@ impl Syncer {
         Ok(next_batch)
     }
 
-    /// The rooms in `response` with changes uplink stores: events, the
-    /// account's own receipts, or membership. Others' receipts and room
-    /// state changes outside the timeline are not stored, so on their own
-    /// they are not changes; but the first sync records every room.
+    /// The rooms in `response` with changes uplink may store: events, the
+    /// account's own receipts, state (a name, an avatar, a space's
+    /// children), or membership. Others' receipts are not stored, so on
+    /// their own they are not changes; but the first sync records every
+    /// room.
     async fn observe(&self, response: SyncResponse, first: bool) -> Result<Vec<ObservedRoom>> {
         let own = self.client.user_id().context("the client has no user")?;
         let mut observed = vec![];
         for (room_id, update) in response.rooms.joined {
             let receipts = own_receipts(own, &update.ephemeral)?;
-            if first || !update.timeline.events.is_empty() || !receipts.is_empty() {
+            let state = match &update.state {
+                State::Before(events) | State::After(events) => events,
+            };
+            if first
+                || !update.timeline.events.is_empty()
+                || !state.is_empty()
+                || !receipts.is_empty()
+            {
                 observed.push(
                     self.room(
                         &room_id,
@@ -247,10 +260,45 @@ impl Syncer {
             name: room.display_name().await?.to_string(),
             encrypted: room.encryption_state().is_encrypted(),
             membership,
+            space: room.is_space(),
+            avatar: avatar(&room).await?,
+            children: space_children(&room).await?,
             events: observed,
             own_receipts,
         })
     }
+}
+
+/// The room's avatar or, of a direct chat without one, the other user's,
+/// as Element shows.
+async fn avatar(room: &Room) -> Result<Option<String>> {
+    if let Some(url) = room.avatar_url() {
+        return Ok(Some(url.to_string()));
+    }
+    let targets = room.direct_targets();
+    let [target] = targets.iter().collect::<Vec<_>>()[..] else {
+        return Ok(None);
+    };
+    let Some(user) = target.as_user_id() else {
+        return Ok(None);
+    };
+    Ok(room
+        .get_member_no_sync(user)
+        .await?
+        .and_then(|member| member.avatar_url().map(ToString::to_string)))
+}
+
+/// The rooms a space lists (none, of a room that is not a space).
+async fn space_children(room: &Room) -> Result<Vec<SpaceChild>> {
+    let mut children = vec![];
+    for event in room.get_state_events(StateEventType::SpaceChild).await? {
+        let raw = match &event {
+            RawAnySyncOrStrippedState::Sync(raw) => raw.json().get(),
+            RawAnySyncOrStrippedState::Stripped(raw) => raw.json().get(),
+        };
+        children.extend(SpaceChild::parse(raw)?);
+    }
+    Ok(children)
 }
 
 /// The sync filter: no presence, and of ephemeral events only receipts.

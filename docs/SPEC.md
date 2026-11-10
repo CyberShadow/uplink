@@ -1637,6 +1637,28 @@ done once per device, ever; device verification UI is out of scope.
 - The account's own receipts from other devices move the marker forward,
   when past the latest receipt uplink sent or saw (so the echo of its own
   receipt does not undo an undo).
+- Spaces nest the rooms they list (by `m.space.child` events with
+  `via`), as Element shows them: a joined space has its joined subspaces,
+  in its `order` (those without one last, then by room id), then its
+  rooms, by activity; at the top are the spaces in no other, by name, then
+  the rooms in no space. A room may be in several spaces. Spaces that are
+  only in each other go at the top; a space is never nested in itself.
+  `m.space.parent` is not used: a child's claim to a parent is not the
+  parent's listing. Spaces are not links, as their overview is deferred;
+  an invited space is a room to join.
+- Avatars: a room's `m.room.avatar`, or of a direct chat without one, the
+  other user's, as the SDK's store has them when the room is synced (so a
+  change to `m.direct` shows when the room next changes). The server
+  serves a 64 px square thumbnail of a room's current avatar at
+  `/api/rooms/:room/avatar/:server/:media` (the path names the
+  `mxc://` URI, so it is cached for good), fetched by the account's
+  client, through the SDK's media cache, as authenticated media; only
+  PNG, JPEG, GIF and WebP, by their signatures. A room without one, or
+  whose thumbnail fails, shows its name's first letter on one of six
+  colours, by its id, as Element does.
+- A room is recorded when a sync brings state changes too, not only
+  timeline events, so that a name, avatar or space's children changed in
+  a gappy sync are seen.
 
 ### 9.6 What we deliberately don't do
 

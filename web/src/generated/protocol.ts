@@ -457,7 +457,22 @@ pending: MembershipChange | null,
 /**
  * Why the homeserver refused the last change asked for.
  */
-membership_error: string | null, };
+membership_error: string | null, 
+/**
+ * Whether the room is a space.
+ */
+space: boolean, 
+/**
+ * `mxc://server/media`: the room's avatar, or of a direct chat without
+ * one, the other user's. Served at
+ * `/api/rooms/{id}/avatar/{server}/{media}`.
+ */
+avatar: string | null, 
+/**
+ * Of a space, the Matrix ids of the rooms it lists, joined or not, in
+ * the space's order.
+ */
+children: Array<string>, };
 
 export type Encryption = "none" | "decrypted" | "undecryptable";
 
@@ -500,8 +515,8 @@ export type MatrixOutboxItem = { id: MatrixOutboxId, room: RoomId, body: string,
 queued_at: number, };
 
 /**
- * Rooms appeared, or their name, membership, unread count or read
- * marker changed.
+ * Rooms appeared, or their name, membership, avatar, children, unread
+ * count or read marker changed.
  */
 export type RoomsChanged = { rooms: Array<RoomId>, };
 

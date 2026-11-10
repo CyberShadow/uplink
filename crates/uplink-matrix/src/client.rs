@@ -11,13 +11,72 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use matrix_sdk::{
     authentication::matrix::MatrixSession,
     config::SyncSettings,
-    ruma::api::client::{filter::FilterDefinition, sync::sync_events::v3::Filter},
+    media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings},
+    ruma::{
+        api::client::{
+            filter::FilterDefinition, media::get_content_thumbnail::v3::Method,
+            sync::sync_events::v3::Filter,
+        },
+        events::room::MediaSource,
+        OwnedMxcUri, UInt,
+    },
     store::RoomLoadSettings,
     Client,
 };
-use std::{path::PathBuf, time::Duration};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use uplink_config::MatrixAccountConfig;
 use uplink_storage::seal::{self, MasterKey};
+
+/// The accounts' clients, by account id, once their sync tasks have
+/// restored them: for what else needs to reach the homeserver as the
+/// account (its media).
+#[derive(Clone, Default)]
+pub struct Clients(Arc<Mutex<HashMap<String, Client>>>);
+
+impl Clients {
+    /// Of a sync task that starts again, its client replaces the last.
+    pub fn insert(&self, account: &str, client: Client) {
+        self.0
+            .lock()
+            .expect("clients poisoned")
+            .insert(account.to_owned(), client);
+    }
+
+    pub fn get(&self, account: &str) -> Option<Client> {
+        self.0
+            .lock()
+            .expect("clients poisoned")
+            .get(account)
+            .cloned()
+    }
+}
+
+/// The side, in pixels, of the avatar thumbnails asked for: twice what the
+/// web client shows, for high-density screens.
+const AVATAR_SIZE: u32 = 64;
+
+/// A square thumbnail of the image `mxc`, cached in the client's store.
+pub async fn avatar_thumbnail(client: &Client, mxc: &str) -> Result<Vec<u8>> {
+    let size = UInt::from(AVATAR_SIZE);
+    let request = MediaRequestParameters {
+        source: MediaSource::Plain(OwnedMxcUri::from(mxc)),
+        format: MediaFormat::Thumbnail(MediaThumbnailSettings::with_method(
+            Method::Crop,
+            size,
+            size,
+        )),
+    };
+    client
+        .media()
+        .get_media_content(&request, true)
+        .await
+        .with_context(|| format!("fetching a thumbnail of {mxc}"))
+}
 
 /// Where the account's session is sealed.
 pub fn session_path(account: &MatrixAccountConfig) -> PathBuf {

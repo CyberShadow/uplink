@@ -171,8 +171,13 @@ pub fn start_syncs(config: &Config, services: &Services) -> Result<()> {
                 tokio::spawn(calendar.run());
             }
             AccountConfig::Matrix(account) => {
-                let sync =
-                    uplink_matrix::sync::Sync::new(account, key.clone(), dispatcher.clone(), root);
+                let sync = uplink_matrix::sync::Sync::new(
+                    account,
+                    services.matrix.clients(),
+                    key.clone(),
+                    dispatcher.clone(),
+                    root,
+                );
                 info!(account = account.id, "starting Matrix sync");
                 tokio::spawn(sync.run());
             }
@@ -444,6 +449,10 @@ fn build_app(state: AppState) -> Router {
         )
         .route("/api/entries/:entry/raw", get(raw_entry_handler))
         .route(
+            "/api/rooms/:room/avatar/:server/:media",
+            get(room_avatar_handler),
+        )
+        .route(
             uplink_email::remote::REMOTE_IMAGE_PATH,
             get(remote_image_handler),
         )
@@ -495,6 +504,41 @@ async fn attachment_handler(
             (StatusCode::NOT_FOUND, e.message).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.message).into_response(),
+    }
+}
+
+/// A thumbnail of a room's avatar `mxc://server/media`. The path names the
+/// avatar, so it is one image for good.
+async fn room_avatar_handler(
+    State(state): State<AppState>,
+    extract::Path((room, server, media)): extract::Path<(i64, String, String)>,
+) -> Response {
+    match state
+        .services
+        .matrix
+        .avatar(
+            uplink_protocol::matrix::RoomId(room),
+            format!("mxc://{server}/{media}"),
+        )
+        .await
+    {
+        Ok((mime, image)) => (
+            [
+                (header::CONTENT_TYPE, mime),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+                (header::CONTENT_SECURITY_POLICY, "sandbox"),
+                (
+                    header::CACHE_CONTROL,
+                    "private, max-age=31536000, immutable",
+                ),
+            ],
+            image,
+        )
+            .into_response(),
+        Err(e) if e.code == ErrorCode::NotFound => {
+            (StatusCode::NOT_FOUND, e.message).into_response()
+        }
+        Err(e) => (StatusCode::BAD_GATEWAY, e.message).into_response(),
     }
 }
 

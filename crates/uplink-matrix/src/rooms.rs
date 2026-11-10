@@ -51,11 +51,47 @@ pub struct ObservedRoom {
     pub name: String,
     pub encrypted: bool,
     pub membership: Membership,
+    /// Whether the room is a space (of type `m.space`).
+    pub space: bool,
+    /// `mxc://` URI: the room's avatar, or of a direct chat without one,
+    /// the other user's.
+    pub avatar: Option<String>,
+    /// Of a space, the rooms it lists.
+    pub children: Vec<SpaceChild>,
     /// Timeline events, in order. Not in the log: they are stored.
     #[serde(skip)]
     pub events: Vec<ObservedEvent>,
     /// Events the account's own read receipts in the response are for.
     pub own_receipts: Vec<String>,
+}
+
+/// A room a space lists, by an `m.space.child` event with `via`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SpaceChild {
+    pub room_id: String,
+    /// The event's `order`, if it is valid: at most 50 characters, from
+    /// `\x20` to `\x7E`.
+    pub order: Option<String>,
+}
+
+impl SpaceChild {
+    /// Reads a space's `m.space.child` event; `None` if it lists no room
+    /// (it has no `via`, as one that removes a child).
+    pub fn parse(raw: &str) -> Result<Option<Self>> {
+        let event: serde_json::Value = serde_json::from_str(raw).context("event JSON")?;
+        let room_id = event["state_key"]
+            .as_str()
+            .with_context(|| format!("m.space.child without a state key: {raw}"))?;
+        let content = &event["content"];
+        let listed = content["via"].as_array().is_some_and(|via| !via.is_empty());
+        let order = content["order"]
+            .as_str()
+            .filter(|o| o.len() <= 50 && o.bytes().all(|b| (0x20..=0x7e).contains(&b)));
+        Ok(listed.then(|| Self {
+            room_id: room_id.to_owned(),
+            order: order.map(str::to_owned),
+        }))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -145,7 +181,8 @@ impl Observation for Synced {
         let mut sent = vec![];
         let mut added_total = 0;
         for room in self.rooms {
-            let (id, changed) = upsert_room(tx, account, &room)?;
+            let (id, upserted) = upsert_room(tx, account, &room)?;
+            let changed = set_children(tx, id, &room.children)? || upserted;
             let added = insert_events(tx, id, &room.events)?;
             sent.extend(outbox::synced_back(tx, id)?);
             let read = observe_receipts(tx, id, &room.own_receipts)?;
@@ -186,43 +223,99 @@ impl Observation for Synced {
     }
 }
 
-/// The room's id, and whether it is new or its name, encryption or
-/// membership changed.
+/// The room's id, and whether it is new or its name, encryption,
+/// membership, type or avatar changed.
 fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(RoomId, bool)> {
     let membership = membership_str(room.membership);
-    let existing: Option<(i64, String, bool, String)> = tx
+    type Stored = (i64, String, bool, String, bool, Option<String>);
+    let existing: Option<Stored> = tx
         .query_row(
-            "SELECT id, name, encrypted, membership FROM matrix_room
+            "SELECT id, name, encrypted, membership, space, avatar FROM matrix_room
              WHERE account_id = ?1 AND room_id = ?2",
             [account, &room.room_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
         )
         .optional()?;
     Ok(match existing {
-        Some((id, name, encrypted, old_membership)) => {
-            let changed =
-                name != room.name || encrypted != room.encrypted || old_membership != membership;
+        Some((id, name, encrypted, old_membership, space, avatar)) => {
+            let changed = name != room.name
+                || encrypted != room.encrypted
+                || old_membership != membership
+                || space != room.space
+                || avatar != room.avatar;
             if changed {
                 // A membership asked for is had, however it came about.
                 tx.execute(
                     "UPDATE matrix_room SET name = ?1, encrypted = ?2, membership = ?3,
+                       space = ?4, avatar = ?5,
                        desired = CASE WHEN desired = ?3 THEN NULL ELSE desired END
-                     WHERE id = ?4",
-                    params![room.name, room.encrypted, membership, id],
+                     WHERE id = ?6",
+                    params![
+                        room.name,
+                        room.encrypted,
+                        membership,
+                        room.space,
+                        room.avatar,
+                        id
+                    ],
                 )?;
             }
             (RoomId(id), changed)
         }
         None => {
             let id = tx.query_row(
-                "INSERT INTO matrix_room (account_id, room_id, name, encrypted, membership)
-                 VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id",
-                params![account, room.room_id, room.name, room.encrypted, membership],
+                "INSERT INTO matrix_room
+                   (account_id, room_id, name, encrypted, membership, space, avatar)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING id",
+                params![
+                    account,
+                    room.room_id,
+                    room.name,
+                    room.encrypted,
+                    membership,
+                    room.space,
+                    room.avatar
+                ],
                 |r| r.get(0),
             )?;
             (RoomId(id), true)
         }
     })
+}
+
+/// Records the rooms the space lists; returns whether they changed.
+fn set_children(tx: &Transaction, space: RoomId, children: &[SpaceChild]) -> Result<bool> {
+    let stored: Vec<(String, Option<String>)> = tx
+        .prepare(
+            "SELECT child, child_order FROM matrix_space_child WHERE space = ?1 ORDER BY child",
+        )?
+        .query_map([space.0], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    let mut observed: Vec<(String, Option<String>)> = children
+        .iter()
+        .map(|c| (c.room_id.clone(), c.order.clone()))
+        .collect();
+    observed.sort();
+    if stored == observed {
+        return Ok(false);
+    }
+    tx.execute("DELETE FROM matrix_space_child WHERE space = ?1", [space.0])?;
+    let mut insert = tx.prepare(
+        "INSERT INTO matrix_space_child (space, child, child_order) VALUES (?1, ?2, ?3)",
+    )?;
+    for (child, order) in observed {
+        insert.execute(params![space.0, child, order])?;
+    }
+    Ok(true)
 }
 
 /// Stores the events not stored yet; returns their ids.
@@ -408,7 +501,11 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
                        AND e.type IN ('m.room.message', 'm.room.encrypted')
                        AND e.sender != ?2),
                     (SELECT max(ts) FROM matrix_event e WHERE e.room = r.id),
-                    r.read_up_to, r.desired, r.membership_error
+                    r.read_up_to, r.desired, r.membership_error, r.space, r.avatar,
+                    -- In the space's order: by `order`, those without last.
+                    (SELECT json_group_array(child) FROM
+                       (SELECT child FROM matrix_space_child c WHERE c.space = r.id
+                        ORDER BY child_order IS NULL, child_order, child))
              FROM matrix_room r
              WHERE r.account_id = ?1 AND (r.membership != 'left' OR r.desired = 'joined')
              ORDER BY 8 DESC NULLS LAST, r.id",
@@ -426,9 +523,24 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
                 read_up_to: r.get::<_, Option<i64>>(8)?.map(RoomEventId),
                 pending: parse_desired(r.get::<_, Option<String>>(9)?.as_deref()),
                 membership_error: r.get(10)?,
+                space: r.get(11)?,
+                avatar: r.get(12)?,
+                children: serde_json::from_str(&r.get::<_, String>(13)?)
+                    .expect("json_group_array makes an array of strings"),
             })
         })?
         .collect::<Result<_, _>>()?)
+}
+
+/// The account a room is of and its avatar, if the room exists.
+pub fn room_avatar(conn: &Connection, room: RoomId) -> Result<Option<(String, Option<String>)>> {
+    Ok(conn
+        .query_row(
+            "SELECT account_id, avatar FROM matrix_room WHERE id = ?1",
+            [room.0],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?)
 }
 
 /// The account a room is of, if the room exists.

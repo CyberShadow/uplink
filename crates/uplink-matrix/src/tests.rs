@@ -6,6 +6,7 @@ use crate::{
     rooms::{ObservedEvent, ObservedRoom, ReceiptSent, Synced},
     service::{ConfiguredAccount, Matrix},
 };
+use serde_json::json;
 use std::sync::Arc;
 use uplink_protocol::{
     compose::OutboxState,
@@ -68,6 +69,9 @@ impl Db {
                     .map(|(id, sender)| message(id, sender))
                     .collect(),
                 own_receipts: own_receipts.iter().map(|r| r.to_string()).collect(),
+                space: false,
+                avatar: None,
+                children: vec![],
             }],
         })
         .await
@@ -300,6 +304,9 @@ mod membership {
                     membership,
                     events: vec![],
                     own_receipts: vec![],
+                    space: false,
+                    avatar: None,
+                    children: vec![],
                 }],
             })
             .await
@@ -416,6 +423,37 @@ mod membership {
                 .unwrap_err()
                 .code,
             ErrorCode::Invalid
+        );
+    }
+}
+
+#[test]
+fn space_children_are_listed_by_via_with_valid_orders() {
+    use crate::rooms::SpaceChild;
+    let child = |content: serde_json::Value| {
+        SpaceChild::parse(
+            &json!({ "type": "m.space.child", "state_key": "!r:x", "content": content })
+                .to_string(),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        child(json!({ "via": ["x"], "order": "a" })),
+        Some(SpaceChild {
+            room_id: "!r:x".into(),
+            order: Some("a".into())
+        })
+    );
+    // Removed: no `via`.
+    assert_eq!(child(json!({})), None);
+    assert_eq!(child(json!({ "via": [] })), None);
+    // Invalid orders are none.
+    for order in [json!("a".repeat(51)), json!("é"), json!("\n"), json!(1)] {
+        assert_eq!(
+            child(json!({ "via": ["x"], "order": order }))
+                .unwrap()
+                .order,
+            None
         );
     }
 }

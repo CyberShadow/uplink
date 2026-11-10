@@ -1,6 +1,7 @@
 //! Answers the Matrix requests of the WebSocket protocol (SPEC §5.4).
 
 use crate::{
+    client::{self, Clients},
     membership::ChangeMembership,
     outbox::{self, CancelMessage, SendMessage},
     rooms::{self, MarkRead},
@@ -11,7 +12,7 @@ use uplink_protocol::{
         MatrixAccount, MatrixOutboxId, Membership, MembershipChange, RoomEventId, RoomId,
         TimelinePage,
     },
-    ErrorCode, ServerResponse,
+    ErrorCode, ServerError, ServerResponse,
 };
 use uplink_storage::rusqlite::Connection;
 use uplink_tx_log::{
@@ -34,6 +35,7 @@ pub struct Matrix {
     dispatcher: Dispatcher,
     reader: Reader,
     accounts: Arc<Vec<ConfiguredAccount>>,
+    clients: Clients,
 }
 
 impl Matrix {
@@ -48,7 +50,52 @@ impl Matrix {
             dispatcher,
             reader: Reader::new(reader),
             accounts: Arc::new(accounts),
+            clients: Clients::default(),
         }
+    }
+
+    /// The accounts' clients, which their sync tasks restore.
+    pub fn clients(&self) -> Clients {
+        self.clients.clone()
+    }
+
+    /// A thumbnail of the room's avatar `mxc`, and its media type: only of
+    /// its current one, so that the client cannot have the server fetch
+    /// whatever it names.
+    pub async fn avatar(
+        &self,
+        room: RoomId,
+        mxc: String,
+    ) -> Result<(&'static str, Vec<u8>), ServerError> {
+        let account = self
+            .reader
+            .read({
+                let mxc = mxc.clone();
+                move |conn| match rooms::room_avatar(conn, room).map_err(internal)? {
+                    Some((account, Some(avatar))) if avatar == mxc => Ok(account),
+                    Some(_) => Err(error(
+                        ErrorCode::NotFound,
+                        format!("{mxc} is not the avatar of room {}", room.0),
+                    )),
+                    None => Err(no_room(room)),
+                }
+            })
+            .await?;
+        let client = self.clients.get(&account).ok_or_else(|| {
+            error(
+                ErrorCode::NotFound,
+                format!("{account} is not connected to its homeserver yet"),
+            )
+        })?;
+        let image = client::avatar_thumbnail(&client, &mxc)
+            .await
+            .map_err(internal)?;
+        let mime = image_type(&image).ok_or_else(|| {
+            internal(anyhow::anyhow!(
+                "the thumbnail of {mxc} is not an image shown"
+            ))
+        })?;
+        Ok((mime, image))
     }
 
     pub async fn list_rooms(&self) -> Response {
@@ -207,6 +254,18 @@ impl Matrix {
                 up_to: Some(event),
             })
             .await
+    }
+}
+
+/// The media type of the image formats homeservers make thumbnails in,
+/// by their signatures; the homeserver's word for it is not kept.
+fn image_type(image: &[u8]) -> Option<&'static str> {
+    match image {
+        [0x89, b'P', b'N', b'G', ..] => Some("image/png"),
+        [0xff, 0xd8, 0xff, ..] => Some("image/jpeg"),
+        [b'G', b'I', b'F', b'8', ..] => Some("image/gif"),
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("image/webp"),
+        _ => None,
     }
 }
 
