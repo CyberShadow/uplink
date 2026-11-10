@@ -98,10 +98,10 @@
         # is what updates it. The out-link is the build's GC root, and the unit
         # is linked through it, so the link never changes:
         #
-        #   nix build -o ~/.local/state/cs-uplink-unit .#service
-        #   ln -s ~/.local/state/cs-uplink-unit/cs-uplink.service ~/.local/share/systemd/user/
-        #   ln -s ../cs-uplink.service ~/.local/share/systemd/user/default.target.wants/
-        #   systemctl --user daemon-reload && systemctl --user start cs-uplink
+        #   nix build -o ~/.local/state/uplink-unit .#service
+        #   ln -s ~/.local/state/uplink-unit/uplink.service ~/.local/share/systemd/user/
+        #   ln -s ../uplink.service ~/.local/share/systemd/user/default.target.wants/
+        #   systemctl --user daemon-reload && systemctl --user start uplink
         #
         # (`systemctl enable` would link the store file itself, which the next
         # build leaves behind.)
@@ -109,7 +109,7 @@
         # After a change, the first line again, then `systemctl --user
         # daemon-reload` and a restart. The file inside is named as the unit
         # because systemd names a unit after the file a link finally reaches: a
-        # bare store file (`<hash>-cs-uplink.service`) makes the link an alias of a
+        # bare store file (`<hash>-uplink.service`) makes the link an alias of a
         # unit nobody can enable.
         #
         # The configuration is the user's, outside the checkout, so that
@@ -120,13 +120,13 @@
         # The out-link also carries bin/uplink, the CLI on the service's
         # configuration (`uplink oauth init --account …`), which the dotfiles
         # put on the PATH the same way.
-        service = pkgs.symlinkJoin { name = "cs-uplink-units"; paths = [ serviceUnit serviceCli ]; };
+        service = pkgs.symlinkJoin { name = "uplink-service"; paths = [ serviceUnit serviceCli ]; };
 
         serviceCli = pkgs.writeShellScriptBin "uplink" ''
-          exec ${pkgs.lib.getExe uplinkBin} --config "''${XDG_CONFIG_HOME:-$HOME/.config}/cs-uplink/uplink.yaml" "$@"
+          exec ${pkgs.lib.getExe uplinkBin} --config "''${XDG_CONFIG_HOME:-$HOME/.config}/uplink/uplink.yaml" "$@"
         '';
 
-        serviceUnit = pkgs.writeTextDir "cs-uplink.service" ''
+        serviceUnit = pkgs.writeTextDir "uplink.service" ''
           [Unit]
           Description=uplink — mail, Matrix, calendar and tasks in one web client
           Documentation=file://${self}/README.md
@@ -135,8 +135,8 @@
 
           [Service]
           Type=exec
-          ExecStart=${pkgs.lib.getExe uplinkBin} --config %E/cs-uplink/uplink.yaml serve
-          StateDirectory=cs-uplink
+          ExecStart=${pkgs.lib.getExe uplinkBin} --config %E/uplink/uplink.yaml serve
+          StateDirectory=uplink
           Restart=on-failure
           RestartSec=5
 
@@ -149,8 +149,8 @@
           # /home, its own mount, read-write.
           ProtectSystem=strict
           ProtectHome=tmpfs
-          BindReadOnlyPaths=%E/cs-uplink
-          BindPaths=%S/cs-uplink
+          BindReadOnlyPaths=%E/uplink
+          BindPaths=%S/uplink
 
           NoNewPrivileges=true
           PrivateTmp=true
