@@ -5,7 +5,6 @@
 import { type RefObject } from 'preact'
 import { useLayoutEffect, useRef } from 'preact/hooks'
 import {
-  defaultKeybindingsHandlerIgnore,
   matchKeybindingPress,
   parseKeybinding,
   type KeybindingPress,
@@ -67,11 +66,14 @@ export interface Binding {
   /** What the help overlay shows for the keys. */
   label: string
   help: string
+  /** Held down, it repeats, as moving does; others, done again by a held
+   * key's repeats, would act on more than meant. */
+  repeats?: true
 }
 
 export const KEYMAP: Binding[] = [
-  { action: 'next', keys: ['j'], label: 'j', help: 'Next message (in the calendar: the next week or agenda)' },
-  { action: 'previous', keys: ['k'], label: 'k', help: 'Previous message (in the calendar: the previous week or agenda)' },
+  { action: 'next', keys: ['j'], label: 'j', help: 'Next message (in the calendar: the next week or agenda)', repeats: true },
+  { action: 'previous', keys: ['k'], label: 'k', help: 'Previous message (in the calendar: the previous week or agenda)', repeats: true },
   { action: 'open', keys: ['o', 'Enter'], label: 'o, Enter', help: 'Open message' },
   { action: 'back', keys: ['u'], label: 'u', help: 'Back to the list' },
   { action: 'select', keys: ['x'], label: 'x', help: 'Select message' },
@@ -144,6 +146,7 @@ export function useKeymap(
     const bindings: Bound[] = KEYMAP.filter((b) => b.action in current.current).flatMap((b) =>
       b.keys.map((keys) => ({
         presses: parseKeybinding(keys),
+        repeats: b.repeats === true && !keys.includes(' '),
         fire: (event: KeyboardEvent) => {
           event.preventDefault()
           current.current[b.action]!()
@@ -158,7 +161,7 @@ export function useKeymap(
     }
     const handler = sequences(
       () => [bindings],
-      (event) => event.repeat || event.isComposing,
+      (event) => event.isComposing,
     )
     const target = within.current!
     target.addEventListener('keydown', handler)
@@ -169,12 +172,27 @@ export function useKeymap(
 /** A binding's keys, parsed, as bound by a component. */
 interface Bound {
   presses: KeybindingPress[]
+  /** Fires on a held key's repeats; a single press. */
+  repeats: boolean
   fire: (event: KeyboardEvent) => void
 }
 
 /** The window's bindings, by component, in the order they mounted. */
 const windowBindings: Bound[][] = []
-window.addEventListener('keydown', sequences(() => windowBindings, defaultKeybindingsHandlerIgnore))
+// tinykeys' own ignores fields, and repeats: those, `sequences` handles.
+window.addEventListener(
+  'keydown',
+  sequences(
+    () => windowBindings,
+    (event) => {
+      const target = event.target as Element
+      return (
+        event.isComposing ||
+        (target !== event.currentTarget && target.matches('[contenteditable],input,select,textarea'))
+      )
+    },
+  ),
+)
 
 /** How long a sequence waits for its next press. */
 const SEQUENCE_MS = 1000
@@ -202,6 +220,13 @@ function sequences(
   return (event) => {
     // Choosing an autocompletion sends a keydown that is a plain Event.
     if (!(event instanceof KeyboardEvent) || ignore(event) || MODIFIERS.includes(event.key)) return
+    if (event.repeat) {
+      components()
+        .flat()
+        .findLast((b) => b.repeats && matchKeybindingPress(event, b.presses[0]))
+        ?.fire(event)
+      return
+    }
     clearTimeout(timer)
     // The sequence so far, continued; or else, a new one.
     for (const events of [[...typed, event], [event]]) {

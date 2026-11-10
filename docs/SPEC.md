@@ -1648,7 +1648,9 @@ pending sequence (`web/src/keymap.ts`), on tinykeys' key parsing and
 matching. A first press (`g`) thus keeps a binding of the second (`s`,
 star) from firing too, and a sequence that just fired leaves nothing
 half-matched behind (tinykeys' own handler does, so `*r` then `*u`
-typed within a second lost the second).
+typed within a second lost the second). A held key repeats only `j` and
+`k`: other actions, repeated, would act on more than meant (holding `e`
+a moment too long would archive several messages).
 
 ### 12.6 Client state
 

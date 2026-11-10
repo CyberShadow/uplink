@@ -1,5 +1,5 @@
 import { signal } from '@preact/signals'
-import { render, screen, waitFor, within } from '@testing-library/preact'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/preact'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { Entry } from '../generated/protocol'
@@ -48,6 +48,22 @@ describe('mail', () => {
     const nav = screen.getByRole('navigation')
     expect(within(nav).getByRole('link', { name: /Inbox/ }).getAttribute('aria-current')).toBe('page')
     expect(within(nav).getByRole('link', { name: 'Projects' })).toBeTruthy()
+  })
+
+  it('keeps moving while j or k is held, but archives once while e is', async () => {
+    server.deliver('work', 'Zeroth')
+    await start('/mail/work/INBOX')
+    const hold = (key: string, repeats: number) => {
+      fireEvent.keyDown(document.body, { key })
+      for (let i = 0; i < repeats; i++) fireEvent.keyDown(document.body, { key, repeat: true })
+      fireEvent.keyUp(document.body, { key })
+    }
+    hold('j', 1)
+    expect(focusedSubject()).toBe('Second')
+    hold('k', 1)
+    expect(focusedSubject()).toBe('Zeroth')
+    hold('e', 2)
+    await waitFor(() => expect(subjects()).toEqual(['First', 'Second', 'Third']))
   })
 
   it('moves with j and k, selects with x, and archives the selection with e', async () => {
