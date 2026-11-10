@@ -60,40 +60,15 @@ pub fn accounts(
             }),
             None => None,
         };
-        // In one pass over the account's labelled entries; what Trash and
-        // Spam hide, and what is unread, is found once. Conversations are
-        // counted, as Gmail does: an entry without a thread is one by
-        // itself. A label nothing carries has no counts, so zero.
-        let conversation = "coalesce(e.thread_id, '#' || e.id)";
+        // Kept as entries change (SPEC §4).
         let labels = tx
-            .prepare(&format!(
-                "WITH hidden AS (
-                   SELECT entry FROM entry_label
-                   WHERE desired AND label IN (SELECT id FROM label
-                                               WHERE account_id = ?1
-                                                 AND external_id IN ('TRASH', 'SPAM'))),
-                 unread AS (
-                   SELECT entry FROM entry_label
-                   WHERE desired AND label = (SELECT id FROM label
-                                              WHERE account_id = ?1 AND external_id = 'UNREAD')),
-                 counts AS (
-                   SELECT el.label,
-                     count(DISTINCT {conversation}) AS total,
-                     count(DISTINCT CASE WHEN el.entry IN (SELECT entry FROM unread)
-                                         THEN {conversation} END) AS unread
-                   FROM label l
-                   JOIN entry_label el ON el.label = l.id AND el.desired
-                   JOIN mail_entry e ON e.id = el.entry
-                   WHERE l.account_id = ?1
-                     AND (l.external_id IN ('TRASH', 'SPAM')
-                          OR el.entry NOT IN (SELECT entry FROM hidden))
-                   GROUP BY el.label)
-                 SELECT l.id, l.external_id, l.name, l.system, l.folder,
-                   coalesce(c.total, 0), coalesce(c.unread, 0)
-                 FROM label l LEFT JOIN counts c ON c.label = l.id
-                 WHERE l.account_id = ?1
-                 ORDER BY NOT l.system, l.name",
-            ))?
+            .prepare(
+                "SELECT id, external_id, name, system, folder,
+                        conversations, unread_conversations
+                 FROM label
+                 WHERE account_id = ?1
+                 ORDER BY NOT system, name",
+            )?
             .query_map([&account.id], |r| {
                 Ok(Label {
                     id: LabelId(r.get(0)?),

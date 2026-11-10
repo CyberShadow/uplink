@@ -413,6 +413,10 @@ CREATE TABLE label (
   external_id  TEXT NOT NULL,      -- Gmail label id ('INBOX', 'Label_1')
   name         TEXT NOT NULL,
   system       INTEGER NOT NULL,   -- provider-defined (0/1)
+  -- (V0017) Kept by triggers (below): the conversations with the label,
+  -- and those of them unread, as §4 counts them.
+  conversations        INTEGER NOT NULL DEFAULT 0,
+  unread_conversations INTEGER NOT NULL DEFAULT 0,
   UNIQUE (account_id, external_id)
 );
 
@@ -430,6 +434,18 @@ CREATE TABLE entry_label (
 );
 CREATE INDEX entry_label_by_label ON entry_label(label, entry) WHERE desired;
 CREATE INDEX entry_label_pending ON entry_label(entry) WHERE desired != observed;
+
+-- (V0017) Label counts, kept as entries change rather than counted when
+-- asked. A view says how an entry counts now (`entry_label_counted`: per
+-- desired label, its conversation and whether it is unread, Trash and
+-- Spam hiding it from other labels); `counted_label` holds how it counted
+-- last, and `label_conversation(label, conversation, entries, unread)`
+-- the sums per conversation. Triggers on changes to `entry_label`
+-- (insert, delete, `desired`) and `mail_entry` (delete, `thread_id`)
+-- queue the entry in `entry_recount`, whose trigger takes away how it
+-- counted last and adds how it counts now, moving `label`'s counts where
+-- a conversation's sum leaves or reaches 0. (Not a pair of before and
+-- after triggers: an upsert that updates fires BEFORE INSERT ones too.)
 
 -- Full-text index, one row per logical message (rowid = message.id).
 CREATE VIRTUAL TABLE message_fts USING fts5(
@@ -1295,10 +1311,12 @@ up to 2000 are all sorted; more, and entries are walked newest first by
 an index (`mail_entry(received_at)`, or `(account_id, received_at)` for a
 label's or All Mail's list) until the page is full, which many
 candidates make quick. A page so costs about 2000 rows at most, however
-large the mailbox. Label counts are per label, over its own index
-entries, and stay linear in the label's size. The ignored test
+large the mailbox. Label counts are kept by the schema as entries change
+(§4.3), so reading them costs nothing like the mailbox's size; a change
+of labels costs about 0.25 ms more for it. The ignored test
 `speed_of_search_and_listing` measures a 50,000-message mailbox: search
-1–20 ms, a page of the Inbox 3 ms, All Mail under 1 ms, the counts 42 ms.
+3–35 ms, a page of the Inbox (of conversations) 9 ms, All Mail 3 ms, the
+counts 0.03 ms.
 
 ### 8.8 Error semantics
 
