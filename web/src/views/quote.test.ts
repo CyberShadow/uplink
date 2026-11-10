@@ -23,10 +23,10 @@ describe('splitText', () => {
     expect(splitText(text)[1]).toBe('On Mon, 9 Nov 2026 at 10:00, Alice Example\n<a@x.org> wrote:\n> Lunch?')
   })
 
-  it("keeps a quote answered in between, and one that's all there is", () => {
+  it('keeps a quote answered in between, and folds one that is all there is', () => {
     const inline = '> Lunch?\nYes.\n> Where?\nThe usual.'
     expect(splitText(inline)).toEqual([inline, null])
-    expect(splitText('> Lunch?')).toEqual(['> Lunch?', null])
+    expect(splitText('\nOn Mon, Alice wrote:\n> Lunch?')).toEqual(['', 'On Mon, Alice wrote:\n> Lunch?'])
     expect(splitText('No quote here.')).toEqual(['No quote here.', null])
   })
 
@@ -66,10 +66,15 @@ describe('foldHtml', () => {
     ).toEqual(['Done.', 'From: AlicePlease do it.'])
   })
 
-  it('keeps quotes answered in between, and a message of nothing but quote', () => {
+  it('keeps quotes answered in between', () => {
     expect(folded('<blockquote>Lunch?</blockquote><p>Yes.</p><blockquote>Where?</blockquote><p>There.</p>')).toBeNull()
-    expect(folded('<div class="gmail_quote">On Mon, Alice wrote:<blockquote>Lunch?</blockquote></div>')).toBeNull()
     expect(folded('<p>Nothing quoted.</p>')).toBeNull()
+  })
+
+  it('folds a message of nothing but quote whole, as one sent for its attachment', () => {
+    expect(
+      folded('<br><div class="gmail_quote">On Mon, Alice wrote:<blockquote>Lunch?</blockquote></div>'),
+    ).toEqual(['', 'On Mon, Alice wrote:Lunch?'])
   })
 })
 

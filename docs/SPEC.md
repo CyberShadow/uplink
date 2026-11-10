@@ -1810,8 +1810,9 @@ the menu.
 
 A message's quote of the mail it answers is folded away, as Gmail's
 "•••" does (`web/src/views/quote.ts`): from its first mark on, if only
-quote follows it (a quote answered in between stays, as does a message
-of nothing but quote). Marks in HTML: Gmail's `.gmail_quote`, Yahoo's
+quote follows it (a quote answered in between stays). A message of
+nothing but quote, as one sent just for its attachment, is folded whole,
+as Gmail folds it. Marks in HTML: Gmail's `.gmail_quote`, Yahoo's
 `.yahoo_quoted`, any `<blockquote>` (with the attribution before it: an
 element ending "wrote:", in a few languages, or Thunderbird's
 `.moz-cite-prefix`), and Outlook's header of the original

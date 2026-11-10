@@ -1,6 +1,8 @@
 // Where a message quotes the mail it answers, to fold it away as Gmail
 // does (SPEC §12.8). The quote is what follows its first mark, if only
-// quote follows: a quote with replies written in between stays.
+// quote follows: a quote with replies written in between stays. A message
+// of nothing but quote (as one sent just for its attachment) is folded
+// whole, as Gmail folds it.
 
 /** Lines that end an attribution ("On …, Alice wrote:"), in a few languages. */
 const WROTE = /(wrote|schrieb|a écrit|escribió|scrisse|написал|написала)\s*:\s*$/i
@@ -40,9 +42,7 @@ export function splitText(text: string): [string, string | null] {
     if (cut === -1 || first < cut) cut = first
   }
   if (cut === -1) return [text, null]
-  const written = lines.slice(0, cut).join('\n').trimEnd()
-  if (written.trim() === '') return [text, null]
-  return [written, lines.slice(cut).join('\n')]
+  return [lines.slice(0, cut).join('\n').trimEnd(), lines.slice(cut).join('\n')]
 }
 
 /** Marks that the rest is the original, wherever it ends. */
@@ -69,12 +69,6 @@ export function foldHtml(html: string): [string, boolean] {
     r.setEnd(root, root.childNodes.length)
     return r
   }
-  const before = (node: Node) => {
-    const r = document.createRange()
-    r.setStart(root, 0)
-    r.setEndBefore(node)
-    return r.toString()
-  }
   const candidates = [...root.querySelectorAll(`${SEPARATORS}, ${QUOTES}, div[style*="border-top"]`)]
   const mark = candidates.find((el) => {
     if (el.matches(SEPARATORS)) return true
@@ -83,8 +77,7 @@ export function foldHtml(html: string): [string, boolean] {
     return range(el, true).toString().trim() === ''
   })
   const start = mark && (attribution(mark) ?? mark)
-  // A message of nothing but quote shows it.
-  if (!start || before(start).trim() === '') return [html, false]
+  if (!start) return [html, false]
   const quote = document.createElement('div')
   quote.className = QUOTE_CLASS
   quote.append(range(start, false).extractContents())
