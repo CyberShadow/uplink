@@ -12,28 +12,32 @@
   --nav-bg: #f6f8fc;
   /* Message rows: read mail recedes, unread stands out. */
   --read-bg: #f2f6fc;
+  --read-fg: #3c4043;
   --unread-bg: #fff;
   --error-bg: #fce8e6;
   --error-fg: #a50e0e;
-  font: 14px/1.4 system-ui, sans-serif;
+  /* Gmail's: narrower than most systems' own. */
+  font: 14px/1.4 'Google Sans', Roboto, RobotoDraft, Helvetica, Arial, sans-serif;
   color: var(--fg);
   background: var(--bg);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    /* Near-black throughout, with light text: high contrast. */
-    --fg: #f1f1f1;
-    --muted: #b4b8bd;
-    --line: #2e3133;
-    --hover: #34383b;
+    /* Near-black throughout, with light text: high contrast. Read mail's
+       text recedes too. */
+    --fg: #e8e6e3;
+    --read-fg: rgb(232 230 227 / 70%);
+    --muted: #a8a49e;
+    --line: #262a2a;
+    --hover: #2c3131;
     --focus: #1f3d66;
-    --selected: #283a57;
+    --selected: #243650;
     --accent: #8ab4f8;
-    --bg: #181a1b;
-    --nav-bg: #181a1b;
-    --read-bg: #181a1b;
-    --unread-bg: #26292b;
+    --bg: #0d0e0e;
+    --nav-bg: #0d0e0e;
+    --read-bg: #101212;
+    --unread-bg: #202424;
     --error-bg: #5c1c1c;
     --error-fg: #f6aea9;
   }

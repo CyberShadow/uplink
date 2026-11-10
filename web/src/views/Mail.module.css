@@ -15,12 +15,14 @@
   border-bottom: 1px solid var(--line);
   border-left: 4px solid transparent;
   background: var(--read-bg);
+  color: var(--read-fg);
   cursor: pointer;
   white-space: nowrap;
 }
 
 .unread {
   background: var(--unread-bg);
+  color: var(--fg);
 }
 
 .row:hover {

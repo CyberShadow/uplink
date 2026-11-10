@@ -12,8 +12,9 @@ describe('format', () => {
     expect(time(Date.parse('2026-11-10T17:30:00Z'))).toBe('12:30')
   })
 
-  it('briefly gives the time today, and else the date', () => {
+  it('briefly gives the time today, the day this year, and else the date', () => {
     expect(brief(ms, new Date('2026-11-09T23:59:00-05:00'))).toBe('22:05')
-    expect(brief(ms, new Date('2026-11-10T00:00:00-05:00'))).toBe('2026-11-09')
+    expect(brief(ms, new Date('2026-11-10T00:00:00-05:00'))).toBe('9 Nov')
+    expect(brief(ms, new Date('2027-01-01T00:00:00-05:00'))).toBe('2026-11-09')
   })
 })

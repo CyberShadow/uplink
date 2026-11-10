@@ -11,13 +11,13 @@ const REMOTE = /<img[^>]+src=["']?https?:|url\(\s*["']?https?:/i
 // Mail is written for white paper. In a dark theme, the page is inverted,
 // hues kept, as Dark Reader's filter mode does, and pictures inverted back:
 // a mail's colours become their dark counterparts, whatever it sets them
-// to. Its paper is the inverse of the theme's background (#181a1b).
+// to. Its paper is the inverse of the theme's background (#0d0e0e).
 const STYLE = `
 html { background: #fff; }
-body { margin: 0; padding: 8px; font: 14px/1.4 system-ui, sans-serif; overflow-wrap: anywhere; color: #000; background: #fff; }
+body { margin: 0; padding: 8px; font: 14px/1.4 'Google Sans', Roboto, RobotoDraft, Helvetica, Arial, sans-serif; overflow-wrap: anywhere; color: #000; background: #fff; }
 @media (prefers-color-scheme: dark) {
-  html { background: #181a1b; }
-  body { background: #e7e5e4; filter: invert(1) hue-rotate(180deg); }
+  html { background: #0d0e0e; }
+  body { background: #f2f1f1; filter: invert(1) hue-rotate(180deg); }
   img, video, [background], [style*="background-image"] { filter: invert(1) hue-rotate(180deg); }
 }`
 
