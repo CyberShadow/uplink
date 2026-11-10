@@ -93,6 +93,80 @@
           meta.mainProgram = "uplink";
         });
 
+        # ── user service ───────────────────────────────────────────────────
+        # The unit, with ExecStart already pointing into the store: `nix build`
+        # is what updates it. The out-link is the build's GC root, and the unit
+        # is linked through it, so the link never changes:
+        #
+        #   nix build -o ~/.local/state/cs-uplink-unit .#service
+        #   ln -s ~/.local/state/cs-uplink-unit/cs-uplink.service ~/.local/share/systemd/user/
+        #   ln -s ../cs-uplink.service ~/.local/share/systemd/user/default.target.wants/
+        #   systemctl --user daemon-reload && systemctl --user start cs-uplink
+        #
+        # (`systemctl enable` would link the store file itself, which the next
+        # build leaves behind.)
+        #
+        # After a change, the first line again, then `systemctl --user
+        # daemon-reload` and a restart. The file inside is named as the unit
+        # because systemd names a unit after the file a link finally reaches: a
+        # bare store file (`<hash>-cs-uplink.service`) makes the link an alias of a
+        # unit nobody can enable.
+        #
+        # The configuration is the user's, outside the checkout, so that
+        # instances run from the checkout keep to their own; its `data_dir`
+        # is the state directory below (an absolute path: relative ones are
+        # relative to the configuration's directory).
+        service = pkgs.writeTextDir "cs-uplink.service" ''
+          [Unit]
+          Description=uplink — mail, Matrix, calendar and tasks in one web client
+          Documentation=file://${self}/README.md
+          Wants=network-online.target
+          After=network-online.target
+
+          [Service]
+          Type=exec
+          ExecStart=${pkgs.lib.getExe uplinkBin} --config %E/cs-uplink/uplink.yaml serve
+          StateDirectory=cs-uplink
+          Restart=on-failure
+          RestartSec=5
+
+          # --- Sandbox ---------------------------------------------------------
+          # It parses mail from anyone and fetches the images that mail links
+          # to, so it is assumed to be reachable.
+          #
+          # The home directory is replaced with an empty tmpfs and only what the
+          # service uses is mounted back: ProtectSystem=strict alone leaves
+          # /home, its own mount, read-write.
+          ProtectSystem=strict
+          ProtectHome=tmpfs
+          BindReadOnlyPaths=%E/cs-uplink
+          BindPaths=%S/cs-uplink
+
+          NoNewPrivileges=true
+          PrivateTmp=true
+          PrivateDevices=true
+          ProtectProc=invisible
+          ProtectHostname=true
+          ProtectClock=true
+          ProtectKernelTunables=true
+          ProtectKernelModules=true
+          ProtectKernelLogs=true
+          ProtectControlGroups=true
+          RestrictNamespaces=true
+          RestrictRealtime=true
+          RestrictSUIDSGID=true
+          LockPersonality=true
+          MemoryDenyWriteExecute=true
+          CapabilityBoundingSet=
+          SystemCallArchitectures=native
+          SystemCallFilter=@system-service
+          RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+          UMask=0077
+
+          [Install]
+          WantedBy=default.target
+        '';
+
         # Provider fakes for integration tests.
         emulate = pkgs.callPackage ./nix/emulate { };
         # Conduit insists on reading /etc/resolv.conf, which build sandboxes
@@ -112,7 +186,7 @@
       in {
         # ── packages ───────────────────────────────────────────────────────
         packages = {
-          inherit emulate;
+          inherit emulate service;
           default = uplinkBin;
           uplink = uplinkBin;
           uplinkWeb = uplinkWeb;
