@@ -1345,10 +1345,27 @@ own images (`<img src="cid:…">`) are inlined by the server as `data:`
 URIs; `cid:` anywhere else is dropped. Messages without an HTML part show
 their text.
 
-Remote images are fetched by the server, never by the browser: in the
-sanitized HTML, `http:`, `https:` and scheme-relative URLs of `<img src>`,
-and of CSS `url(…)` in `style` attributes and `<style>` elements, become
-`/api/remote-image?url=<URL>` (other `<img>` sources go). Asked to show
+Three layers keep mail in its place, each holding if the one inside it
+fails: ammonia's sanitizing (it parses the HTML as browsers do, keeps an
+allowlist of elements and attributes, and writes a new document from its
+tree), the sandbox (no scripts, ever: with `allow-same-origin`, they
+could lift it), and the CSP (nothing loads but what it names). The frame
+also turns DNS prefetching off (`x-dns-prefetch-control`), so that the
+hosts a mail links to are not looked up, telling their DNS servers it was
+read.
+
+Remote images are fetched by the server, never by the browser. Before
+sanitizing, the HTML is parsed into a DOM (html5ever, as ammonia parses
+it) and its CSS into tokens (cssparser, escapes and all), and the URLs a
+browser would fetch images by are rewritten there, never in text:
+`http:`, `https:` and scheme-relative URLs of `<img src>`, and of CSS in
+`style` attributes and `<style>` elements (`url(…)`, `src(…)`, strings
+in `image-set(…)` and after `@import`), become
+`/api/remote-image?url=<URL>`. Other `<img>` sources go (but `cid:`, which
+sanitizing inlines); other CSS URLs become `""` (but `data:`): relative
+ones would load from uplink. CSS nested deeper than cssparser reads (75
+blocks) is dropped whole. Whatever the rewriting misses, the CSP blocks:
+a miss is an image not shown, never one fetched by the browser. Asked to show
 them, the client lets the frame load images from uplink's origin
 (`img-src data: <origin>`, named: Firefox does not match a `srcdoc`
 frame's `'self'` to the origin it inherits); a sender then learns the server's address, a

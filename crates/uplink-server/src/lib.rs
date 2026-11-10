@@ -443,7 +443,7 @@ fn build_app(state: AppState) -> Router {
             post(copy_attachment_handler),
         )
         .route(
-            uplink_email::parse::REMOTE_IMAGE_PATH,
+            uplink_email::remote::REMOTE_IMAGE_PATH,
             get(remote_image_handler),
         )
         .route(

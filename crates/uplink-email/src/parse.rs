@@ -1,12 +1,12 @@
 //! What uplink takes from a raw message: identity, listing headers and the
 //! text to index (SPEC §4.4–4.5).
 
+use crate::remote::proxy_html;
 use base64::Engine;
 use mail_parser::{
     Address, HeaderName, Message, MessageParser, MessagePart, MimeHeaders, PartType,
 };
-use regex::Regex;
-use std::{collections::HashMap, sync::LazyLock};
+use std::collections::HashMap;
 use uplink_protocol::mail::Attachment;
 
 /// Characters of body text shown in message lists.
@@ -103,60 +103,11 @@ pub fn has_attachments(raw: &[u8]) -> bool {
     attachments(raw).iter().any(|a| !a.inline)
 }
 
-/// Where uplink's server fetches a remote image for a message's HTML body
-/// (SPEC §8.9), given its URL as `url`.
-pub const REMOTE_IMAGE_PATH: &str = "/api/remote-image";
-
-/// The proxied form of a remote image's URL, if `url` is one (`http:`,
-/// `https:`, or scheme-relative, taken as `https:`).
-fn proxied(url: &str) -> Option<String> {
-    let url = url.trim();
-    let absolute = match url.strip_prefix("//") {
-        Some(rest) => format!("https://{rest}"),
-        None => url.to_owned(),
-    };
-    let parsed = url::Url::parse(&absolute).ok()?;
-    matches!(parsed.scheme(), "http" | "https").then(|| {
-        let encoded: String =
-            url::form_urlencoded::byte_serialize(parsed.as_str().as_bytes()).collect();
-        format!("{REMOTE_IMAGE_PATH}?url={encoded}")
-    })
-}
-
-/// CSS's `url(…)`s of remote resources; quoted or not.
-static CSS_URL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)url\(\s*(?:"([^"]*)"|'([^']*)'|([^"')\s]*))\s*\)"#).expect("valid")
-});
-
-/// `css` with its remote `url(…)`s proxied.
-fn proxy_css(css: &str) -> String {
-    CSS_URL
-        .replace_all(css, |c: &regex::Captures| {
-            let url = c
-                .get(1)
-                .or(c.get(2))
-                .or(c.get(3))
-                .expect("one matches")
-                .as_str();
-            match proxied(url) {
-                Some(proxied) => format!("url(\"{proxied}\")"),
-                None => c[0].to_owned(),
-            }
-        })
-        .into_owned()
-}
-
-/// `<style>` elements, as ammonia writes them: their text is raw, and ends
-/// at the first `</style`.
-static STYLE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?is)(<style[^>]*>)(.*?)(</style)").expect("valid"));
-
 /// The message's HTML body, if it has one, sanitized for display: no
 /// scripts, event handlers or forms; styles and presentational attributes
 /// stay, since mail layout depends on them. Remote images, in `<img>` and
-/// in CSS, are fetched through uplink's server ([`REMOTE_IMAGE_PATH`]),
-/// for the client to block or allow (SPEC §8.9); other `<img>` sources
-/// go. Images of the message's own (`cid:`) are inlined as `data:` URIs.
+/// in CSS, are fetched through uplink's server ([`proxy_html`]), for the
+/// client to block or allow (SPEC §8.9); other `<img>` sources go. Images of the message's own (`cid:`) are inlined as `data:` URIs.
 pub fn html_body(raw: &[u8]) -> Option<String> {
     let message = MessageParser::new().parse(raw)?;
     let PartType::Html(html) = &message.html_part(0)?.body else {
@@ -171,17 +122,18 @@ pub fn html_body(raw: &[u8]) -> Option<String> {
             Some((cid.to_owned(), format!("data:{};base64,{data}", mime(part))))
         })
         .collect();
+    // Remote images are proxied first, so that sanitizing has the last word
+    // on what the client gets.
     let html = ammonia::Builder::default()
         // Let `cid:` through the scheme check, for the filter below.
         .add_url_schemes(["cid"])
         .attribute_filter(move |element, attribute, value| {
-            match (element, attribute, value.strip_prefix("cid:")) {
-                ("img", "src", Some(cid)) => images.get(cid).map(|uri| uri.clone().into()),
-                ("img", "src", None) if value.starts_with("data:") => Some(value.into()),
-                ("img", "src", None) => proxied(value).map(Into::into),
-                (_, _, Some(_)) => None,
-                (_, "style", None) => Some(proxy_css(value).into()),
-                (_, _, None) => Some(value.into()),
+            let Some(cid) = value.strip_prefix("cid:") else {
+                return Some(value.into());
+            };
+            match (element, attribute) {
+                ("img", "src") => images.get(cid).map(|uri| uri.clone().into()),
+                _ => None,
             }
         })
         .rm_clean_content_tags(["style"])
@@ -203,15 +155,9 @@ pub fn html_body(raw: &[u8]) -> Option<String> {
             "size",
             "dir",
         ])
-        .clean(html)
+        .clean(&proxy_html(html))
         .to_string();
-    Some(
-        STYLE
-            .replace_all(&html, |c: &regex::Captures| {
-                format!("{}{}{}", &c[1], proxy_css(&c[2]), &c[3])
-            })
-            .into_owned(),
-    )
+    Some(html)
 }
 
 /// The message's attachments, inline images included: those its HTML body
@@ -387,7 +333,7 @@ pub(crate) mod tests {
                 "background: url(\"{}\")",
                 proxied("http%3A%2F%2Fx.example%2Fa%2520b.png")
             ),
-            "background: url(data:image/png;base64,AA==)".to_owned(),
+            "background: url(\"data:image/png;base64,AA==\")".to_owned(),
             format!(
                 "style=\"background-image: url(&quot;{}&quot;)\"",
                 proxied("https%3A%2F%2Fx.example%2Fc.png")
