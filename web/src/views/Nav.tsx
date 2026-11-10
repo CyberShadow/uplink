@@ -3,13 +3,14 @@ import type { ComponentChildren } from 'preact'
 import { useLocation } from 'preact-iso'
 import { duration } from '../format'
 import { keepFocus } from '../keymap'
-import type { Account, Label, ListingProgress, MailProvider } from '../generated/protocol'
+import type { Account, Label, ListingProgress, MailProvider, Room } from '../generated/protocol'
 import { useServices } from '../context'
 import { outboxCount, outboxNeedsAttention } from '../stores/drafts'
 import { allMailPath, inboxPath, mailPath } from './App'
 import { roomPath } from './Room'
 import styles from './Nav.module.css'
 import { Icon, type IconName } from './Icon'
+import { RoomAvatar } from './RoomAvatar'
 
 /** The system labels worth a place in the nav, in Gmail's order; Microsoft
  * 365's well-known folders have the ids of the Gmail labels that mean the
@@ -143,11 +144,53 @@ export function labelTree(labels: Label[]): LabelNode[] {
   return roots
 }
 
+/** A room in the nav; a joined space with the rooms it lists. */
+export interface RoomNode {
+  room: Room
+  children: RoomNode[]
+}
+
+/** The account's rooms as its joined spaces nest them, as Element shows
+ * them: a space has its subspaces, in its order, then its rooms, by
+ * activity; at the top are the spaces in no other, by name, then the
+ * rooms in none. `rooms` is by activity. A room may be in several spaces;
+ * a space is not nested in itself again, and spaces only in each other go
+ * at the top. */
+export function roomTree(rooms: readonly Room[]): RoomNode[] {
+  const byId = new Map(rooms.map((room) => [room.room_id, room]))
+  const isSpace = (room: Room) => room.space && room.membership === 'joined'
+  const spaces = rooms.filter(isSpace).sort((a, b) => a.name.localeCompare(b.name))
+  const listed = new Set(spaces.flatMap((space) => space.children))
+  const reached = new Set<string>()
+  const node = (room: Room, outer: ReadonlySet<string>): RoomNode => {
+    reached.add(room.room_id)
+    if (!isSpace(room)) return { room, children: [] }
+    const path = new Set([...outer, room.room_id])
+    const children = new Set(room.children)
+    const subspaces = room.children
+      .map((id) => byId.get(id))
+      .filter((child) => child !== undefined && isSpace(child) && !path.has(child.room_id)) as Room[]
+    const others = rooms.filter((child) => children.has(child.room_id) && !isSpace(child))
+    return { room, children: [...subspaces, ...others].map((child) => node(child, path)) }
+  }
+  const top = spaces.filter((space) => !listed.has(space.room_id)).map((space) => node(space, new Set()))
+  for (const space of spaces) if (!reached.has(space.room_id)) top.push(node(space, new Set()))
+  const others = rooms.filter((room) => !isSpace(room) && !listed.has(room.room_id))
+  return [...top, ...others.map((room) => ({ room, children: [] }))]
+}
+
+/** What is unread in the rooms of a space, each counted once. */
+function unreadIn(node: RoomNode, seen = new Set<string>()): number {
+  if (seen.has(node.room.room_id)) return 0
+  seen.add(node.room.room_id)
+  return node.room.unread + node.children.reduce((unread, child) => unread + unreadIn(child, seen), 0)
+}
+
 /** `open`: shown as a drawer, where the window is narrow. */
 export function Nav(props: { open: boolean }) {
   const { mail, drafts, matrix, todos } = useServices()
   const { path } = useLocation()
-  const link = (href: string, icon: IconName | null, name: string, count: number, depth = 0, alert = false) => {
+  const link = (href: string, lead: ComponentChildren, name: string, count: number, depth = 0, alert = false) => {
     const current = path === href || path.startsWith(`${href}/`)
     return (
       <a
@@ -156,7 +199,7 @@ export function Nav(props: { open: boolean }) {
         aria-current={current ? 'page' : undefined}
         style={{ '--depth': depth }}
       >
-        {icon && <Icon name={icon} />}
+        {lead}
         <span class={styles.name}>{name}</span>
         {count > 0 && (
           <span
@@ -170,11 +213,16 @@ export function Nav(props: { open: boolean }) {
     )
   }
   const item = (href: string, icon: IconName, name: string, count: number, alert = false) => (
-    <li key={href}>{link(href, icon, name, count, 0, alert)}</li>
+    <li key={href}>{link(href, <Icon name={icon} />, name, count, 0, alert)}</li>
   )
   const labelItem = (account: Account, label: Label) => (
     <li key={label.id}>
-      {link(mailPath(account.id, label.external_id), labelIcon(label), labelName(account, label), label.unread)}
+      {link(
+        mailPath(account.id, label.external_id),
+        <Icon name={labelIcon(label)} />,
+        labelName(account, label),
+        label.unread,
+      )}
     </li>
   )
   const labelNode = (account: Account, node: LabelNode, depth: number) => {
@@ -196,7 +244,13 @@ export function Nav(props: { open: boolean }) {
           </button>
         )}
         {node.label ? (
-          link(mailPath(account.id, node.label.external_id), labelIcon(node.label), node.name, node.label.unread, depth)
+          link(
+            mailPath(account.id, node.label.external_id),
+            <Icon name={labelIcon(node.label)} />,
+            node.name,
+            node.label.unread,
+            depth,
+          )
         ) : (
           <span class={styles.parent} style={{ '--depth': depth }}>
             <Icon name={node.children.some((c) => c.label?.folder) ? 'folder' : 'tag'} />
@@ -205,6 +259,50 @@ export function Nav(props: { open: boolean }) {
         )}
         {node.children.length > 0 && !folded && (
           <ul>{node.children.map((child) => labelNode(account, child, depth + 1))}</ul>
+        )}
+      </li>
+    )
+  }
+  const roomNode = (node: RoomNode, depth: number) => {
+    const { room } = node
+    if (!(room.space && room.membership === 'joined')) {
+      return (
+        <li key={room.id}>
+          {link(
+            roomPath(room.id),
+            <RoomAvatar room={room} />,
+            room.membership === 'invited' ? `${room.name} (invited)` : room.name,
+            room.unread,
+            depth,
+          )}
+        </li>
+      )
+    }
+    const key = `matrix:${room.account}:${room.room_id}`
+    const folded = collapsed.value.has(key)
+    const unread = folded ? unreadIn(node) : 0
+    return (
+      <li key={room.id} class={styles.node}>
+        {node.children.length > 0 && (
+          <button
+            type="button"
+            class={styles.fold}
+            style={{ '--depth': depth }}
+            aria-label={folded ? `Expand ${room.name}` : `Collapse ${room.name}`}
+            aria-expanded={!folded}
+            onMouseDown={keepFocus}
+            onClick={() => toggleCollapsed(key)}
+          >
+            <Icon name={folded ? 'chevron-right' : 'chevron-down'} />
+          </button>
+        )}
+        <span class={styles.parent} style={{ '--depth': depth }}>
+          <RoomAvatar room={room} />
+          <span class={styles.name}>{room.name}</span>
+          {unread > 0 && <span class={styles.count}>{unread}</span>}
+        </span>
+        {node.children.length > 0 && !folded && (
+          <ul>{node.children.map((child) => roomNode(child, depth + 1))}</ul>
         )}
       </li>
     )
@@ -257,16 +355,7 @@ export function Nav(props: { open: boolean }) {
             status={!account.synced && <span class={styles.syncing}> (syncing)</span>}
             unread={rooms.reduce((unread, room) => unread + room.unread, 0)}
           >
-            {rooms.map((room) => (
-              <li key={room.id}>
-                {link(
-                  roomPath(room.id),
-                  null,
-                  room.membership === 'invited' ? `${room.name} (invited)` : room.name,
-                  room.unread,
-                )}
-              </li>
-            ))}
+            {roomTree(rooms).map((node) => roomNode(node, 0))}
           </Section>
         )
       })}

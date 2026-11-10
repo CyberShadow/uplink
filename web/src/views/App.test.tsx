@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import type { Entry } from '../generated/protocol'
 import { Client } from '../stores/client'
 import { conversationKey } from '../stores/mail'
-import { FakeServer } from '../test/server'
+import { FakeServer, ME } from '../test/server'
 import { App } from './App'
 
 let server: FakeServer
@@ -795,15 +795,38 @@ describe('matrix', () => {
     server.receive(room.id, { body: 'Hello there' })
     const user = await start()
     const nav = screen.getByRole('navigation')
-    const link = await within(nav).findByRole('link', { name: /^Lounge/ })
-    expect(link.textContent).toBe('Lounge1')
+    // Its avatar, the initial, is not in its name.
+    const link = await within(nav).findByRole('link', { name: 'Lounge1' })
     await user.click(link)
     expect(location.pathname).toBe(`/rooms/${room.id}`)
     expect(await screen.findByText('Hello there')).toBeTruthy()
-    await waitFor(() => expect(link.textContent).toBe('Lounge'))
+    await waitFor(() => within(nav).getByRole('link', { name: 'Lounge' }))
     expect(link.getAttribute('aria-current')).toBe('page')
     // Reading quietly: no notice.
     expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('nests rooms in their spaces, which fold, counting what is unread', async () => {
+    server.addMatrixAccount()
+    const general = server.addRoom('General')
+    const team = server.addRoom('Team')
+    team.space = true
+    team.children = [general.room_id]
+    team.avatar = 'mxc://example.org/team'
+    server.addRoom('Elsewhere')
+    server.receive(general.id, { body: 'Hi' })
+    const user = await start()
+    const nav = screen.getByRole('navigation')
+    const rooms = within(nav).getByRole('region', { name: `Rooms of ${ME}` })
+    const space = (await within(rooms).findByText('Team')).closest('li')!
+    expect(space.querySelector('img')?.getAttribute('src')).toBe(`/api/rooms/${team.id}/avatar/example.org/team`)
+    expect(within(space).getByRole('link', { name: 'General1' })).toBeTruthy()
+    expect(within(space).queryByRole('link', { name: 'Elsewhere' })).toBeNull()
+    within(rooms).getByRole('link', { name: 'Elsewhere' })
+
+    await user.click(within(space).getByRole('button', { name: 'Collapse Team' }))
+    expect(within(space).queryByRole('link', { name: /General/ })).toBeNull()
+    expect(space.textContent).toContain('Team1')
   })
 
   it('joins an invitation, and leaves the room, with undo in between', async () => {
@@ -811,7 +834,7 @@ describe('matrix', () => {
     const room = server.addRoom('Party', false, 'invited')
     const user = await start(`/rooms/${room.id}`)
     const nav = screen.getByRole('navigation')
-    expect(within(nav).getByRole('link', { name: /^Party/ }).textContent).toBe('Party (invited)')
+    within(nav).getByRole('link', { name: 'Party (invited)' })
     expect(screen.queryByRole('textbox', { name: /message/i })).toBeNull()
 
     await user.click(screen.getByRole('button', { name: 'Join' }))
@@ -823,7 +846,7 @@ describe('matrix', () => {
     await user.click(screen.getByRole('button', { name: 'Join' }))
     server.settleMembership(room.id)
     await screen.findByRole('button', { name: 'Leave' })
-    expect(within(nav).getByRole('link', { name: /^Party/ }).textContent).toBe('Party')
+    within(nav).getByRole('link', { name: 'Party' })
 
     await user.click(screen.getByRole('button', { name: 'Leave' }))
     await screen.findByText('Leaving…')

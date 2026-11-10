@@ -7,6 +7,7 @@ import type { MatrixOutboxItem, MembershipChange, Room, RoomEvent } from '../gen
 import { useServices } from '../context'
 import { keepFocus, useKeymap } from '../keymap'
 import styles from './Room.module.css'
+import { RoomAvatar } from './RoomAvatar'
 import { dateTime } from '../format'
 
 export function roomPath(room: number): string {
@@ -38,6 +39,7 @@ function Timeline(props: { room: Room }) {
   return (
     <section class={styles.room} aria-label={room.name}>
       <header class={styles.header}>
+        <RoomAvatar room={room} class={styles.avatar} />
         <h1>{room.name}</h1>
         {room.encrypted && <span class={styles.muted}>encrypted</span>}
         <MembershipControls room={room} />

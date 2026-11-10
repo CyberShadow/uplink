@@ -1,0 +1,26 @@
+.avatar {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  object-fit: cover;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.space {
+  border-radius: 5px;
+}
+
+/* Element's avatar colours. */
+.c0 { background: #0dbd8b; }
+.c1 { background: #368bd6; }
+.c2 { background: #ac3ba8; }
+.c3 { background: #e64f7a; }
+.c4 { background: #ff812d; }
+.c5 { background: #2dc2c5; }

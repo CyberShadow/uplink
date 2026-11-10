@@ -2689,8 +2689,9 @@ header (folded, it counts what is unread in it: the Inbox's
 conversations, the rooms' messages). An account's labels nest by `/`,
 as Gmail's and Microsoft 365's folder paths do, under parents that need
 not be labels themselves, each foldable. What is folded is kept in the
-browser (`localStorage`): it is the view's, not the mailbox's. Matrix
-spaces are not in it yet; rooms are listed flat.
+browser (`localStorage`): it is the view's, not the mailbox's. A Matrix
+account's rooms nest in its spaces (§9.5), each foldable; folded, a
+space counts what is unread in its rooms.
 
 Narrow (under 720 px wide, as a phone), the nav is a drawer, opened from
 a menu button in the header and closed by going anywhere; message rows

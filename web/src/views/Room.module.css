@@ -13,6 +13,10 @@
   border-bottom: 1px solid var(--line);
 }
 
+.avatar {
+  align-self: center;
+}
+
 .leave {
   margin-left: auto;
 }

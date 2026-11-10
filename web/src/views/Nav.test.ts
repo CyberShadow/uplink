@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import type { Label } from '../generated/protocol'
-import { labelTree, record, remaining, type Sample } from './Nav'
+import type { Label, Room } from '../generated/protocol'
+import { labelTree, record, remaining, roomTree, type RoomNode, type Sample } from './Nav'
+import { avatarPath, initial } from './RoomAvatar'
 
 describe('a first sync', () => {
   const minutes = (n: number) => n * 60_000
@@ -44,5 +45,73 @@ describe('labelTree', () => {
       ['Travel', null, [['2026', 3, []]]],
       ['Work', 2, [['Uplink', 1, []]]],
     ])
+  })
+})
+
+describe('roomTree', () => {
+  let next = 1
+  const room = (name: string, fields: Partial<Room> = {}): Room => ({
+    id: next++,
+    account: 'mx',
+    room_id: `!${name}:x`,
+    name,
+    encrypted: false,
+    membership: 'joined',
+    unread: 0,
+    last_event_ts: null,
+    read_up_to: null,
+    pending: null,
+    membership_error: null,
+    space: false,
+    avatar: null,
+    children: [],
+    ...fields,
+  })
+  const space = (name: string, children: Room[], fields: Partial<Room> = {}) =>
+    room(name, { space: true, children: children.map((c) => c.room_id), ...fields })
+  const names = (nodes: RoomNode[]): unknown[] =>
+    nodes.map((n) => (n.room.space && n.room.membership === 'joined' ? { [n.room.name]: names(n.children) } : n.room.name))
+
+  it('nests rooms in spaces: subspaces in order, then rooms by activity, then the rest', () => {
+    const [recent, old, loose] = [room('recent'), room('old'), room('loose')]
+    const sub = space('sub', [old])
+    const top = space('top', [old, recent, sub])
+    // By activity, as listed.
+    const rooms = [recent, loose, top, old, sub]
+    expect(names(roomTree(rooms))).toEqual([{ top: [{ sub: ['old'] }, 'recent', 'old'] }, 'loose'])
+  })
+
+  it('puts top-level spaces by name, and leaves out children not listed', () => {
+    const b = space('b', [])
+    const a = space('a', [room('unjoined')])
+    expect(names(roomTree([b, a]))).toEqual([{ a: [] }, { b: [] }])
+  })
+
+  it('does not nest invited spaces, nor in them', () => {
+    const child = room('child')
+    const invited = space('invited', [child], { membership: 'invited' })
+    expect(names(roomTree([invited, child]))).toEqual(['invited', 'child'])
+  })
+
+  it('puts spaces only in each other at the top, once', () => {
+    const a = room('a', { space: true })
+    const b = space('b', [a])
+    a.children = [b.room_id]
+    expect(names(roomTree([a, b]))).toEqual([{ a: [{ b: [] }] }])
+  })
+})
+
+describe('room avatars', () => {
+  it('are served at a path naming them', () => {
+    const room = { id: 7, avatar: 'mxc://example.org:8448/AbC_d-1' } as Room
+    expect(avatarPath(room)).toBe('/api/rooms/7/avatar/example.org%3A8448/AbC_d-1')
+    expect(avatarPath({ ...room, avatar: null })).toBeNull()
+    expect(avatarPath({ ...room, avatar: 'https://example.org/a' })).toBeNull()
+  })
+
+  it('fall back to the first letter of the name', () => {
+    expect(initial('#matrix-dev')).toBe('M')
+    expect(initial('élan')).toBe('É')
+    expect(initial('!!!')).toBe('?')
   })
 })
