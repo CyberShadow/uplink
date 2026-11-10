@@ -83,7 +83,7 @@ export function remaining(seen: Sample[], total: number): number | null {
 }
 
 /** A mail account's first sync, and how far it has got if known. Its
- * total includes Spam and Trash, which it skips: it ends short of 100%. */
+ * total is as the sync began, so it shows 99% at most until done. */
 function Syncing(props: { account: string; listing: ListingProgress | null }) {
   const { account, listing } = props
   if (!listing) return <span class={styles.syncing}> (syncing)</span>

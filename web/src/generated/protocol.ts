@@ -170,7 +170,7 @@ export type ListingProgress = {
 stored: number, 
 /**
  * Messages the mailbox held as the listing began, Spam and Trash
- * included, which the listing is not: it ends a little short.
+ * included, as the listing does.
  */
 total: number, };
 

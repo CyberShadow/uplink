@@ -1100,7 +1100,9 @@ IMAP's per-folder copies, and a REST fake is practical to test against
 
 - **Initial sync**: `messages.list` (all mail, newest first) for ids, then
   `messages.get?format=raw` for content, stored as variants (§4.4), most
-  recent first. Each batch is one log entry. Record the profile's
+  recent first. Each batch of 50 is one log entry: a page of 500 takes
+  about 6 minutes of quota, and its messages show, and survive an
+  interruption, as they come. Record the profile's
   `historyId` *before* starting, so nothing that changes during the walk
   is missed. The listing resumes after an interruption: `sync_state`
   holds `{listing_from, before}`, the history id it began at and the

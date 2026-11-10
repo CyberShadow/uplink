@@ -31,6 +31,9 @@ pub const KIND: &str = "gmail";
 pub const POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// Messages fetched at once.
 const CONCURRENT_FETCHES: usize = 8;
+/// While listing, how many messages fetched are stored at once: at
+/// Gmail's quota, about 40 s of fetching.
+const STORE_EVERY: usize = 50;
 /// Gmail's limit for `batchModify`.
 const BATCH_MODIFY_MAX: usize = 1000;
 
@@ -200,12 +203,24 @@ impl GmailSync {
             let page = gmail.messages(page_token.as_deref()).await?;
             let ids: Vec<String> = page.messages.into_iter().map(|m| m.id).collect();
             listed.extend(ids.iter().cloned());
-            let new = ids
+            let new: Vec<String> = ids
                 .iter()
                 .filter(|id| !known.contains(*id))
                 .cloned()
                 .collect();
-            let added = self.fetch_new(account, new).await?;
+            // Stored a few at a time, as a page takes minutes of quota: so
+            // that they show, and an interruption loses little.
+            for batch in new.chunks(STORE_EVERY) {
+                let added = self.fetch_new(account, batch.to_vec()).await?;
+                if !added.is_empty() {
+                    account
+                        .observe(MailboxObserved {
+                            added,
+                            ..observed()
+                        })
+                        .await?;
+                }
+            }
             // Messages deleted since they were listed are recorded as
             // removed by the first poll, which starts before the listing.
             let old = ids.into_iter().filter(|id| earlier.contains(id)).collect();
@@ -215,10 +230,9 @@ impl GmailSync {
                 .into_iter()
                 .filter_map(|(_, labels)| labels)
                 .collect();
-            if !added.is_empty() || !updated.is_empty() {
+            if !updated.is_empty() {
                 account
                     .observe(MailboxObserved {
-                        added,
                         updated,
                         ..observed()
                     })
