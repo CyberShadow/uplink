@@ -1322,11 +1322,28 @@ client shows it in an `<iframe srcdoc>` sandboxed without scripts (same
 origin only so that it can be sized to its content; popups so that links,
 with `<base target=_blank>`, open in a new tab), under a CSP of
 `default-src 'none'; img-src data:; style-src 'unsafe-inline'`: nothing
-remote loads, so tracking pixels and remote fonts don't, until the user
-asks to show remote images for the message. The message's own images
-(`<img src="cid:…">`) are inlined by the server as `data:` URIs, so the
-CSP need not change; `cid:` anywhere else is dropped. Messages without
-an HTML part show their text.
+remote loads, so tracking pixels and remote fonts don't. The message's
+own images (`<img src="cid:…">`) are inlined by the server as `data:`
+URIs; `cid:` anywhere else is dropped. Messages without an HTML part show
+their text.
+
+Remote images are fetched by the server, never by the browser: in the
+sanitized HTML, `http:`, `https:` and scheme-relative URLs of `<img src>`,
+and of CSS `url(…)` in `style` attributes and `<style>` elements, become
+`/api/remote-image?url=<URL>` (other `<img>` sources go). Asked to show
+them, the client lets the frame load images from uplink's origin
+(`img-src data: 'self'`); a sender then learns the server's address, a
+fixed user agent (`Mozilla/5.0 (compatible; uplink)`) and when the mail
+was shown, but nothing of the browser: no client headers, cookies or
+referrer. Remote fonts and stylesheets still don't load. The endpoint
+(behind basic auth) fetches only from public addresses (not loopback,
+private, link-local, shared, multicast or reserved ones, checked as names
+resolve and at each of at most 5 redirects, with no HTTP proxy to resolve
+past the check), so that a mail cannot make the server reach what only
+it can. It serves only `image/*` responses, of at most 16 MB, within
+30 s, with `nosniff`, `Content-Security-Policy: sandbox` (an SVG opened
+as a page runs nothing in uplink's origin) and a day's private caching;
+anything else is a 502.
 
 Mail sees white paper whatever the theme: the frame element has
 `color-scheme: light`, so the frame's `prefers-color-scheme` is light,

@@ -214,17 +214,19 @@ describe('mail', () => {
     expect(focusedSubject()).toBe('Third')
   })
 
-  it('shows an HTML body in a sandbox, remote images only when asked', async () => {
+  it('shows an HTML body in a sandbox, remote images only when asked, through the server', async () => {
     const first = server.deliver('work', 'Newsletter')
-    server.html.set(first.message, '<p>Hello <img src="https://t.example/pixel.gif"></p>')
+    // As the server rewrites it.
+    const html = '<p>Hello <img src="/api/remote-image?url=https%3A%2F%2Ft.example%2Fpixel.gif"></p>'
+    server.html.set(first.message, html)
     const user = await start('/mail/work/INBOX')
     await user.keyboard('{Enter}')
     const frame = (await screen.findByTitle('Message body')) as HTMLIFrameElement
     expect(frame.getAttribute('sandbox')).not.toContain('allow-scripts')
-    expect(frame.srcdoc).toContain('<p>Hello <img src="https://t.example/pixel.gif"></p>')
-    expect(frame.srcdoc).toContain("img-src data:;")
+    expect(frame.srcdoc).toContain(html)
+    expect(frame.srcdoc).toContain('img-src data:;')
     await user.click(screen.getByRole('button', { name: 'Show them' }))
-    expect(frame.srcdoc).toContain('img-src data: https: http:')
+    expect(frame.srcdoc).toContain("img-src data: 'self';")
   })
 
   it('lists the files attached to a message, to download', async () => {

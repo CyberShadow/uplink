@@ -4650,6 +4650,7 @@ dependencies = [
  "mail-builder",
  "mail-parser",
  "rand 0.10.3",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
@@ -4727,6 +4728,7 @@ dependencies = [
  "rust-embed",
  "rustls",
  "rustls-pemfile",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "subtle",
@@ -4745,6 +4747,7 @@ dependencies = [
  "uplink-storage",
  "uplink-todos",
  "uplink-tx-log",
+ "url",
 ]
 
 [[package]]

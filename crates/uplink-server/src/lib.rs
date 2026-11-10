@@ -40,6 +40,9 @@ use uplink_storage::seal::MasterKey;
 use uplink_todos::service::Todos;
 use uplink_tx_log::{Dispatcher, LogReader, Registry, UndoError};
 
+mod remote_image;
+use remote_image::RemoteImages;
+
 /// How far a session may lag the live stream before it is disconnected.
 const HUB_CAPACITY: usize = 4096;
 /// A reconnecting client further behind than this reloads instead.
@@ -55,6 +58,7 @@ struct StaticFiles;
 struct AppState {
     gate: Gate,
     services: Services,
+    remote_images: RemoteImages,
 }
 
 /// Basic auth's check. bcrypt takes about 200 ms by design, and a browser
@@ -275,6 +279,7 @@ pub async fn serve_with_listener(
     let state = AppState {
         gate: Gate::new(basic_auth.clone()),
         services,
+        remote_images: RemoteImages::new(remote_image::public),
     };
 
     let (tx, rx) = tokio::sync::broadcast::channel::<ConfigChanged>(16);
@@ -438,6 +443,10 @@ fn build_app(state: AppState) -> Router {
             post(copy_attachment_handler),
         )
         .route(
+            uplink_email::parse::REMOTE_IMAGE_PATH,
+            get(remote_image_handler),
+        )
+        .route(
             "/api/blobs",
             post(blob_handler).layer(DefaultBodyLimit::max(
                 uplink_email::service::MAX_ATTACHMENTS
@@ -486,6 +495,19 @@ async fn attachment_handler(
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.message).into_response(),
     }
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteImage {
+    url: reqwest::Url,
+}
+
+/// A remote image of a mail's, fetched by the server (SPEC §8.9).
+async fn remote_image_handler(
+    State(state): State<AppState>,
+    extract::Query(RemoteImage { url }): extract::Query<RemoteImage>,
+) -> Response {
+    state.remote_images.get(url).await
 }
 
 /// Stores an uploaded file, to be attached to drafts (SPEC §7.4).
@@ -823,6 +845,7 @@ mod tests {
                 password_bcrypt: TEST_BCRYPT.to_string(),
             })))),
             services: SERVICES.1.clone(),
+            remote_images: RemoteImages::new(remote_image::public),
         }
     }
 

@@ -1,12 +1,14 @@
 // An HTML mail body (SPEC §8.9), already sanitized by the server, shown in
 // a sandboxed frame: no scripts, links open in a new tab, and nothing
-// remote loads (tracking pixels, fonts) unless asked for.
+// remote loads (tracking pixels, fonts). Remote images, which the server
+// fetches in the client's stead, load if asked for.
 
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { keepFocus } from '../keymap'
 import styles from './Mail.module.css'
 
-const REMOTE = /<img[^>]+src=["']?https?:|url\(\s*["']?https?:/i
+/** The server's rewriting of a remote image's URL, to fetch it itself. */
+const REMOTE = /\/api\/remote-image\?url=/
 
 // Mail is shown as for white paper: the frame is in a light colour scheme
 // (Mail.module.css), so that mail with a dark mode of its own, often
@@ -37,7 +39,8 @@ function useDark(): boolean {
 }
 
 function document(html: string, remote: boolean, dark: boolean): string {
-  const images = remote ? 'data: https: http:' : 'data:'
+  // The frame's origin is uplink's, the server's fetches of remote images.
+  const images = remote ? "data: 'self'" : 'data:'
   return `<!doctype html><html${dark ? ' class="dark"' : ''}><head><meta charset="utf-8"><meta name="darkreader-lock">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${images}; style-src 'unsafe-inline'">
 <base target="_blank">
