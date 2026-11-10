@@ -60,9 +60,10 @@ pub fn accounts(
             }),
             None => None,
         };
-        // Per label, so each count is of its own index entries; what Trash
-        // and Spam hide is found once. Conversations are counted, as Gmail
-        // does: an entry without a thread is one by itself.
+        // In one pass over the account's labelled entries; what Trash and
+        // Spam hide, and what is unread, is found once. Conversations are
+        // counted, as Gmail does: an entry without a thread is one by
+        // itself. A label nothing carries has no counts, so zero.
         let conversation = "coalesce(e.thread_id, '#' || e.id)";
         let labels = tx
             .prepare(&format!(
@@ -74,19 +75,22 @@ pub fn accounts(
                  unread AS (
                    SELECT entry FROM entry_label
                    WHERE desired AND label = (SELECT id FROM label
-                                              WHERE account_id = ?1 AND external_id = 'UNREAD'))
+                                              WHERE account_id = ?1 AND external_id = 'UNREAD')),
+                 counts AS (
+                   SELECT el.label,
+                     count(DISTINCT {conversation}) AS total,
+                     count(DISTINCT CASE WHEN el.entry IN (SELECT entry FROM unread)
+                                         THEN {conversation} END) AS unread
+                   FROM label l
+                   JOIN entry_label el ON el.label = l.id AND el.desired
+                   JOIN mail_entry e ON e.id = el.entry
+                   WHERE l.account_id = ?1
+                     AND (l.external_id IN ('TRASH', 'SPAM')
+                          OR el.entry NOT IN (SELECT entry FROM hidden))
+                   GROUP BY el.label)
                  SELECT l.id, l.external_id, l.name, l.system, l.folder,
-                   (SELECT count(DISTINCT {conversation}) FROM entry_label el
-                    JOIN mail_entry e ON e.id = el.entry
-                    WHERE el.label = l.id AND el.desired
-                      AND (l.external_id IN ('TRASH', 'SPAM')
-                           OR el.entry NOT IN (SELECT entry FROM hidden))),
-                   (SELECT count(DISTINCT {conversation}) FROM unread u
-                    JOIN entry_label el ON el.entry = u.entry AND el.label = l.id AND el.desired
-                    JOIN mail_entry e ON e.id = el.entry
-                    WHERE l.external_id IN ('TRASH', 'SPAM')
-                       OR u.entry NOT IN (SELECT entry FROM hidden))
-                 FROM label l
+                   coalesce(c.total, 0), coalesce(c.unread, 0)
+                 FROM label l LEFT JOIN counts c ON c.label = l.id
                  WHERE l.account_id = ?1
                  ORDER BY NOT l.system, l.name",
             ))?

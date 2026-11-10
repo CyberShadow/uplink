@@ -405,7 +405,7 @@ CREATE TABLE mail_entry (
   UNIQUE (account_id, external_id)
 );
 CREATE INDEX mail_entry_by_message ON mail_entry(message);
-CREATE INDEX mail_entry_by_thread ON mail_entry(account_id, thread_id);
+CREATE INDEX mail_entry_by_thread ON mail_entry(account_id, thread_id, received_at, id); -- (V0016)
 
 CREATE TABLE label (
   id           INTEGER PRIMARY KEY,
