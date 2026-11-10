@@ -233,8 +233,8 @@ server:
 # Everything uplink keeps (§4.1), including the master key and tokens.
 data_dir: /var/lib/uplink
 
-# How long sent mail waits in the outbox, during which sending can be
-# undone (§6.7). Default 10.
+# How long sent mail waits in the outbox, during which undoing the send
+# takes it back for sure (§6.7). Default 10.
 send_delay_secs: 10
 
 accounts:
@@ -360,6 +360,8 @@ CREATE TABLE account (
   listing_total INTEGER            -- (V0015) while it is not: the messages
                                    -- the mailbox held as it began (Gmail's
                                    -- profile, Spam and Trash included)
+  push_error  TEXT,                -- (V0018) why pushes are failing, while
+  push_failing_since INTEGER       -- they are (§6.6); unix ms
 );
 
 -- A logical message, identified by its Message-ID across accounts.
@@ -425,12 +427,17 @@ CREATE TABLE label (
 -- starred state are labels too (UNREAD, STARRED). Rows with both 0 are
 -- deleted.
 CREATE TABLE entry_label (
-  entry     INTEGER NOT NULL REFERENCES mail_entry(id) ON DELETE CASCADE,
-  label     INTEGER NOT NULL REFERENCES label(id) ON DELETE CASCADE,
-  desired   INTEGER NOT NULL,
-  observed  INTEGER NOT NULL,
+  entry      INTEGER NOT NULL REFERENCES mail_entry(id) ON DELETE CASCADE,
+  label      INTEGER NOT NULL REFERENCES label(id) ON DELETE CASCADE,
+  desired    INTEGER NOT NULL,
+  observed   INTEGER NOT NULL,
+  -- (V0018) The op that set `desired`, while it differs from `observed`:
+  -- the outbox's item it belongs to; and the provider's refusal of it.
+  desired_by INTEGER REFERENCES tx_log(id),
+  refused    TEXT,
   PRIMARY KEY (entry, label),
-  CHECK (desired OR observed)
+  CHECK (desired OR observed),
+  CHECK ((desired != observed) OR (desired_by IS NULL AND refused IS NULL))
 );
 CREATE INDEX entry_label_by_label ON entry_label(label, entry) WHERE desired;
 CREATE INDEX entry_label_pending ON entry_label(entry) WHERE desired != observed;
@@ -483,14 +490,17 @@ CREATE TABLE matrix_event (
   encryption   TEXT NOT NULL,        -- 'none' | 'decrypted' | 'undecryptable'
   UNIQUE (room, event_id)
 );
-CREATE TABLE matrix_outbox (
+CREATE TABLE matrix_send (     -- (V0018: was matrix_outbox)
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   room         INTEGER NOT NULL REFERENCES matrix_room(id),
   body         TEXT NOT NULL,
   queued_at    INTEGER NOT NULL,
-  state        TEXT NOT NULL,        -- 'queued' | 'sending' | 'sent' | 'failed'
-  error        TEXT,
-  event_id     TEXT                  -- once sent
+  wanted       INTEGER NOT NULL,     -- desired, as mail_send's (§6.7)
+  desired_by   INTEGER NOT NULL REFERENCES tx_log(id),
+  state        TEXT NOT NULL,        -- 'queued' | 'sending' | 'sent' | 'refused'
+  error        TEXT,                 -- set iff refused
+  event_id     TEXT,                 -- once sent
+  synced       INTEGER NOT NULL      -- the event is synced: out of the outbox
 );
 -- Full-text search of Matrix messages is deferred.
 
@@ -550,19 +560,25 @@ CREATE TABLE draft (
   updated_at     INTEGER NOT NULL
 );
 
--- ── outbox (§6.7) ────────────────────────────────────────────────────
+-- ── sends (§6.7) ─────────────────────────────────────────────────────
 -- Mail only; Matrix sends get their own table, as their payload and
 -- reconciler differ. Ids are never reused: log entries refer to them.
-CREATE TABLE mail_outbox (
+-- (V0018: was mail_outbox; sends are kept once synced.)
+CREATE TABLE mail_send (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   account_id     TEXT NOT NULL,
   draft          TEXT NOT NULL,             -- JSON: the draft as sent
   message_id     TEXT NOT NULL UNIQUE,      -- generated when queued
   delay_ms       INTEGER NOT NULL,          -- the send delay queued with
   not_before     INTEGER NOT NULL,          -- unix ms
-  state          TEXT NOT NULL,             -- 'queued' | 'sending' | 'sent' | 'failed'
-  error          TEXT,                      -- set iff failed
-  message        INTEGER REFERENCES message(id) -- set iff sent: the local copy
+  wanted         INTEGER NOT NULL,          -- desired: 0 once cancelled while it can't be taken back
+  desired_by     INTEGER NOT NULL REFERENCES tx_log(id), -- the op that set `wanted`
+  state          TEXT NOT NULL,             -- 'queued' | 'sending' | 'unknown' | 'sent' | 'refused'
+  attempted_at   INTEGER,                   -- unix ms; set iff unknown
+  provider_draft TEXT,                      -- M365: the draft it is sent as (§8.4)
+  error          TEXT,                      -- set iff refused
+  message        INTEGER REFERENCES message(id), -- set iff sent: the local copy
+  synced         INTEGER NOT NULL           -- the provider's copy is observed: out of the outbox
 );
 
 -- ── the log ─────────────────────────────────────────────────────────
@@ -749,14 +765,16 @@ than it buffers is closed; the client reconnects and resumes.
   clients query what they display.
 - **Matrix**: `RoomsChanged { rooms }` (appeared, or name, membership,
   unread count or read marker changed), `TimelineAdded { room, events }`
-  (appended to the timeline), `MatrixOutboxChanged { items }`.
+  (appended to the timeline), `MatrixSendsChanged { sends }`.
 - **Calendar**: `CalendarEventAdded`, `CalendarEventRemoved`,
   `CalendarEventChanged`.
 - **To-dos**: `TodosChanged { todos }` (added, edited or deleted; the
   client lists them again, as it does drafts).
 - **Draft**: `DraftEdited { draft, revision, splice }` (§7.2), and
   `DraftsChanged { drafts }` when drafts are created or deleted.
-- **Outbox**: `OutboxChanged { items }` (added, removed or changed state).
+- **Outbox**: `OutboxChanged { accounts }` — something not yet reconciled
+  in those accounts was added, changed state or went (§6.6); clients
+  showing the outbox ask for it again.
 - **Config**: `ConfigChanged { section }`.
 
 `ClientRequest` variants (MVP):
@@ -783,16 +801,23 @@ than it buffers is closed; the client reconnects and resumes.
   HTML body if there is one (§8.9).
 - `ListRooms` — Matrix accounts and their rooms with unread counts;
   `ListTimeline { room, page, limit }` — the latest events, or those
-  before or after one, oldest first; `ListMatrixOutbox`.
+  before or after one, oldest first; `ListMatrixSends { room }`: its
+  sends not yet synced back, for the end of the timeline.
 - `Undo { tx_log_id }`; `ListHistory { before, limit }` — the user's
   ops, newest first, each with the entry that undid it, if any (§6.3).
-- `ListDrafts`, `ListOutbox` — all drafts; outbox items not yet synced
-  back.
+- `ListDrafts` — all drafts. `ListOutbox` — per account, its push
+  error, if failing, and what is not yet reconciled (§6.6): label changes
+  grouped by the op that made them (its description, the entries left,
+  how many refused, with their reasons), sends, membership changes; each
+  with its state.
 - One request per op kind the client can dispatch, answered with the
   tx_log id: `ModifyLabels { entries, add, remove }` covers archive,
   label, mark read and star; `CreateDraft`, `EditDraft { draft, revision,
-  splice }`, `DeleteDraft`, `SendDraft`, `CancelSend { item }` (§6.7, §7);
-  `SendMatrixMessage { room, body }`, `CancelMatrixSend { item }`,
+  splice }`, `DeleteDraft`, `SendDraft`, `CancelSend { send }`,
+  `KeepSent { send }` (§6.7, §7); `KeepObserved { op }` — a refused
+  change taken back to what the provider has (§6.6);
+  `SendMatrixMessage { room, body }`, `CancelMatrixSend { send }`,
+  `KeepMatrixSent { send }`,
   `MarkRoomRead { room, event }`, `ChangeMembership { room, change }`
   (§9).
 
@@ -874,9 +899,10 @@ overwriting. This is the same conflict as in desired-state sync (§6.6);
 a future UI may let the user pick which version to keep.
 
 Ops change desired state, never provider state directly (§6.6), so every
-inverse is itself just a desired-state change. Whether it can still be
-fulfilled is decided by the op: un-sending is possible only while the
-item is still in the outbox (§6.7).
+inverse is itself just a desired-state change. Whether the provider can
+still be brought in line is the reconciler's to find out, not the
+inverse's to decide: un-sending a message that has gone out is applied,
+and shown in the outbox as irreconcilable until resolved (§6.6, §6.7).
 
 ### 6.3 Undo
 
@@ -929,59 +955,124 @@ changed fields, not bodies), since they are stored.
 Not log entries: read-only queries (search, load message body, load room
 timeline).
 
-### 6.6 Desired state and reconciliation
+### 6.6 Desired state, reconciliation and the outbox
 
-Ops record what the user wants; they do not call providers. State that
-mirrors a provider (labels, flags) is stored twice: *desired* (set by
-ops) and *observed* (set by sync). Each account runs a reconciler task
-that, after every commit touching its state, pushes the differences —
-Gmail `messages.batchModify`, Graph `PATCH`/`move` — and retries with backoff on
-failure. The UI shows desired state immediately, so actions feel instant
-and survive a provider outage.
+Ops record what the user wants; they do not call providers. Everything
+that mirrors a provider is stored twice: *desired* (set by ops) and
+*observed* (set by sync, and by the reconciler as it learns what the
+provider made of a push):
+
+- a mail entry's labels: its labels, folder, read and starred state;
+- whether a mail or a Matrix message is sent (§6.7);
+- a Matrix room's membership (§9.7) and read receipt (§9.5).
+
+Each account runs a reconciler (its sync task) that, after every commit
+touching its state, pushes the differences — Gmail `messages.batchModify`
+and `messages.send`; Graph `PATCH`, `move` and draft `send`; Matrix sends,
+joins, leaves and receipts. The UI shows desired state immediately, so
+actions feel instant and survive a provider outage.
+
+A difference is *pending* until the provider is observed to match. Each
+records the op that made it (`desired_by`), so that it can be told in
+the user's terms. A push ends one of four ways:
+
+- **done**: the provider matches; the difference is gone;
+- **not done, for a passing reason** (connection refused, 5xx, 429, token
+  refresh): still pending, retried with the task's backoff. The account
+  records, as an observation, when its pushes start failing (with the
+  error) and when they recover, not each retry;
+- **refused** by the provider (4xx other than for rate): the difference
+  is marked refused, with the provider's reason, and not retried; the
+  rest are pushed regardless (a refused batch is split until the
+  differences it refused are found);
+- **outcome unknown** (a timeout, the process stopped mid-request):
+  still pending. A push states what should be, not a step to take, so
+  it is pushed again: harmlessly for labels, receipts and membership,
+  and, for sends, only once the provider has been observed not to have
+  the message (§6.7).
+
+A difference that can't be reconciled is *irreconcilable*: one refused,
+or one asking for what no push can do, such as un-sending a message that
+has gone out. It stays until the user resolves it by changing desired
+state, usually to the observed ("keep Gmail's", "keep it sent"), with an
+op that is logged and undoable like any other; or otherwise (a refused
+send's draft fixed and sent again). Undo is therefore never refused for
+the provider's sake: what it asks of the provider is reconciled or
+shown, like everything else. (Undo refuses only conflicts in uplink's
+own state, §6.2.)
 
 When sync observes a remote change:
 
 - if there is no pending local change for that field, desired follows
   observed (the remote change wins);
 - if there is, the local change wins and is pushed. Surfacing such
-  conflicts to the user is deferred, together with undo conflicts (§6.2).
+  conflicts to the user is deferred, together with undo conflicts (§6.2);
+- an entry the provider deleted takes its pending changes with it: there
+  is nothing left for them to apply to.
 
-### 6.7 Outbox: actions that can't be taken back
+**The outbox** (`/outbox`) shows everything not yet reconciled: per
+account, the ops whose desired state the provider does not reflect yet,
+newest first, each with what is left of it ("Archived 214
+conversations: 180 to go") and its state: waiting (a send's delay),
+being pushed, retrying (with the account's error, and since when), or
+needing a decision (refused or irreconcilable: the reason, and the
+actions that resolve it). Each has its Undo. Sends are listed until the
+provider's copy is synced (§8.6), so a sent mail stays until it is in
+Sent. The nav shows the outbox's count, and marks it while an account's
+pushes are failing or something needs a decision. An empty outbox means
+the providers, as last observed, match what the user has done.
 
-Sending mail or a Matrix message is a desired state that can only be
-fulfilled once. `mail.send` / `matrix.send` move the message into the
-outbox; the account's reconciler performs the send once `not_before`
-has passed. The inverse (`mail.cancel_send`, also an op of its own) takes
-the item back out, returning a mail to its draft, and succeeds only while
-the item is `queued` or `failed`; afterwards undo refuses ("being sent",
-"was sent"). The send delay (`send_delay_secs`, default 10) therefore
-gives a reliable undo-send window. Sends stay in `tx_log` like any other
-op.
+### 6.7 Sends: desired state fulfilled once
 
-The reconciler (the account's sync task) *claims* a due item before
-handing it to the provider, recording it as `sending` (an observation
-refused if the item is no longer queued), so a cancel and a send can't
-both win. Then:
+Sending mail or a Matrix message is desired state like any other: that
+the message be sent from the account. It differs in how it is fulfilled:
+once, by the provider accepting the message, after which nothing undoes
+it.
 
-- accepted: recorded `sent` with the message as sent (§8.6);
-- refused by the provider (4xx), or unbuildable (bad addresses): `failed`,
-  with the reason; cancelling returns the draft for fixing;
-- not sent for a passing reason (connection refused, 5xx, 429, token
-  refresh): back to `queued`, retried with the task's backoff;
-- interrupted after the request went out (timeout, process killed while
-  `sending`): `failed` as "may have been sent", never retried, since a
-  duplicate is worse than asking.
+`mail.send` (`SendDraft`) turns the draft into a send (`mail_send`),
+wanted, with a Message-ID chosen there and then and `not_before` the
+send delay (`send_delay_secs`, default 10) away; the draft leaves Drafts.
+Its inverse, `mail.cancel_send` (also an op of its own, `CancelSend`),
+makes the send unwanted, and is never refused:
 
-The outbox lists queued, failed and sent items until the provider's copy
-of a sent one is synced, when the item is deleted: from then on it is
-mail like any other.
+- before the reconciler has claimed the send, it is fulfilled at once:
+  the send goes, and the draft is back. The send delay is therefore a
+  reliable undo-send window;
+- once claimed (`sending`, the push in flight) or sent, it is a pending
+  difference that only the provider's refusal fulfils (then the draft is
+  back). If the message went out, it is irreconcilable ("sent before the
+  undo"), resolved by keeping it sent (`mail.keep_sent`), which makes the
+  send wanted again; the draft stays gone.
+
+Sends are kept once sent, rather than deleted when synced, so undoing an
+old send is shown the same way.
+
+The reconciler claims a due send before handing it to the provider, so
+that a cancel knows whether it can still be fulfilled locally. Then:
+
+- accepted: `sent`, with the message as sent (§8.6);
+- refused (4xx), or unbuildable (bad addresses): `refused`, with the
+  reason; it needs a decision, and cancelling (the draft back for
+  fixing) is fulfilled at once, as the provider has nothing;
+- not sent for a passing reason: back to `queued`, retried with backoff;
+- outcome unknown (a timeout; the process stopped while `sending`):
+  `unknown`, until the provider is observed:
+  - Gmail files the sent copy in accepting `messages.send`, so a sync
+    completed after the attempt tells: the Message-ID's copy in Sent
+    means `sent`; none means it did not go out, and it is queued again;
+  - Graph sends a draft created first, by its id (§8.4): reading that
+    draft tells, at once.
+
+SMTP and Gmail's `messages.send` take no idempotency key (RFC 1047
+describes the duplicate a lost acknowledgement causes); observing the
+outcome, by the Message-ID or the draft, is what makes a retry safe.
 
 Matrix messages (§9.3) differ in two ways. They have no send delay, since
-chat expects immediacy: undo cancels one only until the task claims it.
-And since the homeserver deduplicates a transaction id, a message is sent
-again rather than failed when the outcome is unknown or the task was
-interrupted; only a refusal fails it. Showing queued items in Sent / the room timeline as
-a local echo is deferred; the outbox view stands in for it.
+chat expects immediacy: a cancel is fulfilled at once only until the
+task claims the message. And the homeserver deduplicates a transaction
+id, so a message whose outcome is unknown is simply sent again. Showing
+queued items in Sent / the room timeline as a local echo is deferred;
+the outbox stands in for it.
 
 ---
 
@@ -1076,7 +1167,7 @@ of its text: attaching and detaching leave the revision as it is, so they
 never conflict with edits in flight, and they announce themselves with
 `DraftsChanged`, upon which tabs reload the drafts. Discarding, sending
 and undoing either take the attachments along (`PutDraft` and the
-outbox's copy of the draft include them). Blobs are never deleted: log
+send's copy of the draft include them). Blobs are never deleted: log
 entries refer to them, as they do to mail.
 
 The server refuses names that are empty or contain control characters,
@@ -1264,13 +1355,23 @@ IMAP's per-folder copies, and a REST fake is practical to test against
 
 ### 8.4 M365 — send
 
-- **Transport**: `POST /me/sendMail` with the RFC 5322 message we built
-  (base64 MIME, `Content-Type: text/plain`), so our Message-ID is kept
-  and the provider's copy in Sent Items becomes a variant of the same
-  logical message. Graph threads by the headers; there is no thread id
-  to pass. Message-ID preservation is confirmed against the emulator
-  only (§15.12). Graph takes MIME messages of up to 4 MB this way;
-  larger attachments would need an upload session (not done).
+- **Transport**: in two steps, each safe to repeat (§6.7). First the
+  RFC 5322 message we built becomes a draft: `POST /me/messages` (base64
+  MIME, `Content-Type: text/plain`), whose id is recorded on the send
+  (`provider_draft`); repeating this step after an unknown outcome first
+  looks in Drafts for our Message-ID (`$filter=internetMessageId eq …`).
+  Then `POST /me/messages/{id}/send` sends that draft. Ids are immutable
+  (§8.3), so the draft keeps its id as Graph files it in Sent Items, and
+  an unknown outcome is settled by reading it: still a draft (`isDraft`),
+  it is sent again; in Sent Items, it went out; gone, the send is
+  refused (deleted elsewhere). Our Message-ID is kept, so the copy in
+  Sent Items becomes a variant of the same logical message. Graph
+  threads by the headers; there is no thread id to pass. The draft
+  shows in Outlook's Drafts until sent; sync takes it for a draft, not
+  for the send's copy, which is the one in Sent Items. Graph takes MIME
+  messages of up to 4 MB this way; larger attachments would be added to
+  the draft by an upload session (not done). Verified against the
+  emulator only (§15.12).
 - **OAuth scope required**: `Mail.Send`.
 
 ### 8.5 Compose
@@ -1293,18 +1394,20 @@ IMAP's per-folder copies, and a REST fake is practical to test against
 
 ### 8.6 Persistence of sent mail
 
-When the reconciler sends an outbox item:
+When the reconciler sends a mail (§6.7):
 
 1. Persist the assembled RFC 5322 bytes as a variant (source: the
    account), creating the logical message (its Message-ID is the one we
    generated).
-2. Mark the outbox item `sent` and broadcast.
+2. Mark the send `sent` and broadcast.
 
 Next sync pass, the provider's Sent copy is observed. It has the same
 Message-ID but different bytes (the provider adds headers), so it is
 stored as a second variant of the same message, and the message gains its
-`mail_entry` for the account; the outbox item is then deleted. (emulate
-stores the bytes as sent, so there it is the same variant.)
+`mail_entry` for the account; the send is then `synced`, and leaves the
+outbox. (emulate stores the bytes as sent, so there it is the same
+variant.) The same observation settles a send whose outcome was unknown
+(§6.7): its Message-ID's copy in Sent means it went out.
 
 ### 8.7 Body extraction & FTS
 
@@ -1468,15 +1571,16 @@ retrying them is deferred.
 ### 9.3 Sending
 
 `matrix.send` (`SendMatrixMessage`) queues a plain-text message in
-`matrix_outbox`; the room's timeline shows it at the end, with its state,
-until it is synced back. The sending loop claims a message (`sending`,
-refused if no longer queued, so an undo and a send can't both win) and
-sends it with transaction id `uplink-<id>`:
+`matrix_send`, wanted (§6.7); the room's timeline shows it at the end,
+with its state, until it is synced back. The sending loop claims a
+message (`sending`, so that a cancel knows it can no longer be fulfilled
+at once) and sends it with transaction id `uplink-<id>`:
 
-- accepted: `sent`, with its event id; deleted once that event is synced
-  (or at once, if sync delivered it first);
-- refused (4xx other than 429): `failed`, with the homeserver's reason;
-  it can be cancelled (`CancelMatrixSend`);
+- accepted: `sent`, with its event id; `synced` once that event is synced
+  (or at once, if sync delivered it first). If it was cancelled
+  meanwhile, it is irreconcilable until kept (`KeepMatrixSent`);
+- refused (4xx other than 429): `refused`, with the homeserver's reason;
+  it needs a decision, and cancelling (`CancelMatrixSend`) drops it;
 - anything else, including a send interrupted by a restart: queued
   again and retried with backoff — the homeserver deduplicates the
   transaction id, so a retry cannot duplicate the message.
@@ -1532,9 +1636,11 @@ Membership is desired state (§6.6). `ChangeMembership { room, change }`
 (join an invitation; leave a room, or decline an invitation) records
 `matrix_room.desired`; the account's sender loop asks the homeserver
 (`join_room_by_id`, `Room::leave`) and records the outcome as an
-observation: the membership, or the refusal in `membership_error`. Sync
-also clears `desired` once it sees that membership, however it came
-about. Rooms left are not listed, unless being joined again.
+observation: the membership, or the refusal in `membership_error`, which
+puts it in the outbox as needing a decision (§6.6): keeping the
+membership as it is clears `desired`. Sync also clears `desired` once
+it sees that membership, however it came about. Rooms left are not
+listed, unless being joined again.
 
 Undo goes back to how the room was, as far as possible: a change not yet
 made is cancelled; one made is reversed (a joined room is left; a room
@@ -1686,7 +1792,7 @@ src/views/
 ├── Icon.tsx               # the Lucide icons used, vendored (ISC)
 ├── LabelPicker.tsx
 ├── Compose.tsx            # TipTap-backed, lazily loaded
-├── Outgoing.tsx           # drafts and the mail outbox
+├── Outgoing.tsx           # drafts and the outbox (§6.6)
 ├── Room.tsx               # a Matrix room: timeline and composer
 ├── Todos.tsx              # the to-do list
 ├── History.tsx            # the user's ops, with Undo
@@ -1771,7 +1877,8 @@ connection; an op is failed, since it may have been applied (the log will
 show it), except draft creation and edits, which can't apply twice
 (§7.2). The last op dispatched from the tab is shown with an Undo button.
 Drafts apply their edits locally and reload on creation and deletion; the
-outbox reloads on any change.
+outbox, while shown, reloads on `OutboxChanged`, and the nav's count of it
+with it.
 
 Lists are not virtualized yet: pages of 100 load as the focus or scroll
 nears the end; a reload re-reads up to 500. `@tanstack/react-virtual`
@@ -2317,10 +2424,17 @@ README install steps.
 
 ### 15.9 Irreversible external actions
 
-**Decision**: sending is an outbox op (§6.7): logged like everything else,
-undoable until performed, refused afterwards. Matrix redaction as an
-"undo" after sending is best-effort at most (recipients may already have
-the plaintext); if wanted, it would be an explicit action of its own.
+**Decision** (revised 2026-11-10): sending is desired state like any other
+(§6.6, §6.7), reconciled by the same task and shown in the same outbox
+as label, membership and receipt changes. Undoing a send is never
+refused: before the send is claimed it takes the mail back; afterwards,
+if it went out, it is irreconcilable and the user keeps it sent. A retry
+after an unknown outcome is made safe by observing the Message-ID in
+Sent, not by refusing to retry. (Before: the outbox held sends only,
+label changes were pushed unseen, and undo refused a sent mail.)
+Matrix redaction as an "undo" after sending is best-effort at most
+(recipients may already have the plaintext); if wanted, it would be an
+explicit action of its own.
 
 ### 15.10 Test infrastructure
 
@@ -2475,7 +2589,9 @@ token endpoint wants anything more), the immutable-id `Prefer` header
 together with `odata.maxpagesize`, `$select` on delta queries, whether
 Graph's real delta pages report a move as a removal from one folder and
 an addition to another (as the emulator does) and flags, importance and
-category changes as updates, `sendMail` keeping our Message-ID, and the
+category changes as updates, a draft created from MIME keeping our
+Message-ID and its immutable id when sent, what `send` answers for a
+draft already sent or being sent, and the
 throttling of polling every folder every 30 s; for the calendar, that
 calendar view delta expands series and reports exceptions and cancelled
 occurrences as the emulator does, how long its delta links last, and
@@ -2554,7 +2670,7 @@ visible. Routes (handled by `preact-iso`):
 | `/search/:terms/:entry`                | A conversation, within the results     |
 | `/message/:message`                    | A message's conversation (from a to-do) |
 | `/compose/:draft`                      | Compose (new or continued draft)       |
-| `/drafts`, `/outbox`                   | Drafts; mail being sent                |
+| `/drafts`, `/outbox`                   | Drafts; what is not yet at the providers (§6.6) |
 | `/rooms/:room`                         | Room timeline (uplink's room id)       |
 | `/matrix/:account/space/:space`        | Space overview (deferred)              |
 | `/calendar/:view/:date`                | Calendar, `week` or `agenda` (§10.2)   |
