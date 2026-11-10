@@ -1328,11 +1328,16 @@ asks to show remote images for the message. The message's own images
 CSP need not change; `cid:` anywhere else is dropped. Messages without
 an HTML part show their text.
 
-In a dark theme, the frame's page is inverted with its hues kept
+Mail sees white paper whatever the theme: the frame element has
+`color-scheme: light`, so the frame's `prefers-color-scheme` is light,
+and mail with a dark mode of its own (often partial: dark text turned
+light on backgrounds it leaves light) keeps to its light one. In a dark
+theme (the parent's `prefers-color-scheme`, as a class on the frame's
+root), the frame's page is then inverted with its hues kept
 (`filter: invert(1) hue-rotate(180deg)`, as Dark Reader's filter mode),
 and its images, videos and background images inverted back: mail is
 written for white paper, and whatever colours it sets become their dark
-counterparts. Mail designed dark comes out light. Pictures come out a
+counterparts. Mail designed only dark comes out light. Pictures come out a
 little muted: the filter is not exactly undone. The page and the frame
 carry `<meta name="darkreader-lock">`, so that the Dark Reader browser
 extension, which a user may keep for other sites, does not darken them

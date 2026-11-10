@@ -272,8 +272,10 @@
   color: var(--muted);
 }
 
-/* The frame's document has its own background (HtmlBody.tsx). */
+/* The frame's document has its own background, and is in a light colour
+   scheme: mail sees white paper, whatever the theme (HtmlBody.tsx). */
 .html {
+  color-scheme: light;
   display: block;
   width: 100%;
   border: none;
