@@ -6,7 +6,8 @@ import { keepFocus, useKeymap } from '../keymap'
 import { conversationKey, hasEntry, threadOf, type MailStore, type Thread, type View } from '../stores/mail'
 import { respond, type Response } from '../compose/reply'
 import { allMailPath, inboxPath, mailPath, searchPath } from './App'
-import { HtmlBody } from './HtmlBody'
+import { HtmlBody, QuoteToggle } from './HtmlBody'
+import { forwards, splitText } from './quote'
 import { LabelPicker, MovePicker } from './LabelPicker'
 import { composePath } from './Outgoing'
 import { messagePath } from './Todos'
@@ -410,13 +411,26 @@ function ConversationMessage(props: { mail: MailStore; entry: Entry; expanded: b
             </dl>
             <Attachments message={content} />
             {content.body_html === null ? (
-              <pre class={styles.body}>{content.body_text}</pre>
+              <TextBody text={content.body_text} fold={!forwards(content.subject)} />
             ) : (
-              <HtmlBody html={content.body_html} />
+              <HtmlBody html={content.body_html} fold={!forwards(content.subject)} />
             )}
           </>
         ))}
     </section>
+  )
+}
+
+/** A plain-text body; `fold`: as `HtmlBody`'s. */
+function TextBody(props: { text: string; fold: boolean }) {
+  const [shown, setShown] = useState(false)
+  const [written, quote] = props.fold ? splitText(props.text) : [props.text, null]
+  return (
+    <>
+      <pre class={styles.body}>{written}</pre>
+      {quote !== null && <QuoteToggle shown={shown} toggle={() => setShown(!shown)} />}
+      {quote !== null && shown && <pre class={styles.body}>{quote}</pre>}
+    </>
   )
 }
 

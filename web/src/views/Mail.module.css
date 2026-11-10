@@ -282,6 +282,21 @@
   border-radius: 4px;
 }
 
+/* Gmail's "•••": a small pill. */
+.quoteToggle {
+  display: block;
+  margin: 4px 0;
+  padding: 0 8px;
+  border: none;
+  border-radius: 6px;
+  background: var(--line);
+  color: inherit;
+  font-size: 10px;
+  line-height: 14px;
+  letter-spacing: 1px;
+  cursor: pointer;
+}
+
 .remote {
   margin: 0 0 8px;
   color: var(--muted);

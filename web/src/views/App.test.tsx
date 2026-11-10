@@ -232,6 +232,39 @@ describe('mail', () => {
     expect(frame.srcdoc).toContain(`img-src data: ${location.origin};`)
   })
 
+  it("folds the quote of the mail answered, as Gmail does, but not a forward's", async () => {
+    const reply = server.deliver('work', 'Re: Lunch')
+    server.html.set(reply.message, '<p>Yes.</p><p>On Mon, Alice wrote:</p><blockquote>Lunch?</blockquote>')
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('{Enter}')
+    const frame = (await screen.findByTitle('Message body')) as HTMLIFrameElement
+    expect(frame.srcdoc).toContain('<div class="uplink-quote"><p>On Mon, Alice wrote:</p><blockquote>Lunch?</blockquote></div>')
+    expect(frame.srcdoc).toContain('<html class="">')
+    await user.click(screen.getByRole('button', { name: 'Show trimmed content' }))
+    expect(frame.srcdoc).toContain('<html class="quote">')
+    expect(screen.getByRole('button', { name: 'Hide trimmed content' }).getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('folds the quote of a plain-text message', async () => {
+    const reply = server.deliver('work', 'Re: Lunch')
+    server.text.set(reply.message, 'Yes.\n\nOn Mon, Alice wrote:\n> Lunch?')
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('{Enter}')
+    await screen.findByText('Yes.')
+    expect(screen.queryByText(/Lunch\?/)).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Show trimmed content' }))
+    expect(screen.getByText(/> Lunch\?/)).toBeTruthy()
+  })
+
+  it('shows a forward whole', async () => {
+    const forward = server.deliver('work', 'Fwd: Lunch')
+    server.text.set(forward.message, 'See below.\n\nOn Mon, Alice wrote:\n> Lunch?')
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('{Enter}')
+    await screen.findByText(/> Lunch\?/)
+    expect(screen.queryByRole('button', { name: 'Show trimmed content' })).toBeNull()
+  })
+
   it('lists the files attached to a message, to download', async () => {
     const first = server.deliver('work', 'With files')
     server.attachments.set(first.message, [

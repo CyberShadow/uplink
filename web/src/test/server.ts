@@ -260,6 +260,7 @@ export class FakeServer implements Requester, Blobs {
 
   /** HTML bodies by message, for messages that have one. */
   readonly html = new Map<number, string>()
+  readonly text = new Map<number, string>()
   /** Attachments by message, for messages that have some. */
   readonly attachments = new Map<number, Attachment[]>()
 
@@ -352,7 +353,7 @@ export class FakeServer implements Requester, Blobs {
             to_addrs: [`${entry.account}@example.com`],
             cc_addrs: [],
             date_sent: entry.received_at / 1000,
-            body_text: `Body of ${entry.subject}`,
+            body_text: this.text.get(entry.message) ?? `Body of ${entry.subject}`,
             body_html: this.html.get(entry.message) ?? null,
             attachments: this.attachments.get(entry.message) ?? [],
           },

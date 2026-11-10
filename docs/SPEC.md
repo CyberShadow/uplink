@@ -1797,6 +1797,22 @@ latest expanded (a header toggles one); opening it reads them all, and
 replying, forwarding and flagging (`Shift+t`, or unflagging the flagged
 ones) take the latest.
 
+A message's quote of the mail it answers is folded away, as Gmail's
+"•••" does (`web/src/views/quote.ts`): from its first mark on, if only
+quote follows it (a quote answered in between stays, as does a message
+of nothing but quote). Marks in HTML: Gmail's `.gmail_quote`, Yahoo's
+`.yahoo_quoted`, any `<blockquote>` (with the attribution before it: an
+element ending "wrote:", in a few languages, or Thunderbird's
+`.moz-cite-prefix`), and Outlook's header of the original
+(`#divRplyFwdMsg`, `#appendonsend`, or a top-ruled box starting
+"From:", with the `<hr>` above it), from which all the rest goes. In
+plain text: a trailing run of `>` lines with its attribution, or
+Outlook's `-----Original Message-----` or underscore rule. Forwards
+(subject `Fwd:` or `Fw:`) show whole. The HTML is folded in an inert
+`<template>`, moving the quote into an element the frame's style hides;
+the toggle, below the frame (which runs no scripts), reloads it with the
+quote shown, and the frame is fitted to its root's box again.
+
 ### 12.9 Look
 
 Gmail's, in light and dark (as the system is). Conversation rows: a
