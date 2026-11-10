@@ -1797,6 +1797,17 @@ latest expanded (a header toggles one); opening it reads them all, and
 replying, forwarding and flagging (`Shift+t`, or unflagging the flagged
 ones) take the latest.
 
+Not only by keyboard (for touch, too), as Gmail has them: below the
+conversation, Reply to all, Reply and Forward, on the latest; on an
+expanded message, by its date, Reply and a menu (⋮) of Reply, Reply to
+all and Forward, on that message; Delete this message and Mark unread
+from here (that message and those after it; the conversation is left,
+as opening it would read them again); and Report spam, unless it is
+spam. Deleting or reporting one message of several reopens the
+conversation by a message that stays, since the path names one of its
+entries; the last one leaves it. Escape, or a click elsewhere, closes
+the menu.
+
 A message's quote of the mail it answers is folded away, as Gmail's
 "•••" does (`web/src/views/quote.ts`): from its first mark on, if only
 quote follows it (a quote answered in between stays, as does a message

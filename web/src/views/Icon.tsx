@@ -38,6 +38,11 @@ const SHAPES = {
   'chevron-right': [['path', { d: 'm9 18 6-6-6-6' }]],
   'chevron-down': [['path', { d: 'm6 9 6 6 6-6' }]],
   'chevrons-right': [['path', { d: 'm6 17 5-5-5-5' }], ['path', { d: 'm13 17 5-5-5-5' }]],
+  'reply': [['path', { d: 'M20 18v-2a4 4 0 0 0-4-4H4' }], ['path', { d: 'm9 17-5-5 5-5' }]],
+  'reply-all': [['path', { d: 'm12 17-5-5 5-5' }], ['path', { d: 'M22 18v-2a4 4 0 0 0-4-4H7' }], ['path', { d: 'm7 17-5-5 5-5' }]],
+  'forward': [['path', { d: 'm15 17 5-5-5-5' }], ['path', { d: 'M4 18v-2a4 4 0 0 1 4-4h12' }]],
+  'mail': [['path', { d: 'm22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7' }], ['rect', { x: '2', y: '4', width: '20', height: '16', rx: '2' }]],
+  'ellipsis-vertical': [['circle', { cx: '12', cy: '12', r: '1' }], ['circle', { cx: '12', cy: '5', r: '1' }], ['circle', { cx: '12', cy: '19', r: '1' }]],
 } satisfies Record<string, Shape[]>
 
 export type IconName = keyof typeof SHAPES

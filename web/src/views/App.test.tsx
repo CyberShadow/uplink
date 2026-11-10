@@ -160,6 +160,63 @@ describe('mail', () => {
       const draft = server.requests.find((r) => r.type === 'create_draft')!
       expect(draft).toMatchObject({ in_reply_to: last.message })
     })
+
+    describe('actions by pointer', () => {
+      const conversation = async () => {
+        const [first, second, last] = thread()
+        const user = await start('/mail/work/INBOX')
+        await user.keyboard('{Enter}')
+        const messages = within(await screen.findByRole('list', { name: 'Conversation' })).getAllByRole('listitem')
+        await screen.findByText('Body of Re: Plans')
+        return { user, messages, first, second, last }
+      }
+      const created = () => server.requests.filter((r) => r.type === 'create_draft')
+
+      it('replies, to all, and forwards from the bar below the conversation, taking the latest', async () => {
+        const { user, last } = await conversation()
+        await user.click(screen.getByRole('button', { name: 'Reply to all' }))
+        await waitFor(() => expect(created()).toHaveLength(1))
+        expect(created()[0]).toMatchObject({ in_reply_to: last.message })
+      })
+
+      it("answers an earlier message from its own tools and menu", async () => {
+        const { user, messages, first } = await conversation()
+        await user.click(messages[0].querySelector('header')!)
+        await screen.findByText('Body of Plans')
+        const tools = within(messages[0])
+        await user.click(tools.getByRole('button', { name: 'Reply' }))
+        await waitFor(() => expect(created()).toHaveLength(1))
+        expect(created()[0]).toMatchObject({ in_reply_to: first.message })
+      })
+
+      it('deletes one message, and marks unread from one on, leaving the conversation', async () => {
+        const { user, messages, first, second, last } = await conversation()
+        const trash = server.labelId('work', 'TRASH')
+        const unread = server.labelId('work', 'UNREAD')
+        await user.click(within(messages[2]).getByRole('button', { name: 'More' }))
+        expect(screen.getByRole('menu', { name: 'More' })).toBeTruthy()
+        await user.click(screen.getByRole('menuitem', { name: 'Delete this message' }))
+        await waitFor(() => expect(server.labelsOf(last.id)).toContain(trash))
+        expect(server.labelsOf(first.id)).not.toContain(trash)
+        expect(screen.queryByRole('menu')).toBeNull()
+        // It leaves the view; the user's reply is the latest, expanded.
+        const left = () => within(screen.getByRole('list', { name: 'Conversation' })).getAllByRole('listitem')
+        await waitFor(() => expect(left()).toHaveLength(2))
+        await user.click(await within(left()[1]).findByRole('button', { name: 'More' }))
+        await user.click(screen.getByRole('menuitem', { name: 'Mark unread from here' }))
+        await waitFor(() => expect(server.labelsOf(second.id)).toContain(unread))
+        expect(server.labelsOf(first.id)).not.toContain(unread)
+        await screen.findByRole('list', { name: 'Messages' })
+      })
+
+      it('closes the menu on Escape', async () => {
+        const { user, messages } = await conversation()
+        await user.click(within(messages[2]).getByRole('button', { name: 'More' }))
+        await user.keyboard('{Escape}')
+        expect(screen.queryByRole('menu')).toBeNull()
+        expect(screen.getByRole('list', { name: 'Conversation' })).toBeTruthy()
+      })
+    })
   })
 
   it('keeps moving while j or k is held, but archives once while e is', async () => {

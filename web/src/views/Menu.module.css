@@ -1,0 +1,59 @@
+.root {
+  position: relative;
+  display: inline-flex;
+}
+
+.button {
+  display: inline-flex;
+  padding: 4px;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.button:hover,
+.button[aria-expanded='true'] {
+  color: var(--fg);
+  background: var(--hover);
+}
+
+.menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 10;
+  min-width: 220px;
+  margin: 4px 0 0;
+  padding: 8px 0;
+  list-style: none;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  box-shadow: 0 2px 6px rgb(0 0 0 / 30%);
+  white-space: nowrap;
+}
+
+.menu button {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  padding: 6px 16px;
+  border: none;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu button:hover {
+  background: var(--hover);
+}
+
+.separator {
+  margin: 8px 0;
+  border-top: 1px solid var(--line);
+}

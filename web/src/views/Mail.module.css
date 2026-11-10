@@ -81,9 +81,17 @@
   white-space: nowrap;
 }
 
+/* The sender gives way to the date and tools, as on a phone. */
 .messageHeader .from {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-weight: 600;
+}
+
+.messageHeader > :is(.date, .star, .messageTools) {
+  flex: none;
 }
 
 .messageHeader .snippet {
@@ -98,6 +106,52 @@
 
 .expanded {
   padding-bottom: 16px;
+}
+
+.messageTools {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.messageTools > button {
+  display: inline-flex;
+  padding: 4px;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.messageTools > button:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+
+/* Gmail's bar below the last message: outlined pills. */
+.responses {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 16px 0;
+}
+
+.responses button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px 6px 12px;
+  border: 1px solid var(--muted);
+  border-radius: 18px;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+.responses button:hover {
+  background: var(--hover);
 }
 
 .snippet {
@@ -256,8 +310,10 @@
 }
 
 .headers dd {
+  min-width: 0;
   margin: 0;
   color: var(--fg);
+  overflow-wrap: anywhere;
 }
 
 .body {

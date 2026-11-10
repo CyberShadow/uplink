@@ -536,6 +536,15 @@ export class MailStore {
     return this.modify(latest(threads), (account) => ({ add: [unread(account)], remove: [] }), quiet)
   }
 
+  /** Marks the thread's entries unread from `entry` on, as Gmail's "Mark
+   * unread from here" does. */
+  markUnreadFrom(thread: Thread, entry: EntryId) {
+    const items = all([thread])
+    const from = items.findIndex((e) => e.id === entry)
+    const unread = (account: string) => this.systemLabel(account, 'UNREAD').id
+    return this.modify(items.slice(from), (account) => ({ add: [unread(account)], remove: [] }))
+  }
+
   /** If every thread has a star, unstars them all; else stars the latest
    * entry of those without. */
   toggleStar(threads: Thread[]) {

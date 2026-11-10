@@ -7,6 +7,7 @@ import { conversationKey, hasEntry, threadOf, type MailStore, type Thread, type 
 import { respond, type Response } from '../compose/reply'
 import { allMailPath, inboxPath, mailPath, searchPath } from './App'
 import { HtmlBody, QuoteToggle } from './HtmlBody'
+import { MenuButton } from './Menu'
 import { forwards, splitText } from './quote'
 import { LabelPicker, MovePicker } from './LabelPicker'
 import { composePath } from './Outgoing'
@@ -180,7 +181,15 @@ export function Mail(props: Props) {
       {openId === null ? (
         <MessageList mail={mail} open={open} />
       ) : openThread ? (
-        <ConversationView key={conversationKey(opened!)} mail={mail} thread={openThread} entries={shown!} />
+        <ConversationView
+          key={conversationKey(opened!)}
+          mail={mail}
+          thread={openThread}
+          entries={shown!}
+          back={backToList}
+          // The path names an entry of it, which may be the one leaving.
+          reopen={(entry) => route(pathFor(entry), true)}
+        />
       ) : (
         <p class={styles.placeholder}>
           {list?.loaded && !opened ? 'This conversation is not in the list.' : 'Loading…'}
@@ -304,23 +313,58 @@ export function senders(list: Sender[], own: string): string {
 
 /** The conversation open: its messages oldest first, the unread ones and
  * the latest expanded. */
-function ConversationView(props: { mail: MailStore; thread: Thread; entries: Entry[] }) {
-  const { mail, thread, entries } = props
+function ConversationView(props: {
+  mail: MailStore
+  thread: Thread
+  entries: Entry[]
+  back: () => void
+  reopen: (entry: EntryId) => void
+}) {
+  const { mail, thread, entries, back, reopen } = props
   const { drafts, todos } = useServices()
   const { route } = useLocation()
   const latest = entries.at(-1)!
 
-  const responder = (kind: Response) => async () => {
-    const content = await mail.loadMessage(latest.message)
+  const responder = (kind: Response, entry: Entry) => async () => {
+    const content = await mail.loadMessage(entry.message)
     if (!content) return
-    const own = mail.accounts.value?.find((a) => a.id === latest.account)?.address ?? ''
+    const own = mail.accounts.value?.find((a) => a.id === entry.account)?.address ?? ''
     const draft = respond(kind, content, own)
-    const id = await drafts.create(latest.account, draft.content, draft.inReplyTo)
+    const id = await drafts.create(entry.account, draft.content, draft.inReplyTo)
     if (!id) return
     route(composePath(id))
     if (kind === 'forward') await drafts.attachForwarded(id, content)
   }
-  useKeymap({ reply: responder('reply'), replyAll: responder('replyAll'), forward: responder('forward') })
+  useKeymap({
+    reply: responder('reply', latest),
+    replyAll: responder('replyAll', latest),
+    forward: responder('forward', latest),
+  })
+
+  // A message's own actions, from its menu. Those that take it out of the
+  // view leave the conversation if it was all the view had, and else
+  // reopen it by a message that stays.
+  const actions = (entry: Entry): MessageActions => {
+    const alone: Thread = { account: entry.account, subject: entry.subject, entries: [entry] }
+    const leaving = (action: () => void) => () => {
+      action()
+      const staying = entries.filter((e) => e !== entry)
+      if (staying.length === 0) back()
+      else reopen(staying.at(-1)!.id)
+    }
+    return {
+      reply: responder('reply', entry),
+      replyAll: responder('replyAll', entry),
+      forward: responder('forward', entry),
+      trash: leaving(() => mail.trash([alone])),
+      // Opening reads it: unread, the conversation is left, as Gmail does.
+      markUnreadFrom: () => {
+        mail.markUnreadFrom(thread, entry.id)
+        back()
+      },
+      spam: mail.having(alone, 'SPAM') ? null : leaving(() => mail.toggleSpam([alone])),
+    }
+  }
 
   // Opening a conversation reads it, and so does mail arriving in it. The
   // thread is made anew each render; whether it is unread is the change.
@@ -356,18 +400,50 @@ function ConversationView(props: { mail: MailStore; thread: Thread; entries: Ent
               entry={entry}
               expanded={isExpanded(entry)}
               toggle={() => setExpanded(new Map(expanded).set(entry.id, !isExpanded(entry)))}
+              actions={actions(entry)}
             />
           </li>
         ))}
       </ol>
+      <div class={styles.responses}>
+        <button type="button" onMouseDown={keepFocus} onClick={responder('replyAll', latest)}>
+          <Icon name="reply-all" />
+          Reply to all
+        </button>
+        <button type="button" onMouseDown={keepFocus} onClick={responder('reply', latest)}>
+          <Icon name="reply" />
+          Reply
+        </button>
+        <button type="button" onMouseDown={keepFocus} onClick={responder('forward', latest)}>
+          <Icon name="forward" />
+          Forward
+        </button>
+      </div>
     </article>
   )
 }
 
+/** What can be done to one message of a conversation; `spam` is `null`
+ * if it is spam already. */
+interface MessageActions {
+  reply: () => void
+  replyAll: () => void
+  forward: () => void
+  trash: () => void
+  markUnreadFrom: () => void
+  spam: (() => void) | null
+}
+
 /** One message of a conversation: collapsed, its sender, snippet and
- * date; expanded, all of it. */
-function ConversationMessage(props: { mail: MailStore; entry: Entry; expanded: boolean; toggle: () => void }) {
-  const { mail, entry, expanded } = props
+ * date; expanded, all of it, with its actions. */
+function ConversationMessage(props: {
+  mail: MailStore
+  entry: Entry
+  expanded: boolean
+  toggle: () => void
+  actions: MessageActions
+}) {
+  const { mail, entry, expanded, actions } = props
   // `null` if it failed to load.
   const [content, setContent] = useState<MessageContent | null | undefined>(undefined)
   const message = entry.message
@@ -387,6 +463,30 @@ function ConversationMessage(props: { mail: MailStore; entry: Entry; expanded: b
         {!expanded && <span class={styles.snippet}>{entry.snippet}</span>}
         <time class={styles.date}>{dateTime(date)}</time>
         <Star mail={mail} thread={{ account: entry.account, subject: entry.subject, entries: [entry] }} />
+        {expanded && (
+          // Its own clicks, not the header's, which folds the message.
+          <span class={styles.messageTools} onClick={(event) => event.stopPropagation()}>
+            <button type="button" aria-label="Reply" title="Reply" onMouseDown={keepFocus} onClick={actions.reply}>
+              <Icon name="reply" />
+            </button>
+            <MenuButton
+              label="More"
+              icon="ellipsis-vertical"
+              groups={[
+                [
+                  { label: 'Reply', icon: 'reply', action: actions.reply },
+                  { label: 'Reply to all', icon: 'reply-all', action: actions.replyAll },
+                  { label: 'Forward', icon: 'forward', action: actions.forward },
+                ],
+                [
+                  { label: 'Delete this message', icon: 'trash', action: actions.trash },
+                  { label: 'Mark unread from here', icon: 'mail', action: actions.markUnreadFrom },
+                ],
+                ...(actions.spam ? [[{ label: 'Report spam', icon: 'octagon-x' as const, action: actions.spam }]] : []),
+              ]}
+            />
+          </span>
+        )}
       </header>
       {expanded &&
         (content === undefined ? (
