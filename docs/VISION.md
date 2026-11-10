@@ -12,6 +12,7 @@ Goals:
 - UI oriented towards a single power user, focusing on productivity and responsiveness, not user-friendliness. Adopt Gmail's keyboard shortcuts scheme.
 - Support multiple mailbox and Matrix accounts.
 - Transaction log + undo support (undo tagging/deletion/any other mass operation).
+- Android app (which may wrap a web view, but needs to have tight platform integration such as low-latency notifications).
 
 Non-goals:
 
