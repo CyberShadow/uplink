@@ -19,7 +19,7 @@ use std::{
     io::BufReader,
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tokio::net::TcpListener;
@@ -53,8 +53,61 @@ struct StaticFiles;
 
 #[derive(Clone)]
 struct AppState {
-    basic_auth: Arc<ArcSwap<BasicAuthConfig>>,
+    gate: Gate,
     services: Services,
+}
+
+/// Basic auth's check. bcrypt takes about 200 ms by design, and a browser
+/// sends the password with every request: it is checked by bcrypt once,
+/// then by the digest of the password it accepted, which a change of the
+/// configured password voids.
+#[derive(Clone)]
+struct Gate {
+    config: Arc<ArcSwap<BasicAuthConfig>>,
+    accepted: Arc<Mutex<Option<Accepted>>>,
+}
+
+struct Accepted {
+    /// The configured hash it was checked against.
+    password_bcrypt: String,
+    digest: [u8; 32],
+}
+
+impl Gate {
+    fn new(config: Arc<ArcSwap<BasicAuthConfig>>) -> Gate {
+        Gate {
+            config,
+            accepted: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    async fn admits(&self, user: &str, password: &str) -> bool {
+        let config = self.config.load_full();
+        if subtle::ConstantTimeEq::ct_eq(user.as_bytes(), config.user.as_bytes()).unwrap_u8() != 1 {
+            return false;
+        }
+        let digest: [u8; 32] = sha2::Sha256::digest(password.as_bytes()).into();
+        let known = self.accepted.lock().unwrap().as_ref().is_some_and(|a| {
+            a.password_bcrypt == config.password_bcrypt
+                && bool::from(subtle::ConstantTimeEq::ct_eq(&a.digest[..], &digest[..]))
+        });
+        if known {
+            return true;
+        }
+        let (password, hash) = (password.to_owned(), config.password_bcrypt.clone());
+        // Off the async threads, which it would hold up.
+        let verified = tokio::task::spawn_blocking(move || bcrypt::verify(password, &hash))
+            .await
+            .expect("bcrypt does not panic");
+        if !matches!(verified, Ok(true)) {
+            return false;
+        }
+        *self.accepted.lock().unwrap() = Some(Accepted {
+            password_bcrypt: config.password_bcrypt.clone(),
+            digest,
+        });
+        true
+    }
 }
 
 /// Runs the server for the config at `config_path` until it fails.
@@ -220,7 +273,7 @@ pub async fn serve_with_listener(
         Arc::new(ArcSwap::from(Arc::new(config.server.basic_auth.clone())));
 
     let state = AppState {
-        basic_auth: basic_auth.clone(),
+        gate: Gate::new(basic_auth.clone()),
         services,
     };
 
@@ -680,17 +733,10 @@ async fn basic_auth_middleware(
         return unauthorized();
     };
 
-    let ba = state.basic_auth.load();
-    let expected_user = ba.user.as_bytes();
-    let user_match = subtle::ConstantTimeEq::ct_eq(username.as_bytes(), expected_user).unwrap_u8();
-
-    if user_match != 1 {
-        return unauthorized();
-    }
-
-    match bcrypt::verify(password, &ba.password_bcrypt) {
-        Ok(true) => next.run(req).await,
-        _ => unauthorized(),
+    if state.gate.admits(username, password).await {
+        next.run(req).await
+    } else {
+        unauthorized()
     }
 }
 
@@ -772,16 +818,34 @@ mod tests {
 
     fn test_state() -> AppState {
         AppState {
-            basic_auth: Arc::new(ArcSwap::from(Arc::new(BasicAuthConfig {
+            gate: Gate::new(Arc::new(ArcSwap::from(Arc::new(BasicAuthConfig {
                 user: TEST_USER.to_string(),
                 password_bcrypt: TEST_BCRYPT.to_string(),
-            }))),
+            })))),
             services: SERVICES.1.clone(),
         }
     }
 
     fn basic_auth_header(user: &str, pass: &str) -> String {
         format!("Basic {}", BASE64.encode(format!("{}:{}", user, pass)))
+    }
+
+    /// A password accepted once is remembered, until the configured one
+    /// changes: then it is checked against the new one.
+    #[tokio::test]
+    async fn a_changed_password_voids_the_one_accepted() {
+        let state = test_state();
+        let gate = &state.gate;
+        assert!(gate.admits(TEST_USER, TEST_PASS).await);
+        assert!(gate.admits(TEST_USER, TEST_PASS).await);
+        assert!(!gate.admits(TEST_USER, "wrong").await);
+        assert!(!gate.admits("mallory", TEST_PASS).await);
+        gate.config.store(Arc::new(BasicAuthConfig {
+            user: TEST_USER.into(),
+            password_bcrypt: bcrypt::hash("new", 4).unwrap(),
+        }));
+        assert!(!gate.admits(TEST_USER, TEST_PASS).await);
+        assert!(gate.admits(TEST_USER, "new").await);
     }
 
     #[tokio::test]
@@ -989,7 +1053,7 @@ mod tests {
         const NEW_USER: &str = "bob";
         const NEW_PASS: &str = "newpass";
         let new_bcrypt = bcrypt::hash(NEW_PASS, 4).unwrap();
-        state.basic_auth.store(Arc::new(BasicAuthConfig {
+        state.gate.config.store(Arc::new(BasicAuthConfig {
             user: NEW_USER.into(),
             password_bcrypt: new_bcrypt,
         }));

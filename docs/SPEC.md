@@ -1779,6 +1779,10 @@ later.
 HTTP Basic Auth on every route (`/`, `/api/*`, `/ws`). The bcrypt hash
 lives in `server.basic_auth.password_bcrypt`. The middleware uses
 `subtle` crate for constant-time compare and `bcrypt` for verification.
+bcrypt takes about 200 ms by design, and the browser sends the password
+with every request: it is checked by bcrypt once (on a blocking thread),
+then by its SHA-256 digest, remembered with the configured hash it was
+checked against, so that changing the password voids it.
 
 This is intentionally minimal. The MVP doesn't need session cookies,
 account selection, password reset, or rate limiting — the user is the
