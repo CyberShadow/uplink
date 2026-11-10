@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { brief, date, dateTime, time } from './format'
+import { brief, date, dateTime, duration, time } from './format'
 
 // The tests run in New York (vite.config.ts), here UTC−5.
 describe('format', () => {
@@ -16,5 +16,12 @@ describe('format', () => {
     expect(brief(ms, new Date('2026-11-09T23:59:00-05:00'))).toBe('22:05')
     expect(brief(ms, new Date('2026-11-10T00:00:00-05:00'))).toBe('9 Nov')
     expect(brief(ms, new Date('2027-01-01T00:00:00-05:00'))).toBe('2026-11-09')
+  })
+
+  it('roughly writes a length of time', () => {
+    expect(duration(10_000)).toBe('1 min')
+    expect(duration(5 * 60_000)).toBe('5 min')
+    expect(duration(120 * 60_000)).toBe('2 h')
+    expect(duration(135 * 60_000)).toBe('2 h 15 min')
   })
 })

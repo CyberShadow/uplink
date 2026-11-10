@@ -748,7 +748,8 @@ than it buffers is closed; the client reconnects and resumes.
 - `ListAccounts` — mail accounts with their labels and counts, and,
   until an account's first listing is done, how far it has got: the
   messages stored of `listing_total`, which the nav shows as a
-  percentage.
+  percentage; its tooltip estimates the time left, from the pace the
+  count rose at over the last ten minutes the page saw.
 - `ListEntries { list, after, limit }` — a page of a list's
   conversations (§4), newest first: of a label, every account's Inbox,
   or an account's All Mail (§8.1). Each has its newest entry in full,
@@ -1737,7 +1738,11 @@ ones) take the latest.
 Gmail's, in light and dark (as the system is). Conversation rows: a
 checkbox, a star that toggles Starred (§12.8), the senders and count,
 the user's labels, the latest's subject and snippet, a paperclip if
-files are attached to any (not inline images), and the date, small. Unread rows are bold on a background of
+files are attached to any (not inline images), and the date, small. The
+rows share their columns (CSS subgrid), so the paperclip's and the
+date's are only as wide as what is shown in them, and the subject and
+snippet have the rest. Narrow, rows are laid out as a phone app's
+(§16.1). Unread rows are bold on a background of
 their own; read ones recede, their text dimmer (in the dark theme,
 onto the page's near-black). The font is Gmail's (`Google Sans`, else
 Roboto, Helvetica, Arial), narrower than most systems' own. No Important markers: Gmail's guesses, which `+` and `-`
@@ -2410,6 +2415,20 @@ based on selection:
 Unified nav tree: mail folders/labels, Matrix spaces+rooms (using Matrix
 space hierarchy directly), calendars, and the tasks root all live in one
 tree. Each top-level subtree is collapsible.
+
+As built: Drafts, Outbox, History, To-dos and Calendar at the top; then
+a subtree per mail account and per Matrix account, each folded by its
+header (folded, it counts what is unread in it: the Inbox's
+conversations, the rooms' messages). An account's labels nest by `/`,
+as Gmail's and Microsoft 365's folder paths do, under parents that need
+not be labels themselves, each foldable. What is folded is kept in the
+browser (`localStorage`): it is the view's, not the mailbox's. Matrix
+spaces are not in it yet; rooms are listed flat.
+
+Narrow (under 720 px wide, as a phone), the nav is a drawer, opened from
+a menu button in the header and closed by going anywhere; message rows
+are a phone app's: the sender and date, the subject, the snippet, and
+the labels, with the star and paperclip at the right.
 
 ### 16.2 Route taxonomy
 

@@ -19,6 +19,42 @@
   width: 188px;
 }
 
+/* The nav's, where it is a drawer. */
+.menu {
+  display: none;
+  padding: 4px;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.scrim {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  .shell {
+    grid-template: 'header' auto 'content' 1fr 'notice' auto / 1fr;
+  }
+
+  .menu {
+    display: inline-flex;
+  }
+
+  .brand {
+    width: auto;
+  }
+
+  .scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 9;
+    background: rgb(0 0 0 / 50%);
+  }
+}
+
 .search {
   flex: 1;
   max-width: 640px;

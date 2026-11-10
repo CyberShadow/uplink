@@ -5,17 +5,37 @@
   background: var(--nav-bg);
 }
 
+/* Narrow, a drawer over the content, shown when open. */
+@media (max-width: 720px) {
+  .nav {
+    display: none;
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 10;
+    width: min(300px, 85vw);
+  }
+
+  .nav.open {
+    display: block;
+  }
+}
+
 .nav ul {
   list-style: none;
   margin: 0 0 12px;
   padding: 0;
 }
 
-.nav a {
+.nav ul ul {
+  margin: 0;
+}
+
+.nav a,
+.parent {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 4px 16px;
+  padding: 4px 16px 4px calc(16px + var(--depth, 0) * 16px);
   border-radius: 0 16px 16px 0;
   margin-right: 8px;
 }
@@ -34,15 +54,66 @@
 }
 
 .account {
-  margin: 4px 16px;
+  margin: 4px 8px 4px 0;
   font-size: 12px;
   font-weight: 600;
+}
+
+.account button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 2px 8px 2px 2px;
+  border: none;
+  border-radius: 0 12px 12px 0;
+  background: none;
   color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.account button:hover {
+  background: var(--hover);
+}
+
+.account svg,
+.fold svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+/* A label with labels nested in it, and its button folding them. */
+.node {
+  position: relative;
+}
+
+.fold {
+  position: absolute;
+  top: 7px;
+  left: calc(1px + var(--depth, 0) * 16px);
+  z-index: 1;
+  display: flex;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.parent {
+  margin-right: 8px;
+  color: var(--muted);
+}
+
+.parent svg {
+  flex: none;
 }
 
 .syncing {
+  flex: none;
   font-weight: normal;
 }
 

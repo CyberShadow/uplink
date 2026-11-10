@@ -5,10 +5,11 @@ import type { Status } from '../connection'
 import type { Account } from '../generated/protocol'
 import { EMPTY } from '../compose/reply'
 import { ServicesContext, useServices } from '../context'
-import { useKeymap } from '../keymap'
+import { keepFocus, useKeymap } from '../keymap'
 import type { Client } from '../stores/client'
 import { Calendar, calendarPath, today } from './Calendar'
 import { Help } from './Help'
+import { Icon } from './Icon'
 import { History } from './History'
 import { GoToLabel } from './LabelPicker'
 import { Mail } from './Mail'
@@ -38,6 +39,9 @@ function Shell() {
   const { route, path } = useLocation()
   const [help, setHelp] = useState(false)
   const [goingToLabel, setGoingToLabel] = useState(false)
+  // Narrow, the nav is a drawer; going anywhere closes it.
+  const [navOpen, setNavOpen] = useState(false)
+  useEffect(() => setNavOpen(false), [path])
 
   /** The account on show, or else the first. */
   const account = () => {
@@ -80,11 +84,22 @@ function Shell() {
   return (
     <div class={styles.shell}>
       <header class={styles.header}>
+        <button
+          type="button"
+          class={styles.menu}
+          aria-label="Menu"
+          aria-expanded={navOpen}
+          onMouseDown={keepFocus}
+          onClick={() => setNavOpen(!navOpen)}
+        >
+          <Icon name="menu" />
+        </button>
         <span class={styles.brand}>uplink</span>
         <SearchBox />
         {status.value === 'connecting' && <span class={styles.status}>Connecting…</span>}
       </header>
-      <Nav />
+      <Nav open={navOpen} />
+      {navOpen && <div class={styles.scrim} onClick={() => setNavOpen(false)} />}
       <main class={styles.content}>
         {error && (
           <div class={styles.error} role="alert">

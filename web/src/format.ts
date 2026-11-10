@@ -30,3 +30,11 @@ export function brief(ms: number, now = new Date()): string {
   if (day.getFullYear() === now.getFullYear()) return `${day.getDate()} ${MONTHS[day.getMonth()]}`
   return date(day)
 }
+
+/** A rough length of time, `ms` long: `2 h 15 min`, `5 min`. */
+export function duration(ms: number): string {
+  const minutes = Math.max(1, Math.round(ms / 60_000))
+  if (minutes < 60) return `${minutes} min`
+  const hours = Math.floor(minutes / 60)
+  return minutes % 60 === 0 ? `${hours} h` : `${hours} h ${minutes % 60} min`
+}

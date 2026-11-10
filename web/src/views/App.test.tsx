@@ -52,6 +52,26 @@ describe('mail', () => {
     expect(within(nav).getByText('(syncing)')).toBeTruthy()
   })
 
+  it('folds an account in the nav, and labels nested in a label', async () => {
+    server.addAccount('home', ['Family', 'Family/Kids'])
+    const user = await start()
+    const nav = within(screen.getByRole('navigation'))
+    const kids = () => nav.queryByRole('link', { name: 'Kids' })
+    expect(kids()).toBeTruthy()
+    await user.click(nav.getByRole('button', { name: 'Collapse Family' }))
+    expect(kids()).toBeNull()
+    await user.click(nav.getByRole('button', { name: 'Expand Family' }))
+    expect(kids()).toBeTruthy()
+
+    const home = nav.getByRole('button', { name: /home@example.com/ })
+    await user.click(home)
+    expect(home.getAttribute('aria-expanded')).toBe('false')
+    expect(nav.queryByRole('link', { name: 'Family' })).toBeNull()
+    expect(localStorage.getItem('uplink.nav.collapsed')).toBe('["mail:home"]')
+    await user.click(home)
+    expect(nav.getByRole('link', { name: 'Family' })).toBeTruthy()
+  })
+
   it('opens the first Inbox, with labels in the nav', async () => {
     await start()
     expect(location.pathname).toBe('/mail/work/INBOX')
@@ -465,9 +485,11 @@ describe('Microsoft 365', () => {
       'Spam',
       'Trash',
       'All Mail',
-      'Inbox/Projects',
+      // Under an Inbox of its own, not a label: the folder's path.
+      'Projects',
       'Red',
     ])
+    expect(within(office as HTMLElement).getByRole('button', { name: 'Collapse Inbox' })).toBeTruthy()
     expect(within(screen.getByRole('navigation')).getByRole('link', { name: 'Gmail drafts' })).toBeTruthy()
   })
 
