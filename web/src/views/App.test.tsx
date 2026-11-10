@@ -209,6 +209,23 @@ describe('mail', () => {
         await screen.findByRole('list', { name: 'Messages' })
       })
 
+      it("shows a message's original, as its account has it", async () => {
+        const { user, messages, last } = await conversation()
+        const opened: unknown[][] = []
+        const open = window.open
+        window.open = (...args: unknown[]) => {
+          opened.push(args)
+          return null
+        }
+        try {
+          await user.click(within(messages[2]).getByRole('button', { name: 'More' }))
+          await user.click(screen.getByRole('menuitem', { name: 'Show original' }))
+        } finally {
+          window.open = open
+        }
+        expect(opened).toEqual([[`/api/entries/${last.id}/raw`, '_blank', 'noopener']])
+      })
+
       it('closes the menu on Escape', async () => {
         const { user, messages } = await conversation()
         await user.click(within(messages[2]).getByRole('button', { name: 'More' }))

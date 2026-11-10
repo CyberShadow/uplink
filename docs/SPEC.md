@@ -1803,7 +1803,10 @@ expanded message, by its date, Reply and a menu (⋮) of Reply, Reply to
 all and Forward, on that message; Delete this message and Mark unread
 from here (that message and those after it; the conversation is left,
 as opening it would read them again); and Report spam, unless it is
-spam. Deleting or reporting one message of several reopens the
+spam; and Download message and Show original, the account's own copy as
+stored (`GET /api/entries/{entry}/raw`: as `text/plain`, with `nosniff`
+and `Content-Security-Policy: sandbox`, downloaded as `<subject>.eml`).
+Deleting or reporting one message of several reopens the
 conversation by a message that stays, since the path names one of its
 entries; the last one leaves it. Escape, or a click elsewhere, closes
 the menu.

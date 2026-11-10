@@ -363,6 +363,13 @@ function ConversationView(props: {
         back()
       },
       spam: mail.having(alone, 'SPAM') ? null : leaving(() => mail.toggleSpam([alone])),
+      showOriginal: () => window.open(rawPath(entry.id), '_blank', 'noopener'),
+      download: () => {
+        const link = document.createElement('a')
+        link.href = rawPath(entry.id)
+        link.download = `${entry.subject ?? 'message'}.eml`
+        link.click()
+      },
     }
   }
 
@@ -432,6 +439,13 @@ interface MessageActions {
   trash: () => void
   markUnreadFrom: () => void
   spam: (() => void) | null
+  showOriginal: () => void
+  download: () => void
+}
+
+/** The entry's message as its account has it, raw (SPEC §8.9). */
+function rawPath(entry: EntryId): string {
+  return `/api/entries/${entry}/raw`
 }
 
 /** One message of a conversation: collapsed, its sender, snippet and
@@ -483,6 +497,10 @@ function ConversationMessage(props: {
                   { label: 'Mark unread from here', icon: 'mail', action: actions.markUnreadFrom },
                 ],
                 ...(actions.spam ? [[{ label: 'Report spam', icon: 'octagon-x' as const, action: actions.spam }]] : []),
+                [
+                  { label: 'Download message', icon: 'download', action: actions.download },
+                  { label: 'Show original', icon: 'code', action: actions.showOriginal },
+                ],
               ]}
             />
           </span>

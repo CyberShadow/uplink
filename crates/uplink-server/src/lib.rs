@@ -442,6 +442,7 @@ fn build_app(state: AppState) -> Router {
             "/api/messages/:message/attachments/:index/blob",
             post(copy_attachment_handler),
         )
+        .route("/api/entries/:entry/raw", get(raw_entry_handler))
         .route(
             uplink_email::remote::REMOTE_IMAGE_PATH,
             get(remote_image_handler),
@@ -490,6 +491,34 @@ async fn attachment_handler(
             )
                 .into_response()
         }
+        Err(e) if e.code == ErrorCode::NotFound => {
+            (StatusCode::NOT_FOUND, e.message).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.message).into_response(),
+    }
+}
+
+/// A message as its account has it, raw, for "Show original": text, which
+/// the browser shows as is; sandboxed, as an attachment is.
+async fn raw_entry_handler(
+    State(state): State<AppState>,
+    extract::Path(entry): extract::Path<i64>,
+) -> Response {
+    match state
+        .services
+        .mail
+        .raw_entry(uplink_protocol::mail::EntryId(entry))
+        .await
+    {
+        Ok(raw) => (
+            [
+                (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+                (header::CONTENT_SECURITY_POLICY, "sandbox"),
+            ],
+            raw,
+        )
+            .into_response(),
         Err(e) if e.code == ErrorCode::NotFound => {
             (StatusCode::NOT_FOUND, e.message).into_response()
         }
@@ -898,6 +927,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn raw_messages_need_auth_and_an_existing_entry() {
+        let get = |auth: bool| {
+            let mut request = Request::builder().uri("/api/entries/7/raw");
+            if auth {
+                request = request.header(
+                    header::AUTHORIZATION,
+                    basic_auth_header(TEST_USER, TEST_PASS),
+                );
+            }
+            build_app(test_state()).oneshot(request.body(Body::empty()).unwrap())
+        };
+        assert_eq!(get(false).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(get(true).await.unwrap().status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

@@ -1184,6 +1184,20 @@ pub(crate) mod service {
     }
 
     #[tokio::test]
+    async fn an_entry_raw_as_its_account_has_it() {
+        let db = Db::new();
+        let mail = mail_with(&db).await;
+        let raw = mail.raw_entry(db.entry("m2")).await.unwrap();
+        assert!(String::from_utf8(raw)
+            .unwrap()
+            .starts_with("Message-ID: <2@x>\r\n"));
+        assert_eq!(
+            mail.raw_entry(EntryId(999)).await.unwrap_err().code,
+            ErrorCode::NotFound
+        );
+    }
+
+    #[tokio::test]
     async fn message_content() {
         let db = Db::new();
         let mail = mail_with(&db).await;

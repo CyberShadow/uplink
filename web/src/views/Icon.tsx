@@ -43,6 +43,8 @@ const SHAPES = {
   'forward': [['path', { d: 'm15 17 5-5-5-5' }], ['path', { d: 'M4 18v-2a4 4 0 0 1 4-4h12' }]],
   'mail': [['path', { d: 'm22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7' }], ['rect', { x: '2', y: '4', width: '20', height: '16', rx: '2' }]],
   'ellipsis-vertical': [['circle', { cx: '12', cy: '12', r: '1' }], ['circle', { cx: '12', cy: '5', r: '1' }], ['circle', { cx: '12', cy: '19', r: '1' }]],
+  'download': [['path', { d: 'M12 15V3' }], ['path', { d: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4' }], ['path', { d: 'm7 10 5 5 5-5' }]],
+  'code': [['path', { d: 'm16 18 6-6-6-6' }], ['path', { d: 'm8 6-6 6 6 6' }]],
 } satisfies Record<string, Shape[]>
 
 export type IconName = keyof typeof SHAPES

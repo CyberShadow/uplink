@@ -16,7 +16,7 @@ use uplink_protocol::{
     mail::{EntryId, EntryList, LabelId, ListPosition, MessageContent, MessageId},
     ErrorCode, ServerError, ServerResponse,
 };
-use uplink_storage::rusqlite::Connection;
+use uplink_storage::rusqlite::{Connection, OptionalExtension};
 use uplink_tx_log::{
     answer::{error, internal, Reader, Response},
     Dispatcher,
@@ -167,6 +167,26 @@ impl Mail {
                         attachments: parse::attachments(&raw),
                     },
                 })
+            })
+            .await
+    }
+
+    /// The entry's message as its account has it, raw: the copy fetched
+    /// from that account, which another account's may differ from.
+    pub async fn raw_entry(&self, entry: EntryId) -> Result<Vec<u8>, ServerError> {
+        let store = self.store.clone();
+        self.reader
+            .read(move |conn| {
+                let variant: String = conn
+                    .query_row(
+                        "SELECT variant FROM mail_entry WHERE id = ?1",
+                        [entry.0],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| internal(e.into()))?
+                    .ok_or_else(|| error(ErrorCode::NotFound, format!("no entry {}", entry.0)))?;
+                store.get(&VariantHash(variant)).map_err(internal)
             })
             .await
     }
