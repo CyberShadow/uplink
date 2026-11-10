@@ -24,9 +24,11 @@ fn start_sync(uplink: &Uplink, provider: &Provider) -> tokio::task::JoinHandle<(
         provider.key.clone(),
     );
     uplink.start(
-        GmailSync {
-            gmail: Gmail::new(http, &provider.account.endpoints.api, credentials),
-        },
+        GmailSync::new(Gmail::new(
+            http,
+            &provider.account.endpoints.api,
+            credentials,
+        )),
         &provider.account.address,
     )
 }

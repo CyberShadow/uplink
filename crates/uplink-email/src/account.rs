@@ -41,8 +41,10 @@ pub trait Provider: Send + Sync + 'static {
     const KIND: &'static str;
 
     /// Records the mailbox's changes since the last sync (all of it, the
-    /// first time).
-    fn sync(&self, account: &Account) -> impl Future<Output = Result<()>> + Send;
+    /// first time), or a bounded part of them; `true` if more remain to
+    /// record at once. Pushing and sending go between calls, so that
+    /// neither waits on a long sync (a first one takes days).
+    fn sync(&self, account: &Account) -> impl Future<Output = Result<bool>> + Send;
 
     /// Pushes label changes not yet in effect at the provider
     /// ([`Account::pending`]), and records them as pushed.
@@ -265,9 +267,11 @@ impl<P: Provider> SyncTask<P> {
                 self.step().await
             };
             match step.await {
-                Ok(next_due) => {
+                Ok((more, next_due)) => {
                     backoff = Duration::from_secs(1);
-                    self.wait(&mut wake, next_due).await;
+                    if !more {
+                        self.wait(&mut wake, next_due).await;
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(account = self.account.id, "sync failed: {e:#}");
@@ -278,11 +282,12 @@ impl<P: Provider> SyncTask<P> {
         }
     }
 
-    /// Syncs, pushes and sends; returns when the next queued mail is due.
-    async fn step(&self) -> Result<Option<i64>> {
-        self.provider.sync(&self.account).await?;
+    /// Syncs (a step), pushes and sends; returns whether the sync has more
+    /// to do at once, and when the next queued mail is due.
+    async fn step(&self) -> Result<(bool, Option<i64>)> {
+        let more = self.provider.sync(&self.account).await?;
         self.provider.push(&self.account).await?;
-        self.send_due().await
+        Ok((more, self.send_due().await?))
     }
 
     /// Until the poll interval passes, mail is due (unix ms), or the user

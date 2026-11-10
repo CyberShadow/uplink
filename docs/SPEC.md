@@ -1127,6 +1127,13 @@ IMAP's per-folder copies, and a REST fake is practical to test against
   labels again only of entries up to `before`, since the polls from
   `listing_from` cover changes to those it fetched. Then the state
   becomes `{history_id: listing_from}`, and the account `synced`.
+  The listing goes in steps, each one page listed or one batch fetched,
+  between which the account's task pushes label changes and sends due
+  mail (§6.6, §6.7): a first sync takes days, and what the user does
+  meanwhile reaches Gmail at once rather than after it. The account task
+  asks for the next step without waiting for the poll interval. Where it
+  has got (page token, ids listed, ids yet to fetch) is kept in memory
+  only, and a failed step is retried from there.
 - **Quota**: Gmail allows a user 6,000 quota units a minute (projects
   created since 1 May 2026, as a user's own will be; older ones keep
   15,000) and refuses with 403 `rateLimitExceeded` for the rest of the
@@ -1230,8 +1237,11 @@ IMAP's per-folder copies, and a REST fake is practical to test against
   Categories (`categories: ["red", "blue"]`) become labels `cat:<name>`;
   Graph has no list of them that a delta reports, so the account's
   categories are those recorded plus those seen on messages.
-- **A poll round** follows each folder's delta link to its end, then
-  settles what left: a message moved is reported gone from one folder
+- **A poll round** is one step of the account's task (unlike Gmail's
+  listing, §8.1): a first round, of the whole mailbox, holds up pushes
+  and sends until it ends. (Open: stepping it as Gmail's listing is, if
+  a mailbox this large comes up.) It follows each folder's delta link to
+  its end, then settles what left: a message moved is reported gone from one folder
   and present in another, and the folders' links are read one after
   another, so a removal is only acted on once every folder has been
   read. A removal from a folder the entry was not last seen in is a

@@ -68,9 +68,7 @@ pub fn task(
 ) -> Result<SyncTask<GmailSync>> {
     let credentials = Credentials::new(http.clone(), oauth::grant(config), key);
     Ok(SyncTask::new(
-        GmailSync {
-            gmail: Gmail::new(http, &config.endpoints.api, credentials),
-        },
+        GmailSync::new(Gmail::new(http, &config.endpoints.api, credentials)),
         config.id.clone(),
         config.address.clone(),
         dispatcher,
@@ -82,25 +80,71 @@ pub fn task(
 
 pub struct GmailSync {
     pub gmail: Gmail,
+    /// The listing under way, if one is: where it has got, between steps.
+    /// Only in memory: Gmail's page tokens do not last, and a listing
+    /// resumed after a restart lists anew, fetching only what it has not.
+    cursor: tokio::sync::Mutex<Option<Cursor>>,
+}
+
+impl GmailSync {
+    pub fn new(gmail: Gmail) -> Self {
+        Self {
+            gmail,
+            cursor: tokio::sync::Mutex::new(None),
+        }
+    }
+}
+
+/// A listing's progress through the mailbox.
+struct Cursor {
+    listing: Listing,
+    /// What the account had as it began, and of that, what it had before
+    /// the listing first began.
+    known: HashSet<String>,
+    earlier: HashSet<String>,
+    /// Every message listed so far: what is not, at the end, has gone.
+    listed: HashSet<String>,
+    /// The next page to list.
+    next: Next,
+    /// Of the pages listed, the new messages yet to fetch, in order.
+    unfetched: Vec<String>,
+}
+
+enum Next {
+    First,
+    Page(String),
+    Done,
 }
 
 impl Provider for GmailSync {
     const KIND: &'static str = KIND;
 
-    async fn sync(&self, account: &Account) -> Result<()> {
-        match account.sync_state::<State>().await? {
+    /// Polls; or, listing the mailbox, takes one step: one page listed, or
+    /// one batch of its messages fetched.
+    async fn sync(&self, account: &Account) -> Result<bool> {
+        let mut cursor = self.cursor.lock().await;
+        if let Some(listing) = cursor.as_mut() {
+            let more = self.list_step(account, listing).await?;
+            if !more {
+                *cursor = None;
+            }
+            return Ok(more);
+        }
+        let resumed = match account.sync_state::<State>().await? {
             Some(State::Synced { history_id }) => {
-                if !self.poll(account, &history_id).await? {
-                    self.list(account, None).await?;
+                if self.poll(account, &history_id).await? {
+                    return Ok(false);
                 }
+                None
             }
             Some(State::Listing(listing)) => {
                 tracing::info!(account = account.id, "resuming the listing of the mailbox");
-                self.list(account, Some(listing)).await?;
+                Some(listing)
             }
-            None => self.list(account, None).await?,
-        }
-        Ok(())
+            None => None,
+        };
+        *cursor = Some(self.start_listing(account, resumed).await?);
+        Ok(true)
     }
 
     async fn push(&self, account: &Account) -> Result<()> {
@@ -169,14 +213,13 @@ impl GmailSync {
             .map(|()| true)
     }
 
-    /// Records the whole mailbox, as of the history id read when the
-    /// listing began; continues `resumed` if given. A resumed listing
+    /// Begins recording the whole mailbox, as of the history id read when
+    /// the listing began; continues `resumed` if given. A resumed listing
     /// lists anew (Gmail's page tokens do not last) but fetches only what
     /// it has not.
-    async fn list(&self, account: &Account, resumed: Option<Listing>) -> Result<()> {
-        let gmail = &self.gmail;
+    async fn start_listing(&self, account: &Account, resumed: Option<Listing>) -> Result<Cursor> {
         // Its total, for the progress shown, is as of now.
-        let profile = gmail.profile().await?;
+        let profile = self.gmail.profile().await?;
         let listing = match resumed {
             Some(listing) => listing,
             None => Listing {
@@ -195,61 +238,83 @@ impl GmailSync {
                 ..observed()
             })
             .await?;
-        let known = account.known().await?;
-        let earlier = account.known_up_to(listing.before).await?;
-        let mut listed = HashSet::new();
-        let mut page_token = None;
-        loop {
-            let page = gmail.messages(page_token.as_deref()).await?;
-            let ids: Vec<String> = page.messages.into_iter().map(|m| m.id).collect();
-            listed.extend(ids.iter().cloned());
-            let new: Vec<String> = ids
-                .iter()
-                .filter(|id| !known.contains(*id))
-                .cloned()
-                .collect();
+        Ok(Cursor {
+            known: account.known().await?,
+            earlier: account.known_up_to(listing.before).await?,
+            listing,
+            listed: HashSet::new(),
+            next: Next::First,
+            unfetched: vec![],
+        })
+    }
+
+    /// Takes the listing a step: fetches a batch of the new messages listed,
+    /// or lists the next page, or, at the end, records what has gone and
+    /// that the mailbox is synced. `true` if there is more. The cursor
+    /// moves only once a step is recorded, so a failed one is retried.
+    async fn list_step(&self, account: &Account, cursor: &mut Cursor) -> Result<bool> {
+        if !cursor.unfetched.is_empty() {
             // Stored a few at a time, as a page takes minutes of quota: so
-            // that they show, and an interruption loses little.
-            for batch in new.chunks(STORE_EVERY) {
-                let added = self.fetch_new(account, batch.to_vec()).await?;
-                if !added.is_empty() {
-                    account
-                        .observe(MailboxObserved {
-                            added,
-                            ..observed()
-                        })
-                        .await?;
-                }
-            }
-            // Messages deleted since they were listed are recorded as
-            // removed by the first poll, which starts before the listing.
-            let old = ids.into_iter().filter(|id| earlier.contains(id)).collect();
-            let updated: Vec<EntryLabels> = self
-                .fetch_labels(old)
-                .await?
-                .into_iter()
-                .filter_map(|(_, labels)| labels)
-                .collect();
-            if !updated.is_empty() {
+            // that they show, and pushes and sends go between.
+            let batch = cursor.unfetched[..cursor.unfetched.len().min(STORE_EVERY)].to_vec();
+            let fetched = batch.len();
+            let added = self.fetch_new(account, batch).await?;
+            if !added.is_empty() {
                 account
                     .observe(MailboxObserved {
-                        updated,
+                        added,
                         ..observed()
                     })
                     .await?;
             }
-            match page.next_page_token {
-                Some(token) => page_token = Some(token),
-                None => break,
-            }
+            cursor.unfetched.drain(..fetched);
+            return Ok(true);
         }
-        account
-            .observe(MailboxObserved {
-                removed: known.difference(&listed).cloned().collect(),
-                sync_state: Some(synced(listing.listing_from)),
-                ..observed()
-            })
-            .await
+        let token = match &cursor.next {
+            Next::First => None,
+            Next::Page(token) => Some(token.clone()),
+            Next::Done => {
+                account
+                    .observe(MailboxObserved {
+                        removed: cursor.known.difference(&cursor.listed).cloned().collect(),
+                        sync_state: Some(synced(cursor.listing.listing_from.clone())),
+                        ..observed()
+                    })
+                    .await?;
+                return Ok(false);
+            }
+        };
+        let page = self.gmail.messages(token.as_deref()).await?;
+        let ids: Vec<String> = page.messages.into_iter().map(|m| m.id).collect();
+        // Messages deleted since they were listed are recorded as removed
+        // by the first poll, which starts before the listing.
+        let old = ids
+            .iter()
+            .filter(|id| cursor.earlier.contains(*id))
+            .cloned()
+            .collect();
+        let updated: Vec<EntryLabels> = self
+            .fetch_labels(old)
+            .await?
+            .into_iter()
+            .filter_map(|(_, labels)| labels)
+            .collect();
+        if !updated.is_empty() {
+            account
+                .observe(MailboxObserved {
+                    updated,
+                    ..observed()
+                })
+                .await?;
+        }
+        cursor.unfetched = ids
+            .iter()
+            .filter(|id| !cursor.known.contains(*id))
+            .cloned()
+            .collect();
+        cursor.listed.extend(ids);
+        cursor.next = page.next_page_token.map_or(Next::Done, Next::Page);
+        Ok(true)
     }
 
     /// Pushes label changes not yet in effect at Gmail.

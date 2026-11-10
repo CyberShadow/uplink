@@ -105,7 +105,9 @@ struct Seen {
 impl Provider for M365Sync {
     const KIND: &'static str = KIND;
 
-    async fn sync(&self, account: &Account) -> Result<()> {
+    /// Records all of the changes in one call: a first sync blocks pushes
+    /// and sends until done (SPEC §8.3), unlike Gmail's.
+    async fn sync(&self, account: &Account) -> Result<bool> {
         let folders = self.folders().await?;
         let state = account.sync_state::<SyncState>().await?.unwrap_or_default();
 
@@ -186,7 +188,7 @@ impl Provider for M365Sync {
             && removed.is_empty()
             && sync_state == state
         {
-            return Ok(());
+            return Ok(false);
         }
 
         let mut labels = labels;
@@ -218,6 +220,7 @@ impl Provider for M365Sync {
                 ..observed()
             })
             .await
+            .map(|()| false)
     }
 
     async fn push(&self, account: &Account) -> Result<()> {

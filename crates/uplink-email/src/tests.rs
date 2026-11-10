@@ -1884,3 +1884,65 @@ async fn attachments_are_indexed_for_messages_stored_before() {
     );
     assert_eq!(index_attachments(&mut conn, &store).unwrap(), 0);
 }
+
+/// A provider whose sync takes `steps` steps, recording its calls.
+struct Stepping {
+    steps: std::sync::atomic::AtomicU32,
+    calls: Arc<std::sync::Mutex<Vec<&'static str>>>,
+}
+
+impl crate::account::Provider for Stepping {
+    const KIND: &'static str = "gmail";
+
+    async fn sync(&self, _: &crate::account::Account) -> anyhow::Result<bool> {
+        self.calls.lock().unwrap().push("sync");
+        Ok(self.steps.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) > 1)
+    }
+
+    async fn push(&self, _: &crate::account::Account) -> anyhow::Result<()> {
+        self.calls.lock().unwrap().push("push");
+        Ok(())
+    }
+
+    async fn send(&self, _: &[u8], _: Option<&str>) -> Result<(), crate::account::SendError> {
+        unreachable!("nothing is queued")
+    }
+}
+
+/// A long sync (a first listing, of days) does not hold up pushes: they
+/// go between its steps, which follow each other without waiting for the
+/// poll interval.
+#[tokio::test]
+async fn pushes_go_between_the_steps_of_a_long_sync() {
+    let db = Db::new();
+    let calls = Arc::new(std::sync::Mutex::new(vec![]));
+    let task = crate::account::SyncTask::new(
+        Stepping {
+            steps: 3.into(),
+            calls: calls.clone(),
+        },
+        "a".into(),
+        "a@x".into(),
+        db.dispatcher.clone(),
+        db.reader(),
+        db.dir.path(),
+        std::time::Duration::from_secs(3600),
+    );
+    let run = tokio::spawn(task.run());
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while calls.lock().unwrap().len() < 6 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{:?}",
+            calls.lock().unwrap()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    // Done, it waits for the poll interval.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(
+        *calls.lock().unwrap(),
+        ["sync", "push", "sync", "push", "sync", "push"]
+    );
+    run.abort();
+}
