@@ -1300,6 +1300,12 @@ asks to show remote images for the message. The message's own images
 CSP need not change; `cid:` anywhere else is dropped. Messages without
 an HTML part show their text.
 
+In a dark theme, the frame's page is inverted with its hues kept
+(`filter: invert(1) hue-rotate(180deg)`, as Dark Reader's filter mode),
+and its images, videos and background images inverted back: mail is
+written for white paper, and whatever colours it sets become their dark
+counterparts. Mail designed dark comes out light.
+
 Attachments: `LoadMessage` lists the message's parts other than its body
 (name, MIME type, decoded size; `inline` if the HTML body shows it), and
 `GET /api/messages/{message}/attachments/{index}` (behind basic auth,
@@ -1577,6 +1583,7 @@ src/views/
 ├── Nav.tsx                # drafts/outbox, mail labels, Matrix rooms
 ├── Mail.tsx               # message list and message view
 ├── HtmlBody.tsx           # sandboxed HTML mail (§8.9)
+├── Icon.tsx               # the Lucide icons used, vendored (ISC)
 ├── LabelPicker.tsx
 ├── Compose.tsx            # TipTap-backed, lazily loaded
 ├── Outgoing.tsx           # drafts and the mail outbox
@@ -1682,7 +1689,18 @@ compose window.
 
 ---
 
-### 12.8 Dates and times
+### 12.8 Look
+
+Gmail's, in light and dark (as the system is). Message rows: a
+checkbox, a star that toggles Starred, the sender, the user's labels,
+subject and snippet, a paperclip if files are attached (not inline
+images), and the date, small. Unread rows are bold on a background of
+their own; read ones recede (in the dark theme, onto the page's
+near-black). No Important markers: Gmail's guesses, which `+` and `-`
+still set. In the nav, system labels have Gmail's icons, the user's own
+labels a tag, and Microsoft 365's folders a folder.
+
+### 12.9 Dates and times
 
 One format throughout, `web/src/format.ts`: `YYYY-MM-DD` and 24-hour
 `HH:MM`, in the browser's time zone. Not the browser locale's

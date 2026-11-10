@@ -8,12 +8,25 @@ import styles from './Mail.module.css'
 
 const REMOTE = /<img[^>]+src=["']?https?:|url\(\s*["']?https?:/i
 
+// Mail is written for white paper. In a dark theme, the page is inverted,
+// hues kept, as Dark Reader's filter mode does, and pictures inverted back:
+// a mail's colours become their dark counterparts, whatever it sets them
+// to. Its paper is the inverse of the theme's background (#181a1b).
+const STYLE = `
+html { background: #fff; }
+body { margin: 0; padding: 8px; font: 14px/1.4 system-ui, sans-serif; overflow-wrap: anywhere; color: #000; background: #fff; }
+@media (prefers-color-scheme: dark) {
+  html { background: #181a1b; }
+  body { background: #e7e5e4; filter: invert(1) hue-rotate(180deg); }
+  img, video, [background], [style*="background-image"] { filter: invert(1) hue-rotate(180deg); }
+}`
+
 function document(html: string, remote: boolean): string {
   const images = remote ? 'data: https: http:' : 'data:'
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${images}; style-src 'unsafe-inline'">
 <base target="_blank">
-<style>body { margin: 0; padding: 8px; font: 14px/1.4 system-ui, sans-serif; overflow-wrap: anywhere; color: #000; background: #fff; }</style>
+<style>${STYLE}</style>
 </head><body>${html}</body></html>`
 }
 
