@@ -5,6 +5,7 @@ import { duration } from '../format'
 import { keepFocus } from '../keymap'
 import type { Account, Label, ListingProgress, MailProvider } from '../generated/protocol'
 import { useServices } from '../context'
+import { outboxCount, outboxNeedsAttention } from '../stores/drafts'
 import { allMailPath, inboxPath, mailPath } from './App'
 import { roomPath } from './Room'
 import styles from './Nav.module.css'
@@ -146,7 +147,7 @@ export function labelTree(labels: Label[]): LabelNode[] {
 export function Nav(props: { open: boolean }) {
   const { mail, drafts, matrix, todos } = useServices()
   const { path } = useLocation()
-  const link = (href: string, icon: IconName | null, name: string, count: number, depth = 0) => {
+  const link = (href: string, icon: IconName | null, name: string, count: number, depth = 0, alert = false) => {
     const current = path === href || path.startsWith(`${href}/`)
     return (
       <a
@@ -157,12 +158,19 @@ export function Nav(props: { open: boolean }) {
       >
         {icon && <Icon name={icon} />}
         <span class={styles.name}>{name}</span>
-        {count > 0 && <span class={styles.count}>{count}</span>}
+        {count > 0 && (
+          <span
+            class={alert ? `${styles.count} ${styles.alert}` : styles.count}
+            title={alert ? 'Something needs your attention' : undefined}
+          >
+            {count}
+          </span>
+        )}
       </a>
     )
   }
-  const item = (href: string, icon: IconName, name: string, count: number) => (
-    <li key={href}>{link(href, icon, name, count)}</li>
+  const item = (href: string, icon: IconName, name: string, count: number, alert = false) => (
+    <li key={href}>{link(href, icon, name, count, 0, alert)}</li>
   )
   const labelItem = (account: Account, label: Label) => (
     <li key={label.id}>
@@ -212,7 +220,13 @@ export function Nav(props: { open: boolean }) {
             mail.accounts.value!.reduce((unread, account) => unread + inboxUnread(account), 0),
           )}
         {item('/drafts', 'file', 'Drafts', drafts.drafts.value?.size ?? 0)}
-        {item('/outbox', 'clock-arrow-up', 'Outbox', drafts.outbox.value?.length ?? 0)}
+        {item(
+          '/outbox',
+          'clock-arrow-up',
+          'Outbox',
+          outboxCount(drafts.outbox.value ?? []),
+          outboxNeedsAttention(drafts.outbox.value ?? []),
+        )}
         {item('/history', 'undo-2', 'History', 0)}
         {item('/todos', 'list-todo', 'To-dos', todos.todos.value?.filter((t) => t.done_at === null).length ?? 0)}
         {item('/calendar', 'calendar', 'Calendar', 0)}

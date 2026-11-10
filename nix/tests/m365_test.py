@@ -231,7 +231,7 @@ with subtest("mail sent to Bob reaches him, and its copy in Sent Items shows up"
     )
     assert [m["subject"] for m in received] == ["Plans"], received
     eventually("the sent copy", lambda: "Plans" in in_folder("SENT"))
-    assert ws({"type": "list_outbox"})["items"] == []
+    assert all(a["sends"] == [] for a in ws({"type": "list_outbox"})["accounts"])
 
 with subtest("a restart loses nothing and resumes from the stored delta links"):
     before = set(in_folder("INBOX"))

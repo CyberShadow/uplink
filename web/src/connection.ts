@@ -81,6 +81,7 @@ function isResendable(body: ClientRequest): boolean {
     case 'detach_from_draft':
     case 'send_draft':
     case 'cancel_send':
+    case 'keep_observed':
     case 'send_matrix_message':
     case 'cancel_matrix_send':
     case 'mark_room_read':

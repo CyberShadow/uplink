@@ -20,13 +20,13 @@ export type WsServerMsg = { "type": "pong", seq: number, } | { "type": "welcome"
  */
 cursor: TxLogId, resumed: boolean, } | { "type": "response", request_id: number, body: ServerResponse, } | { "type": "request_failed", request_id: number, error: ServerError, } | { "type": "entry", entry: LogEntry, };
 
-export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": "list_history", before: TxLogId | null, limit: number, } | { "type": "list_accounts" } | { "type": "list_entries", list: EntryList, after: ListPosition | null, limit: number, } | { "type": "search", query: string, limit: number, } | { "type": "list_conversation", entry: EntryId, } | { "type": "list_message_entries", message: MessageId, } | { "type": "load_message", message: MessageId, } | { "type": "modify_labels", entries: Array<EntryId>, add: Array<LabelId>, remove: Array<LabelId>, } | { "type": "list_drafts" } | { "type": "create_draft", id: DraftId, account: string, content: DraftContent, in_reply_to: MessageId | null, } | { "type": "edit_draft", draft: DraftId, revision: number, splice: Splice, } | { "type": "delete_draft", draft: DraftId, } | { "type": "attach_to_draft", draft: DraftId, blob: BlobId, name: string, mime: string, } | { "type": "detach_from_draft", draft: DraftId, attachment: DraftAttachmentId, } | { "type": "send_draft", draft: DraftId, } | { "type": "cancel_send", item: OutboxId, } | { "type": "list_outbox" } | { "type": "list_rooms" } | { "type": "list_timeline", room: RoomId, page: TimelinePage, limit: number, } | { "type": "list_matrix_outbox" } | { "type": "send_matrix_message", room: RoomId, body: string, } | { "type": "cancel_matrix_send", item: MatrixOutboxId, } | { "type": "mark_room_read", room: RoomId, event: RoomEventId, } | { "type": "change_membership", room: RoomId, change: MembershipChange, } | { "type": "list_events", from: number, to: number, } | { "type": "list_todos" } | { "type": "create_todo", title: string, notes: string, due: string | null, message: MessageId | null, } | { "type": "edit_todo", todo: TodoId, edit: TodoEdit, } | { "type": "delete_todo", todo: TodoId, };
+export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": "list_history", before: TxLogId | null, limit: number, } | { "type": "list_accounts" } | { "type": "list_entries", list: EntryList, after: ListPosition | null, limit: number, } | { "type": "search", query: string, limit: number, } | { "type": "list_conversation", entry: EntryId, } | { "type": "list_message_entries", message: MessageId, } | { "type": "load_message", message: MessageId, } | { "type": "modify_labels", entries: Array<EntryId>, add: Array<LabelId>, remove: Array<LabelId>, } | { "type": "list_drafts" } | { "type": "create_draft", id: DraftId, account: string, content: DraftContent, in_reply_to: MessageId | null, } | { "type": "edit_draft", draft: DraftId, revision: number, splice: Splice, } | { "type": "delete_draft", draft: DraftId, } | { "type": "attach_to_draft", draft: DraftId, blob: BlobId, name: string, mime: string, } | { "type": "detach_from_draft", draft: DraftId, attachment: DraftAttachmentId, } | { "type": "send_draft", draft: DraftId, } | { "type": "cancel_send", item: OutboxId, } | { "type": "list_outbox" } | { "type": "keep_observed", account: string, op: TxLogId | null, } | { "type": "list_rooms" } | { "type": "list_timeline", room: RoomId, page: TimelinePage, limit: number, } | { "type": "list_matrix_outbox" } | { "type": "send_matrix_message", room: RoomId, body: string, } | { "type": "cancel_matrix_send", item: MatrixOutboxId, } | { "type": "mark_room_read", room: RoomId, event: RoomEventId, } | { "type": "change_membership", room: RoomId, change: MembershipChange, } | { "type": "list_events", from: number, to: number, } | { "type": "list_todos" } | { "type": "create_todo", title: string, notes: string, due: string | null, message: MessageId | null, } | { "type": "edit_todo", todo: TodoId, edit: TodoEdit, } | { "type": "delete_todo", todo: TodoId, };
 
 export type ServerResponse = { "type": "undone", tx_log_id: TxLogId, } | { "type": "dispatched", tx_log_id: TxLogId, } | { "type": "accounts", as_of: TxLogId, accounts: Array<Account>, } | { "type": "conversations", as_of: TxLogId, conversations: Array<Conversation>, 
 /**
  * Where the next page starts, if there may be one.
  */
-next: ListPosition | null, } | { "type": "entries", as_of: TxLogId, entries: Array<Entry>, } | { "type": "message", message: MessageContent, } | { "type": "drafts", as_of: TxLogId, drafts: Array<Draft>, } | { "type": "outbox", as_of: TxLogId, items: Array<OutboxItem>, } | { "type": "rooms", as_of: TxLogId, accounts: Array<MatrixAccount>, rooms: Array<Room>, } | { "type": "timeline", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, 
+next: ListPosition | null, } | { "type": "entries", as_of: TxLogId, entries: Array<Entry>, } | { "type": "message", message: MessageContent, } | { "type": "drafts", as_of: TxLogId, drafts: Array<Draft>, } | { "type": "outbox", as_of: TxLogId, accounts: Array<AccountOutbox>, } | { "type": "rooms", as_of: TxLogId, accounts: Array<MatrixAccount>, rooms: Array<Room>, } | { "type": "timeline", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, 
 /**
  * Whether there are earlier events than those listed.
  */
@@ -329,6 +329,55 @@ export type OutboxItem = { id: OutboxId, account: string, draft: Draft, state: O
  * When it is sent, ms since the Unix epoch.
  */
 not_before: number, };
+
+/**
+ * What of an account is not yet reconciled with its provider (SPEC §6.6).
+ */
+export type AccountOutbox = { account: string, 
+/**
+ * Why its changes are not reaching the provider, while they are not.
+ */
+failing: Failing | null, 
+/**
+ * Label changes pending, by the op that made them, newest first.
+ */
+changes: Array<PendingChanges>, 
+/**
+ * Mail being sent, or sent and not yet synced back.
+ */
+sends: Array<OutboxItem>, };
+
+export type Failing = { error: string, 
+/**
+ * Ms since the Unix epoch.
+ */
+since: number, };
+
+/**
+ * The label changes of one op not yet in effect at the provider.
+ */
+export type PendingChanges = { 
+/**
+ * The op, with what it did and when; `None` for changes made before
+ * ops were recorded with them.
+ */
+op: PendingOp | null, 
+/**
+ * The messages with changes still to push.
+ */
+entries: number, 
+/**
+ * Of those, the ones the provider refused, by its reason.
+ */
+refused: Array<Refusal>, };
+
+export type PendingOp = { id: TxLogId, description: string, 
+/**
+ * Ms since the Unix epoch.
+ */
+ts: number, };
+
+export type Refusal = { reason: string, entries: number, };
 
 /**
  * A draft's text changed by `splice`, making its revision `revision`.

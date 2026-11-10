@@ -1,0 +1,28 @@
+/* The outbox: a section per account, each a list of what is not yet at
+   its provider. */
+.outbox {
+  flex: 1;
+  overflow: auto;
+}
+
+.account {
+  margin: 0;
+  padding: 12px 16px 4px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.failing {
+  margin: 0 16px 8px;
+  padding: 8px 12px;
+  border-radius: 4px;
+  background: var(--error-bg);
+  color: var(--error-fg);
+}
+
+.actions {
+  display: flex;
+  justify-content: end;
+  gap: 8px;
+}

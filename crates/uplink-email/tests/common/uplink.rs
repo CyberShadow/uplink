@@ -152,10 +152,14 @@ impl Uplink {
     }
 
     pub async fn outbox(&self) -> Vec<(i64, OutboxState)> {
-        let ServerResponse::Outbox { items, .. } = self.mail.list_outbox().await.unwrap() else {
+        let ServerResponse::Outbox { accounts, .. } = self.mail.list_outbox().await.unwrap() else {
             panic!()
         };
-        items.into_iter().map(|i| (i.id.0, i.state)).collect()
+        accounts
+            .into_iter()
+            .flat_map(|a| a.sends)
+            .map(|i| (i.id.0, i.state))
+            .collect()
     }
 
     pub fn message_of(&self, entry: EntryId) -> (MessageId, String, Option<String>) {

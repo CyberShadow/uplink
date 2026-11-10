@@ -126,6 +126,13 @@
   font-weight: 600;
 }
 
+.alert {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--error-bg);
+  color: var(--error-fg);
+}
+
 .name {
   flex: 1;
   overflow: hidden;

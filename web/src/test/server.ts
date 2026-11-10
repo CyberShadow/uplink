@@ -13,6 +13,9 @@ import type {
   Conversation,
   Draft,
   OutboxItem,
+  AccountOutbox,
+  Failing,
+  PendingChanges,
   Splice,
   Entry,
   EntryId,
@@ -69,6 +72,9 @@ export class FakeServer implements Requester, Blobs {
   readonly drafts = new Map<string, Draft>()
   readonly outbox: OutboxItem[] = []
   private nextOutbox = 1
+  /** Per account, what its sync task has not pushed yet, as set by
+   * `pend`. */
+  readonly pending = new Map<string, { failing: Failing | null; changes: PendingChanges[] }>()
   /** Uploaded blobs: their content's names, as the fake's ids. */
   readonly blobs = new Map<string, number>()
   private nextAttachment = 1
@@ -229,6 +235,12 @@ export class FakeServer implements Requester, Blobs {
       { type: 'rooms_changed', rooms: [room] },
     ])
     return full
+  }
+
+  /** The account's sync task reports what it has not pushed yet. */
+  pend(account: string, failing: Failing | null, changes: PendingChanges[]) {
+    this.pending.set(account, { failing, changes })
+    this.observe(account, [{ type: 'outbox_changed', accounts: [account] }])
   }
 
   /** The homeserver sends an outbox item, and sync echoes it. */
@@ -398,8 +410,25 @@ export class FakeServer implements Requester, Blobs {
       }
       case 'list_drafts':
         return { type: 'drafts', as_of: this.head(), drafts: [...this.drafts.values()] }
-      case 'list_outbox':
-        return { type: 'outbox', as_of: this.head(), items: [...this.outbox] }
+      case 'list_outbox': {
+        const ids = new Set([...this.pending.keys(), ...this.outbox.map((i) => i.account)])
+        const accounts: AccountOutbox[] = [...ids].sort().map((account) => ({
+          account,
+          failing: this.pending.get(account)?.failing ?? null,
+          changes: this.pending.get(account)?.changes ?? [],
+          sends: this.outbox.filter((i) => i.account === account),
+        }))
+        return { type: 'outbox', as_of: this.head(), accounts }
+      }
+      case 'keep_observed': {
+        const pending = this.pending.get(body.account)!
+        const change = pending.changes.find((c) => (c.op?.id ?? null) === body.op)!
+        const kept = change.refused.reduce((n, r) => n + r.entries, 0)
+        change.refused = []
+        change.entries -= kept
+        pending.changes = pending.changes.filter((c) => c.entries > 0)
+        return this.dispatched('Kept what the provider has', [{ type: 'outbox_changed', accounts: [body.account] }])
+      }
       case 'create_draft': {
         if (this.drafts.has(body.id)) throw new RequestError({ code: 'conflict', message: 'exists' })
         const { id, account, content, in_reply_to } = body

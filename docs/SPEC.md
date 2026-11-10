@@ -1021,7 +1021,9 @@ newest first, each with what is left of it ("Archived 214
 conversations: 180 to go") and its state: waiting (a send's delay),
 being pushed, retrying (with the account's error, and since when), or
 needing a decision (refused or irreconcilable: the reason, and the
-actions that resolve it). Each has its Undo. Sends are listed until the
+actions that resolve it). Each has its Undo. Changes pending from before
+ops were recorded with them (V0018) are listed together, as made
+earlier. Sends are listed until the
 provider's copy is synced (§8.6), so a sent mail stays until it is in
 Sent. The nav shows the outbox's count, and marks it while an account's
 pushes are failing or something needs a decision. An empty outbox means

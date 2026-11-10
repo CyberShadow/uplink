@@ -1,8 +1,9 @@
-// Drafts and the outbox, as the server has them (SPEC §6.7, §7), and the
-// compose sessions editing drafts in this tab.
+// Drafts and the outbox, as the server has them (SPEC §6.6, §6.7, §7), and
+// the compose sessions editing drafts in this tab.
 
 import { signal } from '@preact/signals'
 import type {
+  AccountOutbox,
   ClientRequest,
   Draft,
   DraftContent,
@@ -13,9 +14,9 @@ import type {
   MessageContent,
   MessageId,
   OutboxId,
-  OutboxItem,
   ServerResponse,
   Splice,
+  TxLogId,
 } from '../generated/protocol'
 import type { Blobs } from '../blobs'
 import { RequestError, type Requester } from '../connection'
@@ -31,7 +32,8 @@ export type EditOutcome = 'applied' | 'conflict' | 'gone'
 export class DraftStore {
   /** By id; `null` until loaded. */
   readonly drafts = signal<ReadonlyMap<string, Draft> | null>(null)
-  readonly outbox = signal<readonly OutboxItem[] | null>(null)
+  /** Per account with anything, what is not yet at its provider. */
+  readonly outbox = signal<readonly AccountOutbox[] | null>(null)
   readonly error = signal<string | null>(null)
 
   private sessions = new Map<string, ComposeSession>()
@@ -41,7 +43,7 @@ export class DraftStore {
   })
   private outboxLoader = new Loader(async () => {
     const response = await this.query({ type: 'list_outbox' }, 'outbox')
-    if (response) this.outbox.value = response.items
+    if (response) this.outbox.value = response.accounts
   })
 
   constructor(
@@ -196,6 +198,12 @@ export class DraftStore {
     return this.ops.dispatch({ type: 'cancel_send', item })
   }
 
+  /** Resolves `op`'s refused changes in `account` by keeping what the
+   * provider has. */
+  keepObserved(account: string, op: TxLogId | null) {
+    return this.ops.dispatch({ type: 'keep_observed', account, op })
+  }
+
   private async query<T extends ServerResponse['type']>(
     request: ClientRequest,
     type: T,
@@ -207,4 +215,20 @@ export class DraftStore {
       return null
     }
   }
+}
+
+/** How many things the outbox lists: each op's changes, and each send. */
+export function outboxCount(outbox: readonly AccountOutbox[]): number {
+  return outbox.reduce((n, account) => n + account.changes.length + account.sends.length, 0)
+}
+
+/** Whether something in the outbox needs the user: an account failing,
+ * or something refused. */
+export function outboxNeedsAttention(outbox: readonly AccountOutbox[]): boolean {
+  return outbox.some(
+    (account) =>
+      account.failing !== null ||
+      account.changes.some((c) => c.refused.length > 0) ||
+      account.sends.some((s) => s.state === 'failed'),
+  )
 }

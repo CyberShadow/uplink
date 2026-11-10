@@ -1005,6 +1005,126 @@ pub(crate) mod service {
             .collect()
     }
 
+    /// The outbox lists, per account, what is pending by the op that made
+    /// it, newest first, with what the provider refused and why the
+    /// account is failing; refused changes are resolved by keeping what
+    /// the provider has.
+    #[tokio::test]
+    async fn the_outbox_lists_pending_changes_by_op() {
+        use crate::mailbox::{LabelsRefused, PushFailing};
+        use uplink_protocol::compose::{Failing, PendingChanges, PendingOp, Refusal};
+        let db = Db::new();
+        let mail = mail_with(&db).await;
+        let (inbox, starred) = (db.label("a", "INBOX"), db.label("a", "STARRED"));
+        let dispatched = |response: Result<ServerResponse, _>| match response {
+            Ok(ServerResponse::Dispatched { tx_log_id }) => tx_log_id,
+            other => panic!("{other:?}"),
+        };
+        let archived = dispatched(
+            mail.modify_labels(vec![db.entry("m1"), db.entry("m2")], vec![], vec![inbox])
+                .await,
+        );
+        let starred_op = dispatched(
+            mail.modify_labels(vec![db.entry("m3")], vec![starred], vec![])
+                .await,
+        );
+        db.dispatcher
+            .observe(
+                "a".into(),
+                LabelsRefused {
+                    changes: vec![LabelChange {
+                        entry: db.entry("m1"),
+                        label: inbox,
+                        desired: false,
+                    }],
+                    reason: "no".into(),
+                },
+            )
+            .await
+            .unwrap();
+        db.dispatcher
+            .observe(
+                "a".into(),
+                PushFailing {
+                    error: Some("down".into()),
+                    at: 7,
+                },
+            )
+            .await
+            .unwrap();
+        let listed = |response: ServerResponse| {
+            let ServerResponse::Outbox { accounts, .. } = response else {
+                panic!("{response:?}")
+            };
+            accounts
+        };
+        let ts =
+            |id: TxLogId| db.query::<i64>(&format!("SELECT ts FROM tx_log WHERE id = {}", id.0))[0];
+        let op = |id, description: &str| {
+            Some(PendingOp {
+                id,
+                description: description.into(),
+                ts: ts(id),
+            })
+        };
+        let accounts = listed(mail.list_outbox().await.unwrap());
+        let [a] = &accounts[..] else {
+            panic!("{accounts:?}")
+        };
+        assert_eq!(a.account, "a");
+        assert_eq!(
+            a.failing,
+            Some(Failing {
+                error: "down".into(),
+                since: 7
+            })
+        );
+        assert_eq!(
+            a.changes,
+            [
+                PendingChanges {
+                    op: op(starred_op, "Starred 1 message"),
+                    entries: 1,
+                    refused: vec![],
+                },
+                PendingChanges {
+                    op: op(archived, "Archived 2 messages"),
+                    entries: 2,
+                    refused: vec![Refusal {
+                        reason: "no".into(),
+                        entries: 1
+                    }],
+                },
+            ]
+        );
+
+        // Keeping what Gmail has puts m1 back in the Inbox, as an op.
+        let kept = dispatched(mail.keep_observed("a".into(), Some(archived)).await);
+        assert_eq!(
+            db.query::<String>(&format!(
+                "SELECT description FROM tx_log WHERE id = {}",
+                kept.0
+            )),
+            ["Moved 1 message to Inbox"]
+        );
+        let accounts = listed(mail.list_outbox().await.unwrap());
+        assert_eq!(
+            accounts[0].changes[1],
+            PendingChanges {
+                op: op(archived, "Archived 2 messages"),
+                entries: 1,
+                refused: vec![],
+            }
+        );
+        assert!(matches!(
+            mail.keep_observed("a".into(), Some(archived)).await,
+            Err(uplink_protocol::ServerError {
+                code: ErrorCode::Conflict,
+                ..
+            })
+        ));
+    }
+
     #[tokio::test]
     async fn accounts_with_label_counts() {
         let db = Db::new();

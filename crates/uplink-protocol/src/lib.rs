@@ -165,8 +165,16 @@ pub enum ClientRequest {
     CancelSend {
         item: OutboxId,
     },
-    /// Outbox items not yet synced back from the provider.
+    /// What is not yet reconciled with the providers: per mail account
+    /// with anything, its pending changes and sends (SPEC §6.6).
     ListOutbox,
+    /// Resolve the changes the provider refused, of `op` (`None`: those
+    /// made before ops were recorded with them) in `account`, by keeping
+    /// what the provider has: an op, undoable like any other.
+    KeepObserved {
+        account: String,
+        op: Option<TxLogId>,
+    },
     /// The configured Matrix accounts and their rooms.
     ListRooms,
     /// Up to `limit` events of the room's timeline, oldest first.
@@ -257,7 +265,7 @@ pub enum ServerResponse {
     },
     Outbox {
         as_of: TxLogId,
-        items: Vec<compose::OutboxItem>,
+        accounts: Vec<compose::AccountOutbox>,
     },
     Rooms {
         as_of: TxLogId,

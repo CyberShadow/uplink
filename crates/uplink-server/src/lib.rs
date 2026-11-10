@@ -694,6 +694,9 @@ impl Backend for Services {
             ClientRequest::SendDraft { draft } => self.mail.send_draft(draft).await,
             ClientRequest::CancelSend { item } => self.mail.cancel_send(item).await,
             ClientRequest::ListOutbox => self.mail.list_outbox().await,
+            ClientRequest::KeepObserved { account, op } => {
+                self.mail.keep_observed(account, op).await
+            }
             ClientRequest::ListRooms => self.matrix.list_rooms().await,
             ClientRequest::ListTimeline { room, page, limit } => {
                 self.matrix.list_timeline(room, page, limit).await

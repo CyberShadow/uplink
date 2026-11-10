@@ -28,6 +28,7 @@ async function start(path = '/') {
   if (path.startsWith('/rooms/')) await screen.findByRole('list', { name: 'Timeline' })
   else if (path === '/todos') await screen.findByRole('region', { name: 'To-dos' })
   else if (path === '/history') await screen.findByRole('list', { name: 'History' })
+  else if (path === '/outbox') await screen.findByText(/^The outbox is empty/)
   else await screen.findByRole('list', { name: 'Messages' })
   return userEvent.setup()
 }
@@ -740,6 +741,39 @@ describe('compose', () => {
     expect((subject as HTMLInputElement).value).toBe('Fwd: With files')
     const forwarded = await screen.findByRole('list', { name: 'Attachments' })
     expect(forwarded.textContent).toBe('minutes.pdf 2 KB×')
+  })
+})
+
+describe('outbox', () => {
+  it('lists what is not yet at the providers, by op, with what was refused', async () => {
+    const user = await start('/outbox')
+    await screen.findByText('The outbox is empty: everything you did is at the providers.')
+    server.pend('work', { error: 'connection refused', since: Date.UTC(2026, 10, 10, 9) }, [
+      { op: { id: 7, description: 'Starred 1 message', ts: Date.UTC(2026, 10, 10, 9) }, entries: 1, refused: [] },
+      {
+        op: { id: 5, description: 'Archived 3 messages', ts: Date.UTC(2026, 10, 10, 8) },
+        entries: 3,
+        refused: [{ reason: 'Invalid label', entries: 1 }],
+      },
+    ])
+    const section = await screen.findByRole('region', { name: 'work' })
+    expect(within(section).getByRole('alert').textContent).toMatch(/^Not reaching Gmail since .*: connection refused$/)
+    const rows = within(section).getAllByRole('listitem')
+    expect(rows.map((r) => r.querySelector('[class*=summary]')!.textContent)).toEqual([
+      'Starred 1 message1 message waiting',
+      'Archived 3 messages2 messages waiting; Gmail refused 1 message: Invalid label',
+    ])
+    // The nav counts both, and marks that something needs attention.
+    const count = within(screen.getByRole('link', { name: /Outbox/ })).getByText('2')
+    expect(count.title).toBe('Something needs your attention')
+
+    // Keeping Gmail's resolves the refusal.
+    await user.click(within(rows[1]).getByRole('button', { name: 'Keep Gmail’s' }))
+    await screen.findByText('Kept what the provider has')
+    await waitFor(() =>
+      expect(within(section).queryByRole('button', { name: 'Keep Gmail’s' })).toBeNull(),
+    )
+    expect(within(section).getByText(/^2 messages waiting$/)).toBeTruthy()
   })
 })
 

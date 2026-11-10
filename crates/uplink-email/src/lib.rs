@@ -7,6 +7,7 @@ pub mod gmail;
 pub mod m365;
 pub mod mailbox;
 pub mod oauth;
+mod outbox;
 pub mod parse;
 pub mod query;
 pub mod remote;

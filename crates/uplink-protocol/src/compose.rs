@@ -1,11 +1,11 @@
-//! Drafts and the outbox (SPEC §6.7, §7).
+//! Drafts and the outbox (SPEC §6.6, §6.7, §7).
 //!
 //! A draft is edited by span replacements on its text fields, each based
 //! on the draft's revision: an edit based on an older revision than the
 //! current one is refused, and the client rebases it (§7.2). Offsets and
 //! lengths count UTF-16 code units, as JavaScript strings do.
 
-use crate::mail::MessageId;
+use crate::{mail::MessageId, TxLogId};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -125,6 +125,56 @@ pub struct OutboxItem {
     pub error: Option<String>,
     /// When it is sent, ms since the Unix epoch.
     pub not_before: i64,
+}
+
+/// What of an account is not yet reconciled with its provider (SPEC §6.6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct AccountOutbox {
+    pub account: String,
+    /// Why its changes are not reaching the provider, while they are not.
+    pub failing: Option<Failing>,
+    /// Label changes pending, by the op that made them, newest first.
+    pub changes: Vec<PendingChanges>,
+    /// Mail being sent, or sent and not yet synced back.
+    pub sends: Vec<OutboxItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Failing {
+    pub error: String,
+    /// Ms since the Unix epoch.
+    pub since: i64,
+}
+
+/// The label changes of one op not yet in effect at the provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PendingChanges {
+    /// The op, with what it did and when; `None` for changes made before
+    /// ops were recorded with them.
+    pub op: Option<PendingOp>,
+    /// The messages with changes still to push.
+    pub entries: u32,
+    /// Of those, the ones the provider refused, by its reason.
+    pub refused: Vec<Refusal>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PendingOp {
+    pub id: TxLogId,
+    pub description: String,
+    /// Ms since the Unix epoch.
+    pub ts: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Refusal {
+    pub reason: String,
+    pub entries: u32,
 }
 
 // ── events ────────────────────────────────────────────────────────────────

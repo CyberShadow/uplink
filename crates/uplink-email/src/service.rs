@@ -6,6 +6,7 @@ use crate::{
         SendDraft,
     },
     mailbox::{LabelChange, SetLabels},
+    outbox,
     parse::{self, html_body, parse},
     query::{self, ConfiguredAccount},
     store::{Store, VariantHash},
@@ -14,7 +15,7 @@ use std::{path::Path, sync::Arc, time::Duration};
 use uplink_protocol::{
     compose::{BlobId, DraftAttachmentId, DraftContent, DraftId, OutboxId, Splice, UploadedBlob},
     mail::{EntryId, EntryList, LabelId, ListPosition, MessageContent, MessageId},
-    ErrorCode, ServerError, ServerResponse,
+    ErrorCode, ServerError, ServerResponse, TxLogId,
 };
 use uplink_storage::rusqlite::{Connection, OptionalExtension};
 use uplink_tx_log::{
@@ -438,10 +439,28 @@ impl Mail {
             .read(move |conn| {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
                 let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
-                let items = compose::outbox(&tx).map_err(internal)?;
-                Ok(ServerResponse::Outbox { as_of, items })
+                let accounts = outbox::outbox(&tx).map_err(internal)?;
+                Ok(ServerResponse::Outbox { as_of, accounts })
             })
             .await
+    }
+
+    /// Takes the refused changes of `op` back to what the provider has.
+    pub async fn keep_observed(&self, account: String, op: Option<TxLogId>) -> Response {
+        let changes = self
+            .reader
+            .read(move |conn| {
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                outbox::keeping_observed(&tx, &account, op).map_err(internal)
+            })
+            .await?;
+        if changes.is_empty() {
+            return Err(error(
+                ErrorCode::Conflict,
+                "nothing refused is left to keep".into(),
+            ));
+        }
+        self.dispatcher.answer(SetLabels { changes }).await
     }
 }
 
