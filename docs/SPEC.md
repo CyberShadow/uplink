@@ -1332,7 +1332,11 @@ In a dark theme, the frame's page is inverted with its hues kept
 (`filter: invert(1) hue-rotate(180deg)`, as Dark Reader's filter mode),
 and its images, videos and background images inverted back: mail is
 written for white paper, and whatever colours it sets become their dark
-counterparts. Mail designed dark comes out light.
+counterparts. Mail designed dark comes out light. Pictures come out a
+little muted: the filter is not exactly undone. The page and the frame
+carry `<meta name="darkreader-lock">`, so that the Dark Reader browser
+extension, which a user may keep for other sites, does not darken them
+again.
 
 Attachments: `LoadMessage` lists the message's parts other than its body
 (name, MIME type, decoded size; `inline` if the HTML body shows it), and

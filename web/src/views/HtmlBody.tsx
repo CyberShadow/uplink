@@ -23,7 +23,7 @@ body { margin: 0; padding: 8px; font: 14px/1.4 'Google Sans', Roboto, RobotoDraf
 
 function document(html: string, remote: boolean): string {
   const images = remote ? 'data: https: http:' : 'data:'
-  return `<!doctype html><html><head><meta charset="utf-8">
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="darkreader-lock">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${images}; style-src 'unsafe-inline'">
 <base target="_blank">
 <style>${STYLE}</style>
