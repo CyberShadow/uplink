@@ -373,7 +373,11 @@ CREATE TABLE message (
   date_sent         INTEGER,                -- Date:, unix seconds
   senders           TEXT NOT NULL,          -- JSON array: addresses a variant
                                             -- may name as its sender (§4.4)
-  snippet           TEXT NOT NULL           -- start of the body text
+  snippet           TEXT NOT NULL,          -- start of the body text
+  has_attachments   INTEGER                 -- (V0014) files attached, not
+                                            -- inline images; NULL until
+                                            -- indexed, at startup, for
+                                            -- messages stored before
 );
 
 -- One distinct copy of a message, stored at mail/<sha[0:2]>/<sha>.eml.

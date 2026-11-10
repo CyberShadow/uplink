@@ -94,7 +94,8 @@ pub fn accounts(
 }
 
 const ENTRY_COLUMNS: &str = "e.id, e.account_id, e.message, e.thread_id, e.received_at,
-                             m.subject, m.from_addr, m.from_name, m.snippet";
+                             m.subject, m.from_addr, m.from_name, m.snippet,
+                             m.has_attachments";
 
 /// A page of entries, newest first.
 pub struct Page {
@@ -317,6 +318,7 @@ fn entry_row(r: &Row) -> uplink_storage::rusqlite::Result<Entry> {
         from_addr: r.get(6)?,
         from_name: r.get(7)?,
         snippet: r.get(8)?,
+        has_attachments: r.get(9)?,
         labels: vec![],
     })
 }

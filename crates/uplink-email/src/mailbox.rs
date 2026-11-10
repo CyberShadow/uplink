@@ -10,7 +10,7 @@
 use crate::{
     compose,
     parse::{self, Parsed},
-    store::VariantHash,
+    store::{Store, VariantHash},
 };
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -27,6 +27,37 @@ use uplink_tx_log::{Applied, Conflict, Inverse, Observation, Observed, Op, Regis
 
 /// Bytes of body text indexed for search (SPEC §8.7).
 const INDEXED_BODY_BYTES: usize = 64 * 1024;
+
+/// Records which messages have attachments, of those stored before it was
+/// recorded as they were (V0014), reading their preferred variants from
+/// `store`. Run on the writer before the dispatcher takes it, as a
+/// migration that needs the files; returns how many it indexed.
+pub fn index_attachments(
+    conn: &mut uplink_storage::rusqlite::Connection,
+    store: &Store,
+) -> Result<usize> {
+    let pending: Vec<(i64, String)> = conn
+        .prepare("SELECT id, preferred_variant FROM message WHERE has_attachments IS NULL")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    if !pending.is_empty() {
+        tracing::info!("indexing the attachments of {} messages", pending.len());
+    }
+    for batch in pending.chunks(500) {
+        let tx = conn.transaction()?;
+        for (id, variant) in batch {
+            let hash = VariantHash::parse(variant)
+                .with_context(|| format!("message {id} has variant {variant}"))?;
+            let raw = store.get(&hash)?;
+            tx.execute(
+                "UPDATE message SET has_attachments = ?1 WHERE id = ?2",
+                params![parse::has_attachments(&raw), id],
+            )?;
+        }
+        tx.commit()?;
+    }
+    Ok(pending.len())
+}
 
 pub fn register(registry: &mut Registry) {
     registry.register::<SetLabels>();
@@ -415,8 +446,8 @@ fn insert_message(
     let id: i64 = tx.query_row(
         "INSERT INTO message
            (message_id, preferred_variant, subject, from_addr, from_name,
-            to_addrs, cc_addrs, date_sent, senders, snippet)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            to_addrs, cc_addrs, date_sent, senders, snippet, has_attachments)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          RETURNING id",
         params![
             message_id,
@@ -429,6 +460,7 @@ fn insert_message(
             parsed.date_sent,
             serde_json::to_string(&parsed.senders)?,
             parsed.snippet,
+            parsed.has_attachments,
         ],
         |r| r.get(0),
     )?;

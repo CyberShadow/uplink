@@ -70,6 +70,8 @@ pub struct Entry {
     pub from_addr: Option<String>,
     pub from_name: Option<String>,
     pub snippet: String,
+    /// Whether it has attachments other than images its HTML body shows.
+    pub has_attachments: bool,
     /// Labels as desired, i.e. including changes not yet pushed.
     pub labels: Vec<LabelId>,
 }

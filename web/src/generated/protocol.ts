@@ -126,6 +126,10 @@ export type Entry = { id: EntryId, account: string, message: MessageId, thread_i
  */
 received_at: number, subject: string | null, from_addr: string | null, from_name: string | null, snippet: string, 
 /**
+ * Whether it has attachments other than images its HTML body shows.
+ */
+has_attachments: boolean, 
+/**
  * Labels as desired, i.e. including changes not yet pushed.
  */
 labels: Array<LabelId>, };

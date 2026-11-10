@@ -1202,8 +1202,8 @@ fn fill(conn: &mut Connection, messages: i64) {
         let (subject, body) = (subject.join(" "), body.join(" "));
         tx.execute(
             "INSERT INTO message (id, message_id, preferred_variant, subject, from_addr,
-                                  to_addrs, cc_addrs, senders, snippet)
-             VALUES (?1, ?1 || '@x', ?1, ?2, 's@x', '[]', '[]', '[]', ?3)",
+                                  to_addrs, cc_addrs, senders, snippet, has_attachments)
+             VALUES (?1, ?1 || '@x', ?1, ?2, 's@x', '[]', '[]', '[]', ?3, 0)",
             params![id, subject, &body[..60]],
         )
         .unwrap();
@@ -1427,4 +1427,68 @@ fn speed_of_search_and_listing() {
         .len()
     });
     eprintln!("slowest: {slowest:?}");
+}
+
+/// Messages stored before `has_attachments` was recorded get it from their
+/// .eml once, before the dispatcher takes the writer.
+#[tokio::test]
+async fn attachments_are_indexed_for_messages_stored_before() {
+    use crate::{mailbox::index_attachments, parse::tests::WITH_PARTS, query};
+    use uplink_protocol::mail::EntryList;
+
+    let db = Db::new();
+    let store = db.store();
+    db.observe(
+        "a",
+        observed(
+            labels(&["INBOX"]),
+            vec![
+                new_entry(
+                    &store,
+                    "plain",
+                    &["INBOX"],
+                    &raw(
+                        "p@x",
+                        "s@x",
+                        "Mon, 9 Nov 2026 10:00:00 +0000",
+                        "plain",
+                        "hi",
+                    ),
+                ),
+                new_entry(&store, "parts", &["INBOX"], WITH_PARTS.as_bytes()),
+            ],
+            vec![],
+            &[],
+        ),
+    )
+    .await;
+    let mut conn = uplink_storage::open(db.dir.path()).unwrap();
+    let listed = |conn: &mut Connection| -> Vec<(String, bool)> {
+        let inbox = db.label("a", "INBOX");
+        let mut entries: Vec<_> =
+            query::entries(conn, &EntryList::Label { label: inbox }, None, 10)
+                .unwrap()
+                .entries
+                .into_iter()
+                .map(|e| {
+                    (
+                        e.snippet.chars().take(2).collect::<String>(),
+                        e.has_attachments,
+                    )
+                })
+                .collect();
+        entries.sort();
+        entries
+    };
+    let recorded = listed(&mut conn);
+    conn.execute("UPDATE message SET has_attachments = NULL", [])
+        .unwrap();
+    assert_eq!(index_attachments(&mut conn, &store).unwrap(), 2);
+    assert_eq!(listed(&mut conn), recorded);
+    assert_eq!(
+        recorded.iter().filter(|(_, has)| *has).count(),
+        1,
+        "{recorded:?}"
+    );
+    assert_eq!(index_attachments(&mut conn, &store).unwrap(), 0);
 }

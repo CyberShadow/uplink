@@ -31,6 +31,8 @@ pub struct Parsed {
     /// converted.
     pub body_text: String,
     pub snippet: String,
+    /// Whether it has attachments other than images its HTML body shows.
+    pub has_attachments: bool,
 }
 
 pub fn parse(raw: &[u8]) -> Parsed {
@@ -57,6 +59,7 @@ pub fn parse(raw: &[u8]) -> Parsed {
             senders: vec![],
             body_text: String::new(),
             snippet: String::new(),
+            has_attachments: false,
         };
     };
 
@@ -89,7 +92,14 @@ pub fn parse(raw: &[u8]) -> Parsed {
         senders,
         snippet: snippet(&body_text),
         body_text,
+        has_attachments: has_attachments(raw),
     }
+}
+
+/// Whether the message has attachments other than images its HTML body
+/// shows.
+pub fn has_attachments(raw: &[u8]) -> bool {
+    attachments(raw).iter().any(|a| !a.inline)
 }
 
 /// The message's HTML body, if it has one, sanitized for display: no
@@ -227,7 +237,7 @@ pub fn truncate(text: &str, max_bytes: usize) -> &str {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn raw(headers: &str, body: &str) -> Vec<u8> {
@@ -302,7 +312,7 @@ mod tests {
     }
 
     /// An HTML message showing an image of its own, with a PDF attached.
-    const WITH_PARTS: &str = "From: a@example.com\r
+    pub(crate) const WITH_PARTS: &str = "From: a@example.com\r
 Subject: Report\r
 MIME-Version: 1.0\r
 Content-Type: multipart/mixed; boundary=outer\r

@@ -133,6 +133,7 @@ export class FakeServer implements Requester, Blobs {
       from_addr: 'bob@example.org',
       from_name: 'Bob',
       snippet: `About ${subject.toLowerCase()}`,
+      has_attachments: false,
       labels: labels.map((l) => this.labelId(account, l)),
     }
     this.entries.push(entry)
