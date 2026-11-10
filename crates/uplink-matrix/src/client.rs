@@ -9,7 +9,11 @@
 use anyhow::{ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use matrix_sdk::{
-    authentication::matrix::MatrixSession, config::SyncSettings, store::RoomLoadSettings, Client,
+    authentication::matrix::MatrixSession,
+    config::SyncSettings,
+    ruma::api::client::{filter::FilterDefinition, sync::sync_events::v3::Filter},
+    store::RoomLoadSettings,
+    Client,
 };
 use std::{path::PathBuf, time::Duration};
 use uplink_config::MatrixAccountConfig;
@@ -49,23 +53,45 @@ pub async fn restore(account: &MatrixAccountConfig, key: &MasterKey) -> Result<C
     Ok(client)
 }
 
-/// Logs in with `password`, creating a device named `device_name`, and
-/// seals the session. The account must not be paired yet: its stores
-/// belong to one device.
-pub async fn login(
+/// Pairs the account: logs in with `password`, creating a device named
+/// `device_name`, uploads the device's keys, so that others encrypt to it
+/// from now on, and seals the session. Run before [`import_secrets`].
+///
+/// The account must have no state yet: its stores belong to one device. A
+/// pairing that fails logs its device out and removes the state it made,
+/// so that it can be retried.
+pub async fn pair(
     account: &MatrixAccountConfig,
     key: &MasterKey,
     password: &str,
     device_name: &str,
 ) -> Result<Client> {
-    let path = session_path(account);
     ensure!(
-        !path.exists(),
-        "{} is paired already; to pair it again, delete {} first",
+        !account.state_dir.exists(),
+        "{} has state in {} already: it is paired, or its pairing was interrupted; \
+         to pair it again, delete that first",
         account.id,
         account.state_dir.display()
     );
     let client = build(account, key).await?;
+    match set_up(account, key, &client, password, device_name).await {
+        Ok(()) => Ok(client),
+        Err(e) => match undo(account, client).await {
+            Ok(()) => Err(e),
+            Err(undo) => Err(e.context(format!(
+                "pairing failed, and undoing it failed too ({undo:#})"
+            ))),
+        },
+    }
+}
+
+async fn set_up(
+    account: &MatrixAccountConfig,
+    key: &MasterKey,
+    client: &Client,
+    password: &str,
+    device_name: &str,
+) -> Result<()> {
     client
         .matrix_auth()
         .login_username(&account.mxid, password)
@@ -77,24 +103,33 @@ pub async fn login(
         .session()
         .context("logged in, but the client has no session")?;
     check_user(account, &session)?;
-    seal::write(key, &account.id, &session, &path)?;
-    Ok(client)
-}
-
-/// Uploads the new device's keys, so that others encrypt to it from now
-/// on. Run after [`login`], before [`import_secrets`].
-pub async fn upload_keys(client: &Client) -> Result<()> {
     client
         .encryption()
         .wait_for_e2ee_initialization_tasks()
         .await;
-    // A sync sends the outgoing key uploads. The server's sync task
-    // starts afresh, so this one leaves nothing unrecorded.
+    // A sync sends the outgoing key uploads. One without rooms returns
+    // quickly however many the account has; the server's sync task starts
+    // afresh, so it leaves nothing unrecorded.
     client
-        .sync_once(SyncSettings::new().timeout(Duration::ZERO))
+        .sync_once(
+            SyncSettings::new()
+                .filter(Filter::FilterDefinition(FilterDefinition::ignore_all()))
+                .timeout(Duration::ZERO),
+        )
         .await
         .context("syncing to upload the device keys")?;
-    Ok(())
+    seal::write(key, &account.id, &session, &session_path(account))
+}
+
+/// Logs out the device of a failed pairing, if it got one, and removes
+/// the account's state.
+async fn undo(account: &MatrixAccountConfig, client: Client) -> Result<()> {
+    if client.matrix_auth().logged_in() {
+        client.logout().await.context("logging the device out")?;
+    }
+    drop(client);
+    std::fs::remove_dir_all(&account.state_dir)
+        .with_context(|| format!("removing {}", account.state_dir.display()))
 }
 
 /// Imports the account's cross-signing keys (and key backup key) from

@@ -1594,8 +1594,12 @@ at once) and sends it with transaction id `uplink-<id>`:
 ### 9.4 Cross-signing pairing
 
 `uplink matrix pair --account ID` (run as the service user) logs in with
-the account's password as a new device ("uplink (ID)"), seals the
-session, and syncs once to upload the device's keys. It then asks for
+the account's password as a new device ("uplink (ID)"), checks that the
+homeserver logged in the configured mxid (it may spell it otherwise, in
+another case), syncs once without rooms to upload the device's keys
+(quickly, however many rooms the account has), and seals the session. A
+pairing that fails before that logs its device out and removes the
+account's state directory, so that it can be retried. It then asks for
 the account's recovery key or Secret Storage passphrase: with it,
 matrix-sdk's `Recovery::recover` imports the cross-signing keys (and the
 key backup key) from Secret Storage, so the device signs itself and the
@@ -1603,8 +1607,8 @@ account's other devices trust it; left empty, the device stays
 unverified. Typed at a terminal, both are read without echo; otherwise
 a line each from standard input, for scripts. A running uplink picks
 the paired account up within a minute (its sync task retries restoring
-the session with backoff). To pair again, delete that directory: its stores
-belong to the old device.
+the session with backoff). To pair again, delete the account's state
+directory: its stores belong to the old device.
 
 This is a CLI flow and not a SPA flow because cross-signing setup is
 done once per device, ever; device verification UI is out of scope.

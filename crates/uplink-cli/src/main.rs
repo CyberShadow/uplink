@@ -110,13 +110,12 @@ async fn matrix_pair(config_path: &std::path::Path, id: &str) -> Result<()> {
     let mut prompt = Prompt::new();
     let password = prompt.secret("Password: ")?;
     let device_name = format!("uplink ({})", account.id);
-    let client = client::login(account, &key, &password, &device_name).await?;
+    let client = client::pair(account, &key, &password, &device_name).await?;
     println!(
         "Logged in as device {}; the session is sealed in {}.",
         client.device_id().context("no device id")?,
         client::session_path(account).display()
     );
-    client::upload_keys(&client).await?;
     println!(
         "To verify the device, so that your other devices share keys with it, enter \
          the account's recovery key or Secret Storage passphrase. Leave it empty to skip."

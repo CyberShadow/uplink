@@ -150,7 +150,7 @@ impl Uplink {
 
     /// Pairs the account, as `uplink matrix pair` does, and starts syncing.
     async fn pair_and_sync(&self) -> tokio::task::JoinHandle<()> {
-        client::login(&self.account, &self.key, PASSWORD, "uplink")
+        client::pair(&self.account, &self.key, PASSWORD, "uplink")
             .await
             .unwrap();
         self.start_sync()
@@ -496,10 +496,9 @@ async fn pairing_with_the_recovery_key_verifies_the_device() {
     let recovery_key = alice_phone.encryption().recovery().enable().await.unwrap();
 
     let uplink = Uplink::new(&homeserver);
-    let client = client::login(&uplink.account, &uplink.key, PASSWORD, "uplink")
+    let client = client::pair(&uplink.account, &uplink.key, PASSWORD, "uplink")
         .await
         .unwrap();
-    client::upload_keys(&client).await.unwrap();
     assert!(client::import_secrets(&client, &recovery_key)
         .await
         .unwrap());
@@ -612,4 +611,35 @@ async fn invitations_are_joined_or_declined_and_undone() {
         .unwrap();
     change(room.id, MembershipChange::Leave).await;
     membership(private, None).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_pairing_leaves_nothing_behind_and_can_be_retried() {
+    let dir = tempfile::tempdir().unwrap();
+    let homeserver = Homeserver::start(dir.path()).await;
+    let alice_phone = homeserver.register(dir.path(), "alice").await;
+    let mut uplink = Uplink::new(&homeserver);
+
+    // The homeserver logs in a name other than the configured one, as it
+    // does an mxid in another case: the session is not of the account.
+    uplink.account.mxid = "alice".into();
+    let error = client::pair(&uplink.account, &uplink.key, PASSWORD, "uplink")
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("not the configured alice"),
+        "{error:#}"
+    );
+    assert!(!uplink.account.state_dir.exists(), "the stores are removed");
+    let devices = alice_phone.devices().await.unwrap().devices;
+    assert_eq!(
+        devices.len(),
+        1,
+        "only the phone's device is left: {devices:?}"
+    );
+
+    uplink.account.mxid = "@alice:localhost".into();
+    client::pair(&uplink.account, &uplink.key, PASSWORD, "uplink")
+        .await
+        .unwrap();
 }
