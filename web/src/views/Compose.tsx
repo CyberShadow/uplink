@@ -83,7 +83,9 @@ function ComposeForm(props: { session: ComposeSession; draft: Draft }) {
   }, [session])
 
   useEffect(() => {
-    editor.current!.setEditable(!gone)
+    // Without an update: it would send the editor's HTML as an edit, which
+    // for an empty draft is `<p></p>`, from every tab that opens it.
+    editor.current!.setEditable(!gone, false)
   }, [gone])
 
   // Edits from elsewhere, rebased into what is typed here.

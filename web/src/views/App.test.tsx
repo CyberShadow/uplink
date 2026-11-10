@@ -559,6 +559,9 @@ describe('compose', () => {
     const [draft] = server.drafts.values()
     await waitFor(() => expect(draft.id && server.drafts.get(draft.id)!.content.subject).toBe('Lunch'))
     expect(server.drafts.get(draft.id)!.content.to).toBe('bob@example.org')
+    // Opening it changed nothing else: as another tab opening it at once
+    // would too, and the two would add up.
+    expect(server.drafts.get(draft.id)!.content.body).toBe('')
 
     // Shortcuts work from within the fields, and nowhere else.
     await user.keyboard('{Control>}{Enter}{/Control}')
