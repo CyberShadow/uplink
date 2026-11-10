@@ -13,6 +13,7 @@ import { messagePath } from './Todos'
 import styles from './Mail.module.css'
 import { fileSize } from './size'
 import { brief, dateTime } from '../format'
+import { Icon } from './Icon'
 
 // Route params; preact-iso's own `query` prop is the URL's query string.
 interface Props {
@@ -233,6 +234,7 @@ function MessageList(props: { mail: MailStore; open: (entry: Entry) => void }) {
                 mail.toggleSelected(entry.id)
               }}
             />
+            <Star mail={mail} entry={entry} />
             <span class={styles.from}>{sender(entry)}</span>
             <span class={styles.summary}>
               {isFlagged && <Flag />}
@@ -240,6 +242,13 @@ function MessageList(props: { mail: MailStore; open: (entry: Entry) => void }) {
               <LabelChips mail={mail} entry={entry} />
               <span class={styles.subject}>{entry.subject ?? '(no subject)'}</span>
               <span class={styles.snippet}> — {entry.snippet}</span>
+            </span>
+            <span class={styles.clip}>
+              {entry.has_attachments && (
+                <span title="Has attachments">
+                  <Icon name="paperclip" />
+                </span>
+              )}
             </span>
             <time class={styles.date} dateTime={new Date(entry.received_at).toISOString()}>
               {brief(entry.received_at)}
@@ -288,6 +297,7 @@ function MessageView(props: { mail: MailStore; entry: Entry }) {
   return (
     <article class={styles.message}>
       <h1 class={styles.messageSubject}>
+        <Star mail={mail} entry={entry} />
         {entry.subject ?? '(no subject)'} {todos.flagged.value.has(entry.message) && <Flag />}
         <LabelChips mail={mail} entry={entry} />
       </h1>
@@ -345,25 +355,41 @@ function Attachments(props: { message: MessageContent }) {
   )
 }
 
-/** The entry's labels worth showing beside it: user labels and Starred. */
+/** The entry's labels worth showing beside it: the user's own. */
 function LabelChips(props: { mail: MailStore; entry: Entry }) {
   const labels = props.entry.labels
     .map((id) => props.mail.labels.value.get(id))
-    .filter((l): l is Label => l !== undefined && (!l.system || l.external_id === 'STARRED'))
+    .filter((l): l is Label => l !== undefined && !l.system)
   return (
     <>
-      {labels.map((label) =>
-        label.external_id === 'STARRED' ? (
-          <span key={label.id} class={styles.star} title="Starred">
-            ★
-          </span>
-        ) : (
-          <span key={label.id} class={styles.chip}>
-            {label.name}
-          </span>
-        ),
-      )}
+      {labels.map((label) => (
+        <span key={label.id} class={styles.chip}>
+          {label.name}
+        </span>
+      ))}
     </>
+  )
+}
+
+/** Whether the entry is starred, and a button to star or unstar it. */
+function Star(props: { mail: MailStore; entry: Entry }) {
+  const { mail, entry } = props
+  const starred = entry.labels.includes(mail.systemLabel(entry.account, 'STARRED').id)
+  return (
+    <button
+      type="button"
+      class={[styles.star, starred && styles.starred].filter(Boolean).join(' ')}
+      aria-label="Star"
+      aria-pressed={starred}
+      title={starred ? 'Starred' : 'Not starred'}
+      onMouseDown={keepFocus}
+      onClick={(event) => {
+        event.stopPropagation()
+        mail.toggleStar([entry])
+      }}
+    >
+      <Icon name="star" filled={starred} />
+    </button>
   )
 }
 

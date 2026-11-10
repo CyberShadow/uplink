@@ -217,6 +217,25 @@ describe('mail', () => {
     await screen.findByText('No messages.')
   })
 
+  it('stars and unstars with a row\'s star, staying in the list', async () => {
+    const user = await start('/mail/work/INBOX')
+    const star = () => within(rows()[1]).getByRole('button', { name: 'Star' })
+    expect(star().getAttribute('aria-pressed')).toBe('false')
+    await user.click(star())
+    await waitFor(() => expect(star().getAttribute('aria-pressed')).toBe('true'))
+    expect(server.labelsOf(client.mail.list.value!.entries[1].id)).toContain(server.labelId('work', 'STARRED'))
+    expect(location.pathname).toBe('/mail/work/INBOX')
+    await user.click(star())
+    await waitFor(() => expect(star().getAttribute('aria-pressed')).toBe('false'))
+  })
+
+  it('shows which messages have files attached', async () => {
+    server.deliver('work', 'Report').has_attachments = true
+    await start('/mail/work/INBOX')
+    expect(within(rows()[0]).getByTitle('Has attachments')).toBeTruthy()
+    expect(within(rows()[1]).queryByTitle('Has attachments')).toBeNull()
+  })
+
   it('stars with s and marks unread with Shift+u', async () => {
     const user = await start('/mail/work/INBOX')
     await user.keyboard('s')

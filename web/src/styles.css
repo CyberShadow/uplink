@@ -10,6 +10,9 @@
   --accent: #1a73e8;
   --bg: #fff;
   --nav-bg: #f6f8fc;
+  /* Message rows: read mail recedes, unread stands out. */
+  --read-bg: #f2f6fc;
+  --unread-bg: #fff;
   --error-bg: #fce8e6;
   --error-fg: #a50e0e;
   font: 14px/1.4 system-ui, sans-serif;
@@ -19,15 +22,18 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --fg: #e3e3e3;
-    --muted: #9aa0a6;
-    --line: #3c4043;
-    --hover: #2a2d31;
-    --focus: #1e3a5f;
-    --selected: #283142;
+    /* Near-black throughout, with light text: high contrast. */
+    --fg: #f1f1f1;
+    --muted: #b4b8bd;
+    --line: #2e3133;
+    --hover: #34383b;
+    --focus: #1f3d66;
+    --selected: #283a57;
     --accent: #8ab4f8;
-    --bg: #1f1f1f;
-    --nav-bg: #18191b;
+    --bg: #181a1b;
+    --nav-bg: #181a1b;
+    --read-bg: #181a1b;
+    --unread-bg: #26292b;
     --error-bg: #5c1c1c;
     --error-fg: #f6aea9;
   }
