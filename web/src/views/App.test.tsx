@@ -226,7 +226,7 @@ describe('mail', () => {
     expect(frame.srcdoc).toContain(html)
     expect(frame.srcdoc).toContain('img-src data:;')
     await user.click(screen.getByRole('button', { name: 'Show them' }))
-    expect(frame.srcdoc).toContain("img-src data: 'self';")
+    expect(frame.srcdoc).toContain(`img-src data: ${location.origin};`)
   })
 
   it('lists the files attached to a message, to download', async () => {

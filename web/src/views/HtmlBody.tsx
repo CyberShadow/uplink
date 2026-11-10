@@ -39,8 +39,10 @@ function useDark(): boolean {
 }
 
 function document(html: string, remote: boolean, dark: boolean): string {
-  // The frame's origin is uplink's, the server's fetches of remote images.
-  const images = remote ? "data: 'self'" : 'data:'
+  // The server's fetches of remote images, at uplink's origin; by name, as
+  // Firefox does not take a srcdoc frame's 'self' for its (inherited)
+  // origin.
+  const images = remote ? `data: ${location.origin}` : 'data:'
   return `<!doctype html><html${dark ? ' class="dark"' : ''}><head><meta charset="utf-8"><meta name="darkreader-lock">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${images}; style-src 'unsafe-inline'">
 <base target="_blank">

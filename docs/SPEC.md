@@ -1332,7 +1332,8 @@ sanitized HTML, `http:`, `https:` and scheme-relative URLs of `<img src>`,
 and of CSS `url(…)` in `style` attributes and `<style>` elements, become
 `/api/remote-image?url=<URL>` (other `<img>` sources go). Asked to show
 them, the client lets the frame load images from uplink's origin
-(`img-src data: 'self'`); a sender then learns the server's address, a
+(`img-src data: <origin>`, named: Firefox does not match a `srcdoc`
+frame's `'self'` to the origin it inherits); a sender then learns the server's address, a
 fixed user agent (`Mozilla/5.0 (compatible; uplink)`) and when the mail
 was shown, but nothing of the browser: no client headers, cookies or
 referrer. Remote fonts and stylesheets still don't load. The endpoint
