@@ -457,5 +457,37 @@ async fn sends_mail_keeping_its_message_id() {
         raw.contains(&format!("In-Reply-To: <{original_message_id}>")),
         "{raw}"
     );
+
+    // Sent again, as if its outcome had been unknown and settled as not
+    // sent: it is sent as the same draft, which went out already, so Bob
+    // gets it once only.
+    sync.abort();
+    let _ = sync.await;
+    let db = uplink_storage::open(uplink.dir.path()).unwrap();
+    let requeued = db
+        .execute(
+            "UPDATE mail_send SET state = 'queued', message = NULL, synced = 0, not_before = 0
+             WHERE provider_draft IS NOT NULL",
+            [],
+        )
+        .unwrap();
+    assert_eq!(requeued, 1);
+    let sync = uplink.start(microsoft.provider(), ALICE);
+    eventually("the send to be sent again", || async {
+        let state: String = db
+            .query_row("SELECT state FROM mail_send", [], |r| r.get(0))
+            .unwrap();
+        (state == "sent").then_some(())
+    })
+    .await;
+    let received = microsoft
+        .call(
+            Method::GET,
+            "/mailFolders/inbox/messages/delta",
+            None,
+            Some(&bob),
+        )
+        .await;
+    assert_eq!(received["value"].as_array().unwrap().len(), 1, "{received}");
     sync.abort();
 }

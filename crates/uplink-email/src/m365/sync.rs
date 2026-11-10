@@ -9,7 +9,8 @@
 
 use super::api::{Changed, Delta, Flag, FlagStatus, Graph, Importance, Message, MessageUpdate};
 use crate::{
-    account::{Account, Pending, Provider, SendError, SyncTask},
+    account::{Account, Outgoing, Pending, Provider, SendError, SyncTask},
+    compose::SendDrafted,
     mailbox::{
         self, EntryLabels, LabelChange, LabelsPushed, LabelsRefused, MailboxObserved, NewEntry,
         ObservedLabel,
@@ -256,9 +257,33 @@ impl Provider for M365Sync {
         Ok(())
     }
 
-    async fn send(&self, raw: &[u8], _thread: Option<&str>) -> Result<(), SendError> {
-        // Graph threads a message by its headers.
-        self.graph.send_mail(raw).await
+    /// In two steps (SPEC §8.4): the message is made a draft, recorded,
+    /// then sent by its id. Graph threads it by its headers.
+    async fn send(&self, account: &Account, mail: Outgoing<'_>) -> Result<(), SendError> {
+        let draft = match mail.provider_draft {
+            Some(draft) => draft.to_owned(),
+            None => {
+                // Made by an attempt whose outcome was not known, if any.
+                let found = self
+                    .graph
+                    .find_draft(mail.message_id)
+                    .await
+                    .map_err(SendError::NotSent)?;
+                let draft = match found {
+                    Some(draft) => draft,
+                    None => self.graph.create_draft(mail.raw).await?,
+                };
+                account
+                    .observe(SendDrafted {
+                        item: mail.item,
+                        provider_draft: draft.clone(),
+                    })
+                    .await
+                    .map_err(SendError::NotSent)?;
+                draft
+            }
+        };
+        self.graph.send_draft(&draft).await
     }
 }
 

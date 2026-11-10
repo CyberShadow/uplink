@@ -28,6 +28,7 @@ use std::{
 };
 use tokio::sync::broadcast::{self, error::RecvError};
 use uplink_protocol::{
+    compose::OutboxId,
     mail::{EntryId, LabelId},
     LogEntry, Source,
 };
@@ -55,13 +56,25 @@ pub trait Provider: Send + Sync + 'static {
     /// ([`Account::pending`]), and records them as pushed.
     fn push(&self, account: &Account) -> impl Future<Output = Result<()>> + Send;
 
-    /// Hands the message to the provider to send; `thread` is the
-    /// provider's thread of the message it replies to.
+    /// Hands the message to the provider to send.
     fn send(
         &self,
-        raw: &[u8],
-        thread: Option<&str>,
+        account: &Account,
+        mail: Outgoing<'_>,
     ) -> impl Future<Output = Result<(), SendError>> + Send;
+}
+
+/// A message to send, and what is known of earlier attempts.
+pub struct Outgoing<'a> {
+    pub item: OutboxId,
+    /// RFC 5322, as built.
+    pub raw: &'a [u8],
+    pub message_id: &'a str,
+    /// The provider's thread of the message it replies to.
+    pub thread: Option<&'a str>,
+    /// The provider's draft it is sent as, if an earlier attempt made it
+    /// ([`SendDrafted`](crate::compose::SendDrafted)).
+    pub provider_draft: Option<&'a str>,
 }
 
 /// Why sending did not succeed.
@@ -506,7 +519,18 @@ impl<P: Provider> SyncTask<P> {
             now_ms() / 1000,
         )
         .map_err(|e| SendError::Rejected(format!("{e:#}")))?;
-        self.provider.send(&raw, thread.as_deref()).await?;
+        self.provider
+            .send(
+                &self.account,
+                Outgoing {
+                    item: due.item,
+                    raw: &raw,
+                    message_id: &due.message_id,
+                    thread: thread.as_deref(),
+                    provider_draft: due.provider_draft.as_deref(),
+                },
+            )
+            .await?;
         self.account
             .store_raw(raw)
             .await

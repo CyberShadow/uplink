@@ -6,7 +6,7 @@ use super::{
     oauth,
 };
 use crate::{
-    account::{Account, Provider, SendError, SyncTask},
+    account::{Account, Outgoing, Provider, SendError, SyncTask},
     mailbox::{
         EntryLabels, LabelChange, LabelsPushed, LabelsRefused, MailboxObserved, NewEntry,
         ObservedLabel, SyncState,
@@ -152,8 +152,8 @@ impl Provider for GmailSync {
         self.push_labels(account).await
     }
 
-    async fn send(&self, raw: &[u8], thread: Option<&str>) -> Result<(), SendError> {
-        self.gmail.send_message(raw, thread).await
+    async fn send(&self, _: &Account, mail: Outgoing<'_>) -> Result<(), SendError> {
+        self.gmail.send_message(mail.raw, mail.thread).await
     }
 }
 

@@ -221,48 +221,109 @@ impl Graph {
         changed(self.send(Method::POST, &url, Some(&body)).await?).await
     }
 
-    /// Sends the RFC 5322 message `raw`, which Graph takes as base64 MIME,
-    /// keeping a copy in Sent Items.
-    pub async fn send_mail(&self, raw: &[u8]) -> Result<(), SendError> {
-        let url = self.url("/sendMail");
-        let body = STANDARD.encode(raw);
+    /// The id of the draft in Drafts whose Message-ID is `message_id`, if
+    /// there is one.
+    pub async fn find_draft(&self, message_id: &str) -> Result<Option<String>> {
+        #[derive(Deserialize)]
+        struct Found {
+            value: Vec<Id>,
+        }
+        #[derive(Deserialize)]
+        struct Id {
+            id: String,
+        }
+        let filter = format!("internetMessageId eq '{}'", message_id.replace('\'', "''"));
+        let url = reqwest::Url::parse_with_params(
+            &self.url("/mailFolders/drafts/messages"),
+            [("$filter", filter.as_str()), ("$select", "id")],
+        )?;
+        let found: Found = self
+            .get(url.as_str())
+            .await?
+            .context("Drafts is not found")?;
+        Ok(found.value.into_iter().next().map(|m| m.id))
+    }
+
+    /// Makes the RFC 5322 message `raw`, which Graph takes as base64 MIME,
+    /// a draft, in Drafts; its id. This does nothing visible to others:
+    /// whatever its outcome, it may be repeated.
+    pub async fn create_draft(&self, raw: &[u8]) -> Result<String, SendError> {
+        #[derive(Deserialize)]
+        struct Created {
+            id: String,
+        }
+        let url = self.url("/messages");
+        let response = match self.post(&url, Some(STANDARD.encode(raw))).await {
+            Ok(response) => response,
+            Err(SendError::Unknown(e)) => return Err(SendError::NotSent(e)),
+            Err(e) => return Err(e),
+        };
+        let response = sent(response).await?;
+        let created: Created = decode(&url, response).await.map_err(SendError::NotSent)?;
+        Ok(created.id)
+    }
+
+    /// Sends the draft `id`. Graph files it in Sent Items, keeping its id;
+    /// so sending it again does not send it twice (SPEC §8.4).
+    pub async fn send_draft(&self, id: &str) -> Result<(), SendError> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Draft {
+            is_draft: bool,
+        }
+        let response = self
+            .post(&self.url(&format!("/messages/{id}/send")), None)
+            .await?;
+        match sent(response).await {
+            Err(SendError::Rejected(reason)) => {
+                // No longer a draft: an earlier attempt sent it.
+                let draft: Option<Draft> = self
+                    .get(&self.url(&format!("/messages/{id}?$select=isDraft")))
+                    .await
+                    .map_err(SendError::NotSent)?;
+                match draft {
+                    Some(Draft { is_draft: false }) => Ok(()),
+                    Some(Draft { is_draft: true }) => Err(SendError::Rejected(reason)),
+                    None => Err(SendError::Rejected(format!(
+                        "{reason} (its draft is gone from Microsoft 365)"
+                    ))),
+                }
+            }
+            outcome => outcome.map(|_| ()),
+        }
+    }
+
+    /// POSTs `body` as text, refreshing the access token once if it is
+    /// refused. The error is that of a request that failed: before it
+    /// went out ([`SendError::NotSent`]), or after.
+    async fn post(&self, url: &str, body: Option<String>) -> Result<reqwest::Response, SendError> {
         for retry in [false, true] {
             let token = self
                 .credentials
                 .access_token()
                 .await
                 .map_err(SendError::NotSent)?;
-            let response = match self
+            let request = self
                 .http
-                .post(&url)
-                .bearer_auth(token)
-                .header(header::CONTENT_TYPE, "text/plain")
-                .body(body.clone())
-                .send()
-                .await
-            {
+                .post(url)
+                .header("Prefer", PREFER)
+                .bearer_auth(token);
+            let request = match &body {
+                Some(body) => request
+                    .header(header::CONTENT_TYPE, "text/plain")
+                    .body(body.clone()),
+                None => request.header(header::CONTENT_LENGTH, 0),
+            };
+            let response = match request.send().await {
                 Ok(response) => response,
                 Err(e) if e.is_connect() => return Err(SendError::NotSent(e.into())),
                 Err(e) => return Err(SendError::Unknown(e.into())),
             };
-            let status = response.status();
-            if status.is_success() {
-                return Ok(());
-            }
-            if status == StatusCode::UNAUTHORIZED && !retry {
+            if response.status() == StatusCode::UNAUTHORIZED && !retry {
                 self.credentials.invalidate().await;
                 continue;
             }
-            let body = response.text().await.unwrap_or_default();
-            if status.is_server_error()
-                || status == StatusCode::TOO_MANY_REQUESTS
-                || status == StatusCode::UNAUTHORIZED
-            {
-                return Err(SendError::NotSent(anyhow!(
-                    "Graph answered {status}: {body}"
-                )));
-            }
-            return Err(SendError::Rejected(error_message(&body).unwrap_or(body)));
+            return Ok(response);
         }
         unreachable!("the second attempt returns")
     }
@@ -309,6 +370,25 @@ impl Graph {
         }
         unreachable!("the second attempt returns")
     }
+}
+
+/// What Graph made of a message to send: refused for a 4xx other than
+/// for authorization or rate, which pass, as do server errors.
+async fn sent(response: reqwest::Response) -> Result<reqwest::Response, SendError> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    let body = response.text().await.unwrap_or_default();
+    if status.is_server_error()
+        || status == StatusCode::TOO_MANY_REQUESTS
+        || status == StatusCode::UNAUTHORIZED
+    {
+        return Err(SendError::NotSent(anyhow!(
+            "Graph answered {status}: {body}"
+        )));
+    }
+    Err(SendError::Rejected(error_message(&body).unwrap_or(body)))
 }
 
 async fn decode<T: DeserializeOwned>(url: &str, response: reqwest::Response) -> Result<T> {

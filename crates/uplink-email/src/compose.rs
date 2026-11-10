@@ -647,6 +647,8 @@ pub struct Due {
     pub item: OutboxId,
     pub draft: Draft,
     pub message_id: String,
+    /// The provider's draft it is sent as, once made (SPEC §8.4).
+    pub provider_draft: Option<String>,
 }
 
 /// The account's queued sends whose time has come, and when the next
@@ -658,7 +660,7 @@ pub(crate) fn due(
 ) -> Result<(Vec<Due>, Option<i64>)> {
     let due = conn
         .prepare(
-            "SELECT id, draft, message_id FROM mail_send
+            "SELECT id, draft, message_id, provider_draft FROM mail_send
              WHERE account_id = ?1 AND state = 'queued' AND not_before <= ?2
              ORDER BY not_before, id",
         )?
@@ -668,6 +670,7 @@ pub(crate) fn due(
                 item: OutboxId(r.get(0)?),
                 draft: serde_json::from_str(&draft).expect("sent drafts deserialize"),
                 message_id: r.get(2)?,
+                provider_draft: r.get(3)?,
             })
         })?
         .collect::<Result<_, _>>()?;
@@ -730,6 +733,36 @@ impl Observation for SendStarted {
         Ok(Observed {
             description: format!("Sending {}", title(&item.draft.content)),
             events: vec![outbox_changed(account)],
+        })
+    }
+}
+
+/// The provider made a send being sent into a draft of its own, which it
+/// is then sent as, by its id: sending it again sends it once only
+/// (SPEC §8.4).
+#[derive(Debug, Serialize)]
+pub struct SendDrafted {
+    pub item: OutboxId,
+    pub provider_draft: String,
+}
+
+impl Observation for SendDrafted {
+    const KIND: &'static str = "mail.send_drafted";
+
+    fn apply(self, _account: &str, tx: &Transaction) -> Result<Observed> {
+        let item = send(tx, self.item)?.context("the send is gone")?;
+        ensure!(
+            item.state == SendState::Sending,
+            "{:?} is not being sent",
+            self.item
+        );
+        tx.execute(
+            "UPDATE mail_send SET provider_draft = ?1 WHERE id = ?2",
+            params![self.provider_draft, self.item.0],
+        )?;
+        Ok(Observed {
+            description: format!("Drafted {} at the provider", title(&item.draft.content)),
+            events: vec![],
         })
     }
 }

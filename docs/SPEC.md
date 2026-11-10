@@ -1070,8 +1070,9 @@ that a cancel knows whether it can still be fulfilled locally. Then:
     request: the Message-ID's copy in Sent means `sent`; none means it
     did not go out, and it is queued again (or, no longer wanted, the
     draft is back);
-  - Graph sends a draft created first, by its id (§8.4): reading that
-    draft tells, at once.
+  - Graph the same way, its copy filed in Sent Items. As Graph sends a
+    draft created first, by its id (§8.4), sending it again is safe
+    regardless: a draft already sent is not sent twice.
 
 SMTP and Gmail's `messages.send` take no idempotency key (RFC 1047
 describes the duplicate a lost acknowledgement causes); observing the
@@ -1368,13 +1369,18 @@ IMAP's per-folder copies, and a REST fake is practical to test against
 - **Transport**: in two steps, each safe to repeat (§6.7). First the
   RFC 5322 message we built becomes a draft: `POST /me/messages` (base64
   MIME, `Content-Type: text/plain`), whose id is recorded on the send
-  (`provider_draft`); repeating this step after an unknown outcome first
-  looks in Drafts for our Message-ID (`$filter=internetMessageId eq …`).
-  Then `POST /me/messages/{id}/send` sends that draft. Ids are immutable
-  (§8.3), so the draft keeps its id as Graph files it in Sent Items, and
-  an unknown outcome is settled by reading it: still a draft (`isDraft`),
-  it is sent again; in Sent Items, it went out; gone, the send is
-  refused (deleted elsewhere). Our Message-ID is kept, so the copy in
+  (`provider_draft`, by the observation `mail.send_drafted`). This has
+  no effect anyone else sees, so whatever its outcome it counts as not
+  sent; repeating it first looks in Drafts for our Message-ID
+  (`$filter=internetMessageId eq …`), so as not to leave a second
+  draft. Then `POST /me/messages/{id}/send` sends that draft. Ids are
+  immutable (§8.3), so the draft keeps its id as Graph files it in Sent
+  Items; sending it again (its outcome unknown, then settled as not
+  sent, §6.7) refuses one no longer a draft (`isDraft`), which means an
+  earlier attempt sent it: that counts as sent, so it goes out once
+  only. Graph sends asynchronously (202), its copy in Sent Items not at
+  once, so an unknown outcome is settled by sync as Gmail's is, not by
+  reading the draft right away. Our Message-ID is kept, so the copy in
   Sent Items becomes a variant of the same logical message. Graph
   threads by the headers; there is no thread id to pass. The draft
   shows in Outlook's Drafts until sent; sync takes it for a draft, not
@@ -2245,7 +2251,8 @@ undoing a send within the delay keeps it from going out; the provider's
 copy of a sent message shows up within one sync interval as a second
 variant of the same logical message.
 
-**State:** done; Graph `sendMail` against the emulator only (§15.12).
+**State:** done; Graph's two-step send against the emulator only
+(§15.12).
 "Switching tabs
 mid-edit" is covered by the compose session tests (an edit from another
 tab while typing, and while an edit is in flight), and by the e2e test,
@@ -2568,7 +2575,10 @@ request).
   `DELETE`, of a series' occurrences too, which makes them exceptions or
   cancels them), `instances`, `calendarView` and `calendarView/delta`,
   expanding daily, weekly, absolute monthly and yearly patterns, in UTC
-  only.
+  only. Patch `0006` adds the two-step send (§8.4): drafts created from
+  MIME (`POST /me/messages`), sent by id (`POST /me/messages/{id}/send`,
+  refused for a message no longer a draft), and a folder's messages
+  filtered by `internetMessageId`.
 - **Matrix:** Conduit (single-binary Rust homeserver, from nixpkgs), a
   real homeserver rather than a fake. The Rust tests start one per test
   (`UPLINK_CONDUIT`, set by the dev shell and the checks; in the build

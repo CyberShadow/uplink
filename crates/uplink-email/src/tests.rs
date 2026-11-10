@@ -2213,7 +2213,11 @@ impl crate::account::Provider for Stepping {
         Ok(())
     }
 
-    async fn send(&self, _: &[u8], _: Option<&str>) -> Result<(), crate::account::SendError> {
+    async fn send(
+        &self,
+        _: &crate::account::Account,
+        _: crate::account::Outgoing<'_>,
+    ) -> Result<(), crate::account::SendError> {
         unreachable!("nothing is queued")
     }
 }
@@ -2278,7 +2282,11 @@ impl crate::account::Provider for Failing {
         Ok(())
     }
 
-    async fn send(&self, _: &[u8], _: Option<&str>) -> Result<(), crate::account::SendError> {
+    async fn send(
+        &self,
+        _: &crate::account::Account,
+        _: crate::account::Outgoing<'_>,
+    ) -> Result<(), crate::account::SendError> {
         unreachable!("nothing is queued")
     }
 }

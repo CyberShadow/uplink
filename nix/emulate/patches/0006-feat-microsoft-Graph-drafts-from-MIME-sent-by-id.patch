@@ -1,0 +1,199 @@
+From: Claude Code <noreply@anthropic.com>
+Subject: [PATCH] feat(microsoft): Graph drafts from MIME, sent by id
+
+POST /v1.0/me/messages creates a draft from MIME, and
+POST /v1.0/me/messages/{id}/send sends it, moving it to Sent Items with
+its id kept; a folder's messages can be listed, filtered by
+internetMessageId.
+
+---
+diff --git a/apps/web/content/docs/microsoft.mdx b/apps/web/content/docs/microsoft.mdx
+--- a/apps/web/content/docs/microsoft.mdx
++++ b/apps/web/content/docs/microsoft.mdx
+@@ -16,9 +16,12 @@
+ - `GET /:tenant/oauth2/authorize` - v1 (Azure AD) authorization endpoint: the v2 page, with the `resource`'s default scope
+ - `GET /v1.0/me/mailFolders`, `GET /v1.0/me/mailFolders/:folder`, `GET|POST /v1.0/me/mailFolders/:folder/childFolders`, `POST /v1.0/me/mailFolders` - mail folders, by id or well-known name (`inbox`, `sentitems`, ...)
+ - `GET /v1.0/me/mailFolders/:folder/messages/delta` - a folder's changes, through `@odata.nextLink` / `@odata.deltaLink`
++- `GET /v1.0/me/mailFolders/:folder/messages` - a folder's messages; `$filter` by `internetMessageId eq '…'` only
+ - `POST /v1.0/me/mailFolders/:folder/messages` - create a message from MIME (base64, `text/plain`)
++- `POST /v1.0/me/messages` - create a draft from MIME, in Drafts
+ - `GET|PATCH|DELETE /v1.0/me/messages/:id`, `GET /v1.0/me/messages/:id/$value`, `POST /v1.0/me/messages/:id/move` - messages and their MIME source
+ - `POST /v1.0/me/sendMail` - send MIME or a JSON message, delivering to seeded recipients
++- `POST /v1.0/me/messages/:message/send` - send a draft, which keeps its id in Sent Items
+ - `GET /oauth2/v2.0/logout` - end session / logout
+ - `POST /oauth2/v2.0/revoke` - token revocation
+ 
+diff --git a/packages/@emulators/microsoft/README.md b/packages/@emulators/microsoft/README.md
+--- a/packages/@emulators/microsoft/README.md
++++ b/packages/@emulators/microsoft/README.md
+@@ -23,9 +23,12 @@
+ - `GET /:tenant/oauth2/authorize` — v1 (Azure AD) authorization endpoint: the v2 page, with the `resource`'s default scope
+ - `GET /v1.0/me/mailFolders`, `GET /v1.0/me/mailFolders/:folder`, `GET|POST /v1.0/me/mailFolders/:folder/childFolders`, `POST /v1.0/me/mailFolders` — mail folders, by id or well-known name (`inbox`, `sentitems`, ...)
+ - `GET /v1.0/me/mailFolders/:folder/messages/delta` — a folder's changes, through `@odata.nextLink` / `@odata.deltaLink`
++- `GET /v1.0/me/mailFolders/:folder/messages` — a folder's messages; `$filter` by `internetMessageId eq '…'` only
+ - `POST /v1.0/me/mailFolders/:folder/messages` — create a message from MIME (base64, `text/plain`)
++- `POST /v1.0/me/messages` — create a draft from MIME, in Drafts
+ - `GET|PATCH|DELETE /v1.0/me/messages/:id`, `GET /v1.0/me/messages/:id/$value`, `POST /v1.0/me/messages/:id/move` — messages and their MIME source
+ - `POST /v1.0/me/sendMail` — send MIME or a JSON message, delivering to seeded recipients
++- `POST /v1.0/me/messages/:message/send` — send a draft, which keeps its id in Sent Items
+ - `POST /v1.0/me/events`, `GET|PATCH|DELETE /v1.0/me/events/:id`, `GET /v1.0/me/events/:id/instances` — events and recurring series; an occurrence's id changes or cancels that occurrence
+ - `GET /v1.0/me/calendarView`, `GET /v1.0/me/calendarView/delta` — the events in a window, series expanded, and their changes
+ - `GET /oauth2/v2.0/logout` — end session / logout
+diff --git a/packages/@emulators/microsoft/src/__tests__/mail.test.ts b/packages/@emulators/microsoft/src/__tests__/mail.test.ts
+--- a/packages/@emulators/microsoft/src/__tests__/mail.test.ts
++++ b/packages/@emulators/microsoft/src/__tests__/mail.test.ts
+@@ -203,6 +203,32 @@
+     expect(delivered).not.toContain("Bcc:");
+   });
+ 
++  it("sends a draft created from MIME, which keeps its id", async () => {
++    const raw = [`From: ${ALICE}`, `To: ${BOB}`, "Subject: Drafted", "Message-ID: <drafted@example.com>", "", "Hi"].join(
++      "\r\n",
++    );
++    const created = await request("/v1.0/me/messages", {
++      method: "POST",
++      headers: { "Content-Type": "text/plain" },
++      body: Buffer.from(raw).toString("base64"),
++    });
++    expect(created.status).toBe(201);
++    const draft = (await created.json()) as any;
++    expect(draft.isDraft).toBe(true);
++    const filter = encodeURIComponent("internetMessageId eq '<drafted@example.com>'");
++    const found = await json(`/v1.0/me/mailFolders/drafts/messages?$filter=${filter}`);
++    expect(found.value.map((m: any) => m.id)).toEqual([draft.id]);
++
++    expect((await request(`/v1.0/me/messages/${draft.id}/send`, { method: "POST" })).status).toBe(202);
++    const sent = await json(`/v1.0/me/messages/${draft.id}`);
++    expect([sent.isDraft, sent.parentFolderId]).toEqual([false, (await json("/v1.0/me/mailFolders/sentitems")).id]);
++    expect((await json(`/v1.0/me/mailFolders/drafts/messages?$filter=${filter}`)).value).toEqual([]);
++    const bobs = await json("/v1.0/me/mailFolders/inbox/messages/delta", {}, "bob-token");
++    expect(bobs.value.map((m: any) => m.subject)).toEqual(["Drafted"]);
++    // Sent once only.
++    expect((await request(`/v1.0/me/messages/${draft.id}/send`, { method: "POST" })).status).toBe(400);
++  });
++
+   it("sends JSON messages too", async () => {
+     const res = await request("/v1.0/me/sendMail", {
+       method: "POST",
+diff --git a/packages/@emulators/microsoft/src/mail.ts b/packages/@emulators/microsoft/src/mail.ts
+--- a/packages/@emulators/microsoft/src/mail.ts
++++ b/packages/@emulators/microsoft/src/mail.ts
+@@ -114,7 +114,9 @@
+ export function changeMessage(
+   store: Store,
+   message: MicrosoftMessage,
+-  update: Partial<Pick<MicrosoftMessage, "folder_id" | "is_read" | "flag_status" | "importance" | "categories">>,
++  update: Partial<
++    Pick<MicrosoftMessage, "folder_id" | "is_read" | "is_draft" | "flag_status" | "importance" | "categories">
++  >,
+ ): MicrosoftMessage {
+   const ms = getMicrosoftStore(store);
+   const change = nextChange(store, message.user_email);
+diff --git a/packages/@emulators/microsoft/src/routes/mail.ts b/packages/@emulators/microsoft/src/routes/mail.ts
+--- a/packages/@emulators/microsoft/src/routes/mail.ts
++++ b/packages/@emulators/microsoft/src/routes/mail.ts
+@@ -218,6 +218,24 @@
+     return parseHeaders(mime).size > 0 ? mime : null;
+   };
+ 
++  /** The folder's messages; of `$filter`, only `internetMessageId eq '…'`. */
++  app.get("/v1.0/me/mailFolders/:folder/messages", (c) => {
++    const email = user(c);
++    if (email instanceof Response) return email;
++    const folder = findFolder(ms, email, c.req.param("folder"));
++    if (!folder) return folderNotFound(c);
++    let messages = ms.messages.findBy("user_email", email).filter((m) => m.folder_id === folder.folder_id);
++    const filter = c.req.query("$filter");
++    if (filter !== undefined) {
++      const id = filter.match(/^internetMessageId eq '((?:[^']|'')*)'$/)?.[1];
++      if (id === undefined) {
++        return graphError(c, 400, "ErrorInvalidUrlQueryFilter", "The emulator filters by internetMessageId only.");
++      }
++      messages = messages.filter((m) => m.internet_message_id === id.replace(/''/g, "'"));
++    }
++    return c.json({ value: messages.map(formatMessage) });
++  });
++
+   app.post("/v1.0/me/mailFolders/:folder/messages", async (c) => {
+     const email = user(c);
+     if (email instanceof Response) return email;
+@@ -231,8 +249,54 @@
+     return c.json(formatMessage(message), 201);
+   });
+ 
++  /** A draft, from MIME: Graph files it in Drafts. */
++  app.post("/v1.0/me/messages", async (c) => {
++    const email = user(c);
++    if (email instanceof Response) return email;
++    const mime = await mimeBody(c);
++    if (mime === null) {
++      return graphError(c, 400, "ErrorMimeContentInvalid", "The emulator creates messages from MIME only.");
++    }
++    const message = createMessage(store, email, findFolder(ms, email, "drafts")!, { mime, isDraft: true });
++    return c.json(formatMessage(message), 201);
++  });
++
+   // ---------- Sending ----------
+ 
++  /** Delivers `mime` to each recipient that is a seeded user; `null` if
++   * it has none. Recipients do not see who else was Bcc'd. */
++  const deliver = (mime: string, receivedAt: string): true | null => {
++    const headers = parseHeaders(mime);
++    const recipients = ["to", "cc", "bcc"].flatMap((h) => parseAddresses(headers.get(h) ?? ""));
++    if (recipients.length === 0) return null;
++    const delivered = mime.replace(/^Bcc:.*(?:\r?\n[ \t].*)*\r?\n/im, "");
++    for (const address of new Set(recipients)) {
++      const recipient = ms.users.findOneBy("email", address as never);
++      if (!recipient) continue;
++      const inbox = findFolder(ms, recipient.email, "inbox")!;
++      createMessage(store, recipient.email, inbox, { mime: delivered, receivedAt });
++    }
++    return true;
++  };
++
++  const invalidRecipients = (c: Context) =>
++    graphError(c, 400, "ErrorInvalidRecipients", "At least one recipient is not valid.");
++
++  /** Sends a draft: it keeps its id, moving to Sent Items. */
++  app.post(
++    "/v1.0/me/messages/:message/send",
++    withMessage((c, email, message) => {
++      if (!message.is_draft) {
++        return graphError(c, 400, "ErrorInvalidRequest", "Only a draft can be sent.");
++      }
++      const receivedAt = new Date().toISOString();
++      if (deliver(message.mime, receivedAt) === null) return invalidRecipients(c);
++      const sent = findFolder(ms, email, "sentitems")!;
++      changeMessage(store, message, { folder_id: sent.folder_id, is_read: true, is_draft: false });
++      return c.body(null, 202);
++    }),
++  );
++
+   app.post("/v1.0/me/sendMail", async (c) => {
+     const email = user(c);
+     if (email instanceof Response) return email;
+@@ -266,23 +330,11 @@
+       ].join("\r\n");
+       saveToSentItems = body.saveToSentItems ?? true;
+     }
+-    const headers = parseHeaders(mime);
+-    const recipients = ["to", "cc", "bcc"].flatMap((h) => parseAddresses(headers.get(h) ?? ""));
+-    if (recipients.length === 0) {
+-      return graphError(c, 400, "ErrorInvalidRecipients", "At least one recipient is not valid.");
+-    }
+     const receivedAt = new Date().toISOString();
++    if (deliver(mime, receivedAt) === null) return invalidRecipients(c);
+     if (saveToSentItems) {
+       createMessage(store, email, findFolder(ms, email, "sentitems")!, { mime, isRead: true, receivedAt });
+     }
+-    // Recipients do not see who else was Bcc'd.
+-    const delivered = mime.replace(/^Bcc:.*(?:\r?\n[ \t].*)*\r?\n/im, "");
+-    for (const address of new Set(recipients)) {
+-      const recipient = ms.users.findOneBy("email", address as never);
+-      if (!recipient) continue;
+-      const inbox = findFolder(ms, recipient.email, "inbox")!;
+-      createMessage(store, recipient.email, inbox, { mime: delivered, receivedAt });
+-    }
+     return c.body(null, 202);
+   });
+ }
