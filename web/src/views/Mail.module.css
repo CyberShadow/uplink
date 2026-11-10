@@ -1,4 +1,10 @@
+/* One grid, its rows sharing its columns: the paperclip's and the date's
+   are as wide as the widest shown, and the summary has the rest. */
 .list {
+  display: grid;
+  grid-template-columns: auto auto 180px minmax(0, 1fr) auto auto;
+  align-content: start;
+  column-gap: 12px;
   list-style: none;
   margin: 0;
   padding: 0;
@@ -8,8 +14,8 @@
 
 .row {
   display: grid;
-  grid-template-columns: auto auto 180px 1fr 1.25em 6em;
-  gap: 12px;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
   align-items: center;
   padding: 4px 16px 4px 12px;
   border-bottom: 1px solid var(--line);
@@ -96,6 +102,83 @@
 
 .snippet {
   color: var(--muted);
+}
+
+.row .snippet::before {
+  content: ' — ';
+}
+
+/* Narrow, as a phone's: fat rows, the sender and date above the subject
+   and snippet, the star and paperclip at the right. */
+@media (max-width: 720px) {
+  .list {
+    display: block;
+  }
+
+  .row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      'select from date'
+      'select subject star'
+      'select snippet star'
+      'select tags clip';
+    column-gap: 12px;
+    padding: 10px 16px 10px 8px;
+  }
+
+  .row > input {
+    grid-area: select;
+    align-self: start;
+  }
+
+  .row > .star {
+    grid-area: star;
+    justify-self: end;
+  }
+
+  .row .from {
+    grid-area: from;
+    font-size: 15px;
+  }
+
+  .row .summary {
+    display: contents;
+  }
+
+  .row .subject,
+  .row .snippet {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .row .subject {
+    grid-area: subject;
+  }
+
+  .row .snippet {
+    grid-area: snippet;
+  }
+
+  .row .snippet::before {
+    content: none;
+  }
+
+  .row .tags {
+    grid-area: tags;
+    overflow: hidden;
+  }
+
+  .row .tags:not(:empty) {
+    margin-top: 4px;
+  }
+
+  .row .clip {
+    grid-area: clip;
+  }
+
+  .row .date {
+    grid-area: date;
+  }
 }
 
 /* Gmail's: small, and in columns. */

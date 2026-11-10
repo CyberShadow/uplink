@@ -262,11 +262,13 @@ function MessageList(props: { mail: MailStore; open: (conversation: Conversation
               {count > 1 && <span class={styles.count}> {count}</span>}
             </span>
             <span class={styles.summary}>
-              {isFlagged && <Flag />}
-              {address(latest.account) && <span class={styles.account}>{address(latest.account)}</span>}
-              <LabelChips mail={mail} thread={thread} />
+              <span class={styles.tags}>
+                {isFlagged && <Flag />}
+                {address(latest.account) && <span class={styles.account}>{address(latest.account)}</span>}
+                <LabelChips mail={mail} thread={thread} />
+              </span>
               <span class={styles.subject}>{latest.subject ?? '(no subject)'}</span>
-              <span class={styles.snippet}> — {latest.snippet}</span>
+              <span class={styles.snippet}>{latest.snippet}</span>
             </span>
             <span class={styles.clip}>
               {conversation.has_attachments && (
