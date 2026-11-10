@@ -145,9 +145,10 @@ pub struct DraftsChanged {
     pub drafts: Vec<DraftId>,
 }
 
-/// Outbox items were added, removed or changed state.
+/// Something not yet reconciled in these accounts was added, changed
+/// state or went (SPEC §6.6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct OutboxChanged {
-    pub items: Vec<OutboxId>,
+    pub accounts: Vec<String>,
 }

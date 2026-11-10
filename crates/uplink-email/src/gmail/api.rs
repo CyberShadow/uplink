@@ -102,6 +102,18 @@ struct Reply {
 }
 
 impl Reply {
+    /// Gmail's reason, if it refused the request for what it asked: a 4xx
+    /// other than for authorization or rate, which passes.
+    fn refusal(&self) -> Option<String> {
+        (self.status.is_client_error()
+            && self.status != StatusCode::UNAUTHORIZED
+            && !refused_for_rate(self.status, &self.body))
+        .then(|| {
+            let body = String::from_utf8_lossy(&self.body).into_owned();
+            error_message(&body).unwrap_or(body)
+        })
+    }
+
     fn check(self) -> Result<Self> {
         if self.status.is_success() {
             return Ok(self);
@@ -272,17 +284,22 @@ impl Gmail {
         self.get("/history", &query, cost::HISTORY).await
     }
 
-    pub async fn batch_modify(&self, request: &BatchModify<'_>) -> Result<()> {
-        self.send(
-            Method::POST,
-            "/messages/batchModify",
-            &[],
-            Some(request),
-            cost::BATCH_MODIFY,
-        )
-        .await?
-        .check()?;
-        Ok(())
+    /// `Err` with Gmail's reason if it refused the change.
+    pub async fn batch_modify(&self, request: &BatchModify<'_>) -> Result<Result<(), String>> {
+        let reply = self
+            .send(
+                Method::POST,
+                "/messages/batchModify",
+                &[],
+                Some(request),
+                cost::BATCH_MODIFY,
+            )
+            .await?;
+        if let Some(reason) = reply.refusal() {
+            return Ok(Err(reason));
+        }
+        reply.check()?;
+        Ok(Ok(()))
     }
 
     /// Sends the RFC 5322 message `raw`, in thread `thread_id` if given.

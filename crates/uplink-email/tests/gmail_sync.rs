@@ -114,6 +114,60 @@ async fn mirrors_the_mailbox_and_pushes_changes() {
     provider.clean_up().await;
 }
 
+/// A change Gmail refuses is recorded as refused, and holds up no other:
+/// here, a label deleted in Gmail since uplink last listed the labels.
+/// (Listing them again, as the next change seen makes uplink do, takes the
+/// label away, and the refused change with it.)
+#[tokio::test(flavor = "multi_thread")]
+async fn refused_changes_hold_up_no_others() {
+    let uplink = Uplink::new(MailProvider::Gmail);
+    let provider = Provider::start(uplink.dir.path(), None).await;
+    let doomed = provider
+        .create_label(&format!("Doomed {}", common::nonce()))
+        .await;
+    let first = provider.deliver(&message("first", "one")).await;
+    let second = provider.deliver(&message("second", "two")).await;
+    let sync = start_sync(&uplink, &provider);
+    let first_entry = uplink.arrived("first").await;
+    let second_entry = uplink.arrived("second").await;
+    eventually("the listing to end", || async {
+        uplink.synced().then_some(())
+    })
+    .await;
+    provider.delete_label(&doomed).await;
+
+    let label = uplink.label(&doomed);
+    let ServerResponse::Dispatched {
+        tx_log_id: labelled,
+    } = uplink
+        .mail
+        .modify_labels(vec![first_entry], vec![label], vec![])
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(uplink.pending(first_entry, label), (Some(labelled.0), None));
+    uplink
+        .mail
+        .modify_labels(vec![second_entry], vec![], vec![uplink.label("INBOX")])
+        .await
+        .unwrap();
+    eventually("the archive to reach Gmail", || async {
+        (provider.labels(&second).await == ["UNREAD"]).then_some(())
+    })
+    .await;
+    let refusal = eventually("the label to be refused", || async {
+        uplink.logged("mail.refused")
+    })
+    .await;
+    assert!(refusal.contains(&doomed), "{refusal}");
+    assert_eq!(provider.labels(&first).await, ["INBOX", "UNREAD"]);
+
+    sync.abort();
+    provider.clean_up().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn resyncs_fully_once_history_expired() {
     let uplink = Uplink::new(MailProvider::Gmail);

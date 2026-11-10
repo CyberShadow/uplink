@@ -12,7 +12,7 @@
 //! the blob, as an op of its own beside the text's splices (§7.4).
 
 use crate::{
-    mailbox::insert_variant,
+    mailbox::{insert_variant, outbox_changed},
     parse::Parsed,
     store::{Store, VariantHash},
 };
@@ -27,7 +27,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use uplink_protocol::{
     compose::{
         BlobId, Draft, DraftAttachment, DraftAttachmentId, DraftContent, DraftEdited, DraftField,
-        DraftId, DraftsChanged, OutboxChanged, OutboxId, OutboxItem, OutboxState, Splice,
+        DraftId, DraftsChanged, OutboxId, OutboxItem, OutboxState, Splice,
     },
     mail::{EntryId, MessageId},
     ServerEvent,
@@ -491,10 +491,6 @@ fn outbox_item(tx: &Transaction, id: OutboxId) -> Result<Option<OutboxItem>> {
         .optional()?)
 }
 
-fn outbox_changed(id: OutboxId) -> ServerEvent {
-    ServerEvent::OutboxChanged(OutboxChanged { items: vec![id] })
-}
-
 /// Moves a draft into the outbox, to be sent `delay_ms` from now.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -526,7 +522,7 @@ impl Op for SendDraft {
         Ok(Applied {
             description: format!("Sent {}", title(&draft.content)),
             inverse: Inverse::of(&CancelSend { item }),
-            events: vec![drafts_changed(&self.id), outbox_changed(item)],
+            events: vec![drafts_changed(&self.id), outbox_changed(&draft.account)],
         })
     }
 }
@@ -568,7 +564,10 @@ impl Op for CancelSend {
                 id: item.draft.id.clone(),
                 delay_ms,
             }),
-            events: vec![drafts_changed(&item.draft.id), outbox_changed(self.item)],
+            events: vec![
+                drafts_changed(&item.draft.id),
+                outbox_changed(&item.account),
+            ],
         })
     }
 }
@@ -635,14 +634,14 @@ pub struct SendStarted {
 impl Observation for SendStarted {
     const KIND: &'static str = "mail.send_started";
 
-    fn apply(self, _account: &str, tx: &Transaction) -> Result<Observed> {
+    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
         let item = outbox_item(tx, self.item)?
             .filter(|i| i.state == OutboxState::Queued)
             .ok_or_else(|| Conflict("no longer queued".into()))?;
         set_state(tx, self.item, "sending", None)?;
         Ok(Observed {
             description: format!("Sending {}", title(&item.draft.content)),
-            events: vec![outbox_changed(self.item)],
+            events: vec![outbox_changed(account)],
         })
     }
 }
@@ -685,7 +684,7 @@ impl Observation for SendSucceeded {
             params![message.0, self.item.0],
         )?;
         // The provider's copy may have been synced already.
-        let mut events = vec![outbox_changed(self.item)];
+        let mut events = vec![outbox_changed(account)];
         events.extend(synced_back(tx, account, message)?);
         Ok(Observed {
             description: format!("Sent {}", title(&item.draft.content)),
@@ -705,7 +704,7 @@ pub struct SendFailed {
 impl Observation for SendFailed {
     const KIND: &'static str = "mail.send_failed";
 
-    fn apply(self, _account: &str, tx: &Transaction) -> Result<Observed> {
+    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
         let item = outbox_item(tx, self.item)?.context("the outbox item is gone")?;
         ensure!(
             item.state == OutboxState::Sending,
@@ -725,7 +724,7 @@ impl Observation for SendFailed {
         };
         Ok(Observed {
             description,
-            events: vec![outbox_changed(self.item)],
+            events: vec![outbox_changed(account)],
         })
     }
 }
@@ -741,16 +740,13 @@ fn set_state(tx: &Transaction, item: OutboxId, state: &str, error: Option<&str>)
 /// Removes the account's sent items whose provider copy has been synced:
 /// they are mail like any other now.
 fn synced_back(tx: &Transaction, account: &str, message: MessageId) -> Result<Option<ServerEvent>> {
-    let items: Vec<OutboxId> = tx
-        .prepare(
-            "DELETE FROM mail_outbox
-             WHERE account_id = ?1 AND message = ?2 AND state = 'sent'
-               AND EXISTS (SELECT 1 FROM mail_entry WHERE account_id = ?1 AND message = ?2)
-             RETURNING id",
-        )?
-        .query_map(params![account, message.0], |r| Ok(OutboxId(r.get(0)?)))?
-        .collect::<Result<_, _>>()?;
-    Ok((!items.is_empty()).then_some(ServerEvent::OutboxChanged(OutboxChanged { items })))
+    let removed = tx.execute(
+        "DELETE FROM mail_outbox
+         WHERE account_id = ?1 AND message = ?2 AND state = 'sent'
+           AND EXISTS (SELECT 1 FROM mail_entry WHERE account_id = ?1 AND message = ?2)",
+        params![account, message.0],
+    )?;
+    Ok((removed > 0).then(|| outbox_changed(account)))
 }
 
 /// After an entry was recorded: its message may be one sent from the

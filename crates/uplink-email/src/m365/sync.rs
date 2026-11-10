@@ -7,11 +7,12 @@
 //! are the labels UNREAD, STARRED and IMPORTANT, and categories are labels
 //! `cat:<name>`.
 
-use super::api::{Delta, Flag, FlagStatus, Graph, Importance, Message, MessageUpdate};
+use super::api::{Changed, Delta, Flag, FlagStatus, Graph, Importance, Message, MessageUpdate};
 use crate::{
     account::{Account, Pending, Provider, SendError, SyncTask},
     mailbox::{
-        self, EntryLabels, LabelChange, LabelsPushed, MailboxObserved, NewEntry, ObservedLabel,
+        self, EntryLabels, LabelChange, LabelsPushed, LabelsRefused, MailboxObserved, NewEntry,
+        ObservedLabel,
     },
 };
 use anyhow::{bail, Context, Result};
@@ -232,16 +233,27 @@ impl Provider for M365Sync {
         for p in pending {
             per_entry.entry(p.entry).or_default().push(p);
         }
-        let mut changes = vec![];
+        let mut pushed = vec![];
+        let mut refused: BTreeMap<String, Vec<LabelChange>> = BTreeMap::new();
         for (entry, pending) in per_entry {
-            self.push_entry(account, entry, &pending).await?;
-            changes.extend(pending.into_iter().map(|p| LabelChange {
+            let refusal = self.push_entry(account, entry, &pending).await?;
+            let changes = pending.into_iter().map(|p| LabelChange {
                 entry: p.entry,
                 label: p.label,
                 desired: p.desired,
-            }));
+            });
+            match refusal {
+                None => pushed.extend(changes),
+                Some(reason) => refused.entry(reason).or_default().extend(changes),
+            }
         }
-        account.observe(LabelsPushed { changes }).await
+        for (reason, changes) in refused {
+            account.observe(LabelsRefused { changes, reason }).await?;
+        }
+        if !pushed.is_empty() {
+            account.observe(LabelsPushed { changes: pushed }).await?;
+        }
+        Ok(())
     }
 
     async fn send(&self, raw: &[u8], _thread: Option<&str>) -> Result<(), SendError> {
@@ -430,13 +442,14 @@ impl M365Sync {
     }
 
     /// Makes the entry's pending changes at Graph: a folder by moving the
-    /// message, the rest by updating it.
+    /// message, the rest by updating it. Returns Graph's reason if it
+    /// refused them.
     async fn push_entry(
         &self,
         account: &Account,
         entry: EntryId,
         pending: &[Pending],
-    ) -> Result<()> {
+    ) -> Result<Option<String>> {
         let id = &pending[0].external_id;
         let mut update = MessageUpdate::default();
         let mut categories = false;
@@ -466,7 +479,7 @@ impl M365Sync {
                     })
                 }
                 l if l.starts_with(CATEGORY) => categories = true,
-                l => bail!("label {l} is not one Microsoft 365 has"),
+                l => return Ok(Some(format!("label {l} is not one Microsoft 365 has"))),
             }
         }
         if categories {
@@ -481,17 +494,23 @@ impl M365Sync {
         }
         // A message deleted meanwhile is recorded as removed by the next
         // sync.
-        if !update.is_empty() && !self.graph.update(id, &update).await? {
-            return Ok(());
+        if !update.is_empty() {
+            match self.graph.update(id, &update).await? {
+                Changed::Done => {}
+                Changed::Gone => return Ok(None),
+                Changed::Refused(reason) => return Ok(Some(reason)),
+            }
         }
         if let Some(into) = into {
             let folder = WELL_KNOWN
                 .iter()
                 .find(|(_, external_id)| external_id == into)
                 .map_or(into.as_str(), |(name, _)| name);
-            self.graph.move_to(id, folder).await?;
+            if let Changed::Refused(reason) = self.graph.move_to(id, folder).await? {
+                return Ok(Some(reason));
+            }
         }
-        Ok(())
+        Ok(None)
     }
 }
 

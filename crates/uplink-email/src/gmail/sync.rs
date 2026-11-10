@@ -8,7 +8,8 @@ use super::{
 use crate::{
     account::{Account, Provider, SendError, SyncTask},
     mailbox::{
-        EntryLabels, LabelChange, LabelsPushed, MailboxObserved, NewEntry, ObservedLabel, SyncState,
+        EntryLabels, LabelChange, LabelsPushed, LabelsRefused, MailboxObserved, NewEntry,
+        ObservedLabel, SyncState,
     },
     oauth::Credentials,
 };
@@ -324,38 +325,75 @@ impl GmailSync {
             return Ok(());
         }
         // Entries needing the same change go in one request.
-        let mut per_entry: BTreeMap<EntryId, (String, Vec<String>, Vec<String>)> = BTreeMap::new();
-        let mut changes = vec![];
+        struct Entry {
+            external_id: String,
+            add: Vec<String>,
+            remove: Vec<String>,
+            changes: Vec<LabelChange>,
+        }
+        let mut per_entry: BTreeMap<EntryId, Entry> = BTreeMap::new();
         for p in pending {
-            let (_, add, remove) = per_entry
-                .entry(p.entry)
-                .or_insert_with(|| (p.external_id, vec![], vec![]));
-            if p.desired { add } else { remove }.push(p.label_external_id);
-            changes.push(LabelChange {
+            let entry = per_entry.entry(p.entry).or_insert_with(|| Entry {
+                external_id: p.external_id,
+                add: vec![],
+                remove: vec![],
+                changes: vec![],
+            });
+            if p.desired {
+                &mut entry.add
+            } else {
+                &mut entry.remove
+            }
+            .push(p.label_external_id);
+            entry.changes.push(LabelChange {
                 entry: p.entry,
                 label: p.label,
                 desired: p.desired,
             });
         }
-        let mut per_change: BTreeMap<(Vec<String>, Vec<String>), Vec<String>> = BTreeMap::new();
-        for (external_id, add, remove) in per_entry.into_values() {
+        let mut per_change: BTreeMap<(Vec<String>, Vec<String>), Vec<Entry>> = BTreeMap::new();
+        for entry in per_entry.into_values() {
             per_change
-                .entry((add, remove))
+                .entry((entry.add.clone(), entry.remove.clone()))
                 .or_default()
-                .push(external_id);
+                .push(entry);
         }
-        for ((add, remove), ids) in per_change {
-            for ids in ids.chunks(BATCH_MODIFY_MAX) {
-                self.gmail
+        let mut pushed = vec![];
+        let mut refused: BTreeMap<String, Vec<LabelChange>> = BTreeMap::new();
+        for ((add, remove), entries) in per_change {
+            // A batch refused is split until the entries refused are found.
+            let mut batches: Vec<&[Entry]> = entries.chunks(BATCH_MODIFY_MAX).rev().collect();
+            while let Some(batch) = batches.pop() {
+                let ids: Vec<String> = batch.iter().map(|e| e.external_id.clone()).collect();
+                let outcome = self
+                    .gmail
                     .batch_modify(&BatchModify {
-                        ids,
+                        ids: &ids,
                         add_label_ids: &add,
                         remove_label_ids: &remove,
                     })
                     .await?;
+                match outcome {
+                    Ok(()) => pushed.extend(batch.iter().flat_map(|e| e.changes.iter().copied())),
+                    Err(reason) if batch.len() == 1 => refused
+                        .entry(reason)
+                        .or_default()
+                        .extend(batch[0].changes.iter().copied()),
+                    Err(_) => {
+                        let (first, second) = batch.split_at(batch.len() / 2);
+                        batches.push(second);
+                        batches.push(first);
+                    }
+                }
             }
         }
-        account.observe(LabelsPushed { changes }).await
+        for (reason, changes) in refused {
+            account.observe(LabelsRefused { changes, reason }).await?;
+        }
+        if !pushed.is_empty() {
+            account.observe(LabelsPushed { changes: pushed }).await?;
+        }
+        Ok(())
     }
 
     async fn labels(&self) -> Result<Vec<ObservedLabel>> {

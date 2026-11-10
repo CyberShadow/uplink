@@ -223,7 +223,9 @@ async fn sending_is_undone_while_queued() {
             ServerEvent::DraftsChanged(DraftsChanged {
                 drafts: vec![DraftId("d".into())]
             }),
-            ServerEvent::OutboxChanged(OutboxChanged { items: vec![item] }),
+            ServerEvent::OutboxChanged(uplink_protocol::compose::OutboxChanged {
+                accounts: vec!["a".into()]
+            }),
         ]
     );
     assert!(db.outbox().is_empty());
@@ -344,9 +346,11 @@ async fn sent_mail_joins_its_provider_copy() {
     .await;
     let events = live.recv().await.unwrap().events.clone();
     assert!(
-        events.contains(&ServerEvent::OutboxChanged(OutboxChanged {
-            items: vec![item]
-        })),
+        events.contains(&ServerEvent::OutboxChanged(
+            uplink_protocol::compose::OutboxChanged {
+                accounts: vec!["a".into()]
+            }
+        )),
         "{events:?}"
     );
     assert!(db.outbox().is_empty());

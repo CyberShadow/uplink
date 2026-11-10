@@ -104,6 +104,41 @@ impl Uplink {
             .unwrap()
     }
 
+    /// Whether the account's first listing is done.
+    pub fn synced(&self) -> bool {
+        self.reader()
+            .query_row("SELECT synced FROM account WHERE id = 'test'", [], |r| {
+                r.get(0)
+            })
+            .optional()
+            .unwrap()
+            .unwrap_or(false)
+    }
+
+    /// The description of the last log entry of `kind`, if any.
+    pub fn logged(&self, kind: &str) -> Option<String> {
+        self.reader()
+            .query_row(
+                "SELECT description FROM tx_log WHERE op_type = ?1 ORDER BY id DESC LIMIT 1",
+                [kind],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap()
+    }
+
+    /// The op that made the entry's label pending, and the provider's
+    /// refusal of it, if any.
+    pub fn pending(&self, entry: EntryId, label: LabelId) -> (Option<i64>, Option<String>) {
+        self.reader()
+            .query_row(
+                "SELECT desired_by, refused FROM entry_label WHERE entry = ?1 AND label = ?2",
+                [entry.0, label.0],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+    }
+
     pub fn label(&self, external_id: &str) -> LabelId {
         LabelId(
             self.reader()

@@ -432,12 +432,13 @@ CREATE TABLE entry_label (
   desired    INTEGER NOT NULL,
   observed   INTEGER NOT NULL,
   -- (V0018) The op that set `desired`, while it differs from `observed`:
-  -- the outbox's item it belongs to; and the provider's refusal of it.
-  desired_by INTEGER REFERENCES tx_log(id),
+  -- the outbox's item it belongs to (none for changes made before it was
+  -- recorded); and the provider's refusal of it, after which it is not
+  -- pushed again until an op changes it. Both go once it is reconciled.
+  desired_by INTEGER REFERENCES tx_log(id) DEFERRABLE INITIALLY DEFERRED,
   refused    TEXT,
   PRIMARY KEY (entry, label),
-  CHECK (desired OR observed),
-  CHECK ((desired != observed) OR (desired_by IS NULL AND refused IS NULL))
+  CHECK (desired OR observed)
 );
 CREATE INDEX entry_label_by_label ON entry_label(label, entry) WHERE desired;
 CREATE INDEX entry_label_pending ON entry_label(entry) WHERE desired != observed;
@@ -490,7 +491,7 @@ CREATE TABLE matrix_event (
   encryption   TEXT NOT NULL,        -- 'none' | 'decrypted' | 'undecryptable'
   UNIQUE (room, event_id)
 );
-CREATE TABLE matrix_send (     -- (V0018: was matrix_outbox)
+CREATE TABLE matrix_send (     -- (V0019: was matrix_outbox)
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   room         INTEGER NOT NULL REFERENCES matrix_room(id),
   body         TEXT NOT NULL,
@@ -563,7 +564,7 @@ CREATE TABLE draft (
 -- ── sends (§6.7) ─────────────────────────────────────────────────────
 -- Mail only; Matrix sends get their own table, as their payload and
 -- reconciler differ. Ids are never reused: log entries refer to them.
--- (V0018: was mail_outbox; sends are kept once synced.)
+-- (V0019: was mail_outbox; sends are kept once synced.)
 CREATE TABLE mail_send (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   account_id     TEXT NOT NULL,
@@ -880,6 +881,10 @@ Key properties:
 - **The description comes from `apply`**, so it says what actually
   happened, in the user's terms (label names rather than ids, the count of
   messages that actually changed).
+- **An op knows its own entry's id** (`this_entry(tx)`: ids are never
+  reused and the dispatcher is the only writer, so it is the next one,
+  which `record` asserts), so that state can name the op that set it, as
+  pending changes do (§6.6).
 
 ### 6.2 Inverses
 

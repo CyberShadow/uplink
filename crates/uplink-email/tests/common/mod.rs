@@ -177,6 +177,29 @@ impl Provider {
         .await;
     }
 
+    /// Creates a user label; returns its id.
+    pub async fn create_label(&self, name: &str) -> String {
+        #[derive(Deserialize)]
+        struct Created {
+            id: String,
+        }
+        self.call(
+            reqwest::Method::POST,
+            "/labels",
+            Some(json!({ "name": name })),
+        )
+        .await
+        .json::<Created>()
+        .await
+        .unwrap()
+        .id
+    }
+
+    pub async fn delete_label(&self, id: &str) {
+        self.call(reqwest::Method::DELETE, &format!("/labels/{id}"), None)
+            .await;
+    }
+
     /// The status of `history.list` from `start`.
     pub async fn history_status(&self, start: &str) -> reqwest::StatusCode {
         let url = format!(

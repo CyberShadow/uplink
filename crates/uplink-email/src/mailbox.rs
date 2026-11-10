@@ -3,9 +3,10 @@
 //!
 //! Label membership is stored twice per entry: *desired* (what the user
 //! asked for) and *observed* (what the provider last reported). Ops change
-//! desired; observations change observed, and desired follows unless a
+//! desired, recording which op did while it differs (`desired_by`, for the
+//! outbox); observations change observed, and desired follows unless a
 //! local change is pending; the reconciler pushes differences and records
-//! what it pushed.
+//! what it pushed, or what the provider refused.
 
 use crate::{
     compose,
@@ -16,14 +17,15 @@ use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use uplink_protocol::{
+    compose::OutboxChanged,
     mail::{
         EntriesAdded, EntriesRemoved, EntryId, LabelId, LabelListChanged, LabelState,
         LabelsChanged, MessageId,
     },
-    ServerEvent,
+    ServerEvent, TxLogId,
 };
 use uplink_storage::rusqlite::{params, OptionalExtension, Transaction};
-use uplink_tx_log::{Applied, Conflict, Inverse, Observation, Observed, Op, Registry};
+use uplink_tx_log::{this_entry, Applied, Conflict, Inverse, Observation, Observed, Op, Registry};
 
 /// Bytes of body text indexed for search (SPEC §8.7).
 const INDEXED_BODY_BYTES: usize = 64 * 1024;
@@ -183,7 +185,7 @@ impl Observation for MailboxObserved {
             let entry = insert_entry(tx, account, new)?;
             synced_back.extend(compose::entry_synced(tx, account, entry)?);
             for label in labels {
-                set_label_row(tx, entry, label, true, true)?;
+                set_label_row(tx, entry, label, true, true, None)?;
                 label_changes.push(LabelState {
                     entry,
                     label,
@@ -200,11 +202,15 @@ impl Observation for MailboxObserved {
         events.extend(synced_back);
 
         let mut relabelled = 0;
+        // Whether what was pending changed: reconciled, or gone with its
+        // entry.
+        let mut reconciled = false;
         for update in self.updated {
             let entry = entry_id(tx, account, &update.external_id)?;
             let observed = resolve(&update.labels)?;
-            let changes = observe_labels(tx, entry, &observed)?;
+            let (changes, was_pending) = observe_labels(tx, entry, &observed)?;
             relabelled += usize::from(!changes.is_empty());
+            reconciled |= was_pending;
             label_changes.extend(changes);
         }
         if relabelled > 0 {
@@ -219,6 +225,12 @@ impl Observation for MailboxObserved {
         let mut removed = vec![];
         for external_id in &self.removed {
             let entry = entry_id(tx, account, external_id)?;
+            reconciled |= tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM entry_label
+                                WHERE entry = ?1 AND desired != observed)",
+                [entry.0],
+                |r| r.get::<_, bool>(0),
+            )?;
             tx.execute("DELETE FROM mail_entry WHERE id = ?1", [entry.0])?;
             removed.push(entry);
         }
@@ -227,6 +239,9 @@ impl Observation for MailboxObserved {
             events.push(ServerEvent::EntriesRemoved(EntriesRemoved {
                 entries: removed,
             }));
+        }
+        if reconciled {
+            events.push(outbox_changed(account));
         }
 
         if let Some(state) = self.sync_state {
@@ -262,7 +277,7 @@ pub struct LabelsPushed {
 impl Observation for LabelsPushed {
     const KIND: &'static str = "mail.pushed";
 
-    fn apply(self, _account: &str, tx: &Transaction) -> Result<Observed> {
+    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
         let mut entries = BTreeSet::new();
         let mut changes = vec![];
         for change in self.changes {
@@ -278,7 +293,14 @@ impl Observation for LabelsPushed {
             }
             // The user may have changed desired again since the push.
             let (desired, _) = label_row(tx, change.entry, change.label)?.unwrap_or_default();
-            set_label_row(tx, change.entry, change.label, desired, change.desired)?;
+            set_label_row(
+                tx,
+                change.entry,
+                change.label,
+                desired,
+                change.desired,
+                None,
+            )?;
             entries.insert(change.entry);
             changes.push(LabelState {
                 entry: change.entry,
@@ -289,9 +311,87 @@ impl Observation for LabelsPushed {
         }
         Ok(Observed {
             description: format!("Pushed label changes on {}", messages(entries.len())),
-            events: vec![ServerEvent::LabelsChanged(LabelsChanged { changes })],
+            events: vec![
+                ServerEvent::LabelsChanged(LabelsChanged { changes }),
+                outbox_changed(account),
+            ],
         })
     }
+}
+
+/// Label changes the provider refused, for `reason`: they are not pushed
+/// again until the user decides (SPEC §6.6).
+#[derive(Debug, Serialize)]
+pub struct LabelsRefused {
+    pub changes: Vec<LabelChange>,
+    pub reason: String,
+}
+
+impl Observation for LabelsRefused {
+    const KIND: &'static str = "mail.refused";
+
+    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
+        let mut entries = BTreeSet::new();
+        for change in &self.changes {
+            // Only as the push asked for it: the user may have changed it
+            // since, or the entry may be gone.
+            let refused = tx.execute(
+                "UPDATE entry_label SET refused = ?1
+                 WHERE entry = ?2 AND label = ?3 AND desired = ?4 AND desired != observed",
+                params![self.reason, change.entry.0, change.label.0, change.desired],
+            )?;
+            if refused > 0 {
+                entries.insert(change.entry);
+            }
+        }
+        Ok(Observed {
+            description: format!(
+                "Refused label changes on {}: {}",
+                messages(entries.len()),
+                self.reason
+            ),
+            events: vec![outbox_changed(account)],
+        })
+    }
+}
+
+/// Whether the account's changes are reaching its provider: `error` says
+/// why not, from the first failure on; `None` once they are again.
+#[derive(Debug, Serialize)]
+pub struct PushFailing {
+    pub error: Option<String>,
+    /// Unix ms.
+    pub at: i64,
+}
+
+impl Observation for PushFailing {
+    const KIND: &'static str = "mail.push_failing";
+
+    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
+        let description = match &self.error {
+            Some(error) => format!("Changes are not reaching the provider: {error}"),
+            None => "Changes are reaching the provider again".to_owned(),
+        };
+        let updated = tx.execute(
+            "UPDATE account SET push_error = ?1,
+               push_failing_since = CASE WHEN ?1 IS NULL THEN NULL
+                                         ELSE coalesce(push_failing_since, ?2) END
+             WHERE id = ?3",
+            params![self.error, self.at, account],
+        )?;
+        ensure!(updated == 1, "account {account} is not recorded");
+        Ok(Observed {
+            description,
+            events: vec![outbox_changed(account)],
+        })
+    }
+}
+
+/// The account's outbox changed (SPEC §6.6).
+pub(crate) fn outbox_changed(account: &str) -> ServerEvent {
+    ServerEvent::OutboxChanged(OutboxChanged {
+        accounts: vec![account.to_owned()],
+    })
 }
 
 /// Makes the account's labels `labels`; returns whether anything changed.
@@ -484,12 +584,13 @@ fn insert_message(
     Ok(MessageId(id))
 }
 
-/// Records that the provider reports exactly `observed` on `entry`.
+/// Records that the provider reports exactly `observed` on `entry`; and
+/// whether that changed a label pending a push.
 fn observe_labels(
     tx: &Transaction,
     entry: EntryId,
     observed: &BTreeSet<LabelId>,
-) -> Result<Vec<LabelState>> {
+) -> Result<(Vec<LabelState>, bool)> {
     let mut rows: BTreeMap<LabelId, (bool, bool)> = tx
         .prepare("SELECT label, desired, observed FROM entry_label WHERE entry = ?1")?
         .query_map([entry.0], |r| {
@@ -500,11 +601,13 @@ fn observe_labels(
         rows.entry(label).or_insert((false, false));
     }
     let mut changes = vec![];
+    let mut was_pending = false;
     for (label, (desired, was_observed)) in rows {
         let now_observed = observed.contains(&label);
         if now_observed == was_observed {
             continue;
         }
+        was_pending |= desired != was_observed;
         // Without a pending local change, the remote change wins; with one,
         // the local change stands and is pushed.
         let desired = if desired == was_observed {
@@ -512,7 +615,7 @@ fn observe_labels(
         } else {
             desired
         };
-        set_label_row(tx, entry, label, desired, now_observed)?;
+        set_label_row(tx, entry, label, desired, now_observed, None)?;
         changes.push(LabelState {
             entry,
             label,
@@ -520,7 +623,7 @@ fn observe_labels(
             observed: now_observed,
         });
     }
-    Ok(changes)
+    Ok((changes, was_pending))
 }
 
 fn label_row(tx: &Transaction, entry: EntryId, label: LabelId) -> Result<Option<(bool, bool)>> {
@@ -533,19 +636,29 @@ fn label_row(tx: &Transaction, entry: EntryId, label: LabelId) -> Result<Option<
         .optional()?)
 }
 
+/// Records `desired` and `observed`; `by` is the op setting `desired`, if
+/// one is. A difference keeps the op that made it, and a refusal of it,
+/// until an op sets `desired` again; once there is none, neither stays.
 fn set_label_row(
     tx: &Transaction,
     entry: EntryId,
     label: LabelId,
     desired: bool,
     observed: bool,
+    by: Option<TxLogId>,
 ) -> Result<()> {
     if desired || observed {
         tx.execute(
-            "INSERT INTO entry_label (entry, label, desired, observed) VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO entry_label (entry, label, desired, observed, desired_by)
+             VALUES (?1, ?2, ?3, ?4, CASE WHEN ?3 != ?4 THEN ?5 END)
              ON CONFLICT (entry, label)
-             DO UPDATE SET desired = excluded.desired, observed = excluded.observed",
-            params![entry.0, label.0, desired, observed],
+             DO UPDATE SET desired = excluded.desired, observed = excluded.observed,
+               desired_by = CASE WHEN excluded.desired = excluded.observed THEN NULL
+                                 WHEN ?5 IS NOT NULL THEN ?5
+                                 ELSE desired_by END,
+               refused = CASE WHEN excluded.desired = excluded.observed OR ?5 IS NOT NULL
+                              THEN NULL ELSE refused END",
+            params![entry.0, label.0, desired, observed, by.map(|b| b.0)],
         )?;
     } else {
         tx.execute(
@@ -584,8 +697,10 @@ impl Op for SetLabels {
     const KIND: &'static str = "mail.set_labels";
 
     fn apply(self, tx: &Transaction) -> Result<Applied> {
+        let this = this_entry(tx)?;
         let mut inverse = vec![];
         let mut events = vec![];
+        let mut accounts = BTreeSet::new();
         // (label, desired) → entries changed
         let mut groups: BTreeMap<(LabelId, bool), usize> = BTreeMap::new();
         let mut entries: Vec<EntryId> = vec![];
@@ -650,7 +765,15 @@ impl Op for SetLabels {
             if desired == change.desired {
                 continue;
             }
-            set_label_row(tx, change.entry, change.label, change.desired, observed)?;
+            set_label_row(
+                tx,
+                change.entry,
+                change.label,
+                change.desired,
+                observed,
+                Some(this),
+            )?;
+            accounts.insert(entry_account);
             inverse.push(LabelChange { desired, ..change });
             if !undescribed {
                 *groups.entry((change.label, change.desired)).or_default() += 1;
@@ -684,9 +807,12 @@ impl Op for SetLabels {
                 capitalize(&description.join(", "))
             },
             inverse: Inverse::of(&SetLabels { changes: inverse }),
-            events: vec![ServerEvent::LabelsChanged(LabelsChanged {
+            events: [ServerEvent::LabelsChanged(LabelsChanged {
                 changes: events,
-            })],
+            })]
+            .into_iter()
+            .chain(accounts.iter().map(|a| outbox_changed(a)))
+            .collect(),
         })
     }
 }

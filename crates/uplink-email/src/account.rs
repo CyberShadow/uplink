@@ -13,6 +13,7 @@ use crate::{
         self, build_message, now_ms, Due, File, ReplyContext, SendFailed, SendStarted,
         SendSucceeded,
     },
+    mailbox::PushFailing,
     parse::{parse, Parsed},
     store::{Store, VariantHash},
 };
@@ -168,7 +169,8 @@ impl Account {
         .await
     }
 
-    /// Label changes not yet in effect at the provider, by entry.
+    /// Label changes not yet in effect at the provider, by entry; but for
+    /// those it refused, which wait for the user (SPEC §6.6).
     pub async fn pending(&self) -> Result<Vec<Pending>> {
         let account = self.id.clone();
         self.read(move |conn| {
@@ -179,6 +181,7 @@ impl Account {
                      JOIN mail_entry e ON e.id = el.entry
                      JOIN label l ON l.id = el.label
                      WHERE e.account_id = ?1 AND el.desired != el.observed
+                       AND el.refused IS NULL
                      ORDER BY e.id, l.id",
                 )?
                 .query_map([account], |r| {
@@ -253,13 +256,22 @@ impl<P: Provider> SyncTask<P> {
         }
     }
 
-    /// Runs until the process exits, retrying failures with backoff.
+    /// Runs until the process exits, retrying failures with backoff. A
+    /// failure holds up the account's pushes and sends, as the steps go in
+    /// turn, so it is recorded for the outbox as they start and stop
+    /// failing, not at each retry (SPEC §6.6).
     pub async fn run(self) {
         let mut wake = self.account.dispatcher.hub().subscribe();
         let mut backoff = Duration::from_secs(1);
         let mut recovered = false;
+        // Whether the last run left the account failing: not known until
+        // read, which may fail too.
+        let mut failing = None;
         loop {
             let step = async {
+                if failing.is_none() {
+                    failing = Some(self.failing().await?);
+                }
                 if !recovered {
                     self.recover().await?;
                     recovered = true;
@@ -269,16 +281,53 @@ impl<P: Provider> SyncTask<P> {
             match step.await {
                 Ok((more, next_due)) => {
                     backoff = Duration::from_secs(1);
+                    if failing == Some(true) {
+                        self.record_failing(None).await;
+                        failing = Some(false);
+                    }
                     if !more {
                         self.wait(&mut wake, next_due).await;
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(account = self.account.id, "sync failed: {e:#}");
+                    let error = format!("{e:#}");
+                    tracing::warn!(account = self.account.id, "sync failed: {error}");
+                    if failing == Some(false) {
+                        self.record_failing(Some(error)).await;
+                        failing = Some(true);
+                    }
                     tokio::time::sleep(backoff).await;
                     backoff = (backoff * 2).min(MAX_BACKOFF);
                 }
             }
+        }
+    }
+
+    /// Whether the account is recorded as failing.
+    async fn failing(&self) -> Result<bool> {
+        let account = self.account.id.clone();
+        self.account
+            .read(move |conn| {
+                Ok(conn
+                    .query_row(
+                        "SELECT push_error IS NOT NULL FROM account WHERE id = ?1",
+                        [account],
+                        |r| r.get(0),
+                    )
+                    .optional()?
+                    // Recorded by its first sync, which has not run.
+                    .unwrap_or(false))
+            })
+            .await
+    }
+
+    /// Records that the account's changes are not reaching the provider,
+    /// for `error`, or are again. If that cannot be recorded either, the
+    /// database is failing too, which the next step reports.
+    async fn record_failing(&self, error: Option<String>) {
+        let at = now_ms();
+        if let Err(e) = self.account.observe(PushFailing { error, at }).await {
+            tracing::warn!(account = self.account.id, "recording the failure: {e:#}");
         }
     }
 

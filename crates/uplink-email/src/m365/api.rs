@@ -202,15 +202,13 @@ impl Graph {
         Ok(Some(check(response).await?.bytes().await?.to_vec()))
     }
 
-    /// `false` if the message no longer exists.
-    pub async fn update(&self, id: &str, update: &MessageUpdate) -> Result<bool> {
+    pub async fn update(&self, id: &str, update: &MessageUpdate) -> Result<Changed> {
         let url = self.url(&format!("/messages/{id}"));
-        found(self.send(Method::PATCH, &url, Some(update)).await?).await
+        changed(self.send(Method::PATCH, &url, Some(update)).await?).await
     }
 
-    /// Moves the message to `folder`, an id or a well-known name; `false`
-    /// if the message no longer exists.
-    pub async fn move_to(&self, id: &str, folder: &str) -> Result<bool> {
+    /// Moves the message to `folder`, an id or a well-known name.
+    pub async fn move_to(&self, id: &str, folder: &str) -> Result<Changed> {
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
         struct Move<'a> {
@@ -220,7 +218,7 @@ impl Graph {
         let body = Move {
             destination_id: folder,
         };
-        found(self.send(Method::POST, &url, Some(&body)).await?).await
+        changed(self.send(Method::POST, &url, Some(&body)).await?).await
     }
 
     /// Sends the RFC 5322 message `raw`, which Graph takes as base64 MIME,
@@ -319,12 +317,30 @@ async fn decode<T: DeserializeOwned>(url: &str, response: reqwest::Response) -> 
         .with_context(|| format!("decoding {url}: {}", String::from_utf8_lossy(&body)))
 }
 
-/// `false` on 404.
-async fn found(response: reqwest::Response) -> Result<bool> {
-    if response.status() == StatusCode::NOT_FOUND {
-        return Ok(false);
+/// What Graph made of a change to a message.
+#[derive(Debug, PartialEq)]
+pub enum Changed {
+    Done,
+    /// The message no longer exists.
+    Gone,
+    /// Refused, for this reason: a 4xx other than for authorization or
+    /// rate, which pass.
+    Refused(String),
+}
+
+async fn changed(response: reqwest::Response) -> Result<Changed> {
+    let status = response.status();
+    if status == StatusCode::NOT_FOUND {
+        return Ok(Changed::Gone);
     }
-    check(response).await.map(|_| true)
+    if status.is_client_error()
+        && status != StatusCode::UNAUTHORIZED
+        && status != StatusCode::TOO_MANY_REQUESTS
+    {
+        let body = response.text().await.unwrap_or_default();
+        return Ok(Changed::Refused(error_message(&body).unwrap_or(body)));
+    }
+    check(response).await.map(|_| Changed::Done)
 }
 
 async fn check(response: reqwest::Response) -> Result<reqwest::Response> {

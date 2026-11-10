@@ -257,8 +257,13 @@ impl Inner {
     {
         let mut conn = self.lock();
         let tx = conn.transaction().context("beginning transaction")?;
+        let expected = this_entry(&tx)?;
         let (executed, undoes) = execute(&tx)?;
         let entry = self.record(&tx, executed, source, undoes)?;
+        assert_eq!(
+            entry.id, expected,
+            "entries are recorded as `this_entry` says"
+        );
         if let Some(undone) = undoes {
             tx.execute(
                 "UPDATE tx_log SET undone_by = ?1 WHERE id = ?2",
@@ -372,6 +377,19 @@ impl Inner {
             events: executed.events,
         })
     }
+}
+
+/// The entry that the op or observation being applied in `tx` will be
+/// recorded as, for state that names the op that set it (SPEC §6.6). Ids
+/// are never reused (`AUTOINCREMENT`), and the dispatcher is the only
+/// writer, so it is the next one.
+pub fn this_entry(tx: &Transaction) -> Result<TxLogId> {
+    let last: i64 = tx.query_row(
+        "SELECT coalesce((SELECT seq FROM sqlite_sequence WHERE name = 'tx_log'), 0)",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(TxLogId(last + 1))
 }
 
 /// The last entry recorded, as seen by `tx`: the position a query run in

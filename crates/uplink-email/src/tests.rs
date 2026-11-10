@@ -1,7 +1,7 @@
 use crate::{
     mailbox::{
-        self, EntryLabels, LabelChange, LabelsPushed, MailboxObserved, NewEntry, ObservedLabel,
-        SetLabels,
+        self, EntryLabels, LabelChange, LabelsPushed, LabelsRefused, MailboxObserved, NewEntry,
+        ObservedLabel, PushFailing, SetLabels,
     },
     parse::parse,
     store::Store,
@@ -434,9 +434,10 @@ async fn set_labels_undo_redo() {
     let entry = live.recv().await.unwrap();
     assert_eq!(entry.description, "Moved 1 message to Inbox");
     assert!(
-        matches!(&entry.events[..], [ServerEvent::LabelsChanged(c)] if c.changes == [LabelState {
-            entry: db.entry("m2"), label: inbox, desired: true, observed: true,
-        }])
+        matches!(&entry.events[..], [ServerEvent::LabelsChanged(c), ServerEvent::OutboxChanged(o)]
+            if c.changes == [LabelState {
+                entry: db.entry("m2"), label: inbox, desired: true, observed: true,
+            }] && o.accounts == ["a"])
     );
     assert_eq!(
         db.label_rows(),
@@ -649,6 +650,194 @@ async fn pushed_changes_become_observed() {
         .await
         .unwrap();
     assert_eq!(db.label_rows(), [row("m1", "STARRED", false, true)]);
+}
+
+/// A pending change names the op that made it, and the provider's refusal
+/// of it, until it is reconciled or another op changes it (SPEC §6.6).
+#[tokio::test]
+async fn pending_changes_keep_their_op_and_refusal() {
+    let db = Db::new();
+    let store = db.store();
+    db.observe(
+        "a",
+        observed(
+            labels(ALL),
+            vec![
+                new_entry(&store, "m1", &["INBOX"], &raw("1@x", "s@x", DATE, "1", "")),
+                new_entry(&store, "m2", &["INBOX"], &raw("2@x", "s@x", DATE, "2", "")),
+            ],
+            vec![],
+            &[],
+        ),
+    )
+    .await;
+    let (m1, m2, inbox, starred) = (
+        db.entry("m1"),
+        db.entry("m2"),
+        db.label("a", "INBOX"),
+        db.label("a", "STARRED"),
+    );
+    let pending = || {
+        db.query::<String>(
+            "SELECT e.external_id || ' ' || l.external_id || ' ' || coalesce(desired_by, '-')
+                    || ' ' || coalesce(refused, '-')
+             FROM entry_label el JOIN mail_entry e ON e.id = el.entry
+             JOIN label l ON l.id = el.label
+             WHERE desired != observed OR desired_by IS NOT NULL OR refused IS NOT NULL
+             ORDER BY 1",
+        )
+    };
+    let change = |entry, label, desired| LabelChange {
+        entry,
+        label,
+        desired,
+    };
+    let archived = db
+        .dispatcher
+        .dispatch(SetLabels {
+            changes: vec![change(m1, inbox, false), change(m2, inbox, false)],
+        })
+        .await
+        .unwrap()
+        .0;
+    let starred_by = db
+        .dispatcher
+        .dispatch(SetLabels {
+            changes: vec![change(m1, starred, true)],
+        })
+        .await
+        .unwrap()
+        .0;
+    assert_eq!(
+        pending(),
+        [
+            format!("m1 INBOX {archived} -"),
+            format!("m1 STARRED {starred_by} -"),
+            format!("m2 INBOX {archived} -"),
+        ]
+    );
+
+    // m1's archive is refused, m2's pushed; the star is refused too.
+    let mut live = db.hub.subscribe();
+    db.dispatcher
+        .observe(
+            "a".into(),
+            LabelsRefused {
+                changes: vec![change(m1, inbox, false), change(m1, starred, true)],
+                reason: "no".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(&live.recv().await.unwrap().events[..],
+        [ServerEvent::OutboxChanged(o)] if o.accounts == ["a"]));
+    db.dispatcher
+        .observe(
+            "a".into(),
+            LabelsPushed {
+                changes: vec![change(m2, inbox, false)],
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        pending(),
+        [
+            format!("m1 INBOX {archived} no"),
+            format!("m1 STARRED {starred_by} no"),
+        ]
+    );
+
+    // Refused changes are not pushed again.
+    let reader = db.reader();
+    let refused: i64 = reader
+        .query_row(
+            "SELECT count(*) FROM entry_label WHERE desired != observed AND refused IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(refused, 0);
+
+    // Starring again is a change of its own, pushed anew; undoing the
+    // archive leaves nothing pending of it.
+    db.dispatcher
+        .dispatch(SetLabels {
+            changes: vec![change(m1, starred, false)],
+        })
+        .await
+        .unwrap();
+    let restarred = db
+        .dispatcher
+        .dispatch(SetLabels {
+            changes: vec![change(m1, starred, true)],
+        })
+        .await
+        .unwrap()
+        .0;
+    let undone = db.dispatcher.undo(TxLogId(archived)).await.unwrap().0;
+    assert_eq!(
+        pending(),
+        [
+            format!("m1 STARRED {restarred} -"),
+            format!("m2 INBOX {undone} -"),
+        ]
+    );
+
+    // The provider reporting them so reconciles them.
+    db.observe(
+        "a",
+        observed(
+            None,
+            vec![],
+            vec![("m1", &["INBOX", "STARRED"]), ("m2", &["INBOX"])],
+            &[],
+        ),
+    )
+    .await;
+    assert!(pending().is_empty(), "{:?}", pending());
+}
+
+/// An account's failing pushes are recorded from when they start, and
+/// cleared when they work again.
+#[tokio::test]
+async fn failing_pushes_are_recorded_from_the_first_failure() {
+    let db = Db::new();
+    db.observe("a", observed(labels(ALL), vec![], vec![], &[]))
+        .await;
+    let failing = || {
+        db.reader()
+            .query_row(
+                "SELECT push_error, push_failing_since FROM account WHERE id = 'a'",
+                [],
+                |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<i64>>(1)?)),
+            )
+            .unwrap()
+    };
+    for (error, at) in [("down", 10), ("still down", 20)] {
+        db.dispatcher
+            .observe(
+                "a".into(),
+                PushFailing {
+                    error: Some(error.into()),
+                    at,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    assert_eq!(failing(), (Some("still down".into()), Some(10)));
+    db.dispatcher
+        .observe(
+            "a".into(),
+            PushFailing {
+                error: None,
+                at: 30,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(failing(), (None, None));
 }
 
 #[tokio::test]
@@ -1945,4 +2134,62 @@ async fn pushes_go_between_the_steps_of_a_long_sync() {
         ["sync", "push", "sync", "push", "sync", "push"]
     );
     run.abort();
+}
+
+/// A provider whose pushes fail `failures` times, then work.
+struct Failing {
+    failures: std::sync::atomic::AtomicU32,
+}
+
+impl crate::account::Provider for Failing {
+    const KIND: &'static str = "gmail";
+
+    async fn sync(&self, _: &crate::account::Account) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
+    async fn push(&self, _: &crate::account::Account) -> anyhow::Result<()> {
+        let left = self.failures.load(std::sync::atomic::Ordering::SeqCst);
+        if left > 0 {
+            self.failures
+                .store(left - 1, std::sync::atomic::Ordering::SeqCst);
+            anyhow::bail!("down {left}");
+        }
+        Ok(())
+    }
+
+    async fn send(&self, _: &[u8], _: Option<&str>) -> Result<(), crate::account::SendError> {
+        unreachable!("nothing is queued")
+    }
+}
+
+/// The task records when an account starts failing and when it recovers,
+/// not each retry.
+#[tokio::test(start_paused = true)]
+async fn the_task_records_failing_as_it_starts_and_stops() {
+    let db = Db::new();
+    db.observe("a", observed(labels(ALL), vec![], vec![], &[]))
+        .await;
+    let task = crate::account::SyncTask::new(
+        Failing { failures: 3.into() },
+        "a".into(),
+        "a@x".into(),
+        db.dispatcher.clone(),
+        db.reader(),
+        db.dir.path(),
+        std::time::Duration::from_secs(3600),
+    );
+    let run = tokio::spawn(task.run());
+    // 1 + 2 + 4 s of backoff.
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    run.abort();
+    assert_eq!(
+        db.query::<String>(
+            "SELECT description FROM tx_log WHERE op_type = 'mail.push_failing' ORDER BY id"
+        ),
+        [
+            "Changes are not reaching the provider: down 3",
+            "Changes are reaching the provider again"
+        ]
+    );
 }

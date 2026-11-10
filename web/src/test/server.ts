@@ -448,7 +448,7 @@ export class FakeServer implements Requester, Blobs {
         this.outbox.push({ id, account: draft.account, draft, state: 'queued', error: null, not_before: Date.now() + 10_000 })
         const response = this.dispatched(`Sent '${draft.content.subject}'`, [
           { type: 'drafts_changed', drafts: [draft.id] },
-          { type: 'outbox_changed', items: [id] },
+          { type: 'outbox_changed', accounts: [draft.account] },
         ])
         this.undoable.set(this.head(), { revert: () => this.cancelSend(id, 'Undid it'), undone: false })
         return response
@@ -625,7 +625,7 @@ export class FakeServer implements Requester, Blobs {
     this.drafts.set(cancelled.draft.id, cancelled.draft)
     return this.commit({ type: 'user' }, description, [
       { type: 'drafts_changed', drafts: [cancelled.draft.id] },
-      { type: 'outbox_changed', items: [cancelled.id] },
+      { type: 'outbox_changed', accounts: [cancelled.account] },
     ])
   }
 

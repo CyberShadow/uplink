@@ -341,9 +341,10 @@ export type DraftEdited = { draft: DraftId, revision: number, splice: Splice, };
 export type DraftsChanged = { drafts: Array<DraftId>, };
 
 /**
- * Outbox items were added, removed or changed state.
+ * Something not yet reconciled in these accounts was added, changed
+ * state or went (SPEC §6.6).
  */
-export type OutboxChanged = { items: Array<OutboxId>, };
+export type OutboxChanged = { accounts: Array<string>, };
 
 /**
  * A room of one account, as uplink numbers it.
