@@ -23,9 +23,9 @@ const BASE64URL: GeneralPurpose = GeneralPurpose::new(
 );
 
 /// Gmail's quota units a user's requests may spend each second, on
-/// average: Gmail allows 6,000 a minute per user (as Google's console
-/// shows; its documentation has said 15,000), and refuses requests
-/// beyond that for the rest of the minute.
+/// average: Gmail allows 6,000 a minute per user (to projects created
+/// since 1 May 2026, as the user's must be; older ones keep 15,000), and
+/// refuses requests beyond that for the rest of the minute.
 const UNITS_PER_SECOND: f64 = 80.0;
 /// Units that may be spent at once, after a pause.
 const UNITS_AT_ONCE: f64 = 400.0;
@@ -33,12 +33,16 @@ const UNITS_AT_ONCE: f64 = 400.0;
 /// waits double from a second up to this.
 const MAX_RATE_WAIT: Duration = Duration::from_secs(64);
 
-/// What each request costs, in quota units (Gmail's "Usage limits").
+/// What each request costs, in quota units (Gmail's "Usage limits", as
+/// of May 2026).
 mod cost {
     pub const PROFILE: u32 = 1;
     pub const LABELS: u32 = 1;
     pub const MESSAGES: u32 = 5;
-    pub const MESSAGE: u32 = 5;
+    /// `messages.get?format=minimal`.
+    pub const MESSAGE_MINIMAL: u32 = 20;
+    /// `messages.get?format=raw` (as `full` and `html`).
+    pub const MESSAGE_RAW: u32 = 60;
     pub const HISTORY: u32 = 2;
     pub const BATCH_MODIFY: u32 = 50;
     pub const SEND: u32 = 100;
@@ -246,16 +250,12 @@ impl Gmail {
 
     /// `None` if the message no longer exists.
     pub async fn message(&self, id: &str, format: Format) -> Result<Option<Message>> {
-        let format = match format {
-            Format::Minimal => "minimal",
-            Format::Raw => "raw",
+        let (format, cost) = match format {
+            Format::Minimal => ("minimal", cost::MESSAGE_MINIMAL),
+            Format::Raw => ("raw", cost::MESSAGE_RAW),
         };
-        self.get(
-            &format!("/messages/{id}"),
-            &[("format", format)],
-            cost::MESSAGE,
-        )
-        .await
+        self.get(&format!("/messages/{id}"), &[("format", format)], cost)
+            .await
     }
 
     /// `None` if `start` is too old: history is no longer available from
@@ -480,20 +480,20 @@ mod tests {
     async fn spends_at_once_while_the_budget_lasts_then_at_its_rate() {
         let pace = Pace::new();
         let start = Instant::now();
-        // 80 fetches at 5 units: 400 at once, then 80 a second.
+        // 80 listings at 5 units: 400 at once, then 80 a second.
         for _ in 0..80 {
-            pace.spend(cost::MESSAGE).await;
+            pace.spend(cost::MESSAGES).await;
         }
         assert_eq!(Instant::now() - start, Duration::ZERO);
         for _ in 0..16 {
-            pace.spend(cost::MESSAGE).await;
+            pace.spend(cost::MESSAGES).await;
         }
         assert_eq!(Instant::now() - start, Duration::from_secs(1));
         // A pause refills the bucket, up to its size.
         tokio::time::sleep(Duration::from_secs(60)).await;
         let start = Instant::now();
         for _ in 0..81 {
-            pace.spend(cost::MESSAGE).await;
+            pace.spend(cost::MESSAGES).await;
         }
         let waited = Instant::now() - start;
         assert!(

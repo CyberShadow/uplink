@@ -1079,13 +1079,14 @@ IMAP's per-folder copies, and a REST fake is practical to test against
   labels again only of entries up to `before`, since the polls from
   `listing_from` cover changes to those it fetched. Then the state
   becomes `{history_id: listing_from}`, and the account `synced`.
-- **Quota**: Gmail allows a user 6,000 quota units a minute (as the
-  console shows a new project; the documentation has said 15,000) and
-  refuses with 403 `rateLimitExceeded` for the rest of the minute once
-  they are spent. `messages.get` costs 5, so a listing fetching 8 at a
-  time would spend that in seconds. Each account's requests are paced by
-  a token bucket of 80 units a second, 400 at once; a mailbox of 50,000
-  messages takes about 50 minutes to list.
+- **Quota**: Gmail allows a user 6,000 quota units a minute (projects
+  created since 1 May 2026, as a user's own will be; older ones keep
+  15,000) and refuses with 403 `rateLimitExceeded` for the rest of the
+  minute once they are spent. Since May 2026, `messages.get` costs 60
+  with `format=raw` (20 with `minimal`), so a mailbox downloads at about
+  100 messages a minute at most. Each account's requests are paced by a
+  token bucket of 80 units a second, 400 at once: 80 messages a minute,
+  so a mailbox of 50,000 takes about 10 hours to list.
 - **Incremental**: poll `history.list?startHistoryId=…` every 5 s (2
   quota units per call against 6,000 units/minute per user, so even 1 s
   polling is affordable) —
