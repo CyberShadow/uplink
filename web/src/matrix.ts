@@ -236,6 +236,31 @@ export function linkify(text: string): Array<{ text: string; href: string | null
 
 const URL = /\bhttps?:\/\/[^\s<>]+/g
 
+/** What a `matrix.to` link names: a user, or a room, by its id or an
+ * alias; `null` of other links, and of links to an event. */
+export type Permalink = { type: 'user'; id: string } | { type: 'room'; id: string }
+
+export function permalink(href: string): Permalink | null {
+  const target = /^https:\/\/matrix\.to\/#\/([^/?]+)(?:\?.*)?$/.exec(href)?.[1]
+  if (target === undefined) return null
+  let id
+  try {
+    id = decodeURIComponent(target)
+  } catch {
+    // Not a link Matrix clients make: a plain one.
+    return null
+  }
+  switch (id[0]) {
+    case '@':
+      return { type: 'user', id }
+    case '!':
+    case '#':
+      return { type: 'room', id }
+    default:
+      return null
+  }
+}
+
 /** The web pages a message links, as it is shown: of its HTML, if it
  * has any, its links; else what its text links. Its text may not be what
  * the HTML says: bridges put their network's markup there (Slack's

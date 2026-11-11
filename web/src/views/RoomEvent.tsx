@@ -4,6 +4,7 @@
 // its JSON.
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
+import { useLocation } from 'preact-iso'
 import type {
   MatrixSend,
   MemberReceipt,
@@ -25,16 +26,19 @@ import {
   links,
   media,
   mentions,
+  permalink,
   senderColor,
   shown,
   stateSummary,
   TEXT,
   type Content,
+  type Permalink,
   type Shown,
 } from '../matrix'
 import { Icon } from './Icon'
 import { MenuButton, type MenuItem } from './Menu'
 import { fileSize } from './size'
+import { roomPath } from './Room'
 import styles from './Room.module.css'
 import overlay from './Overlay.module.css'
 
@@ -61,8 +65,8 @@ export interface Line {
   /** Opens the thread the event is the root of, or would be; `null` in
    * a thread. */
   openThread: (() => void) | null
-  /** Opens the sender's profile. */
-  openMember: () => void
+  /** Opens a user's profile, by their user id. */
+  openMember: (user: string) => void
 }
 
 /** What can be done to a line's event, by its buttons, or by keys while
@@ -176,7 +180,7 @@ export function EventRow(
           user={event.sender}
           name={event.sender_name}
           emote={content.msgtype === 'm.emote'}
-          open={props.openMember}
+          open={() => props.openMember(event.sender)}
         />
       )}
       <div class={styles.content}>
@@ -188,7 +192,7 @@ export function EventRow(
             {displayName(event.sender, event.sender_name)} {summary}
           </span>
         ) : (
-          <Body room={room} event={event} content={content} overlay={props.overlay} />
+          <Body room={room} event={event} content={content} overlay={props.overlay} openMember={props.openMember} />
         )}
         {!event.redacted && (
           <Reactions
@@ -306,8 +310,14 @@ export function MemberAvatar(props: { room: Room; user: string; name: string; cl
 }
 
 /** What a message says, as last edited, or being edited. */
-function Body(props: { room: Room; event: RoomEvent; content: Shown; overlay: Overlay }) {
-  const { room, event, content } = props
+function Body(props: {
+  room: Room
+  event: RoomEvent
+  content: Shown
+  overlay: Overlay
+  openMember: (user: string) => void
+}) {
+  const { room, event, content, openMember } = props
   if (event.redacted) {
     const reason = json(event).unsigned?.redacted_because?.content?.reason
     return <span class={styles.muted}>Message deleted{reason ? `: ${reason}` : ''}</span>
@@ -319,7 +329,7 @@ function Body(props: { room: Room; event: RoomEvent; content: Shown; overlay: Ov
   if (editing?.content.type === 'text') {
     return (
       <span class={`${styles.body} ${styles.saving}`}>
-        <Text text={editing.content.body} /> <span class={styles.muted}>(saving…)</span>
+        <Text room={room} text={editing.content.body} openMember={openMember} /> <span class={styles.muted}>(saving…)</span>
       </span>
     )
   }
@@ -329,7 +339,7 @@ function Body(props: { room: Room; event: RoomEvent; content: Shown; overlay: Ov
     event.kind === 'm.room.message' && event.thread_root === null && content.content['m.relates_to']?.rel_type === 'm.thread'
   const tag = orphan && <span class={styles.tag}>in a thread</span>
   if (event.kind === 'm.sticker') {
-    return <Media room={room} event={event} content={content} box={STICKER_BOX} />
+    return <Media room={room} event={event} content={content} box={STICKER_BOX} openMember={openMember} />
   }
   if (event.kind !== 'm.room.message') return <Raw event={event} />
   switch (content.msgtype) {
@@ -340,7 +350,7 @@ function Body(props: { room: Room; event: RoomEvent; content: Shown; overlay: Ov
       return (
         <>
           {tag}
-          <Media room={room} event={event} content={content} box={IMAGE_BOX} /> {edited}
+          <Media room={room} event={event} content={content} box={IMAGE_BOX} openMember={openMember} /> {edited}
         </>
       )
     case 'm.location':
@@ -360,7 +370,12 @@ function Body(props: { room: Room; event: RoomEvent; content: Shown; overlay: Ov
       <div class={[styles.body, notice && styles.notice].filter(Boolean).join(' ')}>
         {tag}
         {emote && <span style={{ color: senderColor(event.sender) }}>{displayName(event.sender, event.sender_name)} </span>}
-        {content.html !== null ? <Html html={content.html} /> : <Text text={content.body} />} {edited}
+        {content.html !== null ? (
+          <Html room={room} html={content.html} openMember={openMember} />
+        ) : (
+          <Text room={room} text={content.body} openMember={openMember} />
+        )}{' '}
+        {edited}
       </div>
       {!notice && !room.encrypted && <LinkPreviews room={room} event={event} body={content.body} html={content.html} />}
     </>
@@ -422,29 +437,76 @@ function LinkPreview(props: { room: Room; event: RoomEvent; url: string }) {
   )
 }
 
-/** Plain text, its URLs linked. */
-function Text(props: { text: string }) {
+/** Plain text, its URLs linked; those to `matrix.to`, as pills. */
+function Text(props: { room: Room; text: string; openMember: (user: string) => void }) {
+  const follow = useFollow(props.room, props.openMember)
   return (
     <>
-      {linkify(props.text).map((part, i) =>
-        part.href === null ? (
-          part.text
-        ) : (
-          <a key={i} href={part.href} target="_blank" rel="noopener noreferrer">
-            {part.text}
+      {linkify(props.text).map((part, i) => {
+        if (part.href === null) return part.text
+        const link = permalink(part.href)
+        return (
+          <a
+            key={i}
+            class={link ? styles.pill : undefined}
+            href={part.href}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(event) => link && follow(link) && event.preventDefault()}
+          >
+            {link ? <PillName room={props.room} link={link} /> : part.text}
           </a>
-        ),
-      )}
+        )
+      })}
     </>
   )
 }
 
+/** What a pill of text says: the user's name in the room, or the room's,
+ * if the account has it; else the id or alias. */
+function PillName(props: { room: Room; link: Permalink }) {
+  const { room, link } = props
+  const { matrix } = useServices()
+  if (link.type === 'user') {
+    const member = matrix.members(room.id).state.value?.members.find((m) => m.user === link.id)
+    return <>{displayName(link.id, member?.name ?? null)}</>
+  }
+  return <>{linkedRoom(matrix, room, link.id)?.name ?? link.id}</>
+}
+
+/** Of the account's rooms, that of the room id. */
+function linkedRoom(matrix: MatrixStore, room: Room, id: string): Room | undefined {
+  return matrix.rooms.value!.find((r) => r.account === room.account && r.room_id === id)
+}
+
+/** Follows a `matrix.to` link where it can: a user's to their profile, a
+ * room's to the room, if the account has it. Whether it did; else the
+ * link opens matrix.to. */
+function useFollow(room: Room, openMember: (user: string) => void): (link: Permalink) => boolean {
+  const { matrix } = useServices()
+  const { route } = useLocation()
+  return (link) => {
+    if (link.type === 'user') {
+      openMember(link.id)
+      return true
+    }
+    const linked = linkedRoom(matrix, room, link.id)
+    if (linked) route(roomPath(linked.id))
+    return linked !== undefined
+  }
+}
+
 /** A message's HTML, as the server sanitized it (SPEC §9.2). Its colours
- * are applied, as the Matrix spec has them (`data-mx-color`), and its
- * spoilers revealed on click. */
-function Html(props: { html: string }) {
+ * are applied, as the Matrix spec has them (`data-mx-color`), its
+ * spoilers revealed on click, and its links to `matrix.to` are pills,
+ * followed as `Text`'s. */
+function Html(props: { room: Room; html: string; openMember: (user: string) => void }) {
   const root = useRef<HTMLSpanElement>(null)
+  const follow = useFollow(props.room, props.openMember)
   useLayoutEffect(() => {
+    for (const anchor of root.current!.querySelectorAll('a[href]')) {
+      if (permalink(anchor.getAttribute('href')!)) anchor.classList.add(styles.pill)
+    }
     for (const element of root.current!.querySelectorAll<HTMLElement>('[data-mx-color], [data-mx-bg-color]')) {
       const color = element.dataset.mxColor
       const background = element.dataset.mxBgColor
@@ -457,8 +519,10 @@ function Html(props: { html: string }) {
       ref={root}
       class={styles.html}
       onClick={(event) => {
-        const spoiler = (event.target as Element).closest('[data-mx-spoiler]')
-        spoiler?.classList.add(styles.revealed)
+        const target = event.target as Element
+        target.closest('[data-mx-spoiler]')?.classList.add(styles.revealed)
+        const link = permalink(target.closest('a[href]')?.getAttribute('href') ?? '')
+        if (link && follow(link)) event.preventDefault()
       }}
       dangerouslySetInnerHTML={{ __html: props.html }}
     />
@@ -485,7 +549,13 @@ export function pretty(raw: string): string {
 }
 
 /** An image, video, audio or file the message sends. */
-function Media(props: { room: Room; event: RoomEvent; content: Shown; box: { width: number; height: number } }) {
+function Media(props: {
+  room: Room
+  event: RoomEvent
+  content: Shown
+  box: { width: number; height: number }
+  openMember: (user: string) => void
+}) {
   const { room, event, content } = props
   const found = media(room.id, event, content.content)
   const info: Content = content.content.info ?? {}
@@ -529,10 +599,10 @@ function Media(props: { room: Room; event: RoomEvent; content: Shown; box: { wid
       {shownMedia}
       {caption &&
         (content.html !== null ? (
-          <Html html={content.html} />
+          <Html room={room} html={content.html} openMember={props.openMember} />
         ) : (
           <span class={styles.body}>
-            <Text text={content.body!} />
+            <Text room={room} text={content.body!} openMember={props.openMember} />
           </span>
         ))}
     </span>

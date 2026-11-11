@@ -289,8 +289,9 @@ button.sender:hover .name {
   height: 1.5em;
 }
 
-/* Mentions, as pills. */
-.html a[href^='https://matrix.to/#/@'] {
+/* Links to users and rooms, as pills. */
+.body a.pill,
+.html a.pill {
   padding: 0 6px;
   border-radius: 10px;
   background: var(--focus);

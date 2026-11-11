@@ -352,7 +352,7 @@ export function Events(props: {
     reply: () => act({ type: 'reply', event, back }),
     edit: () => act({ type: 'edit', event, back }),
     openThread: openThread && (() => openThread(event.id, back)),
-    openMember: () => openMember(event.sender),
+    openMember,
   })
   /** What keys can do to the event of the line that has the focus. */
   const focused = (): LineActions & { id: RoomEventId } => {

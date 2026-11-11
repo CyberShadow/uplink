@@ -2176,6 +2176,49 @@ describe('room timeline', () => {
     expect(await screen.findByRole('heading', { name: 'bob' })).toBeTruthy()
   })
 
+  it('shows links to users and rooms as pills, which open them', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const other = server.addRoom('Kitchen')
+    server.members.set(room.id, {
+      members: [
+        { user: '@carol:example.org', name: 'Carol', power: 0, membership: 'joined', kickable: false, bannable: false },
+        { user: ME, name: 'Me', power: 0, membership: 'joined', kickable: false, bannable: false },
+      ],
+      powers: { invite: false, name: false, topic: false },
+    })
+    const kitchen = `https://matrix.to/#/${encodeURIComponent(other.room_id)}?via=example.org`
+    server.receive(room.id, {
+      body: `Ask https://matrix.to/#/%40carol%3Aexample.org in ${kitchen} or https://matrix.to/#/#hall:example.org`,
+    })
+    server.receive(room.id, {
+      body: 'Dave: hi',
+      html: '<a href="https://matrix.to/#/@dave:example.org" target="_blank" rel="noopener noreferrer">Dave</a>: hi',
+    })
+    const user = await start(`/rooms/${room.id}`)
+    // Of text, named as the room has them.
+    const carol = await within(timeline()).findByRole('link', { name: 'Carol' })
+    expect(carol.className).toContain('pill')
+    expect(within(timeline()).getByRole('link', { name: 'Kitchen' }).className).toContain('pill')
+    // A room the account has not is a pill to matrix.to.
+    const hall = within(timeline()).getByRole('link', { name: '#hall:example.org' })
+    expect(hall.className).toContain('pill')
+    expect(hall.getAttribute('href')).toBe('https://matrix.to/#/#hall:example.org')
+
+    await user.click(carol)
+    let panel = await screen.findByRole('complementary', { name: 'Member' })
+    expect(within(panel).getByText('@carol:example.org')).toBeTruthy()
+    // Of HTML, too.
+    const dave = within(timeline()).getByRole('link', { name: 'Dave' })
+    expect(dave.className).toContain('pill')
+    await user.click(dave)
+    panel = await screen.findByRole('complementary', { name: 'Member' })
+    expect(within(panel).getByText('@dave:example.org')).toBeTruthy()
+
+    await user.click(within(timeline()).getByRole('link', { name: 'Kitchen' }))
+    expect(await screen.findByRole('heading', { name: 'Kitchen' })).toBeTruthy()
+  })
+
   it('loads earlier events as their start comes into view, until it is out of view', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')

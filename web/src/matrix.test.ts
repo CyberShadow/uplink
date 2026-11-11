@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { links } from './matrix'
+import { links, permalink } from './matrix'
 
 describe('links', () => {
   it('of HTML, are its links, not what the text says', () => {
@@ -14,5 +14,21 @@ describe('links', () => {
       'https://example.org/a',
       'http://example.com',
     ])
+  })
+})
+
+describe('permalink', () => {
+  it('is what a matrix.to link names: a user, or a room', () => {
+    expect(permalink('https://matrix.to/#/@bob:example.org')).toEqual({ type: 'user', id: '@bob:example.org' })
+    expect(permalink('https://matrix.to/#/%40bob%3Aexample.org')).toEqual({ type: 'user', id: '@bob:example.org' })
+    expect(permalink('https://matrix.to/#/!abc:example.org?via=example.org')).toEqual({ type: 'room', id: '!abc:example.org' })
+    expect(permalink('https://matrix.to/#/#hall:example.org')).toEqual({ type: 'room', id: '#hall:example.org' })
+  })
+
+  it('of other links, and of events, is none', () => {
+    expect(permalink('https://matrix.to/#/!abc:example.org/$event')).toBeNull()
+    expect(permalink('https://matrix.to/#/nobody')).toBeNull()
+    expect(permalink('https://matrix.to/#/%E0%A4%A')).toBeNull()
+    expect(permalink('https://example.org/#/@bob:example.org')).toBeNull()
   })
 })

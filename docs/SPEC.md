@@ -2817,8 +2817,12 @@ buttons.
 
 - **Messages** show as last edited, marked `(edited)`; a click lists the
   edits (`ListEdits`). Their HTML is the server's sanitized
-  `formatted_body` (§9.2), with its colours (`data-mx-color`), spoilers
-  revealed on click, mentions as pills; plain text has its URLs linked.
+  `formatted_body` (§9.2), with its colours (`data-mx-color`), and
+  spoilers revealed on click; plain text has its URLs linked. Links to
+  users and rooms (`matrix.to`, but those to events) show as pills, those
+  of plain text named as the room's members and the account's rooms are:
+  a click on a user's opens their profile, on a room's the room, if the
+  account has it (else matrix.to).
   Emotes show as IRC shows them (`* Name waves`), notices dimmed. A
   message that mentions the user (by `m.mentions`, or, without it, its
   body naming their user id) is highlighted. Images and stickers show
