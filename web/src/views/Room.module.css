@@ -161,6 +161,21 @@
   font-weight: 600;
 }
 
+button.sender {
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.sender:hover .name {
+  text-decoration: underline;
+}
+
 .name {
   overflow: hidden;
   white-space: nowrap;

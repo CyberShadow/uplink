@@ -96,8 +96,29 @@
   min-width: 0;
 }
 
-.reason {
-  margin: 4px 0 4px 32px;
+.profile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.profile h3 {
+  margin: 6px 0 0;
+  font-size: 16px;
+}
+
+.big {
+  width: 64px;
+  height: 64px;
+  font-size: 28px;
+  line-height: 64px;
+}
+
+.danger {
+  color: var(--error-fg);
 }
 
 .members {
@@ -114,6 +135,19 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
+  padding: 2px 4px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.line:hover {
+  background: var(--hover);
 }
 
 .avatar {

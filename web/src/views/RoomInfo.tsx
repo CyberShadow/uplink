@@ -1,6 +1,7 @@
 // A room's panel beside its timeline (SPEC §12.11), as Element's right
 // panel: its name and topic, to change if the account may, inviting, and
-// its members by membership and power, to remove, ban or unban.
+// its members by membership and power, to remove, ban or unban; or one
+// member's profile.
 
 import { useEffect, useRef, useState } from 'preact/hooks'
 import type { MemberAction, MemberInfo, Room, RoomPowers } from '../generated/protocol'
@@ -9,8 +10,9 @@ import { keepFocus } from '../keymap'
 import { MEMBER_ACTIONS, displayName, senderColor } from '../matrix'
 import styles from './RoomInfo.module.css'
 import { MemberAvatar } from './RoomEvent'
+import { useOpenJoined } from './RoomStarter'
 
-export function RoomInfo(props: { room: Room; close: () => void }) {
+export function RoomInfo(props: { room: Room; close: () => void; openMember: (user: string) => void }) {
   const { room } = props
   const { matrix } = useServices()
   const members = matrix.members(room.id)
@@ -35,7 +37,7 @@ export function RoomInfo(props: { room: Room; close: () => void }) {
         <>
           <Settings room={room} powers={joined ? state.powers : null} />
           {joined && state.powers.invite && <Invite room={room} />}
-          <MemberList room={room} members={state.members} joined={joined} />
+          <MemberList room={room} members={state.members} open={props.openMember} />
         </>
       )}
     </aside>
@@ -116,7 +118,7 @@ function Invite(props: { room: Room }) {
 /** The members, as Element lists them: joined, by power, then by name;
  * then those invited, asking to join, and banned. Those who left are not
  * listed. */
-function MemberList(props: { room: Room; members: readonly MemberInfo[]; joined: boolean }) {
+function MemberList(props: { room: Room; members: readonly MemberInfo[]; open: (user: string) => void }) {
   const groups: [string, MemberInfo[]][] = [
     ['Joined', []],
     ['Invited', []],
@@ -146,7 +148,7 @@ function MemberList(props: { room: Room; members: readonly MemberInfo[]; joined:
             </h3>
             <ul class={styles.members}>
               {members.map((member) => (
-                <Member key={member.user} room={props.room} member={member} joined={props.joined} />
+                <Member key={member.user} room={props.room} member={member} open={() => props.open(member.user)} />
               ))}
             </ul>
           </section>
@@ -168,25 +170,13 @@ function role(member: MemberInfo): string | null {
   return member.power > 0 ? `Power ${member.power}` : null
 }
 
-function Member(props: { room: Room; member: MemberInfo; joined: boolean }) {
+function Member(props: { room: Room; member: MemberInfo; open: () => void }) {
   const { room, member } = props
-  const { matrix } = useServices()
-  // The action being asked a reason for.
-  const [acting, setActing] = useState<MemberAction | null>(null)
   const name = displayName(member.user, member.name)
-  const actions: MemberAction[] = !props.joined
-    ? []
-    : member.membership === 'banned'
-    ? member.kickable && member.bannable
-      ? ['unban']
-      : []
-    : [...(member.kickable ? (['kick'] as const) : []), ...(member.bannable ? (['ban'] as const) : [])]
-  const label = (action: MemberAction) =>
-    action === 'kick' && member.membership === 'invited' ? 'Revoke invitation' : MEMBER_ACTIONS[action]
   const roleName = role(member)
   return (
     <li class={styles.member} aria-label={name}>
-      <div class={styles.line}>
+      <button type="button" class={styles.line} onClick={props.open} title={`${name}'s profile`}>
         <MemberAvatar room={room} user={member.user} name={name} class={styles.avatar} />
         <span class={styles.who}>
           <span class={styles.name} style={{ color: senderColor(member.user) }}>
@@ -195,29 +185,160 @@ function Member(props: { room: Room; member: MemberInfo; joined: boolean }) {
           <span class={styles.user}>{member.user}</span>
         </span>
         {roleName !== null && <span class={styles.role}>{roleName}</span>}
-        {acting === null &&
-          actions.map((action) => (
-            <button key={action} type="button" class={styles.small} onClick={() => setActing(action)}>
-              {label(action)}
-            </button>
-          ))}
-      </div>
-      {acting !== null && (
-        <Reason
-          label={label(acting)}
-          cancel={() => setActing(null)}
-          submit={async (reason) => {
-            const sent = await matrix.send(room.id, {
-              type: 'member',
-              user: member.user,
-              action: acting,
-              reason,
-            })
-            if (sent) setActing(null)
-          }}
-        />
-      )}
+      </button>
     </li>
+  )
+}
+
+const MEMBERSHIP: Record<MemberInfo['membership'], string | null> = {
+  joined: null,
+  invited: 'Invited',
+  knocking: 'Asking to join',
+  left: 'Left the room',
+  banned: 'Banned',
+}
+
+/** A member's profile, as Element's user info: their avatar, name, id
+ * and role in the room; a direct chat with them, mentioning them, and
+ * removing or banning them if the account may. `back` returns to the
+ * room's info, if it was opened from there. */
+export function MemberPanel(props: {
+  room: Room
+  user: string
+  back: (() => void) | null
+  close: () => void
+  /** Puts a mention of them in the room's box. */
+  mention: (user: string, name: string) => void
+}) {
+  const { room, user } = props
+  const { matrix } = useServices()
+  const members = matrix.members(room.id)
+  const member = members.state.value?.members.find((m) => m.user === user) ?? null
+  const me = matrix.accounts.value!.find((a) => a.id === room.account)!.mxid
+  const name = displayName(user, member?.name ?? null)
+  const roleName = member && role(member)
+  const membership = member ? MEMBERSHIP[member.membership] : members.state.value && 'Not a member'
+  return (
+    <aside class={styles.panel} aria-label="Member">
+      <header class={styles.header}>
+        {props.back && (
+          <button type="button" onMouseDown={keepFocus} onClick={props.back} aria-label="Back to room info">
+            ‹
+          </button>
+        )}
+        <h2>Member</h2>
+        <button type="button" onMouseDown={keepFocus} onClick={props.close} aria-label="Close member">
+          ×
+        </button>
+      </header>
+      {members.error.value !== null && (
+        <p class={styles.error} role="alert">
+          {members.error.value}
+        </p>
+      )}
+      <div class={styles.profile}>
+        <MemberAvatar room={room} user={user} name={name} class={styles.big} />
+        <h3 style={{ color: senderColor(user) }}>{name}</h3>
+        <span class={styles.user}>{user}</span>
+        {(roleName || membership) && (
+          <span class={styles.role}>{[roleName, membership].filter(Boolean).join(' · ')}</span>
+        )}
+      </div>
+      {user !== me && (
+        <>
+          <DirectChat room={room} user={user} />
+          {room.membership === 'joined' && (
+            <button type="button" onClick={() => props.mention(user, name)}>
+              Mention
+            </button>
+          )}
+        </>
+      )}
+      {member && room.membership === 'joined' && <MemberActions room={room} member={member} />}
+    </aside>
+  )
+}
+
+/** Opens the account's direct chat with the user, starting one if there
+ * is none. */
+function DirectChat(props: { room: Room; user: string }) {
+  const { matrix } = useServices()
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [, setJoined] = useOpenJoined(props.room.account, noop)
+  return (
+    <>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true)
+          setError(null)
+          try {
+            setJoined(await matrix.join({ type: 'start_direct_chat', account: props.room.account, user: props.user }))
+          } catch (e) {
+            setError((e as Error).message)
+          }
+          setBusy(false)
+        }}
+      >
+        Message
+      </button>
+      {error !== null && (
+        <p class={styles.error} role="alert">
+          {error}
+        </p>
+      )}
+    </>
+  )
+}
+
+function noop() {}
+
+/** Removing (revoking an invitation), banning or unbanning the member,
+ * as the account may, each asking a reason first. */
+function MemberActions(props: { room: Room; member: MemberInfo }) {
+  const { room, member } = props
+  const { matrix } = useServices()
+  // The action being asked a reason for.
+  const [acting, setActing] = useState<MemberAction | null>(null)
+  const actions: MemberAction[] =
+    member.membership === 'banned'
+      ? member.kickable && member.bannable
+        ? ['unban']
+        : []
+      : member.membership === 'left'
+      ? member.bannable
+        ? ['ban']
+        : []
+      : [...(member.kickable ? (['kick'] as const) : []), ...(member.bannable ? (['ban'] as const) : [])]
+  const label = (action: MemberAction) =>
+    action === 'kick' && member.membership === 'invited' ? 'Revoke invitation' : MEMBER_ACTIONS[action]
+  if (acting !== null) {
+    return (
+      <Reason
+        label={label(acting)}
+        cancel={() => setActing(null)}
+        submit={async (reason) => {
+          const sent = await matrix.send(room.id, {
+            type: 'member',
+            user: member.user,
+            action: acting,
+            reason,
+          })
+          if (sent) setActing(null)
+        }}
+      />
+    )
+  }
+  return (
+    <>
+      {actions.map((action) => (
+        <button key={action} type="button" class={styles.danger} onClick={() => setActing(action)}>
+          {label(action)}
+        </button>
+      ))}
+    </>
   )
 }
 

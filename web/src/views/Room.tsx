@@ -2,7 +2,7 @@
 // Element's IRC layout: a line per event, its time, sender and body side
 // by side; days apart; a line where the unread begin. Messages being
 // sent follow, and the box to write one. Beside it, a panel: the room's
-// info, or a thread.
+// info, a member's, or a thread.
 
 import type { RefObject } from 'preact'
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
@@ -25,11 +25,12 @@ import styles from './Room.module.css'
 import { RoomAvatar } from './RoomAvatar'
 import { date } from '../format'
 import { TEXT, displayName, sendSummary, senderColor, shown } from '../matrix'
+import { mention } from './Autocomplete'
 import { EventRow, type Line, type LineActions, lineActions, MembershipRun, type Reacting, reveal, type Overlay } from './RoomEvent'
 import { Icon } from './Icon'
 import { RoomSearch } from './RoomSearch'
 import { Composer, type Mode } from './RoomComposer'
-import { RoomInfo } from './RoomInfo'
+import { MemberPanel, RoomInfo } from './RoomInfo'
 import { MessageDetails } from './RoomMessage'
 import { ThreadPanel } from './RoomThread'
 import { RoomTagPicker } from './RoomTagPicker'
@@ -79,6 +80,7 @@ function Timeline(props: { room: Room; words: string | null }) {
   }
   const [tagging, setTagging] = useState(false)
   const write = () => composer.current?.focus()
+  const openMember = (user: string) => setPanel({ type: 'member', user, back: false })
   const scroller = useRef<HTMLDivElement>(null)
   const scrolling = pages(scroller)
   const lines = useRef<HTMLOListElement>(null)
@@ -198,6 +200,7 @@ function Timeline(props: { room: Room; words: string | null }) {
               act={act}
               openThread={(root) => setPanel({ type: 'thread', root })}
               details={(event) => setPanel({ type: 'message', event })}
+              openMember={openMember}
             />
           </ol>
         </div>
@@ -215,7 +218,29 @@ function Timeline(props: { room: Room; words: string | null }) {
           />
         )}
       </section>
-      {panel?.type === 'info' && <RoomInfo room={room} close={() => setPanel(null)} />}
+      {panel?.type === 'info' && (
+        <RoomInfo
+          room={room}
+          close={() => setPanel(null)}
+          openMember={(user) => setPanel({ type: 'member', user, back: true })}
+        />
+      )}
+      {panel?.type === 'member' && (
+        <MemberPanel
+          key={panel.user}
+          room={room}
+          user={panel.user}
+          back={panel.back ? () => setPanel({ type: 'info' }) : null}
+          close={() => setPanel(null)}
+          mention={(user, name) => {
+            // As if typed where the caret is.
+            const box = composer.current!
+            box.focus()
+            box.setRangeText(`${mention(user, name)} `, box.selectionStart, box.selectionEnd, 'end')
+            box.dispatchEvent(new Event('input', { bubbles: true }))
+          }}
+        />
+      )}
       {panel?.type === 'search' && (
         <RoomSearch
           key={panel.words}
@@ -244,6 +269,7 @@ function Timeline(props: { room: Room; words: string | null }) {
             // From the thread's box, back to the room's.
             if (composer.current) focusShown(composer.current)
           }}
+          openMember={openMember}
         />
       )}
       {panel?.type === 'message' && <Details room={room} events={events} readers={readers} id={panel.event} close={() => setPanel(null)} />}
@@ -271,6 +297,8 @@ function Details(props: {
 type Panel =
   | null
   | { type: 'info' }
+  // `back`: opened from the room's info, to return to.
+  | { type: 'member'; user: string; back: boolean }
   | { type: 'thread'; root: RoomEventId }
   | { type: 'search'; words: string }
   | { type: 'message'; event: RoomEventId }
@@ -292,8 +320,10 @@ export function Events(props: {
   openThread: ((root: RoomEventId) => void) | null
   /** Of the main timeline, shows a message's details. */
   details: ((event: RoomEventId) => void) | null
+  /** Opens a member's profile, by their user id. */
+  openMember: (user: string) => void
 }) {
-  const { room, me, overlay, act, openThread, details } = props
+  const { room, me, overlay, act, openThread, details, openMember } = props
   const { matrix } = useServices()
   const [reacting, setReacting] = useState<{ event: RoomEventId; how: Reacting } | null>(null)
   const line = (event: RoomEvent): Line => ({
@@ -305,6 +335,7 @@ export function Events(props: {
     reply: () => act({ type: 'reply', event }),
     edit: () => act({ type: 'edit', event }),
     openThread: openThread && (() => openThread(event.id)),
+    openMember: () => openMember(event.sender),
   })
   /** What can be done to the event of the line that has the focus. */
   const focused = (): LineActions & { id: RoomEventId } => {

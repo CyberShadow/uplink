@@ -1358,9 +1358,12 @@ describe('matrix', () => {
     await user.click(within(details()).getByRole('button', { name: 'Close message details' }))
     expect(screen.queryByRole('complementary', { name: 'Message details' })).toBeNull()
 
-    // Tab goes on to a line's links, where Enter is the link's.
+    // Tab goes on to a line's sender, whose profile Enter would open, and
+    // its links, where Enter is the link's.
     await user.keyboard('k')
     const link = within(lineOf(theirs)!).getByRole('link', { name: 'https://example.org/plan' })
+    await user.tab()
+    expect(document.activeElement).toBe(within(lineOf(theirs)!).getByTitle(theirs.sender))
     await user.tab()
     expect(document.activeElement).toBe(link)
     const followed = vi.fn((event: Event) => event.preventDefault())
@@ -1998,25 +2001,42 @@ describe('room timeline', () => {
       'Carol',
     ])
     expect(within(within(joined).getByRole('listitem', { name: 'Bob' })).getByText('Owner')).toBeTruthy()
-    expect(within(within(joined).getByRole('listitem', { name: 'Bob' })).queryByRole('button')).toBeNull()
     expect(within(info).queryByText('Gone')).toBeNull()
 
+    // A member's profile, from the list, and back to it.
+    const profile = async (name: string) => {
+      const list = screen.getByRole('complementary', { name: 'Room info' })
+      await user.click(within(list).getByRole('button', { name: new RegExp(`^${name}`) }))
+      return screen.getByRole('complementary', { name: 'Member' })
+    }
+    const back = (panel: HTMLElement) => user.click(within(panel).getByRole('button', { name: 'Back to room info' }))
+    let panel = await profile('Bob')
+    expect(within(panel).getByText('@bob:example.org')).toBeTruthy()
+    expect(within(panel).getByText('Owner')).toBeTruthy()
+    expect(within(panel).queryByRole('button', { name: 'Remove' })).toBeNull()
+    await back(panel)
     // Removing, with a reason.
-    await user.click(within(within(joined).getByRole('listitem', { name: 'Carol' })).getByRole('button', { name: 'Remove' }))
-    await user.type(within(info).getByLabelText('Reason'), 'noisy{Enter}')
-    const invited = within(info).getByRole('region', { name: 'Invited' })
-    await user.click(within(invited).getByRole('button', { name: 'Revoke invitation' }))
-    await user.click(within(invited).getByRole('button', { name: 'Revoke invitation' }))
-    const banned = within(info).getByRole('region', { name: 'Banned' })
-    await user.click(within(banned).getByRole('button', { name: 'Unban' }))
-    await user.click(within(banned).getByRole('button', { name: 'Unban' }))
-    await user.type(within(info).getByLabelText('User to invite'), '@frank:example.org{Enter}')
+    panel = await profile('Carol')
+    await user.click(within(panel).getByRole('button', { name: 'Remove' }))
+    await user.type(within(panel).getByLabelText('Reason'), 'noisy{Enter}')
+    await back(panel)
+    panel = await profile('dave')
+    expect(within(panel).getByText('Invited')).toBeTruthy()
+    await user.click(within(panel).getByRole('button', { name: 'Revoke invitation' }))
+    await user.click(within(panel).getByRole('button', { name: 'Revoke invitation' }))
+    await back(panel)
+    panel = await profile('Eve')
+    await user.click(within(panel).getByRole('button', { name: 'Unban' }))
+    await user.click(within(panel).getByRole('button', { name: 'Unban' }))
+    await back(panel)
+    const info2 = screen.getByRole('complementary', { name: 'Room info' })
+    await user.type(within(info2).getByLabelText('User to invite'), '@frank:example.org{Enter}')
     // The topic is not the account's to change; the name is.
-    expect(within(info).getByLabelText('Topic')).toHaveProperty('disabled', true)
-    const name = within(info).getByLabelText('Name')
+    expect(within(info2).getByLabelText('Topic')).toHaveProperty('disabled', true)
+    const name = within(info2).getByLabelText('Name')
     await user.clear(name)
     await user.type(name, 'Parlour')
-    await user.click(within(info).getByRole('button', { name: 'Save' }))
+    await user.click(within(info2).getByRole('button', { name: 'Save' }))
     await waitFor(() =>
       expect(server.requests.filter((r) => r.type === 'send_matrix_message').map((r) => r.content)).toEqual([
         { type: 'member', user: '@carol:example.org', action: 'kick', reason: 'noisy' },
@@ -2026,8 +2046,38 @@ describe('room timeline', () => {
         { type: 'name', name: 'Parlour' },
       ]),
     )
-    await user.click(within(info).getByRole('button', { name: 'Close room info' }))
+    await user.click(within(info2).getByRole('button', { name: 'Close room info' }))
     expect(screen.queryByRole('complementary', { name: 'Room info' })).toBeNull()
+  })
+
+  it("opens a sender's profile, to mention them or message them", async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    server.members.set(room.id, {
+      members: [
+        { user: '@bob:example.org', name: 'Bob', power: 100, membership: 'joined', kickable: false, bannable: false },
+        { user: ME, name: 'Me', power: 0, membership: 'joined', kickable: false, bannable: false },
+      ],
+      powers: { invite: false, name: false, topic: false },
+    })
+    server.receive(room.id, { body: 'Hello', sender: '@bob:example.org', sender_name: 'Bob' })
+    const user = await start(`/rooms/${room.id}`)
+    await within(timeline()).findByText('Hello')
+    await user.click(within(timeline()).getByTitle('@bob:example.org'))
+    const panel = await screen.findByRole('complementary', { name: 'Member' })
+    expect(within(panel).getByRole('heading', { name: 'Bob' })).toBeTruthy()
+    expect(await within(panel).findByText('Admin')).toBeTruthy()
+    // From the timeline, there is no room info to go back to.
+    expect(within(panel).queryByRole('button', { name: 'Back to room info' })).toBeNull()
+
+    const box = screen.getByLabelText('Message Lounge') as HTMLTextAreaElement
+    await user.type(box, 'Hi ')
+    await user.click(within(panel).getByRole('button', { name: 'Mention' }))
+    expect(box.value).toBe('Hi [Bob](https://matrix.to/#/@bob:example.org) ')
+    expect(document.activeElement).toBe(box)
+
+    await user.click(within(panel).getByRole('button', { name: 'Message' }))
+    expect(await screen.findByRole('heading', { name: 'bob' })).toBeTruthy()
   })
 
   it('loads earlier events as their start comes into view, until it is out of view', async () => {

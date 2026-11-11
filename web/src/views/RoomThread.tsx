@@ -13,7 +13,13 @@ import styles from './Room.module.css'
 // Its header as the room info's.
 import panel from './RoomInfo.module.css'
 
-export function ThreadPanel(props: { room: Room; root: RoomEventId; me: string; close: () => void }) {
+export function ThreadPanel(props: {
+  room: Room
+  root: RoomEventId
+  me: string
+  close: () => void
+  openMember: (user: string) => void
+}) {
   const { room, me } = props
   const { matrix } = useServices()
   const thread = matrix.thread(room.id, props.root)
@@ -65,6 +71,7 @@ export function ThreadPanel(props: { room: Room; root: RoomEventId; me: string; 
             act={act}
             openThread={null}
             details={null}
+            openMember={props.openMember}
           />
         </ol>
       </div>

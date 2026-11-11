@@ -61,6 +61,8 @@ export interface Line {
   /** Opens the thread the event is the root of, or would be; `null` in
    * a thread. */
   openThread: (() => void) | null
+  /** Opens the sender's profile. */
+  openMember: () => void
 }
 
 /** What can be done to a line's event, by its buttons, or by keys while
@@ -158,7 +160,13 @@ export function EventRow(
           {stateArrow(event)}
         </span>
       ) : (
-        <Sender room={room} user={event.sender} name={event.sender_name} emote={content.msgtype === 'm.emote'} />
+        <Sender
+          room={room}
+          user={event.sender}
+          name={event.sender_name}
+          emote={content.msgtype === 'm.emote'}
+          open={props.openMember}
+        />
       )}
       <div class={styles.content}>
         {event.replied && !event.redacted && <ReplyPreview replied={event.replied} />}
@@ -241,16 +249,17 @@ function stateArrow(event: RoomEvent): string {
   return membership === 'join' || membership === 'invite' ? '→' : membership === 'leave' || membership === 'ban' ? '←' : '•'
 }
 
-function Sender(props: { room: Room; user: string; name: string | null; emote: boolean }) {
+/** The sender, whose profile a click opens. */
+function Sender(props: { room: Room; user: string; name: string | null; emote: boolean; open: () => void }) {
   const name = displayName(props.user, props.name)
   return (
-    <span class={styles.sender} title={props.user}>
+    <button type="button" class={styles.sender} title={props.user} onClick={props.open}>
       <MemberAvatar room={props.room} user={props.user} name={name} />
       {/* An emote is `* Name does`, as IRC shows it. */}
       <span class={styles.name} style={{ color: senderColor(props.user) }}>
         {props.emote ? '*' : name}
       </span>
-    </span>
+    </button>
   )
 }
 

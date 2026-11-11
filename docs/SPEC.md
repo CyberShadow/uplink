@@ -2748,7 +2748,8 @@ buttons.
   sender and time, the words marked, more on request; a click shows one
   in the timeline (loading earlier pages until it is, then scrolling to
   it and highlighting it), or one of a thread in its thread. One panel
-  shows at a time: the room's info, a thread, or a search. Under the
+  shows at a time: the room's info, a member's profile, a thread, or a
+  search. Under the
   header, a room with pinned messages shows one at a time, as Element's
   banner, the latest pinned first ("Pinned message 1 of 2"): a click
   shows it in the timeline, as a search's, and the next; a message's menu
@@ -2790,9 +2791,17 @@ buttons.
   the members (`ListMembers`) by membership (joined, invited, asking to
   join, banned; not those who left), each by power then name, with
   their role (Owner, a creator of a room of version 12; Admin, 100;
-  Moderator, 50; else the level, if above 0), and buttons to remove
-  (revoke an invitation), ban or unban those the account may, which ask
-  a reason first. Each change is a send (§9.3), so undoable.
+  Moderator, 50; else the level, if above 0). A click on one opens their
+  profile in the panel, with a button back to the list.
+- **A member's profile**, as Element's user info, opens in the panel
+  from the room info's list or from a sender in the timeline (or a
+  thread): their avatar, name, user id, role and membership (invited,
+  asking to join, left, banned); "Message", which opens the account's
+  direct chat with them, starting one if there is none (§9.7);
+  "Mention", which puts a link mentioning them in the room's box where
+  its caret is; and, as the account may, buttons to remove (revoke an
+  invitation), ban (also one who left) or unban them, which ask a reason
+  first. Each change is a send (§9.3), so undoable.
 - **Who is typing** shows above the composer; who has read how far, as
   up to three avatars (and how many more) at the end of a line.
 - **The composer** sends Markdown with Enter (Shift+Enter for a new
