@@ -776,6 +776,24 @@ describe('outbox', () => {
     expect(within(section).getByText(/^2 messages waiting$/)).toBeTruthy()
   })
 
+  it('lists Matrix messages sent though cancelled, until kept sent', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const user = await start('/outbox')
+    server.sentThoughCancelledToRoom(room.id, 'oops')
+    const section = await screen.findByRole('region', { name: 'mx' })
+    const [row] = within(section).getAllByRole('listitem')
+    expect(row.querySelector('[class*=from]')!.textContent).toBe('Lounge')
+    expect(row.querySelector('[class*=summary]')!.textContent).toBe(
+      'oopsSent before the cancel could take it back',
+    )
+    expect(within(screen.getByRole('link', { name: /Outbox/ })).getByText('1').title).toBe(
+      'Something needs your attention',
+    )
+    await user.click(within(row).getByRole('button', { name: 'Keep it sent' }))
+    await screen.findByText('The outbox is empty: everything you did is at the providers.')
+  })
+
   it('asks about mail sent though cancelled, until kept sent', async () => {
     const user = await start('/outbox')
     server.sentThoughCancelled('work', 'Lunch')
@@ -886,7 +904,7 @@ describe('matrix', () => {
     expect((box as HTMLTextAreaElement).value).toBe('')
     expect(server.requests).toContainEqual({ type: 'send_matrix_message', room: room.id, body: 'First line\nsecond line' })
 
-    server.echo(server.matrixOutbox[0].id)
+    server.echo(server.matrixSends[0].id)
     await waitFor(() => expect(screen.queryByText('Waiting to send')).toBeNull())
     expect(screen.getByText('First line second line')).toBeTruthy()
   })

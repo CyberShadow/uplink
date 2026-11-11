@@ -10,7 +10,7 @@ use uplink_email::{
     service::Mail,
 };
 use uplink_protocol::{
-    compose::{DraftContent, DraftId, SendState},
+    compose::{DraftContent, DraftId, Pending, SendState},
     mail::{EntryId, LabelId, MailProvider, MessageId},
     ServerResponse,
 };
@@ -152,12 +152,15 @@ impl Uplink {
     }
 
     pub async fn outbox(&self) -> Vec<(i64, SendState)> {
-        let ServerResponse::Outbox { accounts, .. } = self.mail.list_outbox().await.unwrap() else {
-            panic!()
-        };
-        accounts
+        let mut conn = self.reader();
+        let tx = conn.transaction().unwrap();
+        uplink_email::outbox::outbox(&tx)
+            .unwrap()
             .into_iter()
-            .flat_map(|a| a.sends)
+            .flat_map(|a| match a.pending {
+                Pending::Mail { sends, .. } => sends,
+                Pending::Matrix { .. } => unreachable!("a mail account"),
+            })
             .map(|i| (i.id.0, i.state))
             .collect()
     }

@@ -3,7 +3,7 @@
 // message types uplink does not display, as their raw JSON.
 
 import { useEffect, useRef, useState } from 'preact/hooks'
-import type { MatrixOutboxItem, MembershipChange, Room, RoomEvent } from '../generated/protocol'
+import type { MatrixSend, MembershipChange, Room, RoomEvent } from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus, useKeymap } from '../keymap'
 import styles from './Room.module.css'
@@ -31,7 +31,7 @@ function Timeline(props: { room: Room }) {
   const { matrix } = useServices()
   const timeline = matrix.timeline(room.id)
   const events = timeline.events.value
-  const pending = matrix.outbox.value?.filter((item) => item.room === room.id) ?? []
+  const sends = timeline.sends.value ?? []
   const composer = useRef<HTMLTextAreaElement>(null)
   useKeymap({ reply: () => composer.current?.focus() })
   useMarkRead(room, events)
@@ -61,7 +61,7 @@ function Timeline(props: { room: Room }) {
           )}
           {events === null && <li class={styles.muted}>Loading…</li>}
           {events?.map((event) => <Event key={event.id} event={event} />)}
-          {pending.map((item) => (
+          {sends.map((item) => (
             <Pending key={item.id} item={item} />
           ))}
         </ol>
@@ -169,26 +169,50 @@ function pretty(raw: string): string {
   return JSON.stringify(JSON.parse(raw), null, 2)
 }
 
-function Pending(props: { item: MatrixOutboxItem }) {
+function Pending(props: { item: MatrixSend }) {
   const { item } = props
-  const { matrix } = useServices()
-  const state = {
-    queued: 'Waiting to send',
-    sending: 'Sending…',
-    sent: 'Sent',
-    failed: `Not sent: ${item.error}`,
-  }[item.state]
   return (
     <li class={`${styles.event} ${styles.pending}`}>
-      <span class={styles.muted}>{state}</span>
-      {(item.state === 'queued' || item.state === 'failed') && (
-        <button type="button" class={styles.cancel} onMouseDown={keepFocus} onClick={() => matrix.cancelSend(item.id)}>
-          Cancel
-        </button>
-      )}
+      <span class={styles.muted}>{matrixSendState(item)}</span>
+      <MatrixSendActions item={item} class={styles.cancel} />
       <div class={styles.body}>{item.body}</div>
     </li>
   )
+}
+
+/** Where a message being sent is, in words. */
+export function matrixSendState(item: MatrixSend): string {
+  switch (item.state) {
+    case 'queued':
+      return 'Waiting to send'
+    case 'sending':
+      return item.wanted ? 'Sending…' : 'Sending; cancelling if it does not go out'
+    case 'sent':
+      return item.wanted ? 'Sent' : 'Sent before the cancel could take it back'
+    case 'refused':
+      return `Not sent: ${item.error}`
+  }
+}
+
+/** Cancelling a message being sent, or keeping one sent though cancelled. */
+export function MatrixSendActions(props: { item: MatrixSend; class?: string }) {
+  const { item } = props
+  const { matrix } = useServices()
+  if (item.wanted && item.state !== 'sent') {
+    return (
+      <button type="button" class={props.class} onMouseDown={keepFocus} onClick={() => matrix.cancelSend(item.id)}>
+        Cancel
+      </button>
+    )
+  }
+  if (!item.wanted && item.state === 'sent') {
+    return (
+      <button type="button" class={props.class} onMouseDown={keepFocus} onClick={() => matrix.keepSent(item.id)}>
+        Keep it sent
+      </button>
+    )
+  }
+  return null
 }
 
 function Composer(props: { room: Room; textarea: preact.RefObject<HTMLTextAreaElement> }) {

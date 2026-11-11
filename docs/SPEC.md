@@ -491,7 +491,7 @@ CREATE TABLE matrix_event (
   encryption   TEXT NOT NULL,        -- 'none' | 'decrypted' | 'undecryptable'
   UNIQUE (room, event_id)
 );
-CREATE TABLE matrix_send (     -- (V0020: was matrix_outbox)
+CREATE TABLE matrix_send (     -- (V0023: was matrix_outbox)
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   room         INTEGER NOT NULL REFERENCES matrix_room(id),
   body         TEXT NOT NULL,
@@ -500,7 +500,7 @@ CREATE TABLE matrix_send (     -- (V0020: was matrix_outbox)
   desired_by   INTEGER NOT NULL REFERENCES tx_log(id),
   state        TEXT NOT NULL,        -- 'queued' | 'sending' | 'sent' | 'refused'
   error        TEXT,                 -- set iff refused
-  event_id     TEXT,                 -- once sent
+  event_id     TEXT,                 -- set iff sent
   synced       INTEGER NOT NULL      -- the event is synced: out of the outbox
 );
 -- Full-text search of Matrix messages is deferred.
@@ -768,7 +768,8 @@ than it buffers is closed; the client reconnects and resumes.
   `OutboxChanged`).
 - **Matrix**: `RoomsChanged { rooms }` (appeared, or name, membership,
   unread count or read marker changed), `TimelineAdded { room, events }`
-  (appended to the timeline), `MatrixSendsChanged { sends }`.
+  (appended to the timeline), `MatrixSendsChanged { rooms }` (their sends
+  were added, changed state or went).
 - **Calendar**: `CalendarEventAdded`, `CalendarEventRemoved`,
   `CalendarEventChanged`.
 - **To-dos**: `TodosChanged { todos }` (added, edited or deleted; the
@@ -809,18 +810,19 @@ than it buffers is closed; the client reconnects and resumes.
 - `Undo { tx_log_id }`; `ListHistory { before, limit }` — the user's
   ops, newest first, each with the entry that undid it, if any (§6.3).
 - `ListDrafts` — all drafts. `ListOutbox` — per account, its push
-  error, if failing, and what is not yet reconciled (§6.6): label changes
-  grouped by the op that made them (its description, the entries left,
-  how many refused, with their reasons), sends, membership changes; each
-  with its state.
+  error, if failing, and what is not yet reconciled (§6.6), by the kind
+  of account: of mail, label changes grouped by the op that made them
+  (its description, the entries left, how many refused, with their
+  reasons) and sends; of Matrix, sends; each with its state. The server
+  lists both kinds in one read, so as of one log position.
 - One request per op kind the client can dispatch, answered with the
   tx_log id: `ModifyLabels { entries, add, remove }` covers archive,
   label, mark read and star; `CreateDraft`, `EditDraft { draft, revision,
   splice }`, `DeleteDraft`, `SendDraft`, `CancelSend { item }`,
   `KeepSent { item }` (§6.7, §7); `KeepObserved { op }` — a refused
   change taken back to what the provider has (§6.6);
-  `SendMatrixMessage { room, body }`, `CancelMatrixSend { send }`,
-  `KeepMatrixSent { send }`,
+  `SendMatrixMessage { room, body }`, `CancelMatrixSend { item }`,
+  `KeepMatrixSent { item }`,
   `MarkRoomRead { room, event }`, `ChangeMembership { room, change }`
   (§9).
 
@@ -1603,7 +1605,10 @@ retrying them is deferred.
 
 `matrix.send` (`SendMatrixMessage`) queues a plain-text message in
 `matrix_send`, wanted (§6.7); the room's timeline shows it at the end,
-with its state, until it is synced back. The sending loop claims a
+with its state (`ListMatrixSends`), until it is synced back, and the
+outbox lists it with the account's. Cancelling it (its undo, or
+`CancelMatrixSend`) drops it while queued or refused; once claimed, it
+makes it unwanted, settled by the outcome. The sending loop claims a
 message (`sending`, so that a cancel knows it can no longer be fulfilled
 at once) and sends it with transaction id `uplink-<id>`:
 
@@ -1611,10 +1616,12 @@ at once) and sends it with transaction id `uplink-<id>`:
   (or at once, if sync delivered it first). If it was cancelled
   meanwhile, it is irreconcilable until kept (`KeepMatrixSent`);
 - refused (4xx other than 429): `refused`, with the homeserver's reason;
-  it needs a decision, and cancelling (`CancelMatrixSend`) drops it;
+  it needs a decision, and cancelling drops it. Cancelled meanwhile, it
+  is dropped at once;
 - anything else, including a send interrupted by a restart: queued
   again and retried with backoff — the homeserver deduplicates the
-  transaction id, so a retry cannot duplicate the message.
+  transaction id, so a retry cannot duplicate the message. Cancelled
+  meanwhile, it is dropped instead.
 
 ### 9.4 Cross-signing pairing
 

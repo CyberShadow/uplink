@@ -10,9 +10,10 @@
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use uplink_protocol::{
+    compose::OutboxChanged,
     matrix::{
-        Encryption, Membership, Room, RoomEvent, RoomEventId, RoomId, RoomsChanged, TimelineAdded,
-        TimelinePage,
+        Encryption, MatrixSendsChanged, Membership, Room, RoomEvent, RoomEventId, RoomId,
+        RoomsChanged, TimelineAdded, TimelinePage,
     },
     ServerEvent,
 };
@@ -21,7 +22,7 @@ use uplink_tx_log::{Applied, Inverse, Observation, Observed, Op};
 
 use crate::{
     membership::{parse_desired, parse_membership},
-    outbox,
+    send,
 };
 
 pub const ACCOUNT_KIND: &str = "matrix";
@@ -184,7 +185,9 @@ impl Observation for Synced {
             let (id, upserted) = upsert_room(tx, account, &room)?;
             let changed = set_children(tx, id, &room.children)? || upserted;
             let added = insert_events(tx, id, &room.events)?;
-            sent.extend(outbox::synced_back(tx, id)?);
+            if send::sends_synced(tx, id)? {
+                sent.push(id);
+            }
             let read = observe_receipts(tx, id, &room.own_receipts)?;
             if changed || read || !added.is_empty() {
                 changed_rooms.push(id);
@@ -203,7 +206,12 @@ impl Observation for Synced {
             }));
         }
         if !sent.is_empty() {
-            events.push(outbox::changed(sent));
+            events.push(ServerEvent::MatrixSendsChanged(MatrixSendsChanged {
+                rooms: sent,
+            }));
+            events.push(ServerEvent::OutboxChanged(OutboxChanged {
+                accounts: vec![account.to_owned()],
+            }));
         }
         let state = serde_json::to_string(&SyncState {
             next_batch: self.next_batch,

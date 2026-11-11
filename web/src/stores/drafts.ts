@@ -74,7 +74,7 @@ export class DraftStore {
         case 'label_list_changed':
         case 'rooms_changed':
         case 'timeline_added':
-        case 'matrix_outbox_changed':
+        case 'matrix_sends_changed':
         case 'todos_changed':
         case 'calendar_changed':
           break
@@ -224,16 +224,27 @@ export class DraftStore {
 
 /** How many things the outbox lists: each op's changes, and each send. */
 export function outboxCount(outbox: readonly AccountOutbox[]): number {
-  return outbox.reduce((n, account) => n + account.changes.length + account.sends.length, 0)
+  return outbox.reduce((n, { pending }) => {
+    switch (pending.kind) {
+      case 'mail':
+        return n + pending.changes.length + pending.sends.length
+      case 'matrix':
+        return n + pending.sends.length
+    }
+  }, 0)
 }
 
 /** Whether something in the outbox needs the user: an account failing,
  * something refused, or mail sent though cancelled. */
 export function outboxNeedsAttention(outbox: readonly AccountOutbox[]): boolean {
-  return outbox.some(
-    (account) =>
-      account.failing !== null ||
-      account.changes.some((c) => c.refused.length > 0) ||
-      account.sends.some((s) => s.state === 'refused' || (s.state === 'sent' && !s.wanted)),
-  )
+  const decision = (s: { state: string; wanted: boolean }) => s.state === 'refused' || (s.state === 'sent' && !s.wanted)
+  return outbox.some(({ failing, pending }) => {
+    if (failing !== null) return true
+    switch (pending.kind) {
+      case 'mail':
+        return pending.changes.some((c) => c.refused.length > 0) || pending.sends.some(decision)
+      case 'matrix':
+        return pending.sends.some(decision)
+    }
+  })
 }

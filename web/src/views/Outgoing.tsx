@@ -1,14 +1,24 @@
 // Drafts and the outbox: mail being written, and what is not yet at the
-// providers (SPEC §6.6): changes being pushed, and mail being sent.
+// providers (SPEC §6.6): changes being pushed, and mail and Matrix
+// messages being sent.
 
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
-import type { AccountOutbox, Draft, MailProvider, OutboxItem, PendingChanges } from '../generated/protocol'
+import type {
+  AccountOutbox,
+  Draft,
+  MailProvider,
+  MatrixSend,
+  OutboxItem,
+  Pending,
+  PendingChanges,
+} from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus, useKeymap } from '../keymap'
 import styles from './Mail.module.css'
 import outgoing from './Outgoing.module.css'
 import { dateTime } from '../format'
+import { MatrixSendActions, matrixSendState } from './Room'
 
 export function composePath(draft: string): string {
   return `/compose/${encodeURIComponent(draft)}`
@@ -64,7 +74,9 @@ export function Outbox() {
   const accounts = drafts.outbox.value
   // Re-render every second, for the countdowns.
   const [, tick] = useState(0)
-  const counting = accounts?.some((a) => a.sends.some((i) => i.state === 'queued'))
+  const counting = accounts?.some(
+    ({ pending }) => pending.kind === 'mail' && pending.sends.some((i) => i.state === 'queued'),
+  )
   useEffect(() => {
     if (!counting) return
     const timer = setInterval(() => tick((t) => t + 1), 1000)
@@ -86,9 +98,8 @@ export function Outbox() {
 }
 
 function AccountSection(props: { account: AccountOutbox; provider: MailProvider | undefined }) {
-  const { drafts, ops } = useServices()
-  const { account, failing, changes, sends } = props.account
-  const name = providerName(props.provider)
+  const { account, failing, pending } = props.account
+  const name = pending.kind === 'matrix' ? 'the homeserver' : providerName(props.provider)
   return (
     <section aria-label={account}>
       <h2 class={outgoing.account}>{account}</h2>
@@ -98,6 +109,50 @@ function AccountSection(props: { account: AccountOutbox; provider: MailProvider 
         </p>
       )}
       <ul class={styles.list} aria-label={`Outbox of ${account}`}>
+        {pending.kind === 'mail' ? (
+          <MailRows account={account} pending={pending} failing={failing !== null} provider={name} />
+        ) : (
+          <MatrixRows sends={pending.sends} />
+        )}
+      </ul>
+    </section>
+  )
+}
+
+function MatrixRows(props: { sends: readonly MatrixSend[] }) {
+  const { matrix } = useServices()
+  const room = (id: number) => matrix.rooms.value?.find((r) => r.id === id)?.name ?? 'a room'
+  return (
+    <>
+      {props.sends.map((item) => (
+        <li key={`matrix:${item.id}`} class={styles.row}>
+          <Unused />
+          <span class={styles.from}>{room(item.room)}</span>
+          <span class={styles.summary}>
+            <span class={styles.subject}>{item.body}</span>
+            <span class={styles.snippet}>{matrixSendState(item)}</span>
+          </span>
+          <span />
+          <span class={outgoing.actions}>
+            <MatrixSendActions item={item} />
+          </span>
+        </li>
+      ))}
+    </>
+  )
+}
+
+function MailRows(props: {
+  account: string
+  pending: Extract<Pending, { kind: 'mail' }>
+  failing: boolean
+  provider: string
+}) {
+  const { drafts, ops } = useServices()
+  const { account, failing, provider: name } = props
+  const { changes, sends } = props.pending
+  return (
+    <>
         {sends.map((item) => (
           <li key={`send:${item.id}`} class={styles.row}>
             <Unused />
@@ -125,9 +180,9 @@ function AccountSection(props: { account: AccountOutbox; provider: MailProvider 
           <li key={`op:${change.op?.id ?? 'earlier'}`} class={styles.row}>
             <Unused />
             <span class={styles.from}>{change.op ? dateTime(change.op.ts) : 'Earlier'}</span>
-            <span class={styles.summary} title={changeState(change, failing !== null, name)}>
+            <span class={styles.summary} title={changeState(change, failing, name)}>
               <span class={styles.subject}>{change.op?.description ?? 'Changes made earlier'}</span>
-              <span class={styles.snippet}>{changeState(change, failing !== null, name)}</span>
+              <span class={styles.snippet}>{changeState(change, failing, name)}</span>
             </span>
             <span />
             <span class={outgoing.actions}>
@@ -148,8 +203,7 @@ function AccountSection(props: { account: AccountOutbox; provider: MailProvider 
             </span>
           </li>
         ))}
-      </ul>
-    </section>
+    </>
   )
 }
 

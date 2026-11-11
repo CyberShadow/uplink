@@ -438,17 +438,6 @@ impl Mail {
         self.dispatcher.answer(KeepSent { item }).await
     }
 
-    pub async fn list_outbox(&self) -> Response {
-        self.reader
-            .read(move |conn| {
-                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
-                let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
-                let accounts = outbox::outbox(&tx).map_err(internal)?;
-                Ok(ServerResponse::Outbox { as_of, accounts })
-            })
-            .await
-    }
-
     /// Takes the refused changes of `op` back to what the provider has.
     pub async fn keep_observed(&self, account: String, op: Option<TxLogId>) -> Response {
         let changes = self

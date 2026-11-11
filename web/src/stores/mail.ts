@@ -178,7 +178,7 @@ export class MailStore {
         case 'outbox_changed':
         case 'rooms_changed':
         case 'timeline_added':
-        case 'matrix_outbox_changed':
+        case 'matrix_sends_changed':
         case 'todos_changed':
         case 'calendar_changed':
           // Not mail; no counts change.

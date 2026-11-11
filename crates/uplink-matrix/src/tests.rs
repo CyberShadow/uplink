@@ -1,16 +1,19 @@
-//! The log entries of rooms and the outbox, without a homeserver; the
+//! The log entries of rooms and sends, without a homeserver; the
 //! sync task is tested against one in `tests/conduit.rs`.
 
 use crate::{
-    outbox::{SendFailed, SendStarted, SendSucceeded},
     rooms::{ObservedEvent, ObservedRoom, ReceiptSent, Synced},
+    send::{SendFailed, SendStarted, SendSucceeded},
     service::{ConfiguredAccount, Matrix},
 };
 use serde_json::json;
 use std::sync::Arc;
 use uplink_protocol::{
-    compose::OutboxState,
-    matrix::{Encryption, MatrixOutboxItem, Membership, Room, RoomEventId, RoomId},
+    compose::{AccountOutbox, Pending},
+    matrix::{
+        Encryption, MatrixSend, MatrixSendId, MatrixSendState, Membership, Room, RoomEventId,
+        RoomId,
+    },
     ServerResponse, TxLogId,
 };
 use uplink_realtime::Hub;
@@ -85,11 +88,29 @@ impl Db {
         }
     }
 
-    async fn outbox(&self) -> Vec<MatrixOutboxItem> {
-        match self.matrix.list_outbox().await.unwrap() {
-            ServerResponse::MatrixOutbox { items, .. } => items,
+    /// The room's sends not yet reconciled.
+    async fn sends(&self) -> Vec<MatrixSend> {
+        let room = self.room().await;
+        match self.matrix.list_sends(room.id).await.unwrap() {
+            ServerResponse::MatrixSends { sends, .. } => sends,
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    /// What the sends show: their state and whether they are wanted.
+    async fn shown(&self) -> Vec<(MatrixSendState, bool)> {
+        self.sends()
+            .await
+            .iter()
+            .map(|s| (s.state, s.wanted))
+            .collect()
+    }
+
+    /// The outbox, as the server lists it of Matrix accounts.
+    fn outbox(&self) -> Vec<AccountOutbox> {
+        let mut conn = uplink_storage::open_reader(self._dir.path()).unwrap();
+        let tx = conn.transaction().unwrap();
+        crate::send::outbox(&tx).unwrap()
     }
 
     async fn event(&self, event_id: &str) -> RoomEventId {
@@ -167,34 +188,58 @@ async fn sending_is_undone_while_queued() {
     let db = Db::new();
     db.sync(&[("$1", "@bob:x")], &[]).await;
     let sent = db.send("hi").await;
-    assert_eq!(db.outbox().await[0].state, OutboxState::Queued);
-    db.dispatcher.undo(sent).await.unwrap();
-    assert!(db.outbox().await.is_empty());
+    assert_eq!(db.shown().await, [(MatrixSendState::Queued, true)]);
+    let [account] = &db.outbox()[..] else {
+        panic!()
+    };
+    assert_eq!(account.account, "mx");
+    assert!(matches!(&account.pending, Pending::Matrix { sends } if sends.len() == 1));
+    let cancel = db.dispatcher.undo(sent).await.unwrap();
+    assert!(db.sends().await.is_empty());
+    assert!(db.outbox().is_empty());
+    // Redo sends it afresh.
+    db.dispatcher.undo(cancel).await.unwrap();
+    assert_eq!(db.shown().await, [(MatrixSendState::Queued, true)]);
 }
 
+async fn start(db: &Db) -> MatrixSendId {
+    let item = db.sends().await.last().unwrap().id;
+    db.observe(SendStarted { item }).await.unwrap();
+    item
+}
+
+/// Once claimed, a send cancelled is taken back if it did not go out; a
+/// refused one waits for the user, who takes it back at once.
 #[tokio::test]
-async fn sending_cannot_be_undone_once_started() {
+async fn sends_handed_over_are_settled_by_their_outcome() {
     let db = Db::new();
     db.sync(&[("$1", "@bob:x")], &[]).await;
     let sent = db.send("hi").await;
-    let item = db.outbox().await[0].id;
-    db.observe(SendStarted { item }).await.unwrap();
-    let refused = db.dispatcher.undo(sent).await.unwrap_err();
-    assert!(
-        matches!(&refused, UndoError::Conflict { conflict, .. } if conflict.0 == "the message is being sent"),
-        "{refused}"
-    );
-    // Claiming twice is refused too.
+    let item = start(&db).await;
+    // Claimed once only.
     assert!(db.observe(SendStarted { item }).await.is_err());
-
-    // A passing failure queues it again; a refusal fails it.
+    // Cancelled while being sent: no longer wanted, until the outcome.
+    db.dispatcher.undo(sent).await.unwrap();
+    assert_eq!(db.shown().await, [(MatrixSendState::Sending, false)]);
+    // Not sent after all (a passing failure): taken back.
     db.observe(SendFailed {
         item,
         refused: None,
     })
     .await
     .unwrap();
-    assert_eq!(db.outbox().await[0].state, OutboxState::Queued);
+    assert!(db.sends().await.is_empty());
+
+    // Wanted, a passing failure queues it again; a refusal waits.
+    let sent = db.send("again").await;
+    let item = start(&db).await;
+    db.observe(SendFailed {
+        item,
+        refused: None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(db.shown().await, [(MatrixSendState::Queued, true)]);
     db.observe(SendStarted { item }).await.unwrap();
     db.observe(SendFailed {
         item,
@@ -202,34 +247,41 @@ async fn sending_cannot_be_undone_once_started() {
     })
     .await
     .unwrap();
-    assert_eq!(db.outbox().await[0].error.as_deref(), Some("M_FORBIDDEN"));
-    // A failed message can be cancelled.
+    assert_eq!(db.sends().await[0].error.as_deref(), Some("M_FORBIDDEN"));
+    assert_eq!(db.shown().await, [(MatrixSendState::Refused, true)]);
+    // A refused message is cancelled at once.
     db.dispatcher.undo(sent).await.unwrap();
-    assert!(db.outbox().await.is_empty());
+    assert!(db.sends().await.is_empty());
 }
 
 #[tokio::test]
-async fn sent_messages_leave_the_outbox_once_synced() {
+async fn sent_messages_are_reconciled_once_synced() {
     let db = Db::new();
     db.sync(&[("$1", "@bob:x")], &[]).await;
     // Synced after the homeserver answered.
-    db.send("first").await;
-    let first = db.outbox().await[0].id;
-    db.observe(SendStarted { item: first }).await.unwrap();
+    let sent = db.send("first").await;
+    let first = start(&db).await;
     db.observe(SendSucceeded {
         item: first,
         event_id: "$first".into(),
     })
     .await
     .unwrap();
-    assert_eq!(db.outbox().await[0].state, OutboxState::Sent);
+    assert_eq!(db.shown().await, [(MatrixSendState::Sent, true)]);
     db.sync(&[("$first", ME)], &[]).await;
-    assert!(db.outbox().await.is_empty());
+    assert!(db.sends().await.is_empty());
+
+    // Undoing it now can't take it back: it needs a decision, which
+    // keeping it sent (undoing the undo) makes.
+    let cancel = db.dispatcher.undo(sent).await.unwrap();
+    assert_eq!(db.shown().await, [(MatrixSendState::Sent, false)]);
+    assert_eq!(db.outbox().len(), 1);
+    db.dispatcher.undo(cancel).await.unwrap();
+    assert!(db.sends().await.is_empty());
 
     // Synced before the homeserver answered.
     db.send("second").await;
-    let second = db.outbox().await[0].id;
-    db.observe(SendStarted { item: second }).await.unwrap();
+    let second = start(&db).await;
     db.sync(&[("$second", ME)], &[]).await;
     db.observe(SendSucceeded {
         item: second,
@@ -237,7 +289,8 @@ async fn sent_messages_leave_the_outbox_once_synced() {
     })
     .await
     .unwrap();
-    assert!(db.outbox().await.is_empty());
+    assert!(db.sends().await.is_empty());
+    assert!(db.outbox().is_empty());
 }
 
 #[tokio::test]

@@ -113,7 +113,7 @@ with subtest("a Matrix invitation is joined from the UI; the room shows messages
         return [e["content"].get("body") for e in events if e["type"] == "m.room.message"]
 
     eventually("uplink's message to reach Bob", lambda: "Hello from uplink" in bodies())
-    assert machine.succeed(f"sqlite3 {STATE}/db/uplink.sqlite 'SELECT count(*) FROM matrix_outbox'").strip() == "0"
+    assert machine.succeed(f"sqlite3 {STATE}/db/uplink.sqlite 'SELECT count(*) FROM matrix_send WHERE NOT synced OR NOT wanted'").strip() == "0"
 
 with subtest("flagging a message adds a to-do, which opens it"):
     result = ui("todos")

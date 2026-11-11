@@ -195,9 +195,10 @@ impl Uplink {
         }
     }
 
-    async fn outbox_len(&self) -> usize {
-        match self.matrix.list_outbox().await.unwrap() {
-            ServerResponse::MatrixOutbox { items, .. } => items.len(),
+    /// How many of the room's sends are not yet reconciled.
+    async fn sends(&self, room: &Room) -> usize {
+        match self.matrix.list_sends(room.id).await.unwrap() {
+            ServerResponse::MatrixSends { sends, .. } => sends.len(),
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -312,9 +313,10 @@ async fn messages_both_ways_in_an_encrypted_room() {
     .await
     .expect("bob receives uplink's message");
     assert_eq!(body, "hello from uplink");
-    // Once synced back, the sent message is in the timeline, not the outbox.
+    // Once synced back, the sent message is in the timeline, and its
+    // send reconciled.
     eventually("the sent message to sync back", || async {
-        (uplink.outbox_len().await == 0).then_some(())
+        (uplink.sends(&room).await == 0).then_some(())
     })
     .await;
     let own = uplink

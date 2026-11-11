@@ -3,13 +3,13 @@
 use crate::{
     client::{self, Clients},
     membership::ChangeMembership,
-    outbox::{self, CancelMessage, SendMessage},
     rooms::{self, MarkRead},
+    send::{self, CancelMessage, KeepSent, SendMessage},
 };
 use std::sync::Arc;
 use uplink_protocol::{
     matrix::{
-        MatrixAccount, MatrixOutboxId, Membership, MembershipChange, RoomEventId, RoomId,
+        MatrixAccount, MatrixSendId, Membership, MembershipChange, RoomEventId, RoomId,
         TimelinePage,
     },
     ErrorCode, ServerError, ServerResponse,
@@ -151,13 +151,17 @@ impl Matrix {
             .await
     }
 
-    pub async fn list_outbox(&self) -> Response {
+    /// The room's sends not yet reconciled, for the end of its timeline.
+    pub async fn list_sends(&self, room: RoomId) -> Response {
         self.reader
             .read(move |conn| {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                rooms::room_account(&tx, room)
+                    .map_err(internal)?
+                    .ok_or_else(|| no_room(room))?;
                 let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
-                let items = outbox::items(&tx).map_err(internal)?;
-                Ok(ServerResponse::MatrixOutbox { as_of, items })
+                let sends = send::sends(&tx, room).map_err(internal)?;
+                Ok(ServerResponse::MatrixSends { as_of, room, sends })
             })
             .await
     }
@@ -194,8 +198,12 @@ impl Matrix {
         self.dispatcher.answer(SendMessage { room, body }).await
     }
 
-    pub async fn cancel_send(&self, item: MatrixOutboxId) -> Response {
+    pub async fn cancel_send(&self, item: MatrixSendId) -> Response {
         self.dispatcher.answer(CancelMessage { item }).await
+    }
+
+    pub async fn keep_sent(&self, item: MatrixSendId) -> Response {
+        self.dispatcher.answer(KeepSent { item }).await
     }
 
     /// Joining only rooms one is invited to; leaving joined rooms, or

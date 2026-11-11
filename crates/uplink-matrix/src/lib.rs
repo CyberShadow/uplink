@@ -1,10 +1,10 @@
 //! Matrix (SPEC §9): rooms and timelines synced with matrix-rust-sdk, the
-//! read marker, and plain-text messages sent through an outbox.
+//! read marker, joining and leaving, and plain-text messages sent.
 
 pub mod client;
 pub mod membership;
-pub mod outbox;
 pub mod rooms;
+pub mod send;
 pub mod service;
 pub mod sync;
 
@@ -15,8 +15,9 @@ use uplink_tx_log::Registry;
 
 pub fn register(registry: &mut Registry) {
     registry.register::<rooms::MarkRead>();
-    registry.register::<outbox::SendMessage>();
-    registry.register::<outbox::CancelMessage>();
+    registry.register::<send::SendMessage>();
+    registry.register::<send::CancelMessage>();
+    registry.register::<send::KeepSent>();
     registry.register::<membership::ChangeMembership>();
     registry.register::<membership::RevertMembership>();
 }

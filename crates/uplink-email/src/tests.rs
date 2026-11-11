@@ -49,6 +49,13 @@ impl Db {
         Store::mail(self.dir.path())
     }
 
+    /// The mail accounts' outbox, as the server lists it.
+    pub fn accounts_outbox(&self) -> Vec<uplink_protocol::compose::AccountOutbox> {
+        let mut conn = self.reader();
+        let tx = conn.transaction().unwrap();
+        crate::outbox::outbox(&tx).unwrap()
+    }
+
     pub async fn observe(&self, account: &str, observation: MailboxObserved) -> TxLogId {
         self.dispatcher
             .observe(account.to_owned(), observation)
@@ -1052,11 +1059,9 @@ pub(crate) mod service {
             )
             .await
             .unwrap();
-        let listed = |response: ServerResponse| {
-            let ServerResponse::Outbox { accounts, .. } = response else {
-                panic!("{response:?}")
-            };
-            accounts
+        let changes = |a: &uplink_protocol::compose::AccountOutbox| match &a.pending {
+            uplink_protocol::compose::Pending::Mail { changes, .. } => changes.clone(),
+            other => panic!("{other:?}"),
         };
         let ts =
             |id: TxLogId| db.query::<i64>(&format!("SELECT ts FROM tx_log WHERE id = {}", id.0))[0];
@@ -1067,7 +1072,7 @@ pub(crate) mod service {
                 ts: ts(id),
             })
         };
-        let accounts = listed(mail.list_outbox().await.unwrap());
+        let accounts = db.accounts_outbox();
         let [a] = &accounts[..] else {
             panic!("{accounts:?}")
         };
@@ -1080,7 +1085,7 @@ pub(crate) mod service {
             })
         );
         assert_eq!(
-            a.changes,
+            changes(a),
             [
                 PendingChanges {
                     op: op(starred_op, "Starred 1 message"),
@@ -1107,9 +1112,9 @@ pub(crate) mod service {
             )),
             ["Moved 1 message to Inbox"]
         );
-        let accounts = listed(mail.list_outbox().await.unwrap());
+        let accounts = db.accounts_outbox();
         assert_eq!(
-            accounts[0].changes[1],
+            changes(&accounts[0])[1],
             PendingChanges {
                 op: op(archived, "Archived 2 messages"),
                 entries: 1,

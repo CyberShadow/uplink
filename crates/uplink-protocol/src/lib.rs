@@ -15,7 +15,7 @@ pub mod todos;
 
 use compose::{BlobId, Draft, DraftAttachmentId, DraftContent, DraftId, OutboxId, Splice};
 use mail::{EntryId, EntryList, LabelId, ListPosition, MessageId};
-use matrix::{MatrixOutboxId, MembershipChange, RoomEventId, RoomId, TimelinePage};
+use matrix::{MatrixSendId, MembershipChange, RoomEventId, RoomId, TimelinePage};
 use todos::{TodoEdit, TodoId};
 
 /// Id of a log entry. Entries are numbered from 1 in commit order, so an
@@ -171,8 +171,8 @@ pub enum ClientRequest {
     KeepSent {
         item: OutboxId,
     },
-    /// What is not yet reconciled with the providers: per mail account
-    /// with anything, its pending changes and sends (SPEC §6.6).
+    /// What is not yet reconciled with the providers: per account with
+    /// anything, what is pending (SPEC §6.6).
     ListOutbox,
     /// Resolve the changes the provider refused, of `op` (`None`: those
     /// made before ops were recorded with them) in `account`, by keeping
@@ -189,16 +189,25 @@ pub enum ClientRequest {
         page: TimelinePage,
         limit: u32,
     },
-    /// Messages being sent, of all rooms.
-    ListMatrixOutbox,
+    /// The room's messages being sent, sent and not yet synced back, or
+    /// sent though cancelled: for the end of its timeline.
+    ListMatrixSends {
+        room: RoomId,
+    },
     /// Send a plain-text message to the room.
     SendMatrixMessage {
         room: RoomId,
         body: String,
     },
-    /// Take a queued or failed message out of the Matrix outbox.
+    /// Take a message being sent back: at once if it has not been handed
+    /// to the homeserver, or if the homeserver refuses it; if it went out,
+    /// it needs a decision (SPEC §9.3).
     CancelMatrixSend {
-        item: MatrixOutboxId,
+        item: MatrixSendId,
+    },
+    /// Keep a message sent though cancelled: resolves it.
+    KeepMatrixSent {
+        item: MatrixSendId,
     },
     /// Move the room's read marker to `event`: it and everything before
     /// it are read.
@@ -285,9 +294,10 @@ pub enum ServerResponse {
         /// Whether there are earlier events than those listed.
         more_before: bool,
     },
-    MatrixOutbox {
+    MatrixSends {
         as_of: TxLogId,
-        items: Vec<matrix::MatrixOutboxItem>,
+        room: RoomId,
+        sends: Vec<matrix::MatrixSend>,
     },
     Todos {
         as_of: TxLogId,
@@ -319,7 +329,7 @@ impl ServerResponse {
             | Self::Outbox { as_of, .. }
             | Self::Rooms { as_of, .. }
             | Self::Timeline { as_of, .. }
-            | Self::MatrixOutbox { as_of, .. }
+            | Self::MatrixSends { as_of, .. }
             | Self::Todos { as_of, .. }
             | Self::Events { as_of, .. }
             | Self::History { as_of, .. } => Some(*as_of),
@@ -401,7 +411,7 @@ pub enum ServerEvent {
     OutboxChanged(compose::OutboxChanged),
     RoomsChanged(matrix::RoomsChanged),
     TimelineAdded(matrix::TimelineAdded),
-    MatrixOutboxChanged(matrix::MatrixOutboxChanged),
+    MatrixSendsChanged(matrix::MatrixSendsChanged),
     TodosChanged(todos::TodosChanged),
     CalendarChanged(calendar::CalendarChanged),
 }

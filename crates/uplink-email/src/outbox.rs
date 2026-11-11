@@ -6,29 +6,34 @@ use crate::{compose, mailbox::LabelChange};
 use anyhow::Result;
 use std::collections::BTreeMap;
 use uplink_protocol::{
-    compose::{AccountOutbox, Failing, PendingChanges, PendingOp, Refusal},
+    compose::{AccountOutbox, Failing, OutboxItem, Pending, PendingChanges, PendingOp, Refusal},
     mail::{EntryId, LabelId},
     TxLogId,
 };
 use uplink_storage::rusqlite::{params, Transaction};
 
+/// What of a mail account is not yet reconciled.
+#[derive(Default)]
+struct MailOutbox {
+    failing: Option<Failing>,
+    changes: Vec<PendingChanges>,
+    sends: Vec<OutboxItem>,
+}
+
 /// Each mail account with anything not yet reconciled, in id order.
-pub(crate) fn outbox(tx: &Transaction) -> Result<Vec<AccountOutbox>> {
-    let mut accounts: BTreeMap<String, AccountOutbox> = BTreeMap::new();
-    fn account(accounts: &mut BTreeMap<String, AccountOutbox>, id: String) -> &mut AccountOutbox {
-        accounts.entry(id.clone()).or_insert_with(|| AccountOutbox {
-            account: id,
-            failing: None,
-            changes: vec![],
-            sends: vec![],
-        })
+pub fn outbox(tx: &Transaction) -> Result<Vec<AccountOutbox>> {
+    let mut accounts: BTreeMap<String, MailOutbox> = BTreeMap::new();
+    fn account(accounts: &mut BTreeMap<String, MailOutbox>, id: String) -> &mut MailOutbox {
+        accounts.entry(id).or_default()
     }
     let failing: Vec<(String, String, i64)> = tx
         .prepare(
             "SELECT id, push_error, push_failing_since FROM account
-             WHERE push_error IS NOT NULL",
+             WHERE push_error IS NOT NULL AND kind IN (?1, ?2)",
         )?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .query_map([crate::gmail::sync::KIND, crate::m365::sync::KIND], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?
         .collect::<Result<_, _>>()?;
     for (id, error, since) in failing {
         account(&mut accounts, id).failing = Some(Failing { error, since });
@@ -100,7 +105,17 @@ pub(crate) fn outbox(tx: &Transaction) -> Result<Vec<AccountOutbox>> {
             .sends
             .push(item);
     }
-    Ok(accounts.into_values().collect())
+    Ok(accounts
+        .into_iter()
+        .map(|(account, outbox)| AccountOutbox {
+            account,
+            failing: outbox.failing,
+            pending: Pending::Mail {
+                changes: outbox.changes,
+                sends: outbox.sends,
+            },
+        })
+        .collect())
 }
 
 /// Per account and op, the entries with changes pending: an entry with

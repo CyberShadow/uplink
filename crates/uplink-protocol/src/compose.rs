@@ -102,19 +102,6 @@ pub struct Splice {
     pub insert: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum OutboxState {
-    /// Waiting for the send delay to pass; can still be cancelled.
-    Queued,
-    /// Being handed to the provider.
-    Sending,
-    /// Accepted by the provider; listed until its copy is synced back.
-    Sent,
-    /// Not sent; `error` says why. Can be cancelled, returning the draft.
-    Failed,
-}
-
 /// Where a mail being sent is (SPEC §6.7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -158,10 +145,25 @@ pub struct AccountOutbox {
     pub account: String,
     /// Why its changes are not reaching the provider, while they are not.
     pub failing: Option<Failing>,
-    /// Label changes pending, by the op that made them, newest first.
-    pub changes: Vec<PendingChanges>,
-    /// Mail being sent, or sent and not yet synced back.
-    pub sends: Vec<OutboxItem>,
+    pub pending: Pending,
+}
+
+/// What is pending, by the kind of account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Pending {
+    Mail {
+        /// Label changes pending, by the op that made them, newest first.
+        changes: Vec<PendingChanges>,
+        /// Mail being sent, sent and not yet synced back, or sent though
+        /// cancelled.
+        sends: Vec<OutboxItem>,
+    },
+    Matrix {
+        /// Messages being sent, sent and not yet synced back, or sent
+        /// though cancelled.
+        sends: Vec<crate::matrix::MatrixSend>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

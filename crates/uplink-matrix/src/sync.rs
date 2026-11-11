@@ -10,8 +10,8 @@
 use crate::{
     client,
     membership::{self, MembershipChanged},
-    outbox::{self, SendFailed, SendStarted, SendSucceeded},
     rooms::{self, ObservedEvent, ObservedRoom, ReceiptSent, SpaceChild, Synced},
+    send::{self, SendFailed, SendStarted, SendSucceeded},
 };
 use anyhow::{Context, Result};
 use matrix_sdk::{
@@ -388,10 +388,7 @@ impl Sender {
     /// their transaction ids make sending them again safe.
     async fn recover(&self) -> Result<()> {
         let account = self.account.clone();
-        let interrupted = read(&self.reader, move |conn| {
-            outbox::interrupted(conn, &account)
-        })
-        .await?;
+        let interrupted = read(&self.reader, move |conn| send::interrupted(conn, &account)).await?;
         for item in interrupted {
             self.observe(SendFailed {
                 item,
@@ -462,7 +459,7 @@ impl Sender {
     /// for a passing reason, so that messages to a room stay in order.
     async fn send_due(&self) -> Result<()> {
         let account = self.account.clone();
-        let due = read(&self.reader, move |conn| outbox::due(conn, &account)).await?;
+        let due = read(&self.reader, move |conn| send::due(conn, &account)).await?;
         for item in due {
             match self.observe(SendStarted { item: item.item }).await {
                 Ok(()) => {}
@@ -479,7 +476,7 @@ impl Sender {
                 .await?;
                 continue;
             };
-            let txn_id: OwnedTransactionId = outbox::transaction_id(item.item).into();
+            let txn_id: OwnedTransactionId = send::transaction_id(item.item).into();
             let sent = room
                 .send(RoomMessageEventContent::text_plain(&item.body))
                 .with_transaction_id(txn_id)

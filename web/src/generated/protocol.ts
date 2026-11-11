@@ -20,7 +20,7 @@ export type WsServerMsg = { "type": "pong", seq: number, } | { "type": "welcome"
  */
 cursor: TxLogId, resumed: boolean, } | { "type": "response", request_id: number, body: ServerResponse, } | { "type": "request_failed", request_id: number, error: ServerError, } | { "type": "entry", entry: LogEntry, };
 
-export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": "list_history", before: TxLogId | null, limit: number, } | { "type": "list_accounts" } | { "type": "list_entries", list: EntryList, after: ListPosition | null, limit: number, } | { "type": "search", query: string, limit: number, } | { "type": "list_conversation", entry: EntryId, } | { "type": "list_message_entries", message: MessageId, } | { "type": "load_message", message: MessageId, } | { "type": "modify_labels", entries: Array<EntryId>, add: Array<LabelId>, remove: Array<LabelId>, } | { "type": "list_drafts" } | { "type": "create_draft", id: DraftId, account: string, content: DraftContent, in_reply_to: MessageId | null, } | { "type": "edit_draft", draft: DraftId, revision: number, splice: Splice, } | { "type": "delete_draft", draft: DraftId, } | { "type": "attach_to_draft", draft: DraftId, blob: BlobId, name: string, mime: string, } | { "type": "detach_from_draft", draft: DraftId, attachment: DraftAttachmentId, } | { "type": "send_draft", draft: DraftId, } | { "type": "cancel_send", item: OutboxId, } | { "type": "keep_sent", item: OutboxId, } | { "type": "list_outbox" } | { "type": "keep_observed", account: string, op: TxLogId | null, } | { "type": "list_rooms" } | { "type": "list_timeline", room: RoomId, page: TimelinePage, limit: number, } | { "type": "list_matrix_outbox" } | { "type": "send_matrix_message", room: RoomId, body: string, } | { "type": "cancel_matrix_send", item: MatrixOutboxId, } | { "type": "mark_room_read", room: RoomId, event: RoomEventId, } | { "type": "change_membership", room: RoomId, change: MembershipChange, } | { "type": "list_events", from: number, to: number, } | { "type": "list_todos" } | { "type": "create_todo", title: string, notes: string, due: string | null, message: MessageId | null, } | { "type": "edit_todo", todo: TodoId, edit: TodoEdit, } | { "type": "delete_todo", todo: TodoId, };
+export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": "list_history", before: TxLogId | null, limit: number, } | { "type": "list_accounts" } | { "type": "list_entries", list: EntryList, after: ListPosition | null, limit: number, } | { "type": "search", query: string, limit: number, } | { "type": "list_conversation", entry: EntryId, } | { "type": "list_message_entries", message: MessageId, } | { "type": "load_message", message: MessageId, } | { "type": "modify_labels", entries: Array<EntryId>, add: Array<LabelId>, remove: Array<LabelId>, } | { "type": "list_drafts" } | { "type": "create_draft", id: DraftId, account: string, content: DraftContent, in_reply_to: MessageId | null, } | { "type": "edit_draft", draft: DraftId, revision: number, splice: Splice, } | { "type": "delete_draft", draft: DraftId, } | { "type": "attach_to_draft", draft: DraftId, blob: BlobId, name: string, mime: string, } | { "type": "detach_from_draft", draft: DraftId, attachment: DraftAttachmentId, } | { "type": "send_draft", draft: DraftId, } | { "type": "cancel_send", item: OutboxId, } | { "type": "keep_sent", item: OutboxId, } | { "type": "list_outbox" } | { "type": "keep_observed", account: string, op: TxLogId | null, } | { "type": "list_rooms" } | { "type": "list_timeline", room: RoomId, page: TimelinePage, limit: number, } | { "type": "list_matrix_sends", room: RoomId, } | { "type": "send_matrix_message", room: RoomId, body: string, } | { "type": "cancel_matrix_send", item: MatrixSendId, } | { "type": "keep_matrix_sent", item: MatrixSendId, } | { "type": "mark_room_read", room: RoomId, event: RoomEventId, } | { "type": "change_membership", room: RoomId, change: MembershipChange, } | { "type": "list_events", from: number, to: number, } | { "type": "list_todos" } | { "type": "create_todo", title: string, notes: string, due: string | null, message: MessageId | null, } | { "type": "edit_todo", todo: TodoId, edit: TodoEdit, } | { "type": "delete_todo", todo: TodoId, };
 
 export type ServerResponse = { "type": "undone", tx_log_id: TxLogId, } | { "type": "dispatched", tx_log_id: TxLogId, } | { "type": "accounts", as_of: TxLogId, accounts: Array<Account>, } | { "type": "conversations", as_of: TxLogId, conversations: Array<Conversation>, 
 /**
@@ -30,7 +30,7 @@ next: ListPosition | null, } | { "type": "entries", as_of: TxLogId, entries: Arr
 /**
  * Whether there are earlier events than those listed.
  */
-more_before: boolean, } | { "type": "matrix_outbox", as_of: TxLogId, items: Array<MatrixOutboxItem>, } | { "type": "todos", as_of: TxLogId, todos: Array<Todo>, } | { "type": "events", as_of: TxLogId, events: Array<CalendarEvent>, } | { "type": "history", as_of: TxLogId, entries: Array<HistoryEntry>, 
+more_before: boolean, } | { "type": "matrix_sends", as_of: TxLogId, room: RoomId, sends: Array<MatrixSend>, } | { "type": "todos", as_of: TxLogId, todos: Array<Todo>, } | { "type": "events", as_of: TxLogId, events: Array<CalendarEvent>, } | { "type": "history", as_of: TxLogId, entries: Array<HistoryEntry>, 
 /**
  * Whether there are earlier ones than those listed.
  */
@@ -76,7 +76,7 @@ export type Source = { "type": "user" } | { "type": "account", id: string, };
  * rather than content, since they are stored in the log; clients query
  * what they display.
  */
-export type ServerEvent = { "type": "entries_added" } & EntriesAdded | { "type": "entries_removed" } & EntriesRemoved | { "type": "labels_changed" } & LabelsChanged | { "type": "label_list_changed" } & LabelListChanged | { "type": "draft_edited" } & DraftEdited | { "type": "drafts_changed" } & DraftsChanged | { "type": "outbox_changed" } & OutboxChanged | { "type": "rooms_changed" } & RoomsChanged | { "type": "timeline_added" } & TimelineAdded | { "type": "matrix_outbox_changed" } & MatrixOutboxChanged | { "type": "todos_changed" } & TodosChanged | { "type": "calendar_changed" } & CalendarChanged;
+export type ServerEvent = { "type": "entries_added" } & EntriesAdded | { "type": "entries_removed" } & EntriesRemoved | { "type": "labels_changed" } & LabelsChanged | { "type": "label_list_changed" } & LabelListChanged | { "type": "draft_edited" } & DraftEdited | { "type": "drafts_changed" } & DraftsChanged | { "type": "outbox_changed" } & OutboxChanged | { "type": "rooms_changed" } & RoomsChanged | { "type": "timeline_added" } & TimelineAdded | { "type": "matrix_sends_changed" } & MatrixSendsChanged | { "type": "todos_changed" } & TodosChanged | { "type": "calendar_changed" } & CalendarChanged;
 
 export type MessageId = number;
 
@@ -322,8 +322,6 @@ export type Splice = { field: DraftField,
  */
 offset: number, delete: string, insert: string, };
 
-export type OutboxState = "queued" | "sending" | "sent" | "failed";
-
 /**
  * Where a mail being sent is (SPEC §6.7).
  */
@@ -352,15 +350,26 @@ export type AccountOutbox = { account: string,
 /**
  * Why its changes are not reaching the provider, while they are not.
  */
-failing: Failing | null, 
+failing: Failing | null, pending: Pending, };
+
+/**
+ * What is pending, by the kind of account.
+ */
+export type Pending = { "kind": "mail", 
 /**
  * Label changes pending, by the op that made them, newest first.
  */
 changes: Array<PendingChanges>, 
 /**
- * Mail being sent, or sent and not yet synced back.
+ * Mail being sent, sent and not yet synced back, or sent though
+ * cancelled.
  */
-sends: Array<OutboxItem>, };
+sends: Array<OutboxItem>, } | { "kind": "matrix", 
+/**
+ * Messages being sent, sent and not yet synced back, or sent
+ * though cancelled.
+ */
+sends: Array<MatrixSend>, };
 
 export type Failing = { error: string, 
 /**
@@ -421,7 +430,7 @@ export type RoomId = number;
  */
 export type RoomEventId = number;
 
-export type MatrixOutboxId = number;
+export type MatrixSendId = number;
 
 export type MatrixAccount = { id: string, mxid: string, 
 /**
@@ -508,7 +517,22 @@ raw: string, encryption: Encryption, };
  */
 export type TimelinePage = { "type": "latest" } | { "type": "before", event: RoomEventId, } | { "type": "after", event: RoomEventId, };
 
-export type MatrixOutboxItem = { id: MatrixOutboxId, room: RoomId, body: string, state: OutboxState, error: string | null, 
+/**
+ * Where a Matrix message being sent is (SPEC §9.3). Never unknown: the
+ * homeserver deduplicates the transaction id, so it is sent again.
+ */
+export type MatrixSendState = "queued" | "sending" | "sent" | "refused";
+
+/**
+ * A message being sent, sent and not yet synced back, or sent though
+ * cancelled (needing a decision).
+ */
+export type MatrixSend = { id: MatrixSendId, room: RoomId, body: string, state: MatrixSendState, 
+/**
+ * Whether it is to be sent: `false` once cancelled while being
+ * sent. Sent, it needs a decision: keeping it sent.
+ */
+wanted: boolean, error: string | null, 
 /**
  * Ms since the Unix epoch.
  */
@@ -526,9 +550,9 @@ export type RoomsChanged = { rooms: Array<RoomId>, };
 export type TimelineAdded = { room: RoomId, events: Array<RoomEventId>, };
 
 /**
- * Matrix outbox items were added, removed or changed state.
+ * Messages being sent to these rooms were added, changed state or went.
  */
-export type MatrixOutboxChanged = { items: Array<MatrixOutboxId>, };
+export type MatrixSendsChanged = { rooms: Array<RoomId>, };
 
 export type TodoId = number;
 

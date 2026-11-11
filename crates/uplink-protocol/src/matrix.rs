@@ -1,6 +1,5 @@
 //! Matrix rooms, their timelines, and messages being sent (SPEC §9).
 
-use crate::compose::OutboxState;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -17,7 +16,7 @@ pub struct RoomEventId(pub i64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
 #[serde(transparent)]
-pub struct MatrixOutboxId(pub i64);
+pub struct MatrixSendId(pub i64);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -118,13 +117,34 @@ pub enum TimelinePage {
     After { event: RoomEventId },
 }
 
+/// Where a Matrix message being sent is (SPEC §9.3). Never unknown: the
+/// homeserver deduplicates the transaction id, so it is sent again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum MatrixSendState {
+    /// Waiting for the homeserver; cancelling takes it back.
+    Queued,
+    /// Being handed to the homeserver.
+    Sending,
+    /// Accepted; listed until its event is synced back.
+    Sent,
+    /// Refused by the homeserver; `error` says why. Needs a decision:
+    /// cancelling drops it.
+    Refused,
+}
+
+/// A message being sent, sent and not yet synced back, or sent though
+/// cancelled (needing a decision).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
-pub struct MatrixOutboxItem {
-    pub id: MatrixOutboxId,
+pub struct MatrixSend {
+    pub id: MatrixSendId,
     pub room: RoomId,
     pub body: String,
-    pub state: OutboxState,
+    pub state: MatrixSendState,
+    /// Whether it is to be sent: `false` once cancelled while being
+    /// sent. Sent, it needs a decision: keeping it sent.
+    pub wanted: bool,
     pub error: Option<String>,
     /// Ms since the Unix epoch.
     pub queued_at: i64,
@@ -148,9 +168,9 @@ pub struct TimelineAdded {
     pub events: Vec<RoomEventId>,
 }
 
-/// Matrix outbox items were added, removed or changed state.
+/// Messages being sent to these rooms were added, changed state or went.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
-pub struct MatrixOutboxChanged {
-    pub items: Vec<MatrixOutboxId>,
+pub struct MatrixSendsChanged {
+    pub rooms: Vec<RoomId>,
 }

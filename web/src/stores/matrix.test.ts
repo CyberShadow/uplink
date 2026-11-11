@@ -63,18 +63,19 @@ describe('MatrixStore', () => {
     await vi.waitFor(() => expect(bodies(room.id)).toEqual(['first']))
   })
 
-  it('sends through the outbox, undoably until sent', async () => {
+  it('lists the messages being sent with the timeline, undoably until sent', async () => {
     const room = server.addRoom('Lounge')
     client.reset()
-    await vi.waitFor(() => expect(client.matrix.outbox.value).toEqual([]))
+    const sends = () => client.matrix.timeline(room.id).sends.value
+    await vi.waitFor(() => expect(sends()).toEqual([]))
     const sent = await client.matrix.send(room.id, 'hi there')
-    await vi.waitFor(() => expect(client.matrix.outbox.value?.map((i) => i.body)).toEqual(['hi there']))
+    await vi.waitFor(() => expect(sends()?.map((i) => i.body)).toEqual(['hi there']))
     await client.ops.undo(sent!.id)
-    await vi.waitFor(() => expect(client.matrix.outbox.value).toEqual([]))
+    await vi.waitFor(() => expect(sends()).toEqual([]))
 
     await client.matrix.send(room.id, 'again')
-    server.echo(server.matrixOutbox[0].id)
-    await vi.waitFor(() => expect(client.matrix.outbox.value).toEqual([]))
+    server.echo(server.matrixSends[0].id)
+    await vi.waitFor(() => expect(sends()).toEqual([]))
     await vi.waitFor(() => expect(bodies(room.id)).toEqual(['again']))
     expect(client.matrix.timeline(room.id).events.value![0].sender).toBe(ME)
   })

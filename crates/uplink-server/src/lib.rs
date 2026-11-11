@@ -11,6 +11,7 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use hyper::body::Incoming;
+use outbox::Outbox;
 use rust_embed::Embed;
 use rustls::ServerConfig;
 use rustls_pemfile::{certs, private_key};
@@ -40,6 +41,7 @@ use uplink_storage::seal::MasterKey;
 use uplink_todos::service::Todos;
 use uplink_tx_log::{Dispatcher, LogReader, Registry, UndoError};
 
+mod outbox;
 mod remote_image;
 use remote_image::RemoteImages;
 
@@ -194,6 +196,7 @@ pub struct Services {
     pub reader: Arc<LogReader>,
     pub mail: Mail,
     pub matrix: Matrix,
+    pub outbox: Outbox,
     pub todos: Todos,
     pub calendar: Calendar,
 }
@@ -238,6 +241,7 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
         })
         .collect();
     Ok(Services {
+        outbox: Outbox::new(uplink_storage::open_reader(root)?),
         todos: Todos::new(dispatcher.clone(), uplink_storage::open_reader(root)?),
         calendar: Calendar::new(uplink_storage::open_reader(root)?),
         matrix: Matrix::new(
@@ -738,7 +742,7 @@ impl Backend for Services {
             ClientRequest::SendDraft { draft } => self.mail.send_draft(draft).await,
             ClientRequest::CancelSend { item } => self.mail.cancel_send(item).await,
             ClientRequest::KeepSent { item } => self.mail.keep_sent(item).await,
-            ClientRequest::ListOutbox => self.mail.list_outbox().await,
+            ClientRequest::ListOutbox => self.outbox.list().await,
             ClientRequest::KeepObserved { account, op } => {
                 self.mail.keep_observed(account, op).await
             }
@@ -746,11 +750,12 @@ impl Backend for Services {
             ClientRequest::ListTimeline { room, page, limit } => {
                 self.matrix.list_timeline(room, page, limit).await
             }
-            ClientRequest::ListMatrixOutbox => self.matrix.list_outbox().await,
+            ClientRequest::ListMatrixSends { room } => self.matrix.list_sends(room).await,
             ClientRequest::SendMatrixMessage { room, body } => {
                 self.matrix.send_message(room, body).await
             }
             ClientRequest::CancelMatrixSend { item } => self.matrix.cancel_send(item).await,
+            ClientRequest::KeepMatrixSent { item } => self.matrix.keep_sent(item).await,
             ClientRequest::MarkRoomRead { room, event } => self.matrix.mark_read(room, event).await,
             ClientRequest::ChangeMembership { room, change } => {
                 self.matrix.change_membership(room, change).await
@@ -907,6 +912,7 @@ mod tests {
                     Duration::from_secs(10),
                 ),
                 matrix: Matrix::new(dispatcher.clone(), reader(), vec![]),
+                outbox: Outbox::new(reader()),
                 todos: Todos::new(dispatcher.clone(), reader()),
                 calendar: Calendar::new(reader()),
                 reader: Arc::new(LogReader::new(reader(), 16)),

@@ -26,7 +26,7 @@ import type {
   MailProvider,
   LogEntry,
   MatrixAccount,
-  MatrixOutboxItem,
+  MatrixSend,
   Membership,
   Room,
   RoomEvent,
@@ -85,7 +85,9 @@ export class FakeServer implements Requester, Blobs {
   private matrixAccounts: MatrixAccount[] = []
   readonly rooms: Room[] = []
   readonly events = new Map<RoomId, RoomEvent[]>()
-  readonly matrixOutbox: MatrixOutboxItem[] = []
+  /** Messages being sent, sent and not yet synced back, or sent though
+   * cancelled. */
+  readonly matrixSends: MatrixSend[] = []
   private nextRoomEvent = 1
 
   attach(client: Client) {
@@ -254,12 +256,18 @@ export class FakeServer implements Requester, Blobs {
     this.observe(account, [{ type: 'outbox_changed', accounts: [account] }])
   }
 
-  /** The homeserver sends an outbox item, and sync echoes it. */
+  /** The homeserver sends a message, and sync echoes it: it is reconciled. */
   echo(item: number) {
-    const index = this.matrixOutbox.findIndex((i) => i.id === item)
-    const [sent] = this.matrixOutbox.splice(index, 1)
+    const index = this.matrixSends.findIndex((i) => i.id === item)
+    const [sent] = this.matrixSends.splice(index, 1)
     this.receive(sent.room, { sender: ME, sender_name: 'Me', body: sent.body })
-    this.observe('mx', [{ type: 'matrix_outbox_changed', items: [item] }])
+    this.observe('mx', this.matrixSendsChanged(sent.room))
+  }
+
+  /** The homeserver took a message that was cancelled meanwhile. */
+  sentThoughCancelledToRoom(room: RoomId, body: string) {
+    this.matrixSends.push({ id: this.nextOutbox++, room, body, state: 'sent', wanted: false, error: null, queued_at: 0 })
+    this.observe('mx', this.matrixSendsChanged(room))
   }
 
   /** The sync task does as asked: the room's pending change takes effect. */
@@ -423,12 +431,19 @@ export class FakeServer implements Requester, Blobs {
         return { type: 'drafts', as_of: this.head(), drafts: [...this.drafts.values()] }
       case 'list_outbox': {
         const ids = new Set([...this.pending.keys(), ...this.outbox.map((i) => i.account)])
-        const accounts: AccountOutbox[] = [...ids].sort().map((account) => ({
+        const accounts: AccountOutbox[] = [...ids].map((account) => ({
           account,
           failing: this.pending.get(account)?.failing ?? null,
-          changes: this.pending.get(account)?.changes ?? [],
-          sends: this.outbox.filter((i) => i.account === account),
+          pending: {
+            kind: 'mail',
+            changes: this.pending.get(account)?.changes ?? [],
+            sends: this.outbox.filter((i) => i.account === account),
+          },
         }))
+        if (this.matrixSends.length > 0) {
+          accounts.push({ account: 'mx', failing: null, pending: { kind: 'matrix', sends: [...this.matrixSends] } })
+        }
+        accounts.sort((a, b) => a.account.localeCompare(b.account))
         return { type: 'outbox', as_of: this.head(), accounts }
       }
       case 'keep_observed': {
@@ -510,17 +525,36 @@ export class FakeServer implements Requester, Blobs {
         }
       case 'list_timeline':
         return { type: 'timeline', as_of: this.head(), room: body.room, ...this.timeline(body.room, body.page, body.limit) }
-      case 'list_matrix_outbox':
-        return { type: 'matrix_outbox', as_of: this.head(), items: [...this.matrixOutbox] }
+      case 'list_matrix_sends':
+        return {
+          type: 'matrix_sends',
+          as_of: this.head(),
+          room: body.room,
+          sends: this.matrixSends.filter((s) => s.room === body.room),
+        }
       case 'send_matrix_message': {
         const id = this.nextOutbox++
-        this.matrixOutbox.push({ id, room: body.room, body: body.body, state: 'queued', error: null, queued_at: Date.now() })
-        const response = this.dispatched(`Sent '${body.body}'`, [{ type: 'matrix_outbox_changed', items: [id] }])
+        this.matrixSends.push({
+          id,
+          room: body.room,
+          body: body.body,
+          state: 'queued',
+          wanted: true,
+          error: null,
+          queued_at: Date.now(),
+        })
+        const response = this.dispatched(`Sent '${body.body}'`, this.matrixSendsChanged(body.room))
         this.undoable.set(this.head(), { revert: () => this.cancelMatrixSend(id, 'Undid it'), undone: false })
         return response
       }
       case 'cancel_matrix_send':
         return { type: 'dispatched', tx_log_id: this.cancelMatrixSend(body.item, 'Cancelled sending') }
+      case 'keep_matrix_sent': {
+        // Its event synced back, it is reconciled once wanted again.
+        const index = this.matrixSends.findIndex((s) => s.id === body.item && s.state === 'sent' && !s.wanted)
+        const [kept] = this.matrixSends.splice(index, 1)
+        return this.dispatched('Kept it sent', this.matrixSendsChanged(kept.room))
+      }
       case 'list_message_entries':
         return {
           type: 'entries',
@@ -661,8 +695,18 @@ export class FakeServer implements Requester, Blobs {
   }
 
   private cancelMatrixSend(item: number, description: string): number {
-    this.matrixOutbox.splice(this.matrixOutbox.findIndex((i) => i.id === item), 1)
-    return this.commit({ type: 'user' }, description, [{ type: 'matrix_outbox_changed', items: [item] }])
+    const [cancelled] = this.matrixSends.splice(
+      this.matrixSends.findIndex((i) => i.id === item),
+      1,
+    )
+    return this.commit({ type: 'user' }, description, this.matrixSendsChanged(cancelled.room))
+  }
+
+  private matrixSendsChanged(room: RoomId): ServerEvent[] {
+    return [
+      { type: 'matrix_sends_changed', rooms: [room] },
+      { type: 'outbox_changed', accounts: ['mx'] },
+    ]
   }
 
   private cancelSend(item: number, description: string): number {

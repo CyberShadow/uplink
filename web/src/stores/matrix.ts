@@ -1,13 +1,13 @@
-// Matrix state: accounts with their rooms, the timelines on show, and the
-// messages being sent (SPEC §9, §12.6), mirrored like mail's.
+// Matrix state: accounts with their rooms, the timelines on show with
+// their messages being sent (SPEC §9, §12.6), mirrored like mail's.
 
 import { signal } from '@preact/signals'
 import type {
   ClientRequest,
   LogEntry,
   MatrixAccount,
-  MatrixOutboxId,
-  MatrixOutboxItem,
+  MatrixSend,
+  MatrixSendId,
   MembershipChange,
   Room,
   RoomEvent,
@@ -25,7 +25,6 @@ export class MatrixStore {
   /** `null` until loaded. */
   readonly accounts = signal<readonly MatrixAccount[] | null>(null)
   readonly rooms = signal<readonly Room[] | null>(null)
-  readonly outbox = signal<readonly MatrixOutboxItem[] | null>(null)
   readonly error = signal<string | null>(null)
 
   private timelines = new Map<RoomId, Timeline>()
@@ -35,10 +34,6 @@ export class MatrixStore {
     this.accounts.value = response.accounts
     this.rooms.value = response.rooms
   })
-  private outboxLoader = new Loader(async () => {
-    const response = await this.query({ type: 'list_matrix_outbox' }, 'matrix_outbox')
-    if (response) this.outbox.value = response.items
-  })
 
   constructor(
     private readonly server: Requester,
@@ -47,7 +42,6 @@ export class MatrixStore {
 
   reset() {
     this.roomLoader.invalidate()
-    this.outboxLoader.invalidate()
     for (const timeline of this.timelines.values()) timeline.reset()
   }
 
@@ -60,8 +54,8 @@ export class MatrixStore {
         case 'timeline_added':
           this.timelines.get(event.room)?.added()
           break
-        case 'matrix_outbox_changed':
-          this.outboxLoader.invalidate()
+        case 'matrix_sends_changed':
+          for (const room of event.rooms) this.timelines.get(room)?.sendsChanged()
           break
         case 'entries_added':
         case 'entries_removed':
@@ -81,7 +75,11 @@ export class MatrixStore {
   timeline(room: RoomId): Timeline {
     let timeline = this.timelines.get(room)
     if (!timeline) {
-      timeline = new Timeline(room, (request) => this.query(request, 'timeline'))
+      timeline = new Timeline(
+        room,
+        (request) => this.query(request, 'timeline'),
+        () => this.query({ type: 'list_matrix_sends', room }, 'matrix_sends'),
+      )
       this.timelines.set(room, timeline)
     }
     return timeline
@@ -91,8 +89,13 @@ export class MatrixStore {
     return this.ops.dispatch({ type: 'send_matrix_message', room, body })
   }
 
-  cancelSend(item: MatrixOutboxId) {
+  cancelSend(item: MatrixSendId) {
     return this.ops.dispatch({ type: 'cancel_matrix_send', item })
+  }
+
+  /** Resolves a message that went out though cancelled by keeping it sent. */
+  keepSent(item: MatrixSendId) {
+    return this.ops.dispatch({ type: 'keep_matrix_sent', item })
   }
 
   changeMembership(room: RoomId, change: MembershipChange) {
@@ -104,7 +107,7 @@ export class MatrixStore {
     return this.ops.dispatch({ type: 'mark_room_read', room, event }, true)
   }
 
-  private async query<T extends Response<'rooms' | 'timeline' | 'matrix_outbox'>['type']>(
+  private async query<T extends Response<'rooms' | 'timeline' | 'matrix_sends'>['type']>(
     request: ClientRequest,
     type: T,
   ): Promise<Response<T> | null> {
@@ -117,26 +120,40 @@ export class MatrixStore {
   }
 }
 
-/** A room's timeline from some point to its end, oldest first. New events
- * are loaded as they are synced; earlier ones on request. */
+/** A room's timeline from some point to its end, oldest first, and the
+ * messages being sent to it, which follow. New events are loaded as they
+ * are synced; earlier ones on request. */
 export class Timeline {
   /** `null` until loaded. */
   readonly events = signal<readonly RoomEvent[] | null>(null)
   readonly moreBefore = signal(false)
+  /** Being sent, sent and not yet synced back, or sent though cancelled;
+   * `null` until loaded. */
+  readonly sends = signal<readonly MatrixSend[] | null>(null)
 
   private newer = this.loader()
   private loadingEarlier = false
+  private sendLoader = new Loader(async () => {
+    const response = await this.loadSends()
+    if (response) this.sends.value = response.sends
+  })
 
   constructor(
     readonly room: RoomId,
     private readonly load: (request: ClientRequest) => Promise<Response<'timeline'> | null>,
+    private readonly loadSends: () => Promise<Response<'matrix_sends'> | null>,
   ) {
     this.newer.invalidate()
+    this.sendLoader.invalidate()
   }
 
   /** Events were added to the end. */
   added() {
     this.newer.invalidate()
+  }
+
+  sendsChanged() {
+    this.sendLoader.invalidate()
   }
 
   /** Everything is void: load the latest events afresh. A load in flight
@@ -145,6 +162,7 @@ export class Timeline {
     this.events.value = null
     this.newer = this.loader()
     this.newer.invalidate()
+    this.sendLoader.invalidate()
   }
 
   /** Loads the events after those loaded, or the latest. */

@@ -65,7 +65,7 @@ function isResendable(body: ClientRequest): boolean {
     case 'list_outbox':
     case 'list_rooms':
     case 'list_timeline':
-    case 'list_matrix_outbox':
+    case 'list_matrix_sends':
     case 'list_message_entries':
     case 'list_conversation':
     case 'list_todos':
@@ -85,6 +85,7 @@ function isResendable(body: ClientRequest): boolean {
     case 'keep_observed':
     case 'send_matrix_message':
     case 'cancel_matrix_send':
+    case 'keep_matrix_sent':
     case 'mark_room_read':
     case 'change_membership':
     case 'create_todo':

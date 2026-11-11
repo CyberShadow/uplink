@@ -360,4 +360,71 @@ mod tests {
             ]
         );
     }
+
+    /// Matrix outbox items become sends (V0023), wanted, with the op that
+    /// queued them; recorded events name their rooms.
+    #[test]
+    fn matrix_outbox_items_become_sends() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = migrated_to(dir.path(), 22);
+        conn.execute_batch(
+            r#"INSERT INTO account (id, kind) VALUES ('mx', 'matrix');
+               INSERT INTO matrix_room (id, account_id, room_id, name, encrypted, membership)
+               VALUES (5, 'mx', '!r:x', 'Room', 0, 'joined');
+               INSERT INTO tx_log (id, ts, description, op_type, op_json, inverse_type,
+                                   inverse_json, events_json)
+               VALUES (1, 0, '', 'matrix.send', '{}', 'matrix.cancel_send', '{}',
+                       '[{"type":"matrix_outbox_changed","items":[3]}]'),
+                      (2, 0, '', 'matrix.send', '{}', 'matrix.cancel_send', '{}',
+                       '[{"type":"matrix_outbox_changed","items":[4]}]'),
+                      (3, 0, '', 'matrix.send', '{}', 'matrix.cancel_send', '{}',
+                       '[{"type":"matrix_outbox_changed","items":[1]}]');
+               INSERT INTO matrix_outbox (id, room, body, queued_at, state, error, event_id)
+               VALUES (3, 5, 'hi', 0, 'failed', 'M_FORBIDDEN', NULL),
+                      (4, 5, 'yo', 0, 'sent', NULL, '$e'),
+                      (9, 5, 'gone', 0, 'sent', NULL, '$g');
+               DELETE FROM matrix_outbox WHERE id = 9;"#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open(dir.path()).unwrap();
+        let sends: Vec<(i64, String, i64, i64)> = conn
+            .prepare("SELECT id, state, wanted, desired_by FROM matrix_send ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            sends,
+            [(3, "refused".into(), 1, 1), (4, "sent".into(), 1, 2)]
+        );
+        let events: Vec<String> = conn
+            .prepare("SELECT events_json FROM tx_log ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            events,
+            [
+                r#"[{"type":"matrix_sends_changed","rooms":[5]}]"#,
+                r#"[{"type":"matrix_sends_changed","rooms":[5]}]"#,
+                // Its send was deleted, synced back.
+                r#"[{"type":"matrix_sends_changed","rooms":[]}]"#,
+            ]
+        );
+        // Ids go on from the old table's, past those deleted.
+        let next: i64 = conn
+            .query_row(
+                "INSERT INTO matrix_send (room, body, queued_at, wanted, desired_by, state, synced)
+                 VALUES (5, 'x', 0, 1, 1, 'queued', 0) RETURNING id",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(next, 10);
+    }
 }
