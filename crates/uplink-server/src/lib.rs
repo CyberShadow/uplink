@@ -939,6 +939,12 @@ impl Backend for Services {
             }
             ClientRequest::ListEdits { room, event } => self.matrix.list_edits(room, event).await,
             ClientRequest::ListThread { room, root } => self.matrix.list_thread(room, root).await,
+            ClientRequest::SearchRoom {
+                room,
+                query,
+                before,
+                limit,
+            } => self.matrix.search_room(room, query, before, limit).await,
             ClientRequest::PreviewUrl { room, event, url } => {
                 self.matrix.preview_url(room, event, url).await
             }

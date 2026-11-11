@@ -757,6 +757,47 @@ impl Matrix {
             .await
     }
 
+    pub async fn search_room(
+        &self,
+        room: RoomId,
+        query: String,
+        before: Option<RoomEventId>,
+        limit: u32,
+    ) -> Response {
+        if !(1..=MAX_LIMIT).contains(&limit) {
+            return Err(error(
+                ErrorCode::Invalid,
+                format!("limit must be between 1 and {MAX_LIMIT}"),
+            ));
+        }
+        let words: Vec<String> = query.split_whitespace().map(str::to_owned).collect();
+        if words.is_empty() {
+            return Err(error(ErrorCode::Invalid, "the query is empty".into()));
+        }
+        self.reader
+            .read(move |conn| {
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
+                if rooms::room_account(&tx, room).map_err(internal)?.is_none() {
+                    return Err(no_room(room));
+                }
+                if let Some(before) = before {
+                    if !rooms::event_in_room(&tx, room, before).map_err(internal)? {
+                        return Err(no_event(room, before));
+                    }
+                }
+                let (events, more) =
+                    rooms::search(&tx, room, &words, before, limit).map_err(internal)?;
+                Ok(ServerResponse::RoomSearch {
+                    as_of,
+                    room,
+                    events,
+                    more,
+                })
+            })
+            .await
+    }
+
     pub async fn list_room_events(&self, room: RoomId, events: Vec<RoomEventId>) -> Response {
         if events.len() > MAX_LIMIT as usize {
             return Err(error(

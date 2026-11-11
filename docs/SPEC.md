@@ -820,6 +820,12 @@ than it buffers is closed; the client reconnects and resumes.
   `ListEdits { room, event }` — a message's edits, oldest first, for its
   edit history; `ListThread { room, root }` — a thread (§9.2);
   `PreviewUrl { room, event, url }` — a link's preview (§9.8);
+  `SearchRoom { room, query, before, limit }` — the room's messages
+  (of the main timeline and its threads, not deleted) whose text, or an
+  edit's, has every word of the query (ignoring the case of ASCII
+  letters, as SQLite's `LIKE`), newest first, a page at a time, and
+  whether there are more. Messages are stored decrypted, so encrypted
+  rooms are searched too;
   `ListMatrixSends { room }`: its sends not yet synced back, for the end
   of the timeline.
 - `Undo { tx_log_id }`; `ListHistory { before, limit }` — the user's
@@ -2333,8 +2339,12 @@ the membership's buttons.
   thread's messages and those being sent to it, and a box to write to
   it (text, with replies within the thread, edits and commands, as the
   room's). Any message not of a thread starts one, by its "Reply in
-  thread" button. One panel shows at a time: the room's info, or a
-  thread. Deleted messages say so, with the reason; undecryptable
+  thread" button. The header's search button opens a search of the
+  room's messages (`SearchRoom`): the messages found, newest first, by
+  sender and time, the words marked, more on request; a click shows one
+  in the timeline (loading earlier pages until it is, then scrolling to
+  it and highlighting it), or one of a thread in its thread. One panel
+  shows at a time: the room's info, a thread, or a search. Deleted messages say so, with the reason; undecryptable
   ones too. Any other message type shows its `body`.
 - **State events** are summarized after the sender's name ("Alice
   joined", "changed the topic to …"); three or more membership changes

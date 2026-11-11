@@ -383,6 +383,66 @@
   font-weight: 600;
 }
 
+.iconButton {
+  display: flex;
+  padding: 4px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.iconButton:hover,
+.iconButton[aria-expanded='true'] {
+  background: var(--hover);
+  color: inherit;
+}
+
+/* Search results: a line of who and when, and what they said. */
+.results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+}
+
+.result {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 6px 16px;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.result:hover {
+  background: var(--hover);
+}
+
+.result mark {
+  border-radius: 2px;
+  background: var(--mark);
+  color: inherit;
+}
+
+.searchForm {
+  display: flex;
+  gap: 8px;
+  padding: 8px 16px;
+}
+
+.searchForm input {
+  flex: 1;
+  min-width: 0;
+}
+
 /* The thread panel: its lines as the timeline's, the sender's column
    narrower. */
 .thread {

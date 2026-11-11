@@ -1392,6 +1392,68 @@ pub fn listed_events(
     )
 }
 
+/// The room's listed messages, of the main timeline or a thread, whose
+/// text, or one of their edits', has every one of `words` (ignoring the
+/// case of ASCII letters, as SQLite's `LIKE`), newest first: up to
+/// `limit`, before `before` if given; and whether there are more.
+pub fn search(
+    tx: &Transaction,
+    room: RoomId,
+    words: &[String],
+    before: Option<RoomEventId>,
+    limit: u32,
+) -> Result<(Vec<RoomEvent>, bool)> {
+    // A word's pattern, its own `%` and `_` (and the escape) escaped.
+    let patterns: Vec<String> = words
+        .iter()
+        .map(|word| {
+            let escaped = word
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            format!("%{escaped}%")
+        })
+        .collect();
+    let has = |i: usize| {
+        let p = i + 4;
+        format!(
+            "(e.body LIKE ?{p} ESCAPE '\\' OR EXISTS (
+               SELECT 1 FROM matrix_event x
+               WHERE x.room = e.room AND x.relates_to = e.event_id AND x.rel_type = 'm.replace'
+                 AND x.sender = e.sender AND NOT x.redacted
+                 AND json_extract(x.raw_json, '$.content.\"m.new_content\".body')
+                     LIKE ?{p} ESCAPE '\\'))"
+        )
+    };
+    let matches: Vec<String> = (0..patterns.len()).map(has).collect();
+    let sql = format!(
+        "SELECT {COLUMNS} FROM matrix_event e
+         WHERE e.room = ?1 AND e.type = 'm.room.message' AND NOT e.redacted AND {LISTED}
+           AND (?2 IS NULL OR e.pos < {before})
+           AND {matches}
+         ORDER BY e.pos DESC LIMIT ?3",
+        before = pos_of("?2"),
+        matches = matches.join(" AND "),
+    );
+    let mut params: Vec<Box<dyn uplink_storage::rusqlite::ToSql>> = vec![
+        Box::new(room.0),
+        Box::new(before.map(|e| e.0)),
+        Box::new(limit + 1),
+    ];
+    for pattern in patterns {
+        params.push(Box::new(pattern));
+    }
+    let mut events = query_events(
+        tx,
+        room,
+        &sql,
+        uplink_storage::rusqlite::params_from_iter(params.iter()),
+    )?;
+    let more = events.len() > limit as usize;
+    events.truncate(limit as usize);
+    Ok((events, more))
+}
+
 /// The thread whose root is `root`, if the main timeline lists it: the
 /// root, and the thread's messages, in timeline order.
 pub fn thread(

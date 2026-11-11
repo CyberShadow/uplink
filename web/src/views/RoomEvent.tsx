@@ -11,6 +11,7 @@ import type {
   Room,
   RoomEvent,
   RepliedEvent,
+  RoomEventId,
   ThreadSummary,
   UrlPreview,
 } from '../generated/protocol'
@@ -503,13 +504,7 @@ function ReplyPreview(props: { replied: RepliedEvent }) {
       type="button"
       class={styles.reply}
       onMouseDown={keepFocus}
-      onClick={() => {
-        const target = document.getElementById(`event-${replied.id}`)
-        if (!target) return
-        target.scrollIntoView({ block: 'center' })
-        target.classList.add(styles.highlight)
-        setTimeout(() => target.classList.remove(styles.highlight), 2000)
-      }}
+      onClick={() => reveal(replied.id)}
     >
       <Icon name="reply" />
       <span style={{ color: senderColor(replied.sender) }}>{displayName(replied.sender, replied.sender_name)}</span>{' '}
@@ -531,6 +526,15 @@ function ThreadSummaryButton(props: { room: Room; summary: ThreadSummary; open: 
       <span class={styles.quoted}>{latest.redacted ? 'Message deleted' : (latest.body ?? latest.kind)}</span>
     </button>
   )
+}
+
+/** Scrolls to the event's line, if on show, and highlights it a while. */
+export function reveal(event: RoomEventId) {
+  const target = document.getElementById(`event-${event}`)
+  if (!target) return
+  target.scrollIntoView({ block: 'center' })
+  target.classList.add(styles.highlight)
+  setTimeout(() => target.classList.remove(styles.highlight), 2000)
 }
 
 /** The reactions to the event: a click on one adds the account's own, or

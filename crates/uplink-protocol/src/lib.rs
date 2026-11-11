@@ -268,6 +268,14 @@ pub enum ClientRequest {
         room: RoomId,
         root: RoomEventId,
     },
+    /// The room's messages whose text (or an edit's) has every word of
+    /// `query`, newest first: up to `limit`, before `before` if given.
+    SearchRoom {
+        room: RoomId,
+        query: String,
+        before: Option<RoomEventId>,
+        limit: u32,
+    },
     /// A preview of the page `url` that the room's message `event` links,
     /// but in encrypted rooms (SPEC §9.8). Not logged.
     PreviewUrl {
@@ -430,6 +438,13 @@ pub enum ServerResponse {
         event: RoomEventId,
         edits: Vec<matrix::RoomEvent>,
     },
+    /// Of `SearchRoom`: whether there are more, before the last.
+    RoomSearch {
+        as_of: TxLogId,
+        room: RoomId,
+        events: Vec<matrix::RoomEvent>,
+        more: bool,
+    },
     /// Of `PreviewUrl`: `None` if the page says nothing of itself.
     UrlPreview {
         preview: Option<matrix::UrlPreview>,
@@ -495,6 +510,7 @@ impl ServerResponse {
             | Self::RoomEvents { as_of, .. }
             | Self::Edits { as_of, .. }
             | Self::Thread { as_of, .. }
+            | Self::RoomSearch { as_of, .. }
             | Self::MatrixSends { as_of, .. }
             | Self::Todos { as_of, .. }
             | Self::Events { as_of, .. }

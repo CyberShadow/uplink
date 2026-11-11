@@ -918,6 +918,57 @@ mod relations {
         assert_eq!(encrypted.code, uplink_protocol::ErrorCode::Invalid);
     }
 
+    #[tokio::test]
+    async fn messages_are_searched_by_their_words_as_edited_newest_first() {
+        let db = Db::new();
+        db.sync_json(&[
+            text("$1", "@bob:x", "Lunch at noon?"),
+            text("$2", "@eve:x", "lunch AT one"),
+            text("$3", "@bob:x", "dinner"),
+            edit("$4", "@bob:x", "$3", "late lunch, at 3"),
+            text("$5", "@bob:x", "100% lunch_at"),
+            text("$6", "@bob:x", "lunch at the moon"),
+            redaction("$7", "@bob:x", "$6"),
+        ])
+        .await;
+        let room = db.room().await.id;
+        let search = |query: &str, before: Option<RoomEventId>, limit: u32| {
+            let db = &db;
+            let query = query.to_owned();
+            async move {
+                match db
+                    .matrix
+                    .search_room(room, query, before, limit)
+                    .await
+                    .unwrap()
+                {
+                    ServerResponse::RoomSearch { events, more, .. } => (events, more),
+                    other => panic!("unexpected {other:?}"),
+                }
+            }
+        };
+        let (found, more) = search("LUNCH at", None, 10).await;
+        assert_eq!(
+            ids(&found),
+            ["$5", "$3", "$2", "$1"],
+            "as edited; not deleted"
+        );
+        assert!(!more);
+        // `%` and `_` are themselves.
+        assert_eq!(ids(&search("0% h_a", None, 10).await.0), ["$5"]);
+        assert!(search("lunch%at", None, 10).await.0.is_empty());
+        // Page by page.
+        let (page, more) = search("lunch", None, 2).await;
+        assert_eq!((ids(&page), more), (vec!["$5", "$3"], true));
+        let (page, more) = search("lunch", Some(page[1].id), 2).await;
+        assert_eq!((ids(&page), more), (vec!["$2", "$1"], false));
+        assert!(db
+            .matrix
+            .search_room(room, " ".into(), None, 10)
+            .await
+            .is_err());
+    }
+
     #[test]
     fn redacting_follows_the_room_version_and_survives_non_canonical_json() {
         use matrix_sdk::ruma::RoomVersionId;

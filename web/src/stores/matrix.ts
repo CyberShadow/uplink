@@ -227,6 +227,12 @@ export class MatrixStore {
     return preview
   }
 
+  /** The room's messages that have every word of `words`, newest first,
+   * a page at a time. Throws the server's refusal. */
+  search(room: RoomId, words: string, before: RoomEventId | null): Promise<Response<'room_search'>> {
+    return query(this.server, { type: 'search_room', room, query: words, before, limit: TIMELINE_PAGE }, 'room_search')
+  }
+
   /** The edits of the room's message `event`, oldest first. */
   async edits(room: RoomId, event: RoomEventId): Promise<RoomEvent[] | null> {
     const response = await this.query({ type: 'list_edits', room, event }, 'edits')
@@ -427,6 +433,18 @@ export class Timeline {
         if (!last || response.events.length < TIMELINE_PAGE) return
       }
     })
+  }
+
+  /** Loads earlier pages until the event at `pos` is loaded, if it is
+   * listed. */
+  async loadUntil(pos: number) {
+    for (;;) {
+      const first = this.events.value?.[0]
+      if (!first || first.pos <= pos || !this.moreBefore.value) return
+      await this.loadEarlier()
+      // Loaded afresh meanwhile, or another load is under way.
+      if (this.events.value?.[0] === first) return
+    }
   }
 
   async loadEarlier() {

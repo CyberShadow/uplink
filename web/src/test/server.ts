@@ -736,6 +736,22 @@ export class FakeServer implements Requester, Blobs {
         }
       case 'list_edits':
         return { type: 'edits', as_of: this.head(), room: body.room, event: body.event, edits: this.edits.get(body.event) ?? [] }
+      case 'search_room': {
+        const words = body.query.toLowerCase().split(/\s+/).filter((w) => w !== '')
+        const events = this.events.get(body.room)!
+        const before = body.before === null ? Infinity : events.find((e) => e.id === body.before)!.pos
+        const found = events
+          .filter((e) => e.kind === 'm.room.message' && !e.redacted && e.pos < before)
+          .filter((e) => words.every((w) => e.body?.toLowerCase().includes(w)))
+          .reverse()
+        return {
+          type: 'room_search',
+          as_of: this.head(),
+          room: body.room,
+          events: found.slice(0, body.limit),
+          more: found.length > body.limit,
+        }
+      }
       case 'preview_url': {
         const event = this.events.get(body.room)!.find((e) => e.id === body.event)!
         if (!event.body?.includes(body.url)) throw new RequestError({ code: 'not_found', message: `no ${body.url}` })

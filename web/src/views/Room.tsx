@@ -23,7 +23,9 @@ import styles from './Room.module.css'
 import { RoomAvatar } from './RoomAvatar'
 import { date } from '../format'
 import { TEXT, displayName, sendSummary, shown } from '../matrix'
-import { EventRow, MembershipRun, type Overlay } from './RoomEvent'
+import { EventRow, MembershipRun, reveal, type Overlay } from './RoomEvent'
+import { Icon } from './Icon'
+import { RoomSearch } from './RoomSearch'
 import { Composer, type Mode } from './RoomComposer'
 import { RoomInfo } from './RoomInfo'
 import { ThreadPanel } from './RoomThread'
@@ -99,6 +101,17 @@ function Timeline(props: { room: Room }) {
               </p>
             )}
           </div>
+          <button
+            type="button"
+            class={styles.iconButton}
+            aria-label="Search messages"
+            title="Search messages"
+            aria-expanded={panel?.type === 'search'}
+            onMouseDown={keepFocus}
+            onClick={() => setPanel(panel?.type === 'search' ? null : { type: 'search' })}
+          >
+            <Icon name="search" />
+          </button>
           <span class={styles.muted}>
             <button
               type="button"
@@ -156,6 +169,21 @@ function Timeline(props: { room: Room }) {
         )}
       </section>
       {panel?.type === 'info' && <RoomInfo room={room} close={() => setPanel(null)} />}
+      {panel?.type === 'search' && (
+        <RoomSearch
+          room={room}
+          close={() => setPanel(null)}
+          open={async (event) => {
+            if (event.thread_root !== null) {
+              setPanel({ type: 'thread', root: event.thread_root })
+              return
+            }
+            await timeline.loadUntil(event.pos)
+            // Once rendered.
+            requestAnimationFrame(() => reveal(event.id))
+          }}
+        />
+      )}
       {panel?.type === 'thread' && (
         <ThreadPanel key={panel.root} room={room} root={panel.root} me={me} close={() => setPanel(null)} />
       )}
@@ -164,7 +192,7 @@ function Timeline(props: { room: Room }) {
 }
 
 /** What shows beside the timeline, if anything. */
-type Panel = null | { type: 'info' } | { type: 'thread'; root: RoomEventId }
+type Panel = null | { type: 'info' } | { type: 'thread'; root: RoomEventId } | { type: 'search' }
 
 /** The rows of a timeline, or a thread, and the sends that follow. */
 export function Events(props: {

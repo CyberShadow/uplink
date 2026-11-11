@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Entry, MemberState } from '../generated/protocol'
 import { Client } from '../stores/client'
 import { conversationKey } from '../stores/mail'
+import { TIMELINE_PAGE } from '../stores/matrix'
 import { FakeServer, ME, RECOVERY_KEY } from '../test/server'
 import { App } from './App'
 import { text } from '../matrix'
@@ -1211,6 +1212,37 @@ describe('room timeline', () => {
     await screen.findByRole('heading', { name: 'Secret' })
     await within(timeline()).findByRole('link', { name: url })
     expect(server.requests.filter((r) => r.type === 'preview_url')).toHaveLength(1)
+  })
+
+  it('searches the room, showing what it finds in the timeline or its thread', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const old = server.receive(room.id, { body: 'Lunch at noon?' })
+    for (let i = 0; i < TIMELINE_PAGE; i++) server.receive(room.id, { body: `filler ${i}` })
+    const root = server.receive(room.id, { body: 'Plans' })
+    server.receiveInThread(room.id, root, { body: 'lunch then' })
+    const user = await start(`/rooms/${room.id}`)
+    await within(timeline()).findByText('Plans')
+    expect(within(timeline()).queryByText('Lunch at noon?')).toBeNull()
+
+    await user.click(screen.getByRole('button', { name: 'Search messages' }))
+    const search = screen.getByRole('complementary', { name: 'Search' })
+    await user.type(within(search).getByRole('searchbox', { name: 'Search Lounge' }), 'LUNCH{Enter}')
+    const results = await within(search).findByRole('list', { name: 'Results' })
+    const found = within(results).getAllByRole('button')
+    expect(found.map((b) => b.textContent)).toEqual([
+      expect.stringContaining('lunch then'),
+      expect.stringContaining('Lunch at noon?'),
+    ])
+    expect(within(found[1]).getByText('Lunch').tagName).toBe('MARK')
+
+    // One far back: earlier pages load until it shows.
+    await user.click(found[1])
+    await within(timeline()).findByText('Lunch at noon?')
+    expect(line('Lunch at noon?').id).toBe(`event-${old.id}`)
+    // One of a thread: its thread opens.
+    await user.click(found[0])
+    await within(screen.getByRole('complementary', { name: 'Thread' })).findByText('lunch then')
   })
 
   it('opens threads beside the timeline, which sum them up, and replies in them', async () => {
