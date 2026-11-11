@@ -17,9 +17,12 @@ const REMOTE = /\/api\/remote-image\?url=/
 // inverted, hues kept, as Dark Reader's filter mode does, and pictures
 // inverted back: a mail's colours become their dark counterparts,
 // whatever it sets them to. Its paper is the inverse of the theme's
-// background (#0d0e0e).
+// background (#0d0e0e). The frame is fitted to its root, so the root is
+// as tall as its content: a mail's own height for it, as the frame's
+// (html, body { height: 100% }, common in mail), would keep the frame at
+// its first height, scrolling.
 const STYLE = `
-html { background: #fff; }
+html { height: auto !important; min-height: 0 !important; background: #fff; }
 body { margin: 0; padding: 8px; font: 14px/1.4 'Google Sans', Roboto, RobotoDraft, Helvetica, Arial, sans-serif; overflow-wrap: anywhere; color: #000; background: #fff; }
 html.dark { background: #0d0e0e; }
 html.dark body { background: #f2f1f1; filter: invert(1) hue-rotate(180deg); }
