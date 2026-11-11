@@ -84,6 +84,8 @@ export class FakeServer implements Requester, Blobs {
   private nextTodo = 1
   private matrixAccounts: MatrixAccount[] = []
   readonly rooms: Room[] = []
+  /** The op that asked for each room's pending membership. */
+  private readonly membershipBy = new Map<RoomId, number>()
   readonly events = new Map<RoomId, RoomEvent[]>()
   /** Messages being sent, sent and not yet synced back, or sent though
    * cancelled. */
@@ -270,6 +272,15 @@ export class FakeServer implements Requester, Blobs {
     this.observe('mx', this.matrixSendsChanged(room))
   }
 
+  /** The homeserver refuses the room's pending change. */
+  refuseMembership(room: RoomId, reason: string) {
+    this.rooms.find((r) => r.id === room)!.membership_error = reason
+    this.observe('mx', [
+      { type: 'rooms_changed', rooms: [room] },
+      { type: 'outbox_changed', accounts: ['mx'] },
+    ])
+  }
+
   /** The sync task does as asked: the room's pending change takes effect. */
   settleMembership(room: RoomId) {
     const row = this.rooms.find((r) => r.id === room)!
@@ -440,8 +451,20 @@ export class FakeServer implements Requester, Blobs {
             sends: this.outbox.filter((i) => i.account === account),
           },
         }))
-        if (this.matrixSends.length > 0) {
-          accounts.push({ account: 'mx', failing: null, pending: { kind: 'matrix', sends: [...this.matrixSends] } })
+        const memberships = this.rooms
+          .filter((r) => r.pending !== null)
+          .map((r) => ({
+            room: r.id,
+            change: r.pending!,
+            op: { id: this.membershipBy.get(r.id)!, description: `${r.pending === 'join' ? 'Joined' : 'Left'} '${r.name}'`, ts: 0 },
+            refused: r.membership_error,
+          }))
+        if (this.matrixSends.length > 0 || memberships.length > 0) {
+          accounts.push({
+            account: 'mx',
+            failing: null,
+            pending: { kind: 'matrix', sends: [...this.matrixSends], memberships, receipts: [] },
+          })
         }
         accounts.sort((a, b) => a.account.localeCompare(b.account))
         return { type: 'outbox', as_of: this.head(), accounts }
@@ -593,13 +616,17 @@ export class FakeServer implements Requester, Blobs {
       case 'change_membership': {
         const room = this.rooms.find((r) => r.id === body.room)!
         room.pending = body.change
-        const response = this.dispatched(body.change === 'join' ? 'Joined' : 'Left', [
+        const changed: ServerEvent[] = [
           { type: 'rooms_changed', rooms: [room.id] },
-        ])
+          { type: 'outbox_changed', accounts: ['mx'] },
+        ]
+        const response = this.dispatched(body.change === 'join' ? 'Joined' : 'Left', changed)
+        this.membershipBy.set(room.id, this.head())
         this.undoable.set(this.head(), {
           revert: () => {
             room.pending = null
-            return this.commit({ type: 'user' }, 'Undid it', [{ type: 'rooms_changed', rooms: [room.id] }])
+            room.membership_error = null
+            return this.commit({ type: 'user' }, 'Undid it', changed)
           },
           undone: false,
         })

@@ -474,7 +474,8 @@ CREATE TABLE matrix_room (
   read_up_to   INTEGER REFERENCES matrix_event(id), -- desired read marker
   read_pushed  INTEGER REFERENCES matrix_event(id), -- last receipt sent/seen
   desired      TEXT,                 -- 'joined' | 'left' asked for (§9.7)
-  membership_error TEXT,             -- the homeserver's last refusal
+  membership_by INTEGER REFERENCES tx_log(id), -- the op that asked; set iff desired (V0024)
+  membership_error TEXT,             -- the homeserver's refusal of what is asked for
   UNIQUE (account_id, room_id)
 );
 CREATE TABLE matrix_event (
@@ -813,8 +814,10 @@ than it buffers is closed; the client reconnects and resumes.
   error, if failing, and what is not yet reconciled (§6.6), by the kind
   of account: of mail, label changes grouped by the op that made them
   (its description, the entries left, how many refused, with their
-  reasons) and sends; of Matrix, sends; each with its state. The server
-  lists both kinds in one read, so as of one log position.
+  reasons) and sends; of Matrix, sends, rooms being joined or left (with
+  the op that asked, and the refusal), and the rooms whose read receipt
+  is still to send; each with its state. The server lists both kinds in
+  one read, so as of one log position.
 - One request per op kind the client can dispatch, answered with the
   tx_log id: `ModifyLabels { entries, add, remove }` covers archive,
   label, mark read and star; `CreateDraft`, `EditDraft { draft, revision,
@@ -1698,13 +1701,15 @@ done once per device, ever; device verification UI is out of scope.
 
 Membership is desired state (§6.6). `ChangeMembership { room, change }`
 (join an invitation; leave a room, or decline an invitation) records
-`matrix_room.desired`; the account's sender loop asks the homeserver
-(`join_room_by_id`, `Room::leave`) and records the outcome as an
-observation: the membership, or the refusal in `membership_error`, which
-puts it in the outbox as needing a decision (§6.6): keeping the
-membership as it is clears `desired`. Sync also clears `desired` once
-it sees that membership, however it came about. Rooms left are not
-listed, unless being joined again.
+`matrix_room.desired`, and the op that asked (`membership_by`); the
+account's sender loop asks the homeserver (`join_room_by_id`,
+`Room::leave`) and records the outcome as an observation: the
+membership, or the refusal in `membership_error`. A refused change stays
+asked for, and is not asked again: the outbox lists it as needing a
+decision (§6.6), which undoing the op makes, keeping the membership as
+it is (an op changes one room, so its undo is that decision). Sync
+clears `desired` once it sees that membership, however it came about.
+Rooms left are not listed, unless being joined again.
 
 Undo goes back to how the room was, as far as possible: a change not yet
 made is cancelled; one made is reversed (a joined room is left; a room

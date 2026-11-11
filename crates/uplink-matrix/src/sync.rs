@@ -42,7 +42,10 @@ use uplink_protocol::{
     LogEntry, Source,
 };
 use uplink_storage::{rusqlite::Connection, seal::MasterKey};
-use uplink_tx_log::{Conflict, Dispatcher, Observation};
+use uplink_tx_log::{
+    push::{self, PushFailing},
+    Conflict, Dispatcher, Observation,
+};
 
 /// How long a `/sync` long poll waits for something to happen.
 const LONG_POLL: Duration = Duration::from_secs(30);
@@ -373,14 +376,52 @@ struct Sender {
 }
 
 impl Sender {
+    /// Pushes until the process exits, retrying failures with backoff. A
+    /// failure holds up the account's pushes, as they go in turn, so it is
+    /// recorded for the outbox as they start and stop failing, not at each
+    /// retry (SPEC §6.6).
     async fn run(mut self) {
         retry(&self.account, "recovering interrupted sends", || {
             self.recover()
         })
         .await;
+        let mut failing = retry(&self.account, "reading whether failing", || async {
+            let account = self.account.clone();
+            read(&self.reader, move |conn| push::is_failing(conn, &account)).await
+        })
+        .await;
+        let mut backoff = Duration::from_secs(1);
         loop {
-            retry(&self.account, "sending", || self.step()).await;
-            self.wait().await;
+            match self.step().await {
+                Ok(()) => {
+                    backoff = Duration::from_secs(1);
+                    if failing {
+                        self.record_failing(None).await;
+                        failing = false;
+                    }
+                    self.wait().await;
+                }
+                Err(e) => {
+                    let error = format!("{e:#}");
+                    tracing::warn!(account = self.account, "sending failed: {error}");
+                    if !failing {
+                        self.record_failing(Some(error)).await;
+                        failing = true;
+                    }
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(MAX_BACKOFF);
+                }
+            }
+        }
+    }
+
+    /// Records that the account's changes are not reaching the homeserver,
+    /// for `error`, or are again. If that cannot be recorded either, the
+    /// database is failing too, which the next step reports.
+    async fn record_failing(&self, error: Option<String>) {
+        let at = send::now_ms();
+        if let Err(e) = self.observe(PushFailing { error, at }).await {
+            tracing::warn!(account = self.account, "recording the failure: {e:#}");
         }
     }
 

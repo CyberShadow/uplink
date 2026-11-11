@@ -10,7 +10,6 @@
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use uplink_protocol::{
-    compose::OutboxChanged,
     matrix::{
         Encryption, MatrixSendsChanged, Membership, Room, RoomEvent, RoomEventId, RoomId,
         RoomsChanged, TimelineAdded, TimelinePage,
@@ -22,7 +21,7 @@ use uplink_tx_log::{Applied, Inverse, Observation, Observed, Op};
 
 use crate::{
     membership::{parse_desired, parse_membership},
-    send,
+    outbox, send,
 };
 
 pub const ACCOUNT_KIND: &str = "matrix";
@@ -177,6 +176,7 @@ impl Observation for Synced {
             "account {account} is a {kind} account"
         );
 
+        let pending = outbox::pending_rooms(tx, account)?;
         let mut events = vec![];
         let mut changed_rooms = vec![];
         let mut sent = vec![];
@@ -205,13 +205,14 @@ impl Observation for Synced {
                 rooms: changed_rooms,
             }));
         }
+        let outbox_changed = !sent.is_empty() || outbox::pending_rooms(tx, account)? != pending;
         if !sent.is_empty() {
             events.push(ServerEvent::MatrixSendsChanged(MatrixSendsChanged {
                 rooms: sent,
             }));
-            events.push(ServerEvent::OutboxChanged(OutboxChanged {
-                accounts: vec![account.to_owned()],
-            }));
+        }
+        if outbox_changed {
+            events.push(outbox::outbox_changed(account));
         }
         let state = serde_json::to_string(&SyncState {
             next_batch: self.next_batch,
@@ -265,6 +266,8 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                 tx.execute(
                     "UPDATE matrix_room SET name = ?1, encrypted = ?2, membership = ?3,
                        space = ?4, avatar = ?5,
+                       membership_by = CASE WHEN desired = ?3 THEN NULL ELSE membership_by END,
+                       membership_error = CASE WHEN desired = ?3 THEN NULL ELSE membership_error END,
                        desired = CASE WHEN desired = ?3 THEN NULL ELSE desired END
                      WHERE id = ?6",
                     params![
@@ -403,26 +406,32 @@ impl Op for MarkRead {
     const KIND: &'static str = "matrix.mark_read";
 
     fn apply(self, tx: &Transaction) -> Result<Applied> {
-        let (name, previous): (String, Option<i64>) = tx
+        let (account, name, previous): (String, String, Option<i64>) = tx
             .query_row(
-                "SELECT name, read_up_to FROM matrix_room WHERE id = ?1",
+                "SELECT account_id, name, read_up_to FROM matrix_room WHERE id = ?1",
                 [self.room.0],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .with_context(|| format!("no room {}", self.room.0))?;
+        let pending = outbox::pending_rooms(tx, &account)?;
         tx.execute(
             "UPDATE matrix_room SET read_up_to = ?1 WHERE id = ?2",
             params![self.up_to.map(|e| e.0), self.room.0],
         )?;
+        let mut events = vec![ServerEvent::RoomsChanged(RoomsChanged {
+            rooms: vec![self.room],
+        })];
+        // A receipt to send, or none.
+        if outbox::pending_rooms(tx, &account)? != pending {
+            events.push(outbox::outbox_changed(&account));
+        }
         Ok(Applied {
             description: format!("Read {name}"),
             inverse: Inverse::of(&MarkRead {
                 room: self.room,
                 up_to: previous.map(RoomEventId),
             }),
-            events: vec![ServerEvent::RoomsChanged(RoomsChanged {
-                rooms: vec![self.room],
-            })],
+            events,
         })
     }
 }
@@ -437,15 +446,21 @@ pub struct ReceiptSent {
 impl Observation for ReceiptSent {
     const KIND: &'static str = "matrix.receipt_sent";
 
-    fn apply(self, _account: &str, tx: &Transaction) -> Result<Observed> {
+    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
+        let pending = outbox::pending_rooms(tx, account)?;
         tx.execute(
             "UPDATE matrix_room SET read_pushed = max(coalesce(read_pushed, 0), ?1) WHERE id = ?2",
             params![self.up_to.0, self.room.0],
         )?;
-        // Nothing clients show changed.
+        // Nothing else clients show changed.
+        let events = if outbox::pending_rooms(tx, account)? == pending {
+            vec![]
+        } else {
+            vec![outbox::outbox_changed(account)]
+        };
         Ok(Observed {
             description: "Sent a read receipt".to_owned(),
-            events: vec![],
+            events,
         })
     }
 }

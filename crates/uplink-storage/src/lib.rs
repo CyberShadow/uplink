@@ -427,4 +427,44 @@ mod tests {
             .unwrap();
         assert_eq!(next, 10);
     }
+
+    /// A membership asked for records the op that asked (V0024); refusals
+    /// of memberships no longer asked for were decided on already.
+    #[test]
+    fn memberships_asked_for_record_their_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = migrated_to(dir.path(), 23);
+        conn.execute_batch(
+            r#"INSERT INTO account (id, kind) VALUES ('mx', 'matrix');
+               INSERT INTO tx_log (id, ts, description, op_type, op_json, inverse_type,
+                                   inverse_json, events_json)
+               VALUES (1, 0, '', 'matrix.change_membership', '{"room":5,"change":"join"}',
+                       'matrix.revert_membership', '{}', '[]'),
+                      (2, 0, '', 'matrix.revert_membership',
+                       '{"room":5,"change":"join","prior":"invited"}',
+                       'matrix.change_membership', '{}', '[]'),
+                      (3, 0, '', 'matrix.change_membership', '{"room":6,"change":"leave"}',
+                       'matrix.revert_membership', '{}', '[]');
+               INSERT INTO matrix_room (id, account_id, room_id, name, encrypted, membership,
+                                        desired, membership_error)
+               VALUES (5, 'mx', '!a:x', 'A', 0, 'joined', 'left', NULL),
+                      (6, 'mx', '!b:x', 'B', 0, 'joined', NULL, 'M_FORBIDDEN'),
+                      (7, 'mx', '!c:x', 'C', 0, 'joined', NULL, NULL);"#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open(dir.path()).unwrap();
+        let rooms: Vec<(i64, Option<i64>, Option<String>)> = conn
+            .prepare("SELECT id, membership_by, membership_error FROM matrix_room ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rooms,
+            [(5, Some(2), None), (6, None, None), (7, None, None)]
+        );
+    }
 }

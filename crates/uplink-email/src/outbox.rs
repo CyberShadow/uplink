@@ -26,17 +26,10 @@ pub fn outbox(tx: &Transaction) -> Result<Vec<AccountOutbox>> {
     fn account(accounts: &mut BTreeMap<String, MailOutbox>, id: String) -> &mut MailOutbox {
         accounts.entry(id).or_default()
     }
-    let failing: Vec<(String, String, i64)> = tx
-        .prepare(
-            "SELECT id, push_error, push_failing_since FROM account
-             WHERE push_error IS NOT NULL AND kind IN (?1, ?2)",
-        )?
-        .query_map([crate::gmail::sync::KIND, crate::m365::sync::KIND], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-        })?
-        .collect::<Result<_, _>>()?;
-    for (id, error, since) in failing {
-        account(&mut accounts, id).failing = Some(Failing { error, since });
+    for (id, failing) in
+        uplink_tx_log::push::failing(tx, &[crate::gmail::sync::KIND, crate::m365::sync::KIND])?
+    {
+        account(&mut accounts, id).failing = Some(failing);
     }
     // Per account and op, newest first (changes of no op last), the
     // entries pending and refused.

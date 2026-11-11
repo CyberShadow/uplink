@@ -354,38 +354,6 @@ impl Observation for LabelsRefused {
     }
 }
 
-/// Whether the account's changes are reaching its provider: `error` says
-/// why not, from the first failure on; `None` once they are again.
-#[derive(Debug, Serialize)]
-pub struct PushFailing {
-    pub error: Option<String>,
-    /// Unix ms.
-    pub at: i64,
-}
-
-impl Observation for PushFailing {
-    const KIND: &'static str = "mail.push_failing";
-
-    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
-        let description = match &self.error {
-            Some(error) => format!("Changes are not reaching the provider: {error}"),
-            None => "Changes are reaching the provider again".to_owned(),
-        };
-        let updated = tx.execute(
-            "UPDATE account SET push_error = ?1,
-               push_failing_since = CASE WHEN ?1 IS NULL THEN NULL
-                                         ELSE coalesce(push_failing_since, ?2) END
-             WHERE id = ?3",
-            params![self.error, self.at, account],
-        )?;
-        ensure!(updated == 1, "account {account} is not recorded");
-        Ok(Observed {
-            description,
-            events: vec![outbox_changed(account)],
-        })
-    }
-}
-
 /// The account's outbox changed (SPEC §6.6).
 pub(crate) fn outbox_changed(account: &str) -> ServerEvent {
     ServerEvent::OutboxChanged(OutboxChanged {

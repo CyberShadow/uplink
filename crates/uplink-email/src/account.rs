@@ -13,7 +13,6 @@ use crate::{
         self, build_message, now_ms, Due, File, ReplyContext, SendFailed, SendNotFound,
         SendOutcome, SendStarted, SendSucceeded,
     },
-    mailbox::PushFailing,
     parse::{parse, Parsed},
     store::{Store, VariantHash},
 };
@@ -33,7 +32,10 @@ use uplink_protocol::{
     LogEntry, Source,
 };
 use uplink_storage::rusqlite::{params, Connection, OptionalExtension};
-use uplink_tx_log::{Conflict, Dispatcher, Observation};
+use uplink_tx_log::{
+    push::{self, PushFailing},
+    Conflict, Dispatcher, Observation,
+};
 
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// How long after a send's attempt began a sync must begin to settle its
@@ -326,17 +328,7 @@ impl<P: Provider> SyncTask<P> {
     async fn failing(&self) -> Result<bool> {
         let account = self.account.id.clone();
         self.account
-            .read(move |conn| {
-                Ok(conn
-                    .query_row(
-                        "SELECT push_error IS NOT NULL FROM account WHERE id = ?1",
-                        [account],
-                        |r| r.get(0),
-                    )
-                    .optional()?
-                    // Recorded by its first sync, which has not run.
-                    .unwrap_or(false))
-            })
+            .read(move |conn| push::is_failing(conn, &account))
             .await
     }
 

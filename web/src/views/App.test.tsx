@@ -776,6 +776,28 @@ describe('outbox', () => {
     expect(within(section).getByText(/^2 messages waiting$/)).toBeTruthy()
   })
 
+  it('lists a refused membership change until undone', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Party', false, 'invited')
+    const user = await start(`/rooms/${room.id}`)
+    await user.click(screen.getByRole('button', { name: 'Join' }))
+    await screen.findByText('Joining…')
+    server.refuseMembership(room.id, 'M_FORBIDDEN')
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'The homeserver refused: M_FORBIDDEN. Undo the change to keep the room as it is.',
+    )
+    expect(screen.getByText('not joined')).toBeTruthy()
+
+    await user.click(screen.getByRole('link', { name: 'Undo the change' }))
+    const section = await screen.findByRole('region', { name: 'mx' })
+    const [row] = within(section).getAllByRole('listitem')
+    expect(row.querySelector('[class*=summary]')!.textContent).toBe(
+      "Joined 'Party'the homeserver refused: M_FORBIDDEN",
+    )
+    await user.click(within(row).getByRole('button', { name: 'Undo' }))
+    await screen.findByText('The outbox is empty: everything you did is at the providers.')
+  })
+
   it('lists Matrix messages sent though cancelled, until kept sent', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')

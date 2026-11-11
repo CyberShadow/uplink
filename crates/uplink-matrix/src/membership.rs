@@ -1,6 +1,8 @@
 //! Joining and leaving rooms (SPEC §9.7), as desired state (§6.6): the
 //! user's op records the membership asked for, and the account's sync task
-//! asks the homeserver for it, then records the outcome.
+//! asks the homeserver for it, then records the outcome. One refused stays
+//! asked for, and refused, until the user decides: undoing the op keeps
+//! the room as it is.
 //!
 //! Undoing is going back to how the room was, as far as that is still
 //! possible: before the change took effect, it is cancelled; after, it is
@@ -11,11 +13,12 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use uplink_protocol::{
+    compose::OutboxChanged,
     matrix::{Membership, MembershipChange, RoomId, RoomsChanged},
     ServerEvent,
 };
 use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Transaction};
-use uplink_tx_log::{Applied, Conflict, Inverse, Observation, Observed, Op};
+use uplink_tx_log::{this_entry, Applied, Conflict, Inverse, Observation, Observed, Op};
 
 pub(crate) fn parse_membership(membership: &str) -> Membership {
     match membership {
@@ -58,6 +61,7 @@ pub(crate) fn parse_desired(desired: Option<&str>) -> Option<MembershipChange> {
 }
 
 struct State {
+    account: String,
     name: String,
     membership: Membership,
     desired: Option<MembershipChange>,
@@ -65,13 +69,14 @@ struct State {
 
 fn state(tx: &Transaction, room: RoomId) -> Result<State> {
     tx.query_row(
-        "SELECT name, membership, desired FROM matrix_room WHERE id = ?1",
+        "SELECT account_id, name, membership, desired FROM matrix_room WHERE id = ?1",
         [room.0],
         |r| {
             Ok(State {
-                name: r.get(0)?,
-                membership: parse_membership(&r.get::<_, String>(1)?),
-                desired: parse_desired(r.get::<_, Option<String>>(2)?.as_deref()),
+                account: r.get(0)?,
+                name: r.get(1)?,
+                membership: parse_membership(&r.get::<_, String>(2)?),
+                desired: parse_desired(r.get::<_, Option<String>>(3)?.as_deref()),
             })
         },
     )
@@ -79,18 +84,28 @@ fn state(tx: &Transaction, room: RoomId) -> Result<State> {
     .with_context(|| format!("no room {}", room.0))
 }
 
+/// Asks for `desired`, by the op being applied; or for nothing.
 fn desire(tx: &Transaction, room: RoomId, desired: Option<MembershipChange>) -> Result<()> {
+    let by = match desired {
+        Some(_) => Some(this_entry(tx)?.0),
+        None => None,
+    };
     tx.execute(
-        "UPDATE matrix_room SET desired = ?1, membership_error = NULL WHERE id = ?2",
-        params![desired.map(target_str), room.0],
+        "UPDATE matrix_room SET desired = ?1, membership_by = ?2, membership_error = NULL
+         WHERE id = ?3",
+        params![desired.map(target_str), by, room.0],
     )?;
     Ok(())
 }
 
-fn changed(room: RoomId) -> Vec<ServerEvent> {
-    vec![ServerEvent::RoomsChanged(RoomsChanged {
-        rooms: vec![room],
-    })]
+/// The room changed, and with it what its account has pending.
+fn changed(room: RoomId, state: &State) -> Vec<ServerEvent> {
+    vec![
+        ServerEvent::RoomsChanged(RoomsChanged { rooms: vec![room] }),
+        ServerEvent::OutboxChanged(OutboxChanged {
+            accounts: vec![state.account.clone()],
+        }),
+    ]
 }
 
 /// Asks for joining or leaving the room.
@@ -125,7 +140,7 @@ impl Op for ChangeMembership {
                 change: self.change,
                 prior: room.membership,
             }),
-            events: changed(self.room),
+            events: changed(self.room, &room),
         })
     }
 }
@@ -156,7 +171,7 @@ impl Op for RevertMembership {
                     room: self.room,
                     change: self.change,
                 }),
-                events: changed(self.room),
+                events: changed(self.room, &room),
             })
         } else if done {
             let reverse = opposite(self.change);
@@ -171,7 +186,7 @@ impl Op for RevertMembership {
                     change: reverse,
                     prior: room.membership,
                 }),
-                events: changed(self.room),
+                events: changed(self.room, &room),
             })
         } else {
             bail!(Conflict(format!("'{name}' changed since")))
@@ -191,7 +206,8 @@ pub fn wanted(conn: &Connection, account: &str) -> Result<Vec<Wanted>> {
     Ok(conn
         .prepare(
             "SELECT id, room_id, desired FROM matrix_room
-             WHERE account_id = ?1 AND desired IS NOT NULL AND desired != membership",
+             WHERE account_id = ?1 AND desired IS NOT NULL AND desired != membership
+               AND membership_error IS NULL",
         )?
         .query_map([account], |r| {
             Ok(Wanted {
@@ -226,11 +242,13 @@ impl Observation for MembershipChanged {
         }
         match &self.refused {
             None => tx.execute(
-                "UPDATE matrix_room SET membership = ?1, desired = NULL WHERE id = ?2",
+                "UPDATE matrix_room SET membership = ?1, desired = NULL, membership_by = NULL
+                 WHERE id = ?2",
                 params![target_str(self.change), self.room.0],
             )?,
+            // Still asked for, until the user decides.
             Some(error) => tx.execute(
-                "UPDATE matrix_room SET desired = NULL, membership_error = ?1 WHERE id = ?2",
+                "UPDATE matrix_room SET membership_error = ?1 WHERE id = ?2",
                 params![error, self.room.0],
             )?,
         };
@@ -241,7 +259,7 @@ impl Observation for MembershipChanged {
                 (None, MembershipChange::Leave) => format!("Left '{name}' on the homeserver"),
                 (Some(error), _) => format!("The homeserver refused to change '{name}': {error}"),
             },
-            events: changed(self.room),
+            events: changed(self.room, &room),
         })
     }
 }

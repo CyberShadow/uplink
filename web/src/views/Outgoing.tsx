@@ -8,7 +8,6 @@ import type {
   AccountOutbox,
   Draft,
   MailProvider,
-  MatrixSend,
   OutboxItem,
   Pending,
   PendingChanges,
@@ -112,19 +111,50 @@ function AccountSection(props: { account: AccountOutbox; provider: MailProvider 
         {pending.kind === 'mail' ? (
           <MailRows account={account} pending={pending} failing={failing !== null} provider={name} />
         ) : (
-          <MatrixRows sends={pending.sends} />
+          <MatrixRows pending={pending} failing={failing !== null} />
         )}
       </ul>
     </section>
   )
 }
 
-function MatrixRows(props: { sends: readonly MatrixSend[] }) {
-  const { matrix } = useServices()
+function MatrixRows(props: { pending: Extract<Pending, { kind: 'matrix' }>; failing: boolean }) {
+  const { matrix, ops } = useServices()
+  const { sends, memberships, receipts } = props.pending
   const room = (id: number) => matrix.rooms.value?.find((r) => r.id === id)?.name ?? 'a room'
   return (
     <>
-      {props.sends.map((item) => (
+      {memberships.map(({ room: id, op, refused }) => (
+        <li key={`membership:${id}`} class={styles.row}>
+          <Unused />
+          <span class={styles.from}>{dateTime(op.ts)}</span>
+          <span class={styles.summary}>
+            <span class={styles.subject}>{op.description}</span>
+            <span class={styles.snippet}>
+              {refused !== null ? `the homeserver refused: ${refused}` : props.failing ? 'waiting' : 'to go'}
+            </span>
+          </span>
+          <span />
+          <span class={outgoing.actions}>
+            <button type="button" onMouseDown={keepFocus} onClick={() => ops.undo(op.id)}>
+              Undo
+            </button>
+          </span>
+        </li>
+      ))}
+      {receipts.length > 0 && (
+        <li key="receipts" class={styles.row}>
+          <Unused />
+          <span class={styles.from}>Read receipts</span>
+          <span class={styles.summary}>
+            <span class={styles.subject}>{receipts.map(room).join(', ')}</span>
+            <span class={styles.snippet}>{props.failing ? 'waiting' : 'to go'}</span>
+          </span>
+          <span />
+          <span />
+        </li>
+      )}
+      {sends.map((item) => (
         <li key={`matrix:${item.id}`} class={styles.row}>
           <Unused />
           <span class={styles.from}>{room(item.room)}</span>

@@ -150,6 +150,19 @@ pub struct MatrixSend {
     pub queued_at: i64,
 }
 
+/// A room being joined or left (SPEC §9.7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PendingMembership {
+    pub room: RoomId,
+    pub change: MembershipChange,
+    /// The op that asked for it: undoing it keeps the room as it is.
+    pub op: crate::compose::PendingOp,
+    /// Why the homeserver refused it: it needs a decision, which undoing
+    /// the op makes.
+    pub refused: Option<String>,
+}
+
 // ── events ────────────────────────────────────────────────────────────────
 
 /// Rooms appeared, or their name, membership, avatar, children, unread

@@ -46,7 +46,8 @@ function Timeline(props: { room: Room }) {
       </header>
       {room.membership_error !== null && (
         <p class={styles.error} role="alert">
-          The homeserver refused: {room.membership_error}
+          The homeserver refused: {room.membership_error}. <a href="/outbox">Undo the change</a> to keep the room
+          as it is.
         </p>
       )}
       {/* Reversed, so that it stays scrolled to the latest event. */}
@@ -77,7 +78,11 @@ function MembershipControls(props: { room: Room }) {
   const { matrix } = useServices()
   const change = (change: MembershipChange) => () => matrix.changeMembership(room.id, change)
   if (room.pending !== null) {
-    return <span class={styles.muted}>{room.pending === 'join' ? 'Joining…' : 'Leaving…'}</span>
+    const joining = room.pending === 'join'
+    if (room.membership_error !== null) {
+      return <span class={styles.muted}>{joining ? 'not joined' : 'not left'}</span>
+    }
+    return <span class={styles.muted}>{joining ? 'Joining…' : 'Leaving…'}</span>
   }
   switch (room.membership) {
     case 'invited':

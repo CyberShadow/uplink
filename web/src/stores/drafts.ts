@@ -222,14 +222,15 @@ export class DraftStore {
   }
 }
 
-/** How many things the outbox lists: each op's changes, and each send. */
+/** How many things the outbox lists: each op's changes, each send and
+ * membership change, and the read receipts together. */
 export function outboxCount(outbox: readonly AccountOutbox[]): number {
   return outbox.reduce((n, { pending }) => {
     switch (pending.kind) {
       case 'mail':
         return n + pending.changes.length + pending.sends.length
       case 'matrix':
-        return n + pending.sends.length
+        return n + pending.sends.length + pending.memberships.length + (pending.receipts.length > 0 ? 1 : 0)
     }
   }, 0)
 }
@@ -244,7 +245,7 @@ export function outboxNeedsAttention(outbox: readonly AccountOutbox[]): boolean 
       case 'mail':
         return pending.changes.some((c) => c.refused.length > 0) || pending.sends.some(decision)
       case 'matrix':
-        return pending.sends.some(decision)
+        return pending.sends.some(decision) || pending.memberships.some((m) => m.refused !== null)
     }
   })
 }

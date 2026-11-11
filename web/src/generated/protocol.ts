@@ -369,7 +369,15 @@ sends: Array<OutboxItem>, } | { "kind": "matrix",
  * Messages being sent, sent and not yet synced back, or sent
  * though cancelled.
  */
-sends: Array<MatrixSend>, };
+sends: Array<MatrixSend>, 
+/**
+ * Rooms being joined or left, by the op that asked, newest first.
+ */
+memberships: Array<PendingMembership>, 
+/**
+ * Rooms read past their latest read receipt.
+ */
+receipts: Array<RoomId>, };
 
 export type Failing = { error: string, 
 /**
@@ -537,6 +545,20 @@ wanted: boolean, error: string | null,
  * Ms since the Unix epoch.
  */
 queued_at: number, };
+
+/**
+ * A room being joined or left (SPEC §9.7).
+ */
+export type PendingMembership = { room: RoomId, change: MembershipChange, 
+/**
+ * The op that asked for it: undoing it keeps the room as it is.
+ */
+op: PendingOp, 
+/**
+ * Why the homeserver refused it: it needs a decision, which undoing
+ * the op makes.
+ */
+refused: string | null, };
 
 /**
  * Rooms appeared, or their name, membership, avatar, children, unread

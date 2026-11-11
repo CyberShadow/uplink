@@ -89,6 +89,7 @@ fn main() {
         TimelinePage,
         MatrixSendState,
         MatrixSend,
+        PendingMembership,
         RoomsChanged,
         TimelineAdded,
         MatrixSendsChanged,

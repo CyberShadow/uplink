@@ -3,6 +3,7 @@
 
 pub mod client;
 pub mod membership;
+pub mod outbox;
 pub mod rooms;
 pub mod send;
 pub mod service;

@@ -17,7 +17,7 @@ use uplink_protocol::{
     ServerResponse, TxLogId,
 };
 use uplink_realtime::Hub;
-use uplink_tx_log::{Dispatcher, Observation, Registry, UndoError};
+use uplink_tx_log::{Dispatcher, Observation, Registry};
 
 const ME: &str = "@me:example.org";
 const ROOM: &str = "!room:example.org";
@@ -110,7 +110,7 @@ impl Db {
     fn outbox(&self) -> Vec<AccountOutbox> {
         let mut conn = uplink_storage::open_reader(self._dir.path()).unwrap();
         let tx = conn.transaction().unwrap();
-        crate::send::outbox(&tx).unwrap()
+        crate::outbox::outbox(&tx).unwrap()
     }
 
     async fn event(&self, event_id: &str) -> RoomEventId {
@@ -193,7 +193,7 @@ async fn sending_is_undone_while_queued() {
         panic!()
     };
     assert_eq!(account.account, "mx");
-    assert!(matches!(&account.pending, Pending::Matrix { sends } if sends.len() == 1));
+    assert!(matches!(&account.pending, Pending::Matrix { sends, .. } if sends.len() == 1));
     let cancel = db.dispatcher.undo(sent).await.unwrap();
     assert!(db.sends().await.is_empty());
     assert!(db.outbox().is_empty());
@@ -304,6 +304,13 @@ async fn reading_moves_the_marker_and_undo_moves_it_back() {
         other => panic!("unexpected {other:?}"),
     };
     assert_eq!(db.room().await.unread, 0);
+    // Its receipt is pending until sent.
+    let receipts = |db: &Db| match db.outbox().into_iter().next().map(|a| a.pending) {
+        Some(Pending::Matrix { receipts, .. }) => receipts,
+        None => vec![],
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(receipts(&db), [room.id]);
     // The receipt is sent; its echo does not move the marker again.
     db.observe(ReceiptSent {
         room: room.id,
@@ -311,7 +318,10 @@ async fn reading_moves_the_marker_and_undo_moves_it_back() {
     })
     .await
     .unwrap();
+    assert!(receipts(&db).is_empty());
     db.dispatcher.undo(read).await.unwrap();
+    // Receipts only move forward: moving the marker back sends none.
+    assert!(receipts(&db).is_empty());
     db.sync(&[], &["$2"]).await;
     assert_eq!(db.room().await.unread, 2);
 
@@ -447,11 +457,32 @@ mod membership {
         assert_eq!(db.state().await, (Membership::Joined, None));
     }
 
+    /// The rooms the account's outbox lists as being joined or left.
+    fn memberships(db: &Db) -> Vec<uplink_protocol::matrix::PendingMembership> {
+        match db.outbox().into_iter().next().map(|a| a.pending) {
+            Some(Pending::Matrix { memberships, .. }) => memberships,
+            None => vec![],
+            other => panic!("{other:?}"),
+        }
+    }
+
     #[tokio::test]
-    async fn refusals_are_kept_and_other_changes_conflict() {
+    async fn refusals_wait_for_a_decision_and_other_changes_conflict() {
         let db = Db::new();
         db.sync_membership(Membership::Invited).await;
         let join = db.change(MembershipChange::Join).await;
+        let [pending] = &memberships(&db)[..] else {
+            panic!()
+        };
+        assert_eq!(
+            (
+                pending.change,
+                pending.op.id,
+                &pending.op.description[..],
+                &pending.refused
+            ),
+            (MembershipChange::Join, join, "Joined 'Room'", &None)
+        );
         let code = db
             .matrix
             .change_membership(db.room().await.id, MembershipChange::Leave)
@@ -459,15 +490,25 @@ mod membership {
             .unwrap_err()
             .code;
         assert_eq!(code, ErrorCode::Conflict, "a change is pending");
+
+        // Refused: still asked for, and not asked again, until undone.
         db.reconcile(MembershipChange::Join, Some("M_FORBIDDEN"))
             .await;
         let room = db.room().await;
-        assert_eq!((room.membership, room.pending), (Membership::Invited, None));
+        assert_eq!(
+            (room.membership, room.pending),
+            (Membership::Invited, Some(MembershipChange::Join))
+        );
         assert_eq!(room.membership_error.as_deref(), Some("M_FORBIDDEN"));
+        assert_eq!(memberships(&db)[0].refused.as_deref(), Some("M_FORBIDDEN"));
+        let conn = uplink_storage::open_reader(db._dir.path()).unwrap();
+        assert!(crate::membership::wanted(&conn, "mx").unwrap().is_empty());
+        db.dispatcher.undo(join).await.unwrap();
+        let room = db.room().await;
+        assert_eq!((room.pending, room.membership_error), (None, None));
+        assert!(memberships(&db).is_empty());
 
-        // Refused: there is nothing to undo.
-        let refused = db.dispatcher.undo(join).await.unwrap_err();
-        assert!(matches!(refused, UndoError::Conflict { .. }), "{refused}");
+        // Joined otherwise: nothing left to ask for.
         db.sync_membership(Membership::Joined).await;
         assert_eq!(
             db.matrix
@@ -477,6 +518,20 @@ mod membership {
                 .code,
             ErrorCode::Invalid
         );
+    }
+
+    /// A membership asked for that sync sees had is no longer pending.
+    #[tokio::test]
+    async fn sync_settles_what_it_sees() {
+        let db = Db::new();
+        db.sync_membership(Membership::Invited).await;
+        db.change(MembershipChange::Join).await;
+        db.reconcile(MembershipChange::Join, Some("M_FORBIDDEN"))
+            .await;
+        db.sync_membership(Membership::Joined).await;
+        let room = db.room().await;
+        assert_eq!((room.pending, room.membership_error), (None, None));
+        assert!(memberships(&db).is_empty());
     }
 }
 

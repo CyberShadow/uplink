@@ -15,9 +15,8 @@
 
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use uplink_protocol::{
-    compose::{AccountOutbox, OutboxChanged, Pending},
+    compose::OutboxChanged,
     matrix::{MatrixSend, MatrixSendId, MatrixSendState, MatrixSendsChanged, RoomId},
     ServerEvent,
 };
@@ -79,28 +78,15 @@ pub fn sends(tx: &Transaction, room: RoomId) -> Result<Vec<MatrixSend>> {
         .collect::<Result<_, _>>()?)
 }
 
-/// Each Matrix account with anything not yet reconciled, in id order
-/// (SPEC §6.6).
-pub fn outbox(tx: &Transaction) -> Result<Vec<AccountOutbox>> {
-    let mut accounts: BTreeMap<String, Vec<MatrixSend>> = BTreeMap::new();
-    let sends: Vec<(String, MatrixSend)> = tx
+/// Every account's sends not yet reconciled, with their accounts.
+pub(crate) fn unreconciled(tx: &Transaction) -> Result<Vec<(String, MatrixSend)>> {
+    Ok(tx
         .prepare(&format!(
             "SELECT r.account_id, {COLUMNS} FROM matrix_send s JOIN matrix_room r ON r.id = s.room
              WHERE NOT s.synced OR NOT s.wanted ORDER BY s.id"
         ))?
         .query_map([], |r| Ok((r.get(0)?, send_row_at(r, 1)?)))?
-        .collect::<Result<_, _>>()?;
-    for (account, send) in sends {
-        accounts.entry(account).or_default().push(send);
-    }
-    Ok(accounts
-        .into_iter()
-        .map(|(account, sends)| AccountOutbox {
-            account,
-            failing: None,
-            pending: Pending::Matrix { sends },
-        })
-        .collect())
+        .collect::<Result<_, _>>()?)
 }
 
 fn send(tx: &Transaction, id: MatrixSendId) -> Result<Option<MatrixSend>> {
@@ -387,7 +373,7 @@ impl Observation for SendFailed {
     }
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock before 1970")

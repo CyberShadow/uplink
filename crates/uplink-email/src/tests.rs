@@ -1,7 +1,7 @@
 use crate::{
     mailbox::{
         self, EntryLabels, LabelChange, LabelsPushed, LabelsRefused, MailboxObserved, NewEntry,
-        ObservedLabel, PushFailing, SetLabels,
+        ObservedLabel, SetLabels,
     },
     parse::parse,
     store::Store,
@@ -14,7 +14,7 @@ use uplink_protocol::{
 };
 use uplink_realtime::Hub;
 use uplink_storage::rusqlite::{params, Connection};
-use uplink_tx_log::{Conflict, Dispatcher, Registry, UndoError};
+use uplink_tx_log::{push::PushFailing, Conflict, Dispatcher, Registry, UndoError};
 
 pub(crate) struct Db {
     pub dir: TempDir,
@@ -1018,7 +1018,7 @@ pub(crate) mod service {
     /// the provider has.
     #[tokio::test]
     async fn the_outbox_lists_pending_changes_by_op() {
-        use crate::mailbox::{LabelsRefused, PushFailing};
+        use crate::mailbox::LabelsRefused;
         use uplink_protocol::compose::{Failing, PendingChanges, PendingOp, Refusal};
         let db = Db::new();
         let mail = mail_with(&db).await;
@@ -2318,7 +2318,7 @@ async fn the_task_records_failing_as_it_starts_and_stops() {
     run.abort();
     assert_eq!(
         db.query::<String>(
-            "SELECT description FROM tx_log WHERE op_type = 'mail.push_failing' ORDER BY id"
+            "SELECT description FROM tx_log WHERE op_type = 'account.push_failing' ORDER BY id"
         ),
         [
             "Changes are not reaching the provider: down 3",

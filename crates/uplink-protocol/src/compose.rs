@@ -163,6 +163,10 @@ pub enum Pending {
         /// Messages being sent, sent and not yet synced back, or sent
         /// though cancelled.
         sends: Vec<crate::matrix::MatrixSend>,
+        /// Rooms being joined or left, by the op that asked, newest first.
+        memberships: Vec<crate::matrix::PendingMembership>,
+        /// Rooms read past their latest read receipt.
+        receipts: Vec<crate::matrix::RoomId>,
     },
 }
 
