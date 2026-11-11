@@ -39,8 +39,52 @@ fn free_port() -> u16 {
         .port()
 }
 
+/// Whom a Stalwart knows, and how it signs them in.
+pub enum Directory<'a> {
+    /// Alice and Bob, by password.
+    Passwords,
+    /// Those that the OpenID provider at `userinfo` (its userinfo
+    /// endpoint) gives an access token to, by the token, made accounts as
+    /// they first sign in.
+    OpenId { userinfo: &'a str },
+}
+
 impl Stalwart {
+    /// A Stalwart of Alice's and Bob's, signing them in by password.
     pub async fn start(dir: &Path) -> Self {
+        Self::start_with(dir, Directory::Passwords).await
+    }
+
+    pub async fn start_with(dir: &Path, directory: Directory<'_>) -> Self {
+        let (directory, directories) = match directory {
+            Directory::Passwords => (
+                "memory",
+                format!(
+                    r#"[directory.memory]
+type = "memory"
+[[directory.memory.principals]]
+name = "alice"
+class = "individual"
+secret = "alice-secret"
+email = ["{ALICE}"]
+[[directory.memory.principals]]
+name = "bob"
+class = "individual"
+secret = "bob-secret"
+email = ["{BOB}"]"#
+                ),
+            ),
+            Directory::OpenId { userinfo } => (
+                "openid",
+                format!(
+                    r#"[directory.openid]
+type = "oidc"
+endpoint.url = "{userinfo}"
+endpoint.method = "userinfo"
+fields.email = "email""#
+                ),
+            ),
+        };
         let stalwart = std::env::var_os("UPLINK_STALWART")
             .expect("UPLINK_STALWART must name the stalwart binary (the dev shell sets it)");
         let dir = dir.join("stalwart");
@@ -78,22 +122,11 @@ data = "rocksdb"
 fts = "rocksdb"
 blob = "rocksdb"
 lookup = "rocksdb"
-directory = "memory"
+directory = "{directory}"
 [store.rocksdb]
 type = "rocksdb"
 path = "{d}/data"
-[directory.memory]
-type = "memory"
-[[directory.memory.principals]]
-name = "alice"
-class = "individual"
-secret = "alice-secret"
-email = ["{ALICE}"]
-[[directory.memory.principals]]
-name = "bob"
-class = "individual"
-secret = "bob-secret"
-email = ["{BOB}"]
+{directories}
 # Received headers, as on mail from the internet (port 25), which POP3
 # dates mail by.
 [session.data.add-headers]

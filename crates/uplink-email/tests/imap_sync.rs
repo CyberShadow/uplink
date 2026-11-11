@@ -6,7 +6,7 @@ mod common;
 
 use common::{
     eventually, message,
-    stalwart::{append, find, store, Stalwart, ALICE, BOB},
+    stalwart::{append, find, store, Directory, Stalwart, ALICE, BOB},
     uplink::{label_set, Uplink},
 };
 use futures_util::TryStreamExt;
@@ -18,7 +18,6 @@ use uplink_email::{
         sign_in::{self, SignIn},
         smtp,
     },
-    oauth,
 };
 use uplink_protocol::{mail::MailProvider, ServerResponse};
 
@@ -293,74 +292,72 @@ async fn sends_mail_by_smtp_and_files_it_in_sent() {
     sync.abort();
 }
 
-/// An account that signs in by XOAUTH2: Stalwart grants a refresh token
-/// (as its own sign-in page would; it refuses the loopback redirect of
-/// `uplink oauth init`, which is not HTTPS), and uplink redeems it for
-/// the access token that signs in to IMAP and SMTP.
+/// An account that signs in by XOAUTH2, emulate's Google its OAuth
+/// provider: authorized as `uplink oauth init` does it, by the account's
+/// own `oauth` settings, the browser played on emulate's sign-in form.
+/// The access token uplink redeems the refresh token for is what Stalwart
+/// checks, at the provider's userinfo endpoint, for IMAP and SMTP alike.
 #[tokio::test(flavor = "multi_thread")]
 async fn signs_in_by_xoauth2() {
     let dir = tempfile::tempdir().unwrap();
-    let stalwart = Stalwart::start(dir.path()).await;
-    let http = reqwest::Client::new();
-    let base = format!("http://127.0.0.1:{}", stalwart.http);
-    let code: serde_json::Value = http
-        .post(format!("{base}/api/oauth"))
-        .basic_auth("alice", Some("alice-secret"))
-        .body(r#"{"type": "code", "client_id": "uplink"}"#)
-        .send()
-        .await
-        .unwrap()
-        .error_for_status()
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let token: serde_json::Value = http
-        .post(format!("{base}/auth/token"))
-        .form(&[
-            ("grant_type", "authorization_code"),
-            ("client_id", "uplink"),
-            ("code", code["data"]["code"].as_str().unwrap()),
-            ("redirect_uri", ""),
-        ])
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let refresh_token = token["refresh_token"].as_str().unwrap();
-
-    let oauth = OAuthConfig {
-        client_id: "uplink".into(),
-        client_secret: None,
-        auth_url: format!("{base}/authorize"),
-        token_url: format!("{base}/auth/token"),
-        scope: String::new(),
-        token_file: stalwart.dir.join("alice.token"),
-    };
+    let config = format!(
+        "google:\n  users:\n    - email: {ALICE}\n      name: Alice\n  oauth_clients:\n    \
+         - client_id: uplink-test\n      client_secret: uplink-test-secret\n      \
+         redirect_uris: [\"http://127.0.0.1/\"]\n"
+    );
+    let (base, _emulate) = common::start_emulate(dir.path(), "google", &config).await;
+    let userinfo = format!("{base}/oauth2/v2/userinfo");
+    let stalwart = Stalwart::start_with(
+        dir.path(),
+        Directory::OpenId {
+            userinfo: &userinfo,
+        },
+    )
+    .await;
     let account = ImapAccountConfig {
-        oauth: Some(oauth.clone()),
+        user: None,
+        oauth: Some(OAuthConfig {
+            client_id: "uplink-test".into(),
+            client_secret: Some("uplink-test-secret".into()),
+            auth_url: format!("{base}/o/oauth2/v2/auth"),
+            token_url: format!("{base}/oauth2/token"),
+            scope: "openid email".into(),
+            token_file: stalwart.dir.join("alice.token"),
+        }),
         ..stalwart.account("alice")
     };
-    let grant = sign_in::grant(account.login(), &oauth);
-    oauth::store(&stalwart.key, &grant, refresh_token.into()).unwrap();
+
+    let http = reqwest::Client::new();
+    let (url_tx, url_rx) = tokio::sync::oneshot::channel();
+    let (authorized, ()) = tokio::join!(
+        sign_in::authorize(
+            account.login(),
+            &stalwart.key,
+            |url| url_tx.send(url.clone()).unwrap(),
+            std::future::pending(),
+        ),
+        async { common::sign_in_at_emulate(&http, &base, url_rx.await.unwrap(), ALICE).await },
+    );
+    authorized.unwrap();
+
     let sign_in = stalwart.sign_in(account.login());
     assert!(matches!(sign_in, SignIn::OAuth(_)));
-
-    let mut alice = session::connect(&account, &sign_in, &stalwart.tls)
+    // Stalwart makes Alice's account as she first signs in.
+    session::connect(&account, &sign_in, &stalwart.tls)
         .await
         .unwrap();
-    alice.session.select("INBOX").await.unwrap();
     let raw = format!(
-        "Message-ID: <oauth@uplink.test>\r\nFrom: {ALICE}\r\nTo: {BOB}\r\n\
-         Date: Tue, 3 Nov 2026 10:00:00 +0000\r\nSubject: oauth \r\n\r\nhi\r\n"
+        "Message-ID: <oauth@uplink.test>\r\nFrom: {ALICE}\r\nTo: {ALICE}\r\n\
+         Date: Tue, 3 Nov 2026 10:00:00 +0000\r\nSubject: oauth 1\r\n\r\nhi\r\n"
     );
     smtp::send(account.login(), &sign_in, &stalwart.tls, raw.as_bytes())
         .await
         .unwrap();
-    eventually("the message to reach Bob", || async {
-        find(&mut stalwart.client("bob").await, "INBOX", "oauth").await
+    eventually("the message to arrive", || async {
+        let mut alice = session::connect(&account, &sign_in, &stalwart.tls)
+            .await
+            .unwrap();
+        find(&mut alice, "INBOX", "oauth").await
     })
     .await;
 }

@@ -319,43 +319,6 @@ async fn authorize(
     base: &str,
 ) {
     let (url_tx, url_rx) = tokio::sync::oneshot::channel();
-    let browser = async {
-        let url: url::Url = url_rx.await.unwrap();
-        let params: std::collections::HashMap<String, String> =
-            url.query_pairs().into_owned().collect();
-        let mut form: Vec<(&str, &str)> = [
-            "redirect_uri",
-            "scope",
-            "state",
-            "client_id",
-            "code_challenge",
-            "code_challenge_method",
-        ]
-        .iter()
-        .map(|k| (*k, params[*k].as_str()))
-        .collect();
-        form.push(("email", "alice@example.com"));
-        let no_redirects = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap();
-        let signed_in = no_redirects
-            .post(format!("{base}/o/oauth2/v2/auth/callback"))
-            .form(&form)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(signed_in.status(), 302);
-        let location = signed_in.headers()["location"].to_str().unwrap().to_owned();
-        assert!(location.starts_with(&params["redirect_uri"]));
-        assert!(http
-            .get(location)
-            .send()
-            .await
-            .unwrap()
-            .status()
-            .is_success());
-    };
     let (authorized, ()) = tokio::join!(
         oauth::authorize(
             account,
@@ -363,9 +326,49 @@ async fn authorize(
             |url| url_tx.send(url.clone()).unwrap(),
             std::future::pending(),
         ),
-        browser,
+        async { sign_in_at_emulate(http, base, url_rx.await.unwrap(), &account.address).await },
     );
     authorized.unwrap();
+}
+
+/// Signs in as `email` at emulate's Google (at `base`), where the
+/// authorization `url` leads, as a browser would: the form posted, and
+/// the redirect followed back to the loopback.
+pub async fn sign_in_at_emulate(http: &reqwest::Client, base: &str, url: url::Url, email: &str) {
+    let params: std::collections::HashMap<String, String> =
+        url.query_pairs().into_owned().collect();
+    let mut form: Vec<(&str, &str)> = [
+        "redirect_uri",
+        "scope",
+        "state",
+        "client_id",
+        "code_challenge",
+        "code_challenge_method",
+    ]
+    .iter()
+    .map(|k| (*k, params[*k].as_str()))
+    .collect();
+    form.push(("email", email));
+    let no_redirects = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let signed_in = no_redirects
+        .post(format!("{base}/o/oauth2/v2/auth/callback"))
+        .form(&form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(signed_in.status(), 302);
+    let location = signed_in.headers()["location"].to_str().unwrap().to_owned();
+    assert!(location.starts_with(&params["redirect_uri"]));
+    assert!(http
+        .get(location)
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
 }
 
 /// Random, to tell the test run's messages apart from others'.

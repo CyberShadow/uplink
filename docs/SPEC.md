@@ -3554,12 +3554,14 @@ request).
   clients over IMAP: delivering by `APPEND`, flagging, moving and
   expunging; mail uplink sends goes through its SMTP to the other
   user's Inbox. Its folders have special-use attributes but no Archive,
-  which uplink then makes. It is an OAuth provider too: a code it grants
-  (by its API, as it refuses the loopback redirect of `uplink oauth
-  init`, not being HTTPS) yields the refresh token that uplink redeems
-  to sign in by XOAUTH2. POP3 is reached by STLS, so both ways of TLS
-  are tested; mail delivered by SMTP has a `Received` header, as on
-  port 25 (which, by default, alone adds one).
+  which uplink then makes. XOAUTH2 is tested with emulate's Google as
+  the OAuth provider: `uplink oauth init`'s flow runs on the account's
+  own `oauth` settings, the browser played on emulate's sign-in form,
+  and Stalwart, its directory then OpenID's (`oidc`), checks the access
+  token uplink signs in with at emulate's userinfo endpoint, making the
+  account as it first signs in. POP3 is reached by STLS, so both ways
+  of TLS are tested; mail delivered by SMTP has a `Received` header, as
+  on port 25 (which, by default, alone adds one).
 - **Matrix:** Conduit (single-binary Rust homeserver, from nixpkgs), a
   real homeserver rather than a fake. The Rust tests start one per test
   (`UPLINK_CONDUIT`, set by the dev shell and the checks; in the build

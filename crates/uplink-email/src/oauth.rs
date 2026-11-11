@@ -165,7 +165,7 @@ impl Credentials {
 }
 
 /// Seals `refresh_token` into the grant's token file.
-pub fn store(key: &MasterKey, grant: &Grant, refresh_token: String) -> Result<()> {
+pub(crate) fn store(key: &MasterKey, grant: &Grant, refresh_token: String) -> Result<()> {
     seal::write(
         key,
         &grant.account,
