@@ -16,6 +16,7 @@ import type {
   RoomId,
   TxLogId,
 } from '../generated/protocol'
+import type { Blobs } from '../blobs'
 import type { Requester } from '../connection'
 import type { Ops } from './ops'
 import { Loader, query, type Response } from './query'
@@ -38,7 +39,7 @@ export class MatrixStore {
   })
 
   constructor(
-    private readonly server: Requester,
+    private readonly server: Requester & Blobs,
     private readonly ops: Ops,
   ) {}
 
@@ -95,6 +96,30 @@ export class MatrixStore {
     return this.ops.dispatch({ type: 'send_matrix_message', room, content })
   }
 
+  /** Uploads `files` and sends each, in order; stops at one that fails. */
+  async sendFiles(room: RoomId, files: readonly File[], reply_to: string | null) {
+    for (const file of files) {
+      let uploaded
+      try {
+        uploaded = await this.server.upload(file)
+      } catch (error) {
+        this.ops.fail(`Could not send ${file.name}: ${(error as Error).message}`)
+        return
+      }
+      const mime = file.type || 'application/octet-stream'
+      const content: MatrixContent = { type: 'file', blob: uploaded.blob, name: file.name, mime, reply_to }
+      if (!(await this.send(room, content))) return
+      // Only the first answers what it replies to.
+      reply_to = null
+    }
+  }
+
+  /** The edits of the room's message `event`, oldest first. */
+  async edits(room: RoomId, event: RoomEventId): Promise<RoomEvent[] | null> {
+    const response = await this.query({ type: 'list_edits', room, event }, 'edits')
+    return response?.edits ?? null
+  }
+
   cancelSend(item: MatrixSendId) {
     return this.ops.dispatch({ type: 'cancel_matrix_send', item })
   }
@@ -113,7 +138,7 @@ export class MatrixStore {
     return this.ops.dispatch({ type: 'mark_room_read', room, event }, true)
   }
 
-  private async query<T extends Response<'rooms' | 'timeline' | 'room_events' | 'matrix_sends'>['type']>(
+  private async query<T extends Response<'rooms' | 'timeline' | 'room_events' | 'edits' | 'matrix_sends'>['type']>(
     request: ClientRequest,
     type: T,
   ): Promise<Response<T> | null> {

@@ -523,8 +523,8 @@ msgtype: string | null,
  */
 body: string | null, 
 /**
- * The event as JSON, decrypted if it could be, for event types
- * uplink does not display otherwise.
+ * The event as JSON, decrypted if it could be: what clients show of
+ * it beyond the fields here (media, state), and its source.
  */
 raw: string, encryption: Encryption, 
 /**

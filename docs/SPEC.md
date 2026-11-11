@@ -1955,7 +1955,9 @@ src/views/
 ├── LabelPicker.tsx
 ├── Compose.tsx            # TipTap-backed, lazily loaded
 ├── Outgoing.tsx           # drafts and the outbox (§6.6)
-├── Room.tsx               # a Matrix room: timeline and composer
+├── Room.tsx               # a Matrix room: its timeline (§12.11)
+├── RoomEvent.tsx          # an event of the timeline, on a line
+├── RoomComposer.tsx       # the box to write to a room
 ├── Todos.tsx              # the to-do list
 ├── History.tsx            # the user's ops, with Undo
 ├── Calendar.tsx           # week and agenda (§10.2)
@@ -2147,6 +2149,54 @@ Message lists abbreviate, as Gmail's do: the time for today's mail, the
 day and month (`9 Nov`) for this year's, and the date otherwise;
 weekday names, in the calendar, are English. A preference can come
 later.
+
+### 12.11 Rooms
+
+A room is laid out as Element's IRC layout lays it out: a line per
+event, its time (`HH:MM`; the date on hover), its sender (a small avatar
+and the name, in the colour Element gives that user id, cut to a column
+of its own), and what it says. A line marks each day, and one ("New")
+where the unread began when the room was opened. The header has the
+room's avatar, name, topic, member count, whether it is encrypted, and
+the membership's buttons.
+
+- **Messages** show as last edited, marked `(edited)`; a click lists the
+  edits (`ListEdits`). Their HTML is the server's sanitized
+  `formatted_body` (§9.2), with its colours (`data-mx-color`), spoilers
+  revealed on click, mentions as pills; plain text has its URLs linked.
+  Emotes show as IRC shows them (`* Name waves`), notices dimmed. A
+  message that mentions the user (by `m.mentions`, or, without it, its
+  body naming their user id) is highlighted. Images and stickers show
+  inline, at the size the event gives within 320×240 (stickers
+  128×128), by their thumbnail; a click opens the full one. Video and
+  audio play inline; other files are links that download them, with
+  their size. A location links to OpenStreetMap. A reply shows what it
+  answers above it, a click scrolling to it; a message of a thread is
+  marked so. Deleted messages say so, with the reason; undecryptable
+  ones too. Any other message type shows its `body`.
+- **State events** are summarized after the sender's name ("Alice
+  joined", "changed the topic to …"); three or more membership changes
+  in a row fold into a line that unfolds. Events uplink does not show
+  otherwise show their type and JSON. Any event's JSON shows from its
+  menu ("View source").
+- **Actions**, on hover, as Element's: react (Element's quick reactions,
+  or any typed), reply, edit (the account's own messages of text), and a
+  menu of delete (its own) and view source. Reactions show below the
+  message, by key with their count, those of the account highlighted; a
+  click adds one's own or takes it back.
+- **Sends** that change a loaded event — reactions, edits, deletions —
+  show on it while they go out (counted, "(saving…)", "Deleting…");
+  others, and those needing a decision (refused, sent though
+  cancelled), are listed after the timeline with their state and
+  buttons (§9.3).
+- **The composer** sends Markdown with Enter (Shift+Enter for a new
+  line); `/me` sends an emote. Replying shows what it answers above the
+  box; editing fills the box with the message, the draft kept apart.
+  Up, in an empty box, edits the account's last message; Escape cancels
+  a reply or edit. Files attached (the paperclip), pasted or dropped on
+  the room are listed above the box, to remove or send with the
+  message, as files after it (the first answering what it replies to if
+  there is no text).
 
 ## 13. Authentication & secrets
 

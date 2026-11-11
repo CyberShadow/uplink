@@ -1,15 +1,18 @@
-// A Matrix room (SPEC §9): its timeline, the messages being sent to it,
-// and a box to write one. Text messages show as text; other events, and
-// message types uplink does not display, as their raw JSON.
+// A Matrix room (SPEC §9, §12.11), laid out as IRC clients do, and as
+// Element's IRC layout: a line per event, its time, sender and body side
+// by side; days apart; a line where the unread begin. Messages being
+// sent follow, and the box to write one.
 
-import { useEffect, useRef, useState } from 'preact/hooks'
-import type { MatrixSend, MembershipChange, Room, RoomEvent } from '../generated/protocol'
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
+import type { MatrixSend, MembershipChange, Room, RoomEvent, RoomEventId } from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus, useKeymap } from '../keymap'
 import styles from './Room.module.css'
 import { RoomAvatar } from './RoomAvatar'
-import { dateTime } from '../format'
-import { sendSummary, text as message } from '../matrix'
+import { date } from '../format'
+import { TEXT, sendSummary, shown } from '../matrix'
+import { EventRow, MembershipRun, type Overlay } from './RoomEvent'
+import { Composer, type Mode } from './RoomComposer'
 
 export function roomPath(room: number): string {
   return `/rooms/${room}`
@@ -24,25 +27,63 @@ export function RoomView(props: { room?: string }) {
   return <Timeline key={room.id} room={room} />
 }
 
-/** Message types shown as text. */
-const TEXT = new Set(['m.text', 'm.notice', 'm.emote'])
-
 function Timeline(props: { room: Room }) {
   const { room } = props
   const { matrix } = useServices()
   const timeline = matrix.timeline(room.id)
   const events = timeline.events.value
-  const sends = timeline.sends.value ?? []
+  const sends = timeline.sends.value
+  const me = matrix.accounts.value!.find((a) => a.id === room.account)!.mxid
   const composer = useRef<HTMLTextAreaElement>(null)
+  const [mode, setMode] = useState<Mode>({ type: 'new' })
+  // Where the unread began when the room was opened: reading it moves
+  // the marker, but not the line, while it is on show.
+  const [readUpTo] = useState(room.read_up_to)
+  const [files, setFiles] = useState<File[]>([])
   useKeymap({ reply: () => composer.current?.focus() })
   useMarkRead(room, events)
 
+  const [overlay, outgoing] = useMemo(() => overlaid(events ?? [], sends ?? []), [events, sends])
+  const list = useMemo(() => rows(events ?? [], readUpTo, me), [events, readUpTo, me])
+  const lastOwn = useMemo(
+    () =>
+      events?.findLast(
+        (e) => e.sender === me && e.kind === 'm.room.message' && !e.redacted && TEXT.has(shown(e).msgtype ?? ''),
+      ) ?? null,
+    [events, me],
+  )
+  const act = (next: Mode) => {
+    setMode(next)
+    composer.current?.focus()
+  }
+
   return (
-    <section class={styles.room} aria-label={room.name}>
+    <section
+      class={styles.room}
+      aria-label={room.name}
+      onDragOver={(event) => {
+        if (room.membership === 'joined' && event.dataTransfer?.types.includes('Files')) event.preventDefault()
+      }}
+      onDrop={(event) => {
+        if (room.membership !== 'joined' || !event.dataTransfer?.files.length) return
+        event.preventDefault()
+        setFiles([...files, ...event.dataTransfer.files])
+      }}
+    >
       <header class={styles.header}>
         <RoomAvatar room={room} class={styles.avatar} />
-        <h1>{room.name}</h1>
-        {room.encrypted && <span class={styles.muted}>encrypted</span>}
+        <div class={styles.title}>
+          <h1>{room.name}</h1>
+          {room.topic !== null && (
+            <p class={styles.topic} title={room.topic}>
+              {room.topic}
+            </p>
+          )}
+        </div>
+        <span class={styles.muted}>
+          {room.joined_members === 1 ? '1 member' : `${room.joined_members} members`}
+          {room.encrypted && ' · encrypted'}
+        </span>
         <MembershipControls room={room} />
       </header>
       {room.membership_error !== null && (
@@ -55,23 +96,162 @@ function Timeline(props: { room: Room }) {
       <div class={styles.scroller}>
         <ol class={styles.events} aria-label="Timeline">
           {timeline.moreBefore.value && (
-            <li>
+            <li class={styles.earlier}>
               <button type="button" onMouseDown={keepFocus} onClick={() => timeline.loadEarlier()}>
                 Load earlier events
               </button>
             </li>
           )}
           {events === null && <li class={styles.muted}>Loading…</li>}
-          {events?.map((event) => <Event key={event.id} event={event} />)}
-          {sends.map((item) => (
+          {list.map((row) => {
+            switch (row.type) {
+              case 'day':
+                return (
+                  <li key={row.key} class={styles.day} role="separator">
+                    <span>{row.date}</span>
+                  </li>
+                )
+              case 'unread':
+                return (
+                  <li key={row.key} class={styles.unread} role="separator" aria-label="New messages">
+                    <span>New</span>
+                  </li>
+                )
+              case 'members':
+                return <MembershipRun key={row.key} room={room} events={row.events} />
+              case 'event':
+                return (
+                  <EventRow
+                    key={row.key}
+                    room={room}
+                    event={row.event}
+                    me={me}
+                    overlay={overlay.get(row.event.event_id)}
+                    pendingRedactions={overlay.redacted}
+                    reply={() => act({ type: 'reply', event: row.event })}
+                    edit={() => act({ type: 'edit', event: row.event })}
+                  />
+                )
+            }
+          })}
+          {outgoing.map((item) => (
             <Pending key={item.id} item={item} />
           ))}
         </ol>
       </div>
-      {room.membership === 'joined' && <Composer room={room} textarea={composer} />}
+      {room.membership === 'joined' && (
+        <Composer
+          room={room}
+          textarea={composer}
+          mode={mode}
+          setMode={setMode}
+          lastOwn={lastOwn}
+          files={files}
+          setFiles={setFiles}
+        />
+      )}
     </section>
   )
 }
+
+type Row =
+  | { type: 'day'; key: string; date: string }
+  | { type: 'unread'; key: string }
+  | { type: 'event'; key: string; event: RoomEvent }
+  | { type: 'members'; key: string; events: RoomEvent[] }
+
+/** Membership changes in a row that are folded into one, as Element
+ * folds them: at least these many. */
+const RUN = 3
+
+/** The timeline's rows: a day's line before its first event, the unread
+ * line before the first event from others after `readUpTo`, and runs of
+ * membership changes folded. */
+export function rows(events: readonly RoomEvent[], readUpTo: RoomEventId | null, me: string): Row[] {
+  const out: Row[] = []
+  let day: string | null = null
+  let run: RoomEvent[] = []
+  let unreadShown = readUpTo === null
+  const flush = () => {
+    if (run.length >= RUN) out.push({ type: 'members', key: `members-${run[0].id}`, events: run })
+    else for (const event of run) out.push({ type: 'event', key: String(event.id), event })
+    run = []
+  }
+  for (const event of events) {
+    const eventDay = date(new Date(event.ts))
+    const unread = !unreadShown && event.id > readUpTo! && event.sender !== me
+    if (eventDay !== day || unread) flush()
+    if (eventDay !== day) {
+      out.push({ type: 'day', key: `day-${event.id}`, date: eventDay })
+      day = eventDay
+    }
+    if (unread) {
+      out.push({ type: 'unread', key: 'unread' })
+      unreadShown = true
+    }
+    if (event.kind === 'm.room.member' && !event.redacted) {
+      run.push(event)
+    } else {
+      flush()
+      out.push({ type: 'event', key: String(event.id), event })
+    }
+  }
+  flush()
+  return out
+}
+
+/** Sends that change what loaded events show — reactions, edits and
+ * deletions — are shown on those, as Element does, while they go out.
+ * Those that need a decision (refused, or sent though cancelled) are
+ * listed with the room's other sends, at the end, with their buttons. */
+function overlaid(events: readonly RoomEvent[], sends: readonly MatrixSend[]): [Overlays, MatrixSend[]] {
+  const loaded = new Set<string>()
+  for (const event of events) {
+    loaded.add(event.event_id)
+    for (const reaction of event.reactions) for (const reactor of reaction.senders) loaded.add(reactor.event_id)
+  }
+  const overlays = new Overlays()
+  const outgoing: MatrixSend[] = []
+  for (const item of sends) {
+    const content = item.content
+    const target =
+      content.type === 'reaction' || content.type === 'redaction'
+        ? content.event
+        : content.type === 'text'
+          ? content.replaces
+          : null
+    const decided = item.wanted && item.state !== 'refused'
+    if (target === null || !decided || !loaded.has(target)) {
+      outgoing.push(item)
+      continue
+    }
+    if (content.type === 'redaction') overlays.redacted.add(target)
+    else overlays.of(target).push(item)
+  }
+  return [overlays, outgoing]
+}
+
+/** Of each loaded event, the sends going out that change it. */
+class Overlays {
+  private byTarget = new Map<string, MatrixSend[]>()
+  /** Events, and reactions, being deleted. */
+  readonly redacted = new Set<string>()
+
+  of(target: string): MatrixSend[] {
+    let overlay = this.byTarget.get(target)
+    if (!overlay) {
+      overlay = []
+      this.byTarget.set(target, overlay)
+    }
+    return overlay
+  }
+
+  get(target: string): Overlay {
+    return this.byTarget.get(target) ?? NONE
+  }
+}
+
+const NONE: Overlay = []
 
 /** Where the account stands in the room, and the buttons to change it. */
 function MembershipControls(props: { room: Room }) {
@@ -100,7 +280,7 @@ function MembershipControls(props: { room: Room }) {
       )
     case 'joined':
       return (
-        <button type="button" class={styles.leave} onMouseDown={keepFocus} onClick={change('leave')}>
+        <button type="button" onMouseDown={keepFocus} onClick={change('leave')}>
           Leave
         </button>
       )
@@ -129,59 +309,17 @@ function useMarkRead(room: Room, events: readonly RoomEvent[] | null) {
   }, [visible, last, room.read_up_to, room.id, matrix])
 }
 
-function Event(props: { event: RoomEvent }) {
-  const { event } = props
-  const sender = (
-    <span class={styles.sender} title={event.sender}>
-      {event.sender_name ?? event.sender}
-    </span>
-  )
-  const time = (
-    <time class={styles.time} dateTime={new Date(event.ts).toISOString()}>
-      {dateTime(event.ts)}
-    </time>
-  )
-  if (event.body !== null && event.msgtype !== null && TEXT.has(event.msgtype)) {
-    return (
-      <li class={styles.event}>
-        {sender} {time}
-        <div class={event.msgtype === 'm.notice' ? `${styles.body} ${styles.muted}` : styles.body}>
-          {event.msgtype === 'm.emote' ? `* ${event.sender_name ?? event.sender} ${event.body}` : event.body}
-        </div>
-      </li>
-    )
-  }
-  if (event.encryption === 'undecryptable') {
-    return (
-      <li class={styles.event}>
-        {sender} {time}
-        <div class={`${styles.body} ${styles.muted}`}>Unable to decrypt this message.</div>
-      </li>
-    )
-  }
-  return (
-    <li class={styles.event}>
-      <details>
-        <summary>
-          {sender} {time} <code>{event.msgtype ? `${event.kind} (${event.msgtype})` : event.kind}</code>
-        </summary>
-        <pre class={styles.raw}>{pretty(event.raw)}</pre>
-      </details>
-    </li>
-  )
-}
-
-function pretty(raw: string): string {
-  return JSON.stringify(JSON.parse(raw), null, 2)
-}
-
 function Pending(props: { item: MatrixSend }) {
   const { item } = props
   return (
-    <li class={`${styles.event} ${styles.pending}`}>
-      <span class={styles.muted}>{matrixSendState(item)}</span>
-      <MatrixSendActions item={item} class={styles.cancel} />
-      <div class={styles.body}>{sendSummary(item.content)}</div>
+    <li class={`${styles.row} ${styles.pending}`}>
+      <span class={styles.time} />
+      <span class={styles.sender} />
+      <div class={styles.content}>
+        <span class={styles.body}>{sendSummary(item.content)}</span>{' '}
+        <span class={styles.muted}>{matrixSendState(item)}</span>
+        <MatrixSendActions item={item} class={styles.cancel} />
+      </div>
     </li>
   )
 }
@@ -219,42 +357,4 @@ export function MatrixSendActions(props: { item: MatrixSend; class?: string }) {
     )
   }
   return null
-}
-
-function Composer(props: { room: Room; textarea: preact.RefObject<HTMLTextAreaElement> }) {
-  const { matrix } = useServices()
-  const [text, setText] = useState('')
-  const send = async () => {
-    if (text.trim() === '') return
-    if (await matrix.send(props.room.id, message(text))) setText('')
-  }
-  return (
-    <form
-      class={styles.composer}
-      onSubmit={(event) => {
-        event.preventDefault()
-        send()
-      }}
-    >
-      <textarea
-        ref={props.textarea}
-        aria-label={`Message ${props.room.name}`}
-        placeholder={`Message ${props.room.name}`}
-        rows={2}
-        value={text}
-        onInput={(event) => setText(event.currentTarget.value)}
-        onKeyDown={(event) => {
-          // Enter sends; Shift+Enter is a new line.
-          if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
-            event.preventDefault()
-            send()
-          }
-          if (event.key === 'Escape') event.currentTarget.blur()
-        }}
-      />
-      <button type="submit" disabled={text.trim() === ''}>
-        Send
-      </button>
-    </form>
-  )
 }

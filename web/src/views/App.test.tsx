@@ -933,6 +933,208 @@ describe('matrix', () => {
   })
 })
 
+describe('room timeline', () => {
+  const day = (iso: string) => new Date(iso).getTime()
+  const timeline = () => screen.getByRole('list', { name: 'Timeline' })
+  const line = (text: string | RegExp) => within(timeline()).getByText(text).closest('li')!
+  const member = (user: string, membership: string, prev?: string) =>
+    JSON.stringify({ type: 'm.room.member', state_key: user, content: { membership }, unsigned: prev ? { prev_content: { membership: prev } } : {} })
+
+  it('lays events out a line each, with days apart and a line where the unread begin', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const read = server.receive(room.id, { body: 'Yesterday', ts: day('2026-11-09T12:00') })
+    server.receive(room.id, { body: 'Mine', sender: ME, sender_name: 'Me', ts: day('2026-11-10T09:00') })
+    server.receive(room.id, { body: 'Unread', ts: day('2026-11-10T09:05') })
+    room.read_up_to = read.id
+    await start(`/rooms/${room.id}`)
+    await within(timeline()).findByText('Unread')
+    const separators = within(timeline()).getAllByRole('separator')
+    expect(separators.map((s) => s.textContent)).toEqual(['2026-11-09', '2026-11-10', 'New'])
+    // After the account's own: the unread are those of others.
+    expect(line('Unread').previousElementSibling).toBe(separators[2])
+    const unread = line('Unread')
+    expect(unread.querySelector('time')!.textContent).toBe('09:05')
+    expect(within(unread).getByTitle('@bob:example.org').textContent).toContain('Bob')
+  })
+
+  it('summarizes state events, folding runs of membership changes', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    server.receive(room.id, {
+      kind: 'm.room.topic',
+      msgtype: null,
+      raw: JSON.stringify({ type: 'm.room.topic', state_key: '', content: { topic: 'Cats' } }),
+    })
+    server.receive(room.id, { kind: 'm.room.member', msgtype: null, raw: member('@bob:example.org', 'join') })
+    server.receive(room.id, { body: 'Hi' })
+    for (const name of ['carol', 'dave', 'erin']) {
+      server.receive(room.id, {
+        kind: 'm.room.member',
+        msgtype: null,
+        sender: `@${name}:example.org`,
+        sender_name: null,
+        raw: member(`@${name}:example.org`, 'leave', 'join'),
+      })
+    }
+    const user = await start(`/rooms/${room.id}`)
+    await within(timeline()).findByText('Bob changed the topic to "Cats"')
+    within(timeline()).getByText('Bob joined')
+    const run = within(timeline()).getByText('3 membership changes: carol left, dave left…')
+    await user.click(run)
+    within(timeline()).getByText('erin left')
+  })
+
+  it('shows HTML, media, and edits with their history', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    server.receive(room.id, { body: '**bold**', html: '<strong>bold</strong> <a href="https://x.org">x</a>' })
+    const image = server.receive(room.id, {
+      msgtype: 'm.image',
+      body: 'cat.png',
+      raw: JSON.stringify({
+        content: { msgtype: 'm.image', body: 'cat.png', url: 'mxc://example.org/cat', info: { w: 640, h: 480 } },
+      }),
+    })
+    server.receive(room.id, {
+      msgtype: 'm.file',
+      body: 'notes.pdf',
+      raw: JSON.stringify({ content: { msgtype: 'm.file', body: 'notes.pdf', url: 'mxc://example.org/n', info: { size: 2048 } } }),
+    })
+    const edited = server.receive(room.id, { body: 'Frist' })
+    edited.edit = { event_id: '$e2', ts: edited.ts + 2, content: JSON.stringify({ msgtype: 'm.text', body: 'First' }), html: null }
+    const edit = (body: string, ts: number) =>
+      ({ ...edited, edit: null, raw: JSON.stringify({ content: { 'm.new_content': { body } } }), ts })
+    server.edits.set(edited.id, [edit('Firs', edited.ts + 1), edit('First', edited.ts + 2)])
+    const user = await start(`/rooms/${room.id}`)
+
+    const bold = await within(timeline()).findByText('bold')
+    expect(bold.tagName).toBe('STRONG')
+    within(timeline()).getByRole('link', { name: 'x' })
+    const img = within(timeline()).getByRole('img', { name: 'cat.png' })
+    expect(img.getAttribute('src')).toBe(`/api/rooms/${room.id}/events/${image.id}/thumbnail/example.org/cat`)
+    expect([img.getAttribute('width'), img.getAttribute('height')]).toEqual(['320', '240'])
+    const file = within(timeline()).getByRole('link', { name: /notes\.pdf/ })
+    expect(file.textContent).toBe('notes.pdf (2 KB)')
+
+    expect(within(line('First')).queryByText('Frist')).toBeNull()
+    await user.click(within(line('First')).getByRole('button', { name: '(edited)' }))
+    const history = await screen.findByRole('dialog', { name: 'Edit history' })
+    await within(history).findByText('Firs')
+    expect([...history.querySelectorAll('li div')].map((d) => d.textContent)).toEqual(['Frist', 'Firs', 'First'])
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('reacts, showing the reaction being sent, and takes it back', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const event = server.receive(room.id, {
+      body: 'Lunch?',
+      reactions: [{ key: '👍', senders: [{ sender: '@bob:example.org', sender_name: 'Bob', event_id: '$r1' }] }],
+    })
+    const user = await start(`/rooms/${room.id}`)
+    await within(timeline()).findByText('Lunch?')
+    const chip = within(line('Lunch?')).getByRole('button', { name: '👍 1' })
+    expect(chip.getAttribute('title')).toBe('Bob reacted with 👍')
+    await user.click(chip)
+    expect(server.requests).toContainEqual({
+      type: 'send_matrix_message',
+      room: room.id,
+      content: { type: 'reaction', event: event.event_id, key: '👍' },
+    })
+    await within(line('Lunch?')).findByRole('button', { name: '👍 2', pressed: true })
+    // Not listed apart while it goes out.
+    expect(within(timeline()).queryByText('Waiting to send')).toBeNull()
+
+    server.change(room.id, event, {
+      reactions: [
+        {
+          key: '👍',
+          senders: [
+            { sender: '@bob:example.org', sender_name: 'Bob', event_id: '$r1' },
+            { sender: ME, sender_name: 'Me', event_id: '$r2' },
+          ],
+        },
+      ],
+    })
+    server.settleSends(room.id)
+    await user.click(await within(line('Lunch?')).findByRole('button', { name: '👍 2', pressed: true }))
+    expect(server.requests).toContainEqual({ type: 'send_matrix_message', room: room.id, content: { type: 'redaction', event: '$r2' } })
+    await within(line('Lunch?')).findByRole('button', { name: '👍 1', pressed: false })
+
+    // Any other, from the picker.
+    await user.click(within(line('Lunch?')).getByRole('button', { name: 'React' }))
+    await user.click(screen.getByRole('button', { name: 'React with 🎉' }))
+    expect(server.requests).toContainEqual({
+      type: 'send_matrix_message',
+      room: room.id,
+      content: { type: 'reaction', event: event.event_id, key: '🎉' },
+    })
+  })
+
+  it('replies, edits the last message with Up, and deletes', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const question = server.receive(room.id, { body: 'Lunch?' })
+    const mine = server.receive(room.id, { body: 'Sure', sender: ME, sender_name: 'Me' })
+    const user = await start(`/rooms/${room.id}`)
+    await within(timeline()).findByText('Sure')
+    await user.click(within(line('Lunch?')).getByRole('button', { name: 'Reply' }))
+    const box = screen.getByRole('textbox', { name: 'Message Lounge' })
+    expect(document.activeElement).toBe(box)
+    screen.getByText(/^Replying to/)
+    await user.keyboard('Where?{Enter}')
+    expect(server.requests).toContainEqual({
+      type: 'send_matrix_message',
+      room: room.id,
+      content: text('Where?', { reply_to: question.event_id }),
+    })
+    await waitFor(() => expect(screen.queryByText(/^Replying to/)).toBeNull())
+
+    await user.keyboard('{ArrowUp}')
+    expect((box as HTMLTextAreaElement).value).toBe('Sure')
+    await user.keyboard(' thing{Enter}')
+    expect(server.requests).toContainEqual({
+      type: 'send_matrix_message',
+      room: room.id,
+      content: text('Sure thing', { replaces: mine.event_id }),
+    })
+    // Shown on the message while it goes out.
+    await within(timeline()).findByText('(saving…)')
+    expect((box as HTMLTextAreaElement).value).toBe('')
+
+    // An edit cancelled leaves the draft as it was.
+    await user.keyboard('draft')
+    await user.click(within(line('Lunch?')).getByRole('button', { name: 'Reply' }))
+    await user.keyboard('{Escape}')
+    expect((box as HTMLTextAreaElement).value).toBe('draft')
+
+    await user.click(within(line(/^Sure/)).getByRole('button', { name: 'Options' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
+    expect(server.requests).toContainEqual({ type: 'send_matrix_message', room: room.id, content: { type: 'redaction', event: mine.event_id } })
+    await within(timeline()).findByText('Deleting…')
+  })
+
+  it('sends files attached, with the message', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const user = await start(`/rooms/${room.id}`)
+    await user.upload(screen.getByLabelText('Files'), new File(['hello'], 'hello.txt', { type: 'text/plain' }))
+    within(screen.getByRole('list', { name: 'Files to send' })).getByText('hello.txt')
+    await user.keyboard('Here{Enter}')
+    await waitFor(() =>
+      expect(server.requests).toContainEqual({
+        type: 'send_matrix_message',
+        room: room.id,
+        content: { type: 'file', blob: 'blob:hello', name: 'hello.txt', mime: 'text/plain', reply_to: null },
+      }),
+    )
+    expect(server.requests).toContainEqual({ type: 'send_matrix_message', room: room.id, content: text('Here') })
+    expect(screen.queryByRole('list', { name: 'Files to send' })).toBeNull()
+  })
+})
+
 describe('switcher', () => {
   beforeEach(() => localStorage.removeItem('uplink.recent'))
 

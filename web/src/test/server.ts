@@ -88,6 +88,8 @@ export class FakeServer implements Requester, Blobs {
   /** The op that asked for each room's pending membership. */
   private readonly membershipBy = new Map<RoomId, number>()
   readonly events = new Map<RoomId, RoomEvent[]>()
+  /** Of events edited, their edits, oldest first. */
+  readonly edits = new Map<number, RoomEvent[]>()
   /** Messages being sent, sent and not yet synced back, or sent though
    * cancelled. */
   readonly matrixSends: MatrixSend[] = []
@@ -278,6 +280,12 @@ export class FakeServer implements Requester, Blobs {
     const [sent] = this.matrixSends.splice(index, 1)
     this.receive(sent.room, { sender: ME, sender_name: 'Me', body: sendSummary(sent.content) })
     this.observe('mx', this.matrixSendsChanged(sent.room))
+  }
+
+  /** The room's sends went out, and sync brought back what they did. */
+  settleSends(room: RoomId) {
+    this.matrixSends.splice(0, this.matrixSends.length, ...this.matrixSends.filter((s) => s.room !== room))
+    this.observe('mx', this.matrixSendsChanged(room))
   }
 
   /** The homeserver took a message that was cancelled meanwhile. */
@@ -570,7 +578,7 @@ export class FakeServer implements Requester, Blobs {
           events: this.events.get(body.room)!.filter((e) => body.events.includes(e.id)),
         }
       case 'list_edits':
-        return { type: 'edits', as_of: this.head(), room: body.room, event: body.event, edits: [] }
+        return { type: 'edits', as_of: this.head(), room: body.room, event: body.event, edits: this.edits.get(body.event) ?? [] }
       case 'list_matrix_sends':
         return {
           type: 'matrix_sends',

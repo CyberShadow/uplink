@@ -3,22 +3,38 @@
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  /* The sender's column, as Element's IRC layout's: names longer are cut. */
+  --name-width: 140px;
 }
 
 .header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
   padding: 8px 16px;
   border-bottom: 1px solid var(--line);
 }
 
-.avatar {
-  align-self: center;
+.title {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
 }
 
-.leave {
-  margin-left: auto;
+.header h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.topic {
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .error {
@@ -26,12 +42,6 @@
   padding: 6px 16px;
   background: var(--error-bg);
   color: var(--error-fg);
-}
-
-.header h1 {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 500;
 }
 
 .scroller {
@@ -44,26 +54,354 @@
 .events {
   list-style: none;
   margin: 0;
-  padding: 8px 16px;
+  padding: 8px 0;
 }
 
-.event {
-  padding: 4px 0;
+.earlier {
+  padding: 4px 16px;
+}
+
+/* A line per event: time, sender, what it says; actions on hover. */
+.row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 5ch var(--name-width) minmax(0, 1fr);
+  column-gap: 8px;
+  /* A line's columns align on its first line, whatever follows: media
+     too. */
+  align-items: start;
+  padding: 1px 16px;
+  line-height: var(--line-height);
+  --line-height: 21px;
+}
+
+.row:hover,
+.row:focus-within {
+  background: var(--hover);
+}
+
+.mention {
+  background: var(--selected);
+  box-shadow: inset 3px 0 var(--accent);
+}
+
+.highlight {
+  background: var(--focus);
+  transition: background 0.3s;
+}
+
+.time {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: var(--line-height);
+  font-variant-numeric: tabular-nums;
 }
 
 .sender {
+  display: flex;
+  align-items: center;
+  height: var(--line-height);
+  gap: 4px;
+  min-width: 0;
   font-weight: 600;
 }
 
-.time,
-.muted {
-  color: var(--muted);
-  font-size: 12px;
+.name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.state .sender {
+  justify-content: flex-end;
+  font-weight: normal;
+}
+
+.memberAvatar {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+  object-fit: cover;
+}
+
+.content {
+  min-width: 0;
 }
 
 .body {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.body a,
+.html a,
+.file {
+  color: var(--accent);
+}
+
+.notice {
+  color: var(--muted);
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.saving {
+  opacity: 0.6;
+}
+
+.tag {
+  margin-right: 6px;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* A message's HTML: its blocks kept tight to the line. */
+.html {
+  white-space: normal;
+}
+
+.html :is(p, ul, ol, blockquote, pre, h1, h2, h3, h4, h5, h6, table) {
+  margin: 2px 0;
+}
+
+.html :is(h1, h2, h3, h4, h5, h6) {
+  font-size: 1.1em;
+}
+
+.html blockquote {
+  padding-left: 8px;
+  border-left: 3px solid var(--line);
+  color: var(--muted);
+}
+
+.html code {
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--nav-bg);
+  font: 13px ui-monospace, monospace;
+}
+
+.html pre {
+  padding: 6px 8px;
+  overflow: auto;
+  border-radius: 4px;
+  background: var(--nav-bg);
+}
+
+.html pre code {
+  padding: 0;
+}
+
+.html img {
+  max-width: 100%;
+  max-height: 240px;
+  vertical-align: middle;
+}
+
+.html img[data-mx-emoticon] {
+  height: 1.5em;
+}
+
+/* Mentions, as pills. */
+.html a[href^='https://matrix.to/#/@'] {
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--focus);
+  color: var(--fg);
+}
+
+.html [data-mx-spoiler]:not(.revealed) {
+  background: var(--fg);
+  color: transparent;
+  cursor: pointer;
+}
+
+.html [data-mx-spoiler]:not(.revealed) * {
+  visibility: hidden;
+}
+
+.revealed {
+  background: var(--nav-bg);
+}
+
+.edited {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mediaBlock {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  margin: 2px 0;
+}
+
+.media {
+  display: block;
+  max-width: 100%;
+}
+
+.media img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+  background: var(--nav-bg);
+}
+
+.file {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.reply {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.reply svg {
+  flex: none;
+  color: var(--muted);
+}
+
+.quoted {
+  overflow: hidden;
+  color: var(--muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 2px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reaction {
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.reaction.own {
+  border-color: var(--accent);
+  background: var(--selected);
+}
+
+/* On hover, at the line's end, as Element's. */
+.actions {
+  position: absolute;
+  top: -12px;
+  right: 16px;
+  z-index: 1;
+  display: none;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.row:hover .actions,
+.row:focus-within .actions {
+  display: flex;
+}
+
+.actions > button,
+.reactRoot > button {
+  display: inline-flex;
+  padding: 4px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.actions > button:hover,
+.reactRoot > button:hover {
+  color: var(--fg);
+}
+
+.reactRoot {
+  position: relative;
+  display: inline-flex;
+}
+
+.picker {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 10;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  width: 200px;
+  padding: 6px;
+  border-radius: 8px;
+  background: var(--bg);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.3);
+}
+
+.picker button {
+  padding: 2px 4px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.picker button:hover {
+  background: var(--hover);
+}
+
+.picker form {
+  width: 100%;
+}
+
+.picker input {
+  width: 100%;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: inherit;
+  color: inherit;
+  font: inherit;
 }
 
 .raw {
@@ -72,6 +410,50 @@
   overflow: auto;
   background: var(--nav-bg);
   font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.day,
+.unread {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.day::before,
+.day::after,
+.unread::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--line);
+}
+
+.unread {
+  color: var(--error-fg);
+}
+
+.unread::after {
+  border-color: var(--error-fg);
+}
+
+.run {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.history {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.history li {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
 }
 
 .pending .body {
@@ -84,13 +466,54 @@
 
 .composer {
   display: flex;
-  gap: 8px;
+  flex-direction: column;
+  gap: 4px;
   padding: 8px 16px;
   border-top: 1px solid var(--line);
 }
 
-.composer textarea {
+.mode,
+.staged li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.mode button,
+.staged button {
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.staged {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.input {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.attach {
+  display: inline-flex;
+  padding: 6px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.input textarea {
   flex: 1;
+  max-height: 40vh;
   resize: vertical;
   padding: 6px 8px;
   border: 1px solid var(--line);
@@ -98,9 +521,25 @@
   font: inherit;
   color: inherit;
   background: var(--bg);
+  field-sizing: content;
+}
+
+.avatar {
+  flex: none;
 }
 
 .placeholder {
   padding: 16px;
   color: var(--muted);
+}
+
+/* Narrow screens: the sender above what it says. */
+@media (max-width: 600px) {
+  .row {
+    grid-template-columns: 5ch minmax(0, 1fr);
+  }
+
+  .content {
+    grid-column: 1 / -1;
+  }
 }

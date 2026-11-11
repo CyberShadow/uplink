@@ -103,8 +103,8 @@ pub struct RoomEvent {
     pub msgtype: Option<String>,
     /// Of `m.room.message`: the plain-text body.
     pub body: Option<String>,
-    /// The event as JSON, decrypted if it could be, for event types
-    /// uplink does not display otherwise.
+    /// The event as JSON, decrypted if it could be: what clients show of
+    /// it beyond the fields here (media, state), and its source.
     pub raw: String,
     pub encryption: Encryption,
     /// Whether the event is redacted: `raw` is as redacted, with
