@@ -879,6 +879,8 @@ than it buffers is closed; the client reconnects and resumes.
   `ListPinned { room }` — of the room's pinned events, those stored and
   listed, in the order pinned (§9.5);
   `PreviewUrl { room, event, url }` — a link's preview (§9.8);
+  `ResolveRoomAlias { account, alias }` — the room an address is of
+  (§9.7);
   `SearchRoom { room, query, before, limit }` — the room's messages
   (of the main timeline and its threads, not deleted) whose text, or an
   edit's, has every word of the query (ignoring the case of ASCII
@@ -947,7 +949,7 @@ remotely, in order.
 A request that needs a homeserver's answer (`PreviewUrl`, `FillGap`,
 `ListMembers`, `GetMatrixSecurity` and the requests answered with the
 security state, `CreateMatrixRoom`, `StartDirectChat`, `JoinMatrixRoom`,
-`ImportRoomKeys`) does its local part (checks, reads) in turn, then
+`ResolveRoomAlias`, `ImportRoomKeys`) does its local part (checks, reads) in turn, then
 hands what waits on the homeserver to a task of its own, and the session
 goes on; it answers when the task is done, as `Answer::Later`. Responses
 thus come in any order, as the client already takes them, by
@@ -2356,6 +2358,10 @@ once the homeserver has; its refusal (as of an address that does not
 exist) is `Invalid`, with its reason. The client opens the room once
 sync lists it. Creating a room and starting a chat are not sent again on
 a new connection (a second would be made); joining is.
+`ResolveRoomAlias { account, alias }` (not logged) answers
+`RoomAliasResolved` with the Matrix id of the room an address is of, as
+the account's homeserver resolves it; an address that does not exist is
+`Invalid`, as above.
 
 ### 9.8 Media
 
@@ -2870,7 +2876,9 @@ buttons.
   users and rooms (`matrix.to`, but those to events) show as pills, those
   of plain text named as the room's members and the account's rooms are:
   a click on a user's opens their profile, on a room's the room, if the
-  account has it (else matrix.to).
+  account has it (else matrix.to). A room's address is resolved
+  (`ResolveRoomAlias`) once shown, once per address: until it is, the
+  pill says the address and opens matrix.to.
   Emotes show as IRC shows them (`* Name waves`), notices dimmed. A
   message that mentions the user (by `m.mentions`, or, without it, its
   body naming their user id) is highlighted. Images and stickers show

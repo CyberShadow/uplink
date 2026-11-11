@@ -2187,23 +2187,36 @@ describe('room timeline', () => {
       ],
       powers: { invite: false, name: false, topic: false },
     })
+    server.addRoom('Garden')
     const kitchen = `https://matrix.to/#/${encodeURIComponent(other.room_id)}?via=example.org`
     server.receive(room.id, {
       body: `Ask https://matrix.to/#/%40carol%3Aexample.org in ${kitchen} or https://matrix.to/#/#hall:example.org`,
     })
     server.receive(room.id, {
-      body: 'Dave: hi',
-      html: '<a href="https://matrix.to/#/@dave:example.org" target="_blank" rel="noopener noreferrer">Dave</a>: hi',
+      body: 'Dave: hi, see Garden',
+      html: '<a href="https://matrix.to/#/@dave:example.org" target="_blank" rel="noopener noreferrer">Dave</a>: hi, see <a href="https://matrix.to/#/%23garden:example.org" target="_blank" rel="noopener noreferrer">Garden</a>',
     })
+    server.receive(room.id, { body: 'Or https://matrix.to/#/#kitchen:example.org' })
     const user = await start(`/rooms/${room.id}`)
     // Of text, named as the room has them.
     const carol = await within(timeline()).findByRole('link', { name: 'Carol' })
     expect(carol.className).toContain('pill')
-    expect(within(timeline()).getByRole('link', { name: 'Kitchen' }).className).toContain('pill')
+    // By its id, and by its address, once the homeserver has resolved it.
+    await waitFor(() =>
+      expect(
+        within(timeline())
+          .getAllByRole('link', { name: 'Kitchen' })
+          .map((a) => [a.getAttribute('href'), a.className.includes('pill')]),
+      ).toEqual([
+        [kitchen, true],
+        ['https://matrix.to/#/#kitchen:example.org', true],
+      ]),
+    )
     // A room the account has not is a pill to matrix.to.
     const hall = within(timeline()).getByRole('link', { name: '#hall:example.org' })
     expect(hall.className).toContain('pill')
     expect(hall.getAttribute('href')).toBe('https://matrix.to/#/#hall:example.org')
+    expect(server.requests).toContainEqual({ type: 'resolve_room_alias', account: 'mx', alias: '#hall:example.org' })
 
     await user.click(carol)
     let panel = await screen.findByRole('complementary', { name: 'Member' })
@@ -2215,8 +2228,17 @@ describe('room timeline', () => {
     panel = await screen.findByRole('complementary', { name: 'Member' })
     expect(within(panel).getByText('@dave:example.org')).toBeTruthy()
 
-    await user.click(within(timeline()).getByRole('link', { name: 'Kitchen' }))
+    await user.click(within(timeline()).getAllByRole('link', { name: 'Kitchen' })[0])
     expect(await screen.findByRole('heading', { name: 'Kitchen' })).toBeTruthy()
+
+    // Of HTML, by its address, once resolved.
+    await user.click(screen.getByRole('link', { name: /^Lounge/ }))
+    await screen.findByRole('heading', { name: 'Lounge' })
+    await waitFor(() =>
+      expect(server.requests).toContainEqual({ type: 'resolve_room_alias', account: 'mx', alias: '#garden:example.org' }),
+    )
+    await user.click(await within(timeline()).findByRole('link', { name: 'Garden' }))
+    expect(await screen.findByRole('heading', { name: 'Garden' })).toBeTruthy()
   })
 
   it('loads earlier events as their start comes into view, until it is out of view', async () => {

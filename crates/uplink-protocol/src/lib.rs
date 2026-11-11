@@ -324,6 +324,12 @@ pub enum ClientRequest {
         account: String,
         room: String,
     },
+    /// The room the address (`#alias:server`) is of, as the account's
+    /// homeserver resolves it. Not logged.
+    ResolveRoomAlias {
+        account: String,
+        alias: String,
+    },
     /// The account's device, its trust, key backup and recovery, and the
     /// account's other devices (SPEC §9.4).
     GetMatrixSecurity {
@@ -535,6 +541,10 @@ pub enum ServerResponse {
     MatrixRoomJoined {
         room_id: String,
     },
+    /// Of `ResolveRoomAlias`: the room, by its Matrix id.
+    RoomAliasResolved {
+        room_id: String,
+    },
     /// Of `ListMembers`: as the account's client knows them, not logged.
     Members {
         room: RoomId,
@@ -588,6 +598,7 @@ impl ServerResponse {
             | Self::Receipts { .. }
             | Self::Members { .. }
             | Self::MatrixRoomJoined { .. }
+            | Self::RoomAliasResolved { .. }
             | Self::MatrixSecurity { .. }
             | Self::UrlPreview { .. }
             | Self::RoomKeysImported { .. } => None,

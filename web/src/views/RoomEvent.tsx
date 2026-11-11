@@ -474,14 +474,16 @@ function PillName(props: { room: Room; link: Permalink }) {
   return <>{linkedRoom(matrix, room, link.id)?.name ?? link.id}</>
 }
 
-/** Of the account's rooms, that of the room id. */
+/** Of the account's rooms, that of the room id, or of the address, once
+ * the homeserver has resolved it. */
 function linkedRoom(matrix: MatrixStore, room: Room, id: string): Room | undefined {
-  return matrix.rooms.value!.find((r) => r.account === room.account && r.room_id === id)
+  const roomId = id[0] === '#' ? matrix.roomOfAlias(room.account, id) : id
+  return matrix.rooms.value!.find((r) => r.account === room.account && r.room_id === roomId)
 }
 
 /** Follows a `matrix.to` link where it can: a user's to their profile, a
- * room's to the room, if the account has it. Whether it did; else the
- * link opens matrix.to. */
+ * room's to the room, if the account has it (by an address, once
+ * resolved). Whether it did; else the link opens matrix.to. */
 function useFollow(room: Room, openMember: (user: string) => void): (link: Permalink) => boolean {
   const { matrix } = useServices()
   const { route } = useLocation()
@@ -502,10 +504,15 @@ function useFollow(room: Room, openMember: (user: string) => void): (link: Perma
  * followed as `Text`'s. */
 function Html(props: { room: Room; html: string; openMember: (user: string) => void }) {
   const root = useRef<HTMLSpanElement>(null)
+  const { matrix } = useServices()
   const follow = useFollow(props.room, props.openMember)
   useLayoutEffect(() => {
     for (const anchor of root.current!.querySelectorAll('a[href]')) {
-      if (permalink(anchor.getAttribute('href')!)) anchor.classList.add(styles.pill)
+      const link = permalink(anchor.getAttribute('href')!)
+      if (!link) continue
+      anchor.classList.add(styles.pill)
+      // Its address resolved, for a click to follow.
+      if (link.type === 'room') linkedRoom(matrix, props.room, link.id)
     }
     for (const element of root.current!.querySelectorAll<HTMLElement>('[data-mx-color], [data-mx-bg-color]')) {
       const color = element.dataset.mxColor
@@ -513,7 +520,7 @@ function Html(props: { room: Room; html: string; openMember: (user: string) => v
       if (color && COLOR.test(color)) element.style.color = color
       if (background && COLOR.test(background)) element.style.backgroundColor = background
     }
-  }, [props.html])
+  }, [props.html, matrix, props.room])
   return (
     <span
       ref={root}

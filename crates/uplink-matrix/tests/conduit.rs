@@ -1942,6 +1942,31 @@ async fn rooms_are_created_direct_chats_started_and_rooms_joined_by_address() {
     );
     assert_eq!(joined_lobby, lobby.room_id());
     listed(joined_lobby).await;
+    let resolved = uplink
+        .matrix
+        .resolve_alias("mx", "#lobby:localhost")
+        .await
+        .answered()
+        .await
+        .unwrap();
+    assert_eq!(
+        resolved,
+        ServerResponse::RoomAliasResolved {
+            room_id: lobby.room_id().to_string()
+        }
+    );
+    let nowhere = uplink
+        .matrix
+        .resolve_alias("mx", "#nowhere:localhost")
+        .await
+        .answered()
+        .await
+        .unwrap_err();
+    assert_eq!(
+        nowhere.code,
+        uplink_protocol::ErrorCode::Invalid,
+        "{nowhere:?}"
+    );
 
     let unknown = uplink
         .matrix

@@ -1047,6 +1047,9 @@ impl Backend for Services {
             ClientRequest::JoinMatrixRoom { account, room } => {
                 return self.matrix.join_room(&account, &room).await.into()
             }
+            ClientRequest::ResolveRoomAlias { account, alias } => {
+                return self.matrix.resolve_alias(&account, &alias).await.into()
+            }
             ClientRequest::FillGap { room, gap } => {
                 return self.matrix.fill_gap(room, gap).await.into()
             }

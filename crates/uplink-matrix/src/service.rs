@@ -712,6 +712,28 @@ impl Matrix {
         }))
     }
 
+    /// The room the address is of, as the homeserver resolves it.
+    pub async fn resolve_alias(&self, account: &str, alias: &str) -> Remote {
+        let client = self.client(account)?;
+        let alias = <&matrix_sdk::ruma::RoomAliasId>::try_from(alias)
+            .map_err(|_| {
+                error(
+                    ErrorCode::Invalid,
+                    format!("not a room's address: {alias:?}"),
+                )
+            })?
+            .to_owned();
+        Ok(Answer::later(async move {
+            let resolved = client
+                .resolve_room_alias(&alias)
+                .await
+                .map_err(|e| refused(e.into()))?;
+            Ok(ServerResponse::RoomAliasResolved {
+                room_id: resolved.room_id.to_string(),
+            })
+        }))
+    }
+
     pub async fn list_rooms(&self) -> Response {
         let configured = self.accounts.clone();
         self.reader

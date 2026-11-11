@@ -1,7 +1,7 @@
 // Matrix state: accounts with their rooms, the timelines on show with
 // their messages being sent (SPEC §9, §12.6), mirrored like mail's.
 
-import { signal } from '@preact/signals'
+import { signal, type Signal } from '@preact/signals'
 import type {
   ClientRequest,
   LogEntry,
@@ -52,6 +52,9 @@ export class MatrixStore {
   private pinnedLists = new Map<RoomId, Pinned>()
   /** By event and URL: pages change little, and previews are not logged. */
   private previews = new Map<string, Promise<UrlPreview | null>>()
+  /** By account and address: the room ids they resolve to, `null` of
+   * those that do not, as the homeserver last said; not logged. */
+  private aliases = new Map<string, Signal<string | null | undefined>>()
   private roomLoader = new Loader(async () => {
     const response = await this.query({ type: 'list_rooms' }, 'rooms')
     if (!response) return
@@ -246,6 +249,24 @@ export class MatrixStore {
       this.previews.set(key, preview)
     }
     return preview
+  }
+
+  /** The id of the room the address (`#alias:server`) is of, as the
+   * account's homeserver resolves it, once asked: `undefined` until it
+   * has, `null` if it cannot. */
+  roomOfAlias(account: string, alias: string): string | null | undefined {
+    const key = `${account} ${alias}`
+    let resolved = this.aliases.get(key)
+    if (!resolved) {
+      const asked = signal<string | null | undefined>(undefined)
+      query(this.server, { type: 'resolve_room_alias', account, alias }, 'room_alias_resolved').then(
+        (response) => (asked.value = response.room_id),
+        () => (asked.value = null),
+      )
+      this.aliases.set(key, asked)
+      resolved = asked
+    }
+    return resolved.value
   }
 
   /** The room's latest message from others among its latest events, for

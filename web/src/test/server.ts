@@ -863,6 +863,11 @@ export class FakeServer implements Requester, Blobs {
         this.observe('mx', [{ type: 'rooms_changed', rooms: [room.id] }])
         return { type: 'matrix_room_joined', room_id: room.room_id }
       }
+      case 'resolve_room_alias': {
+        const room = this.rooms.find((r) => `#${r.name.toLowerCase()}:example.org` === body.alias)
+        if (!room) throw new RequestError({ code: 'invalid', message: 'the homeserver refused: no such room' })
+        return { type: 'room_alias_resolved', room_id: room.room_id }
+      }
       case 'list_members': {
         const { members, powers } = this.members.get(body.room) ?? { members: [], powers: NO_POWERS }
         return { type: 'members', room: body.room, members, powers }
