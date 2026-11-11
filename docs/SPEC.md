@@ -1738,7 +1738,9 @@ fixed user agent (`Mozilla/5.0 (compatible; uplink)`) and when the mail
 was shown, but nothing of the browser: no client headers, cookies or
 referrer. Remote fonts and stylesheets still don't load. The endpoint
 (behind basic auth) fetches only from public addresses (not loopback,
-private, link-local, shared, multicast or reserved ones, checked as names
+private, link-local, shared, benchmarking, multicast or reserved ones,
+nor IPv6 ones carrying such an IPv4 one: mapped, compatible, NAT64's or
+6to4's; checked as names
 resolve and at each of at most 5 redirects, with no HTTP proxy to resolve
 past the check), so that a mail cannot make the server reach what only
 it can. It serves only `image/*` responses, of at most 16 MB, within

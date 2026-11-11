@@ -112,12 +112,15 @@ impl RemoteImages {
     }
 }
 
-/// Whether `ip` is an address of the public internet, as far as the
-/// standard library tells (its `is_global` is unstable).
+/// Whether `ip` is an address of the public internet, as IANA's
+/// special-purpose registries have it (the standard library's
+/// `is_global` is unstable). An IPv6 address that carries an IPv4 one
+/// (mapped, compatible, NAT64's, 6to4's) is judged by that: through a
+/// translator or a tunnel, it is the IPv4 address that is reached.
 pub fn public(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(a) => {
-            let [first, second, ..] = a.octets();
+            let [first, second, third, _] = a.octets();
             !(a.is_private()
                 || a.is_loopback()
                 || a.is_link_local()
@@ -128,20 +131,43 @@ pub fn public(ip: IpAddr) -> bool {
                 || first == 0
                 || first >= 240
                 // Shared address space (carrier-grade NAT).
-                || (first == 100 && second & 0xc0 == 64))
+                || (first == 100 && second & 0xc0 == 64)
+                // IETF protocol assignments.
+                || (first == 192 && second == 0 && third == 0)
+                // Benchmarking, which proxies' "fake IP" DNS hands out.
+                || (first == 198 && second & 0xfe == 18))
         }
-        IpAddr::V6(a) => match a.to_ipv4_mapped() {
-            Some(a) => public(IpAddr::V4(a)),
-            None => {
-                let first = a.segments()[0];
-                !(a.is_loopback()
-                    || a.is_unspecified()
-                    || a.is_multicast()
-                    // Unique local, and link-local.
-                    || first & 0xfe00 == 0xfc00
-                    || first & 0xffc0 == 0xfe80)
+        IpAddr::V6(a) => {
+            let s = a.segments();
+            let embedded = |high: u16, low: u16| {
+                public(IpAddr::V4(
+                    ((u32::from(high) << 16) | u32::from(low)).into(),
+                ))
+            };
+            match s {
+                // IPv4-mapped and IPv4-compatible (:: and ::1 among them).
+                [0, 0, 0, 0, 0, 0 | 0xffff, ..] => embedded(s[6], s[7]),
+                // NAT64's well-known prefix.
+                [0x64, 0xff9b, 0, 0, 0, 0, ..] => embedded(s[6], s[7]),
+                // 6to4.
+                [0x2002, ..] => embedded(s[1], s[2]),
+                _ => {
+                    !(a.is_multicast()
+                        // Unique local, link-local, and site-local.
+                        || s[0] & 0xfe00 == 0xfc00
+                        || s[0] & 0xffc0 == 0xfe80
+                        || s[0] & 0xffc0 == 0xfec0
+                        // NAT64's local-use prefix.
+                        || (s[0] == 0x64 && s[1] == 0xff9b)
+                        // Discard-only.
+                        || (s[0] == 0x100 && s[1..4] == [0, 0, 0])
+                        // IETF protocol assignments (Teredo among them),
+                        // and documentation.
+                        || (s[0] == 0x2001 && s[1] < 0x200)
+                        || (s[0] == 0x2001 && s[1] == 0xdb8))
+                }
             }
-        },
+        }
     }
 }
 
@@ -329,6 +355,11 @@ mod tests {
             "93.184.215.14",
             "2606:2800:21f:cb07:6820:80da:af6b:8b2c",
             "100.128.0.1",
+            "198.20.0.1",
+            "::ffff:93.184.215.14",
+            "64:ff9b::5db8:d70e",
+            "2002:5db8:d70e::1",
+            "2001:4860:4860::8888",
         ] {
             assert!(public(ip.parse().unwrap()), "{ip}");
         }
@@ -349,6 +380,22 @@ mod tests {
             "fe80::1",
             "::ffff:10.0.0.1",
             "ff02::1",
+            "192.0.0.8",
+            "198.18.0.1",
+            "198.19.255.255",
+            // IPv4 within IPv6, as a translator or a tunnel reaches it.
+            "::127.0.0.1",
+            "::10.0.0.1",
+            "::ffff:169.254.169.254",
+            "64:ff9b::7f00:1",
+            "64:ff9b::a9fe:a9fe",
+            "2002:7f00:1::1",
+            "2002:c0a8:101::1",
+            "64:ff9b:1::1",
+            "fec0::1",
+            "100::1",
+            "2001::1",
+            "2001:db8::1",
         ] {
             assert!(!public(ip.parse().unwrap()), "{ip}");
         }
