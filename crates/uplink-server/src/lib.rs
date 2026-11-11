@@ -940,6 +940,7 @@ impl Backend for Services {
             }
             ClientRequest::ListEdits { room, event } => self.matrix.list_edits(room, event).await,
             ClientRequest::ListThread { room, root } => self.matrix.list_thread(room, root).await,
+            ClientRequest::ListPinned { room } => self.matrix.list_pinned(room).await,
             ClientRequest::SearchRoom {
                 room,
                 query,

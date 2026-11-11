@@ -841,6 +841,24 @@ impl Matrix {
             .await
     }
 
+    pub async fn list_pinned(&self, room: RoomId) -> Response {
+        self.reader
+            .read(move |conn| {
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
+                if rooms::room_account(&tx, room).map_err(internal)?.is_none() {
+                    return Err(no_room(room));
+                }
+                let events = rooms::pinned(&tx, room).map_err(internal)?;
+                Ok(ServerResponse::Pinned {
+                    as_of,
+                    room,
+                    events,
+                })
+            })
+            .await
+    }
+
     /// The thread whose root is `root`, which the main timeline lists.
     pub async fn list_thread(&self, room: RoomId, root: RoomEventId) -> Response {
         self.reader
@@ -914,6 +932,11 @@ impl Matrix {
                 // The homeserver's API takes none.
                 if *action == MemberAction::Invite && reason.is_some() {
                     return invalid("an invitation has no reason".into());
+                }
+            }
+            MatrixContent::Pin { event, .. } => {
+                if <&matrix_sdk::ruma::EventId>::try_from(event.as_str()).is_err() {
+                    return invalid(format!("not a Matrix event id: {event:?}"));
                 }
             }
             MatrixContent::Text { .. }
@@ -1007,8 +1030,18 @@ impl Matrix {
                             event(reply_to)?;
                         }
                     }
+                    // Only stored events are pinned; any is unpinned.
+                    MatrixContent::Pin {
+                        event: of,
+                        pinned: true,
+                    } => {
+                        if event(of)?.redacted {
+                            return Err(error(ErrorCode::Conflict, format!("{of} is redacted")));
+                        }
+                    }
                     // Whether the account may is the homeserver's to say.
-                    MatrixContent::Name { .. }
+                    MatrixContent::Pin { pinned: false, .. }
+                    | MatrixContent::Name { .. }
                     | MatrixContent::Topic { .. }
                     | MatrixContent::Member { .. } => {}
                 }

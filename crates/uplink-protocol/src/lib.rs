@@ -258,6 +258,10 @@ pub enum ClientRequest {
     ListMembers {
         room: RoomId,
     },
+    /// The room's pinned events, of those stored.
+    ListPinned {
+        room: RoomId,
+    },
     /// A thread: its root, and its messages.
     ListThread {
         room: RoomId,
@@ -447,6 +451,12 @@ pub enum ServerResponse {
     UrlPreview {
         preview: Option<matrix::UrlPreview>,
     },
+    /// Of `ListPinned`: in the order pinned.
+    Pinned {
+        as_of: TxLogId,
+        room: RoomId,
+        events: Vec<matrix::RoomEvent>,
+    },
     /// Of `ListThread`: its messages, oldest first.
     Thread {
         as_of: TxLogId,
@@ -509,6 +519,7 @@ impl ServerResponse {
             | Self::Edits { as_of, .. }
             | Self::Thread { as_of, .. }
             | Self::RoomSearch { as_of, .. }
+            | Self::Pinned { as_of, .. }
             | Self::MatrixSends { as_of, .. }
             | Self::Todos { as_of, .. }
             | Self::Events { as_of, .. }

@@ -828,6 +828,8 @@ than it buffers is closed; the client reconnects and resumes.
   timeline lists, as it lists them (for `TimelineChanged`);
   `ListEdits { room, event }` — a message's edits, oldest first, for its
   edit history; `ListThread { room, root }` — a thread (§9.2);
+  `ListPinned { room }` — of the room's pinned events, those stored and
+  listed, in the order pinned (§9.5);
   `PreviewUrl { room, event, url }` — a link's preview (§9.8);
   `SearchRoom { room, query, before, limit }` — the room's messages
   (of the main timeline and its threads, not deleted) whose text, or an
@@ -1783,6 +1785,11 @@ JSON since V0026) is one of:
 - the room's **name** or **topic** (`m.room.name`, `m.room.topic`; empty
   takes it away), as state events. Setting state is idempotent, so a
   retry is safe;
+- a **pin** or an **unpin** of an event (`m.room.pinned_events`): of the
+  events pinned as the client has them when it is sent, so that others
+  pinned meanwhile stay; the pin goes last. One pinned already, or not
+  pinned, sends nothing. Only a stored event that is not deleted is
+  pinned; any is unpinned;
 - a change to a **member**: inviting, kicking (of one invited, revoking
   the invitation), banning or unbanning a user, with a reason (but an
   invitation), through the membership endpoints. These say no event id:
@@ -1927,6 +1934,11 @@ which a verified device gives.
   room's levels allow), and whether it may invite and change the name
   and the topic. It is not logged; clients load it again as events
   arrive.
+- **Pinned events**: a room records, as its client has them on sync,
+  the events pinned (`m.room.pinned_events`, in its order) and whether
+  the account may pin (by the room's power levels; of a room invited
+  to, the default levels'), V0033: `matrix_room.pinned` (a JSON array),
+  `may_pin`. `Room.pinned` lists them; `ListPinned` gives those stored.
 - A room is recorded when a sync brings state changes too, not only
   timeline events, so that a name, avatar or space's children changed in
   a gappy sync are seen.
@@ -2389,7 +2401,11 @@ the membership's buttons.
   sender and time, the words marked, more on request; a click shows one
   in the timeline (loading earlier pages until it is, then scrolling to
   it and highlighting it), or one of a thread in its thread. One panel
-  shows at a time: the room's info, a thread, or a search. Deleted messages say so, with the reason; undecryptable
+  shows at a time: the room's info, a thread, or a search. Under the
+  header, a room with pinned messages shows one at a time, as Element's
+  banner, the latest pinned first ("Pinned message 1 of 2"): a click
+  shows it in the timeline, as a search's, and the next; a message's menu
+  pins and unpins it, if the room's power levels let the account. Deleted messages say so, with the reason; undecryptable
   ones too. Any other message type shows its `body`.
 - **State events** are summarized after the sender's name ("Alice
   joined", "changed the topic to …"); three or more membership changes

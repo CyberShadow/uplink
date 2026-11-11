@@ -40,6 +40,8 @@ export function sendSummary(content: MatrixContent): string {
       return content.name
     case 'name':
       return content.name === '' ? 'Name taken away' : `Name: ${content.name}`
+    case 'pin':
+      return content.pinned ? 'Pin' : 'Unpin'
     case 'topic':
       return content.topic === '' ? 'Topic taken away' : `Topic: ${content.topic}`
     case 'member':

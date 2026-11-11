@@ -22,7 +22,7 @@ import { keepFocus, useKeymap } from '../keymap'
 import styles from './Room.module.css'
 import { RoomAvatar } from './RoomAvatar'
 import { date } from '../format'
-import { TEXT, displayName, sendSummary, shown } from '../matrix'
+import { TEXT, displayName, sendSummary, senderColor, shown } from '../matrix'
 import { EventRow, MembershipRun, reveal, type Overlay } from './RoomEvent'
 import { Icon } from './Icon'
 import { RoomSearch } from './RoomSearch'
@@ -132,6 +132,7 @@ function Timeline(props: { room: Room }) {
             as it is.
           </p>
         )}
+        {room.pinned.length > 0 && <PinnedBar room={room} />}
         {/* Reversed, so that it stays scrolled to the latest event. */}
         <div class={styles.scroller}>
           <ol class={styles.events} aria-label="Timeline">
@@ -259,6 +260,51 @@ export function Events(props: {
         <Pending key={item.id} item={item} />
       ))}
     </>
+  )
+}
+
+/** The room's pinned messages, as Element's banner: one at a time, the
+ * latest pinned first; a click shows it in the timeline, and the next. */
+function PinnedBar(props: { room: Room }) {
+  const { room } = props
+  const { matrix } = useServices()
+  const pinned = matrix.pinned(room.id).events.value
+  const [at, setAt] = useState(0)
+  if (pinned === null) return null
+  // Newest first; of those stored.
+  const events = [...pinned].reverse()
+  if (events.length === 0) {
+    return (
+      <p class={`${styles.pinned} ${styles.muted}`}>
+        <Icon name="pin" />
+        {room.pinned.length === 1 ? 'A message is pinned' : `${room.pinned.length} messages are pinned`}, not fetched
+        yet.
+      </p>
+    )
+  }
+  const index = at % events.length
+  const event = events[index]
+  return (
+    <button
+      type="button"
+      class={styles.pinned}
+      aria-label="Pinned messages"
+      onMouseDown={keepFocus}
+      onClick={async () => {
+        setAt(index + 1)
+        await matrix.timeline(room.id).loadUntil(event.pos)
+        requestAnimationFrame(() => reveal(event.id))
+      }}
+    >
+      <Icon name="pin" />
+      <span class={styles.muted}>
+        {events.length === 1 ? 'Pinned message' : `Pinned message ${index + 1} of ${events.length}`}
+      </span>
+      <span class={styles.quoted}>
+        <span style={{ color: senderColor(event.sender) }}>{displayName(event.sender, event.sender_name)}</span>:{' '}
+        {event.redacted ? 'Message deleted' : (shown(event).body ?? event.kind)}
+      </span>
+    </button>
   )
 }
 

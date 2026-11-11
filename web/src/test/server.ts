@@ -304,6 +304,8 @@ export class FakeServer implements Requester, Blobs {
       joined_members: 2,
       notifying: 0,
       highlighted: 0,
+      pinned: [],
+      may_pin: true,
     }
     this.rooms.push(room)
     this.events.set(room.id, [])
@@ -334,6 +336,12 @@ export class FakeServer implements Requester, Blobs {
       thread_root: null,
       ...event,
     }
+  }
+
+  /** The room's pinned events are `events`, as a sync says. */
+  pin(room: RoomId, events: readonly string[]) {
+    this.rooms.find((r) => r.id === room)!.pinned = [...events]
+    this.observe('mx', [{ type: 'rooms_changed', rooms: [room] }])
   }
 
   /** A message of the thread whose root is `root` arrives: the root sums
@@ -785,6 +793,16 @@ export class FakeServer implements Requester, Blobs {
         const event = this.events.get(body.room)!.find((e) => e.id === body.event)!
         if (!event.body?.includes(body.url)) throw new RequestError({ code: 'not_found', message: `no ${body.url}` })
         return { type: 'url_preview', preview: this.previews.get(body.url) ?? null }
+      }
+      case 'list_pinned': {
+        const room = this.rooms.find((r) => r.id === body.room)!
+        const events = this.events.get(body.room)!
+        return {
+          type: 'pinned',
+          as_of: this.head(),
+          room: body.room,
+          events: room.pinned.flatMap((id) => events.filter((e) => e.event_id === id)),
+        }
       }
       case 'list_thread': {
         const events = this.events.get(body.room)!

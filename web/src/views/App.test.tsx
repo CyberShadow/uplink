@@ -1302,6 +1302,45 @@ describe('room timeline', () => {
     await within(screen.getByRole('complementary', { name: 'Thread' })).findByText('lunch then')
   })
 
+  it('pins messages, which a bar under the header shows in turn', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const old = server.receive(room.id, { body: 'Rules: be kind' })
+    for (let i = 0; i < TIMELINE_PAGE; i++) server.receive(room.id, { body: `filler ${i}` })
+    const latest = server.receive(room.id, { body: 'Meet at noon' })
+    const user = await start(`/rooms/${room.id}`)
+    await within(timeline()).findByText('Meet at noon')
+    expect(screen.queryByRole('button', { name: 'Pinned messages' })).toBeNull()
+
+    await user.click(within(line('Meet at noon')).getByRole('button', { name: 'Options' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Pin' }))
+    expect(server.requests).toContainEqual({
+      type: 'send_matrix_message',
+      room: room.id,
+      content: { type: 'pin', event: latest.event_id, pinned: true },
+    })
+    // As the sync brings it back, with one pinned before.
+    server.pin(room.id, [old.event_id, latest.event_id])
+    const bar = await screen.findByRole('button', { name: 'Pinned messages' })
+    await within(bar).findByText(/Meet at noon/)
+    expect(bar.textContent).toContain('1 of 2')
+
+    // A click shows it, and the next: one far back loads until it shows.
+    await user.click(bar)
+    await within(bar).findByText(/Rules: be kind/)
+    await user.click(bar)
+    await within(timeline()).findByText('Rules: be kind')
+    expect(line('Rules: be kind').id).toBe(`event-${old.id}`)
+
+    await user.click(within(line('Rules: be kind')).getByRole('button', { name: 'Options' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Unpin' }))
+    expect(server.requests).toContainEqual({
+      type: 'send_matrix_message',
+      room: room.id,
+      content: { type: 'pin', event: old.event_id, pinned: false },
+    })
+  })
+
   it('opens threads beside the timeline, which sum them up, and replies in them', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')

@@ -149,6 +149,8 @@ fn named(content: &MatrixContent) -> String {
         MatrixContent::File { name, .. } => quote(name),
         MatrixContent::Name { name } => format!("the name {}", quote(name)),
         MatrixContent::Topic { topic } => format!("the topic {}", quote(topic)),
+        MatrixContent::Pin { pinned: true, .. } => "a pin".to_owned(),
+        MatrixContent::Pin { pinned: false, .. } => "an unpin".to_owned(),
         MatrixContent::Member { user, action, .. } => format!(
             "the {} of {user}",
             match action {
@@ -201,6 +203,8 @@ fn described(tx: &Transaction, room: RoomId, content: &MatrixContent) -> Result<
             "Took the room's topic away".to_owned()
         }
         MatrixContent::Topic { topic } => format!("Set the topic to {}", quote(topic)),
+        MatrixContent::Pin { pinned: true, .. } => "Pinned a message".to_owned(),
+        MatrixContent::Pin { pinned: false, .. } => "Unpinned a message".to_owned(),
         MatrixContent::Member { user, action, .. } => format!(
             "{} {user}",
             match action {

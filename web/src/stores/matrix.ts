@@ -48,6 +48,7 @@ export class MatrixStore {
   private memberLists = new Map<RoomId, Members>()
   /** By room, then by root. */
   private threads = new Map<RoomId, Map<RoomEventId, Thread>>()
+  private pinnedLists = new Map<RoomId, Pinned>()
   /** By event and URL: pages change little, and previews are not logged. */
   private previews = new Map<string, Promise<UrlPreview | null>>()
   private roomLoader = new Loader(async () => {
@@ -68,14 +69,18 @@ export class MatrixStore {
     for (const security of this.securities.values()) security.changed()
     for (const members of this.memberLists.values()) members.changed()
     for (const threads of this.threads.values()) for (const thread of threads.values()) thread.changed()
+    for (const pinned of this.pinnedLists.values()) pinned.changed()
   }
 
   apply(entry: LogEntry) {
     for (const event of entry.events) {
       if (event.type === 'timeline_added' || event.type === 'timeline_filled' || event.type === 'timeline_changed') {
-        // Any may be of a thread, or change its root.
+        // Any may be of a thread, or change its root; or be pinned.
         for (const thread of this.threads.get(event.room)?.values() ?? []) thread.changed()
+        this.pinnedLists.get(event.room)?.changed()
       }
+      // What is pinned is of the room's state.
+      if (event.type === 'rooms_changed') for (const room of event.rooms) this.pinnedLists.get(room)?.changed()
       switch (event.type) {
         case 'rooms_changed':
           this.roomLoader.invalidate()
@@ -152,6 +157,16 @@ export class MatrixStore {
       this.memberLists.set(room, members)
     }
     return members
+  }
+
+  /** The room's pinned events, of those stored, loaded on first use. */
+  pinned(room: RoomId): Pinned {
+    let pinned = this.pinnedLists.get(room)
+    if (!pinned) {
+      pinned = new Pinned(room, this.server)
+      this.pinnedLists.set(room, pinned)
+    }
+    return pinned
   }
 
   /** The thread of the room whose root is `root`, loaded on first use. */
@@ -481,6 +496,33 @@ export class Timeline {
     } finally {
       this.loadingEarlier = false
     }
+  }
+}
+
+/** A room's pinned events, of those stored, in the order pinned, as its
+ * client has them: loaded again as the room or its timeline changes. */
+export class Pinned {
+  /** `null` until loaded. */
+  readonly events = signal<readonly RoomEvent[] | null>(null)
+  readonly error = signal<string | null>(null)
+  private loader = new Loader(async () => {
+    try {
+      this.events.value = (await query(this.server, { type: 'list_pinned', room: this.room }, 'pinned')).events
+      this.error.value = null
+    } catch (error) {
+      this.error.value = (error as Error).message
+    }
+  })
+
+  constructor(
+    readonly room: RoomId,
+    private readonly server: Requester,
+  ) {
+    this.loader.invalidate()
+  }
+
+  changed() {
+    this.loader.invalidate()
   }
 }
 

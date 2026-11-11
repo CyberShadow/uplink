@@ -70,6 +70,7 @@ function isResendable(body: ClientRequest): boolean {
     case 'list_room_events':
     case 'list_edits':
     case 'list_thread':
+    case 'list_pinned':
     case 'preview_url':
     case 'search_room':
     case 'list_receipts':

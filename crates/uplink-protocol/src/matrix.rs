@@ -61,6 +61,10 @@ pub struct Room {
     /// account's push rules (SPEC §9.2).
     pub notifying: u32,
     pub highlighted: u32,
+    /// The events pinned, in the order pinned (Matrix event ids).
+    pub pinned: Vec<String>,
+    /// Whether the account may pin and unpin events.
+    pub may_pin: bool,
     /// The latest event's time, ms since the Unix epoch.
     pub last_event_ts: Option<i64>,
     pub read_up_to: Option<ReadMarker>,
@@ -270,6 +274,9 @@ pub enum MatrixContent {
     Name { name: String },
     /// Sets the room's topic (`m.room.topic`); empty takes it away.
     Topic { topic: String },
+    /// Pins the room's event `event`, or unpins it
+    /// (`m.room.pinned_events`, of the events pinned when it is sent).
+    Pin { event: String, pinned: bool },
     /// Invites, kicks, bans or unbans `user`, a Matrix user id.
     Member {
         user: String,

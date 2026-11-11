@@ -429,6 +429,17 @@ impl Syncer {
             avatar: avatar(&room).await?,
             children: space_children(&room).await?,
             topic: room.topic().filter(|t| !t.trim().is_empty()),
+            pinned: room
+                .pinned_event_ids()
+                .unwrap_or_default()
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            // Of a room invited to, by the default levels: not.
+            may_pin: room.power_levels_or_default().await.user_can_send_state(
+                room.own_user_id(),
+                matrix_sdk::ruma::events::StateEventType::RoomPinnedEvents,
+            ),
             joined_members: room.joined_members_count(),
             version: room
                 .version()
@@ -1013,6 +1024,22 @@ impl Sender {
                 .send_state_event_raw("m.room.topic", "", json!({ "topic": topic }))
                 .await
                 .map(|sent| sent.event_id),
+            MatrixContent::Pin { event, pinned } => {
+                // Of the events pinned now, as the client has them: others
+                // pinned meanwhile stay.
+                let now: Vec<String> = room
+                    .pinned_event_ids()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect();
+                let Some(list) = pins(&now, event, *pinned) else {
+                    return Ok(Ok(None));
+                };
+                room.send_state_event_raw("m.room.pinned_events", "", json!({ "pinned": list }))
+                    .await
+                    .map(|sent| sent.event_id)
+            }
             MatrixContent::Member {
                 user,
                 action,
@@ -1069,6 +1096,17 @@ impl Sender {
             .observe(self.account.clone(), observation)
             .await
             .map(drop)
+    }
+}
+
+/// The events pinned once `event` is pinned (last), or unpinned: `None`
+/// if it is so already.
+pub fn pins(now: &[String], event: &str, pinned: bool) -> Option<Vec<String>> {
+    let has = now.iter().any(|e| e == event);
+    match (pinned, has) {
+        (true, false) => Some(now.iter().cloned().chain([event.to_owned()]).collect()),
+        (false, true) => Some(now.iter().filter(|e| *e != event).cloned().collect()),
+        (true, true) | (false, false) => None,
     }
 }
 

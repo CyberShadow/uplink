@@ -69,6 +69,8 @@ describe('roomTree', () => {
     joined_members: 2,
     notifying: 0,
     highlighted: 0,
+    pinned: [],
+    may_pin: false,
     ...fields,
   })
   const space = (name: string, children: Room[], fields: Partial<Room> = {}) =>

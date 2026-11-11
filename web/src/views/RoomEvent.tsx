@@ -84,6 +84,14 @@ export function EventRow(props: {
       action: () => matrix.send(room.id, { type: 'redaction', event: event.event_id }),
     })
   }
+  if (room.membership === 'joined' && room.may_pin && message && !event.redacted && !deleting) {
+    const pinned = room.pinned.includes(event.event_id)
+    actions.push({
+      label: pinned ? 'Unpin' : 'Pin',
+      icon: 'pin',
+      action: () => matrix.send(room.id, { type: 'pin', event: event.event_id, pinned: !pinned }),
+    })
+  }
   actions.push({ label: source ? 'Hide source' : 'View source', icon: 'code', action: () => setSource(!source) })
   // Reacts with `key`, unless the account has already: then takes it back.
   const toggle = (key: string) => {

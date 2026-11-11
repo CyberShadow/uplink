@@ -383,6 +383,32 @@
   font-weight: 600;
 }
 
+/* Under the header: a pinned message, which a click shows. */
+.pinned {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 16px;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pinned svg {
+  flex: none;
+  color: var(--muted);
+}
+
+.pinned:hover {
+  background: var(--hover);
+}
+
 .iconButton {
   display: flex;
   padding: 4px;

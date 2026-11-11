@@ -86,6 +86,16 @@ impl Db {
     }
 
     async fn sync_events(&self, events: Vec<ObservedEvent>, own_receipts: &[&str]) -> TxLogId {
+        self.sync_room(events, own_receipts, &[]).await
+    }
+
+    /// Syncs `events`, the room's `pinned` events those.
+    async fn sync_room(
+        &self,
+        events: Vec<ObservedEvent>,
+        own_receipts: &[&str],
+        pinned: &[&str],
+    ) -> TxLogId {
         self.observe(Synced {
             next_batch: "next".into(),
             rooms: vec![ObservedRoom {
@@ -100,6 +110,8 @@ impl Db {
                 avatar: None,
                 children: vec![],
                 topic: None,
+                pinned: pinned.iter().map(|p| p.to_string()).collect(),
+                may_pin: true,
                 joined_members: 2,
                 version: "11".into(),
             }],
@@ -255,6 +267,47 @@ async fn unread_messages_that_notify_or_highlight_are_counted() {
     db.matrix.mark_read(room.id, events[2].id).await.unwrap();
     let room = db.room().await;
     assert_eq!((room.notifying, room.highlighted), (0, 0));
+}
+
+#[tokio::test]
+async fn pinned_events_are_listed_in_the_order_pinned() {
+    let db = Db::new();
+    db.sync(&[("$1", "@bob:x"), ("$2", "@bob:x")], &[]).await;
+    let room = db.room().await;
+    assert!(room.pinned.is_empty());
+    // One not stored is pinned too, but not listed.
+    let entry = db.sync_room(vec![], &[], &["$2", "$gone", "$1"]).await;
+    assert!(db
+        .events_of(entry)
+        .iter()
+        .any(|e| matches!(e, ServerEvent::RoomsChanged(_))));
+    assert_eq!(db.room().await.pinned, ["$2", "$gone", "$1"]);
+    assert!(db.room().await.may_pin);
+    let ServerResponse::Pinned { events, .. } = db.matrix.list_pinned(room.id).await.unwrap()
+    else {
+        panic!()
+    };
+    let ids: Vec<_> = events.iter().map(|e| e.event_id.as_str()).collect();
+    assert_eq!(ids, ["$2", "$1"]);
+
+    // Pinning one not stored, or not an event id, is refused.
+    let pin = |event: &str| uplink_protocol::matrix::MatrixContent::Pin {
+        event: event.into(),
+        pinned: true,
+    };
+    assert!(db.matrix.send_message(room.id, pin("$gone")).await.is_err());
+    assert!(db.matrix.send_message(room.id, pin("nope")).await.is_err());
+    db.matrix.send_message(room.id, pin("$1")).await.unwrap();
+}
+
+#[test]
+fn pins_keep_others_pinned_meanwhile() {
+    use crate::sync::pins;
+    let now = ["$a".to_owned(), "$b".to_owned()];
+    assert_eq!(pins(&now, "$c", true).unwrap(), ["$a", "$b", "$c"]);
+    assert_eq!(pins(&now, "$a", false).unwrap(), ["$b"]);
+    assert_eq!(pins(&now, "$a", true), None, "pinned already");
+    assert_eq!(pins(&now, "$c", false), None, "not pinned");
 }
 
 #[tokio::test]
@@ -446,6 +499,8 @@ mod membership {
                     avatar: None,
                     children: vec![],
                     topic: None,
+                    pinned: vec![],
+                    may_pin: false,
                     joined_members: 2,
                     version: "11".into(),
                 }],

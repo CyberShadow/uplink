@@ -1484,6 +1484,31 @@ async fn members_are_listed_and_managed_and_the_room_renamed() {
     })
     .await;
 
+    // Pinning an event, and unpinning it, as a moderator may.
+    eventually("uplink to see it may pin", || async {
+        uplink.room(bob_room.room_id()).await?.may_pin.then_some(())
+    })
+    .await;
+    let pinned = uplink
+        .timeline(&room)
+        .await
+        .last()
+        .unwrap()
+        .event_id
+        .clone();
+    for pin in [true, false] {
+        send(MatrixContent::Pin {
+            event: pinned.clone(),
+            pinned: pin,
+        })
+        .await;
+        let want = if pin { vec![pinned.clone()] } else { vec![] };
+        eventually("the pins to sync back", || async {
+            (uplink.room(bob_room.room_id()).await?.pinned == want).then_some(())
+        })
+        .await;
+    }
+
     let membership_of = |user: &'static str, wanted: MemberState| {
         let members = &members;
         async move {

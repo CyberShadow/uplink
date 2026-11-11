@@ -74,6 +74,11 @@ pub struct ObservedRoom {
     pub children: Vec<SpaceChild>,
     /// `m.room.topic`, if set and not empty.
     pub topic: Option<String>,
+    /// The events pinned (`m.room.pinned_events`), in its order.
+    pub pinned: Vec<String>,
+    /// Whether the account may pin and unpin events, by the room's power
+    /// levels.
+    pub may_pin: bool,
     /// How many members have joined, as the homeserver counts them.
     pub joined_members: u64,
     /// The room version, whose rules redact its events: the SDK's
@@ -329,7 +334,8 @@ impl Observation for Synced {
 }
 
 /// The room's id, and whether it is new or its name, encryption,
-/// membership, type, avatar, topic or member count changed.
+/// membership, type, avatar, topic, pinned events, power to pin or
+/// member count changed.
 fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(RoomId, bool)> {
     let membership = membership_str(room.membership);
     type Stored = (
@@ -341,10 +347,14 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
         Option<String>,
         Option<String>,
         u64,
+        String,
+        bool,
     );
+    let pinned = serde_json::to_string(&room.pinned)?;
     let existing: Option<Stored> = tx
         .query_row(
-            "SELECT id, name, encrypted, membership, space, avatar, topic, joined_members
+            "SELECT id, name, encrypted, membership, space, avatar, topic, joined_members, pinned,
+                    may_pin
              FROM matrix_room WHERE account_id = ?1 AND room_id = ?2",
             [account, &room.room_id],
             |r| {
@@ -357,24 +367,40 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                     r.get(5)?,
                     r.get(6)?,
                     r.get(7)?,
+                    r.get(8)?,
+                    r.get(9)?,
                 ))
             },
         )
         .optional()?;
     Ok(match existing {
-        Some((id, name, encrypted, old_membership, space, avatar, topic, joined)) => {
+        Some((
+            id,
+            name,
+            encrypted,
+            old_membership,
+            space,
+            avatar,
+            topic,
+            joined,
+            old_pinned,
+            may_pin,
+        )) => {
             let changed = name != room.name
                 || encrypted != room.encrypted
                 || old_membership != membership
                 || space != room.space
                 || avatar != room.avatar
                 || topic != room.topic
-                || joined != room.joined_members;
+                || joined != room.joined_members
+                || old_pinned != pinned
+                || may_pin != room.may_pin;
             if changed {
                 // A membership asked for is had, however it came about.
                 tx.execute(
                     "UPDATE matrix_room SET name = ?1, encrypted = ?2, membership = ?3,
-                       space = ?4, avatar = ?5, topic = ?6, joined_members = ?7,
+                       space = ?4, avatar = ?5, topic = ?6, joined_members = ?7, pinned = ?9,
+                       may_pin = ?10,
                        membership_by = CASE WHEN desired = ?3 THEN NULL ELSE membership_by END,
                        membership_error = CASE WHEN desired = ?3 THEN NULL ELSE membership_error END,
                        desired = CASE WHEN desired = ?3 THEN NULL ELSE desired END
@@ -387,7 +413,9 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                         room.avatar,
                         room.topic,
                         room.joined_members,
-                        id
+                        id,
+                        pinned,
+                        room.may_pin,
                     ],
                 )?;
             }
@@ -397,8 +425,8 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
             let id = tx.query_row(
                 "INSERT INTO matrix_room
                    (account_id, room_id, name, encrypted, membership, space, avatar, topic,
-                    joined_members)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) RETURNING id",
+                    joined_members, pinned, may_pin)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) RETURNING id",
                 params![
                     account,
                     room.room_id,
@@ -408,7 +436,9 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                     room.space,
                     room.avatar,
                     room.topic,
-                    room.joined_members
+                    room.joined_members,
+                    pinned,
+                    room.may_pin,
                 ],
                 |r| r.get(0),
             )?;
@@ -910,7 +940,7 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
                     (SELECT json_group_array(child) FROM
                        (SELECT child FROM matrix_space_child c WHERE c.space = r.id
                         ORDER BY child_order IS NULL, child_order, child)),
-                    r.topic, r.joined_members, {read_pos},
+                    r.topic, r.joined_members, {read_pos}, r.pinned, r.may_pin,
                     -- Of threads too, as Element counts them.
                     (SELECT count(*) FROM matrix_event e WHERE {unread} AND e.notify),
                     (SELECT count(*) FROM matrix_event e WHERE {unread} AND e.highlight)
@@ -952,8 +982,11 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
                     .expect("json_group_array makes an array of strings"),
                 topic: r.get(14)?,
                 joined_members: r.get(15)?,
-                notifying: r.get(17)?,
-                highlighted: r.get(18)?,
+                may_pin: r.get(18)?,
+                notifying: r.get(19)?,
+                highlighted: r.get(20)?,
+                pinned: serde_json::from_str(&r.get::<_, String>(17)?)
+                    .expect("pinned is a JSON array of strings"),
             })
         })?
         .collect::<Result<_, _>>()?)
@@ -1487,6 +1520,22 @@ pub fn search(
     let more = events.len() > limit as usize;
     events.truncate(limit as usize);
     Ok((events, more))
+}
+
+/// Of the room's pinned events, those stored and listed, in the order
+/// pinned.
+pub fn pinned(tx: &Transaction, room: RoomId) -> Result<Vec<RoomEvent>> {
+    query_events(
+        tx,
+        room,
+        &format!(
+            "SELECT {COLUMNS} FROM matrix_room r, json_each(r.pinned) p
+             JOIN matrix_event e ON e.room = r.id AND e.event_id = p.value
+             WHERE r.id = ?1 AND {LISTED}
+             ORDER BY p.key"
+        ),
+        params![room.0],
+    )
 }
 
 /// The thread whose root is `root`, if the main timeline lists it: the
