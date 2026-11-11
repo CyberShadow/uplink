@@ -73,6 +73,17 @@ accounts: []
   #   smtp:
   #     host: smtp.example.org
 
+  # — A mail account read by POP3 — as the IMAP one, but ports 995 and 110.
+  # Mail is downloaded and left on the server, unless
+  # `delete_after_download: true`.
+  # - id: alice-pop
+  #   kind: pop3
+  #   address: alice@example.net
+  #   pop3:
+  #     host: pop.example.net
+  #   smtp:
+  #     host: smtp.example.net
+
   # — Matrix — run `uplink matrix pair --account alice-matrix`.
   # - id: alice-matrix
   #   kind: matrix

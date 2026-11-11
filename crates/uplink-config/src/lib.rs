@@ -96,6 +96,7 @@ pub enum AccountConfig {
     Gmail(GmailAccountConfig),
     M365(M365AccountConfig),
     Imap(ImapAccountConfig),
+    Pop3(Pop3AccountConfig),
     Matrix(MatrixAccountConfig),
 }
 
@@ -105,6 +106,7 @@ impl AccountConfig {
             AccountConfig::Gmail(account) => &account.id,
             AccountConfig::M365(account) => &account.id,
             AccountConfig::Imap(account) => &account.id,
+            AccountConfig::Pop3(account) => &account.id,
             AccountConfig::Matrix(account) => &account.id,
         }
     }
@@ -115,12 +117,21 @@ impl AccountConfig {
         match self {
             AccountConfig::Gmail(account) => account.oauth.token_file = token_file(&account.id),
             AccountConfig::M365(account) => account.oauth.token_file = token_file(&account.id),
-            AccountConfig::Imap(account) => {
-                account.password_file = data_dir
-                    .join("accounts")
-                    .join(format!("{}.password", account.id));
-                if let Some(oauth) = &mut account.oauth {
-                    oauth.token_file = token_file(&account.id);
+            AccountConfig::Imap(ImapAccountConfig {
+                id,
+                oauth,
+                password_file,
+                ..
+            })
+            | AccountConfig::Pop3(Pop3AccountConfig {
+                id,
+                oauth,
+                password_file,
+                ..
+            }) => {
+                *password_file = data_dir.join("accounts").join(format!("{id}.password"));
+                if let Some(oauth) = oauth {
+                    oauth.token_file = token_file(id);
                 }
             }
             AccountConfig::Matrix(account) => {
@@ -236,25 +247,83 @@ pub struct ImapAccountConfig {
 }
 
 impl ImapAccountConfig {
-    /// The name the servers know the account by.
-    pub fn user(&self) -> &str {
-        self.user.as_deref().unwrap_or(&self.address)
+    pub fn login(&self) -> Login<'_> {
+        Login {
+            id: &self.id,
+            address: &self.address,
+            user: self.user.as_deref().unwrap_or(&self.address),
+            smtp: &self.smtp,
+            oauth: self.oauth.as_ref(),
+            password_file: &self.password_file,
+        }
     }
 
     /// The IMAP server's port: 993, or 143 for STARTTLS, unless set.
     pub fn imap_port(&self) -> u16 {
-        self.imap.port.unwrap_or(match self.imap.security {
-            Security::Tls => 993,
-            Security::Starttls => 143,
-        })
+        self.imap.port_or(993, 143)
+    }
+}
+
+/// An account at any mail server, read by POP3 and sent from by SMTP
+/// (SPEC §8.12): as an IMAP account, but its mail downloaded.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Pop3AccountConfig {
+    pub id: String,
+    pub address: String,
+    /// The name the servers know the account by, if not its address.
+    #[serde(default)]
+    pub user: Option<String>,
+    pub pop3: MailServer,
+    pub smtp: MailServer,
+    /// Whether mail is deleted from the server once uplink has it, rather
+    /// than left there for other clients.
+    #[serde(default)]
+    pub delete_after_download: bool,
+    /// As an IMAP account's.
+    #[serde(default)]
+    pub oauth: Option<OAuthConfig>,
+    /// `<data_dir>/accounts/<id>.password`.
+    #[serde(skip)]
+    pub password_file: PathBuf,
+}
+
+impl Pop3AccountConfig {
+    pub fn login(&self) -> Login<'_> {
+        Login {
+            id: &self.id,
+            address: &self.address,
+            user: self.user.as_deref().unwrap_or(&self.address),
+            smtp: &self.smtp,
+            oauth: self.oauth.as_ref(),
+            password_file: &self.password_file,
+        }
     }
 
+    /// The POP3 server's port: 995, or 110 for STARTTLS, unless set.
+    pub fn pop3_port(&self) -> u16 {
+        self.pop3.port_or(995, 110)
+    }
+}
+
+/// What an account at a mail server, IMAP or POP3, signs in and sends
+/// with.
+#[derive(Debug, Clone, Copy)]
+pub struct Login<'a> {
+    pub id: &'a str,
+    pub address: &'a str,
+    /// The name the servers know the account by.
+    pub user: &'a str,
+    pub smtp: &'a MailServer,
+    /// XOAUTH2 if set, else the password `uplink password` sealed.
+    pub oauth: Option<&'a OAuthConfig>,
+    pub password_file: &'a Path,
+}
+
+impl Login<'_> {
     /// The SMTP server's port: 465, or 587 for STARTTLS, unless set.
     pub fn smtp_port(&self) -> u16 {
-        self.smtp.port.unwrap_or(match self.smtp.security {
-            Security::Tls => 465,
-            Security::Starttls => 587,
-        })
+        self.smtp.port_or(465, 587)
     }
 }
 
@@ -267,6 +336,16 @@ pub struct MailServer {
     pub port: Option<u16>,
     #[serde(default)]
     pub security: Security,
+}
+
+impl MailServer {
+    /// `port`, else the protocol's port for TLS or for STARTTLS.
+    fn port_or(&self, tls: u16, starttls: u16) -> u16 {
+        self.port.unwrap_or(match self.security {
+            Security::Tls => tls,
+            Security::Starttls => starttls,
+        })
+    }
 }
 
 /// How a connection to a mail server is secured. Either way it is TLS:
@@ -606,7 +685,13 @@ mod tests {
                 .iter()
                 .map(AccountConfig::id)
                 .collect::<Vec<_>>(),
-            ["alice-gmail", "alice-m365", "alice-mail", "alice-matrix"]
+            [
+                "alice-gmail",
+                "alice-m365",
+                "alice-mail",
+                "alice-pop",
+                "alice-matrix"
+            ]
         );
         assert_eq!(
             config.server.tls.unwrap().cert,
@@ -650,6 +735,12 @@ accounts:
     imap: { host: imap.example.org }
     smtp: { host: smtp.example.org }
 
+  - id: alice-pop
+    kind: pop3
+    address: alice@example.net
+    pop3: { host: pop.example.net }
+    smtp: { host: smtp.example.net }
+
   - id: alice-matrix
     kind: matrix
     homeserver: "https://matrix.example.org"
@@ -669,7 +760,7 @@ accounts:
             cfg.master_key_file(),
             PathBuf::from("/var/lib/uplink/master.key")
         );
-        assert_eq!(cfg.accounts.len(), 4);
+        assert_eq!(cfg.accounts.len(), 5);
 
         let AccountConfig::Gmail(ref g) = cfg.accounts[0] else {
             panic!("expected gmail account");
@@ -701,8 +792,8 @@ accounts:
         };
         // The address signs in, over TLS from the start, with the password
         // `uplink password` seals.
-        assert_eq!(i.user(), "alice@example.org");
-        assert_eq!((i.imap_port(), i.smtp_port()), (993, 465));
+        assert_eq!(i.login().user, "alice@example.org");
+        assert_eq!((i.imap_port(), i.login().smtp_port()), (993, 465));
         assert_eq!(i.imap.security, Security::Tls);
         assert_eq!(i.oauth, None);
         assert_eq!(
@@ -710,7 +801,13 @@ accounts:
             PathBuf::from("/var/lib/uplink/accounts/alice-mail.password")
         );
 
-        let AccountConfig::Matrix(ref mx) = cfg.accounts[3] else {
+        let AccountConfig::Pop3(ref p) = cfg.accounts[3] else {
+            panic!("expected pop3 account");
+        };
+        assert!(!p.delete_after_download);
+        assert_eq!(p.pop3_port(), 995);
+
+        let AccountConfig::Matrix(ref mx) = cfg.accounts[4] else {
             panic!("expected matrix account");
         };
         assert_eq!(mx.mxid, "@alice:example.org");
@@ -808,8 +905,8 @@ accounts:
         let AccountConfig::Imap(ref i) = cfg.accounts[0] else {
             panic!("expected imap account");
         };
-        assert_eq!(i.user(), "alice");
-        assert_eq!((i.imap_port(), i.smtp_port()), (143, 2525));
+        assert_eq!(i.login().user, "alice");
+        assert_eq!((i.imap_port(), i.login().smtp_port()), (143, 2525));
         let oauth = i.oauth.as_ref().unwrap();
         assert_eq!(oauth.client_secret, None);
         assert_eq!(
@@ -822,6 +919,47 @@ accounts:
         std::fs::write(f.path(), plain).unwrap();
         let err = format!("{:#}", Config::load(f.path()).unwrap_err());
         assert!(err.contains("none"), "{err}");
+    }
+
+    #[test]
+    fn pop3_accounts_leave_mail_on_the_server_unless_told() {
+        let yaml = r#"
+server:
+  basic_auth:
+    user: alice
+    password_bcrypt: "$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+data_dir: /tmp/uplink
+accounts:
+  - id: old
+    kind: pop3
+    address: alice@example.org
+    pop3: { host: pop.example.org }
+    smtp: { host: smtp.example.org, security: starttls }
+  - id: older
+    kind: pop3
+    address: alice@example.net
+    pop3: { host: pop.example.net, security: starttls }
+    smtp: { host: smtp.example.net }
+    delete_after_download: true
+"#;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(yaml.as_bytes()).unwrap();
+        let cfg = Config::load(f.path()).unwrap();
+        let AccountConfig::Pop3(ref old) = cfg.accounts[0] else {
+            panic!("expected pop3 account");
+        };
+        assert!(!old.delete_after_download);
+        assert_eq!((old.pop3_port(), old.login().smtp_port()), (995, 587));
+        assert_eq!(old.login().user, "alice@example.org");
+        assert_eq!(
+            old.password_file,
+            PathBuf::from("/tmp/uplink/accounts/old.password")
+        );
+        let AccountConfig::Pop3(ref older) = cfg.accounts[1] else {
+            panic!("expected pop3 account");
+        };
+        assert!(older.delete_after_download);
+        assert_eq!((older.pop3_port(), older.login().smtp_port()), (110, 465));
     }
 
     #[test]

@@ -31,7 +31,7 @@ use uplink_calendar::service::Calendar;
 use uplink_config::{
     AccountConfig, BasicAuthConfig, Config, ConfigChanged, ConfigSection, Watcher,
 };
-use uplink_email::{gmail, imap, m365, query::ConfiguredAccount, service::Mail};
+use uplink_email::{gmail, imap, m365, pop3, query::ConfiguredAccount, service::Mail};
 use uplink_matrix::service::Matrix;
 use uplink_protocol::{
     mail::MailProvider, ClientRequest, ErrorCode, Notice, ServerError, ServerResponse, TxLogId,
@@ -179,6 +179,12 @@ pub fn start_syncs(config: &Config, services: &Services) -> Result<()> {
                 info!(account = account.id, "starting IMAP sync");
                 tokio::spawn(sync.run());
             }
+            AccountConfig::Pop3(account) => {
+                let sync =
+                    pop3::sync::task(account, key.clone(), http.clone(), dispatcher.clone(), root)?;
+                info!(account = account.id, "starting POP3 sync");
+                tokio::spawn(sync.run());
+            }
             AccountConfig::Matrix(account) => {
                 let sync = uplink_matrix::sync::Sync::new(
                     account,
@@ -242,6 +248,11 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
                 address: imap.address.clone(),
                 provider: MailProvider::Imap,
             }),
+            AccountConfig::Pop3(pop3) => Some(ConfiguredAccount {
+                id: pop3.id.clone(),
+                address: pop3.address.clone(),
+                provider: MailProvider::Pop3,
+            }),
             AccountConfig::Matrix(_) => None,
         })
         .collect();
@@ -253,7 +264,10 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
                 id: matrix.id.clone(),
                 mxid: matrix.mxid.clone(),
             }),
-            AccountConfig::Gmail(_) | AccountConfig::M365(_) | AccountConfig::Imap(_) => None,
+            AccountConfig::Gmail(_)
+            | AccountConfig::M365(_)
+            | AccountConfig::Imap(_)
+            | AccountConfig::Pop3(_) => None,
         })
         .collect();
     Ok(Services {

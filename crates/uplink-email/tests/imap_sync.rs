@@ -6,224 +6,27 @@ mod common;
 
 use common::{
     eventually, message,
+    stalwart::{append, find, store, Stalwart, ALICE, BOB},
     uplink::{label_set, Uplink},
 };
 use futures_util::TryStreamExt;
-use std::{path::Path, process::Stdio, sync::Arc, time::Duration};
-use tokio_rustls::{rustls::pki_types::CertificateDer, TlsConnector};
-use uplink_config::{ImapAccountConfig, MailServer, OAuthConfig, Security};
-use uplink_email::imap::{
-    session::{self, Connection, SignIn},
-    smtp,
-    sync::ImapSync,
+use std::time::Duration;
+use uplink_config::{ImapAccountConfig, OAuthConfig};
+use uplink_email::{
+    imap::{session, sync::ImapSync},
+    mail_server::{
+        sign_in::{self, SignIn},
+        smtp,
+    },
+    oauth,
 };
-use uplink_email::oauth;
 use uplink_protocol::{mail::MailProvider, ServerResponse};
-use uplink_storage::seal::MasterKey;
 
-const ALICE: &str = "alice@example.com";
-const BOB: &str = "bob@example.com";
-
-/// A Stalwart of Alice's and Bob's, its IMAP and SMTP over TLS by a
-/// certificate of the test's.
-struct Stalwart {
-    dir: std::path::PathBuf,
-    imap: u16,
-    smtp: u16,
-    /// Its HTTP, for OAuth.
-    http: u16,
-    tls: TlsConnector,
-    key: Arc<MasterKey>,
-    _server: tokio::process::Child,
-}
-
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
-impl Stalwart {
-    async fn start(dir: &Path) -> Self {
-        let stalwart = std::env::var_os("UPLINK_STALWART")
-            .expect("UPLINK_STALWART must name the stalwart binary (the dev shell sets it)");
-        let dir = dir.join("stalwart");
-        std::fs::create_dir_all(dir.join("data")).unwrap();
-        let rcgen::CertifiedKey { cert, key_pair } =
-            rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-        std::fs::write(dir.join("cert.pem"), cert.pem()).unwrap();
-        std::fs::write(dir.join("key.pem"), key_pair.serialize_pem()).unwrap();
-        let (imap, smtp, http) = (free_port(), free_port(), free_port());
-        let d = dir.display();
-        let config = format!(
-            r#"
-[server]
-hostname = "mail.example.com"
-[server.listener.imaps]
-bind = "127.0.0.1:{imap}"
-protocol = "imap"
-tls.implicit = true
-[server.listener.submissions]
-bind = "127.0.0.1:{smtp}"
-protocol = "smtp"
-tls.implicit = true
-[server.listener.http]
-bind = "127.0.0.1:{http}"
-protocol = "http"
-[certificate.default]
-cert = "%{{file:{d}/cert.pem}}%"
-private-key = "%{{file:{d}/key.pem}}%"
-default = true
-[storage]
-data = "rocksdb"
-fts = "rocksdb"
-blob = "rocksdb"
-lookup = "rocksdb"
-directory = "memory"
-[store.rocksdb]
-type = "rocksdb"
-path = "{d}/data"
-[directory.memory]
-type = "memory"
-[[directory.memory.principals]]
-name = "alice"
-class = "individual"
-secret = "alice-secret"
-email = ["{ALICE}"]
-[[directory.memory.principals]]
-name = "bob"
-class = "individual"
-secret = "bob-secret"
-email = ["{BOB}"]
-[spam-filter]
-enable = false
-[tracer.log]
-type = "log"
-level = "info"
-path = "{d}"
-prefix = "stalwart.log"
-enable = true
-"#
-        );
-        std::fs::write(dir.join("config.toml"), config).unwrap();
-        let server = tokio::process::Command::new(stalwart)
-            .arg("--config")
-            .arg(dir.join("config.toml"))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
-        let tls = session::tls(vec![CertificateDer::from(cert.der().to_vec())]).unwrap();
-        let key = Arc::new(MasterKey::open(&dir.join("master.key")).unwrap());
-        let stalwart = Self {
-            dir,
-            imap,
-            smtp,
-            http,
-            tls,
-            key,
-            _server: server,
-        };
-        for _ in 0..300 {
-            if tokio::net::TcpStream::connect(("127.0.0.1", imap))
-                .await
-                .is_ok()
-                && tokio::net::TcpStream::connect(("127.0.0.1", smtp))
-                    .await
-                    .is_ok()
-            {
-                return stalwart;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        panic!("Stalwart did not start");
-    }
-
-    /// `user`'s account, its password sealed for uplink.
-    fn account(&self, user: &str) -> ImapAccountConfig {
-        let account = ImapAccountConfig {
-            id: format!("test-{user}"),
-            address: format!("{user}@example.com"),
-            user: Some(user.into()),
-            imap: MailServer {
-                host: "localhost".into(),
-                port: Some(self.imap),
-                security: Security::Tls,
-            },
-            smtp: MailServer {
-                host: "localhost".into(),
-                port: Some(self.smtp),
-                security: Security::Tls,
-            },
-            oauth: None,
-            password_file: self.dir.join(format!("{user}.password")),
-        };
-        session::store_password(&self.key, &account, &format!("{user}-secret")).unwrap();
-        account
-    }
-
-    fn sign_in(&self, account: &ImapAccountConfig) -> SignIn {
-        SignIn::of(account, self.key.clone(), reqwest::Client::new())
-    }
-
-    /// uplink's side of Alice's account.
-    fn provider(&self) -> ImapSync {
-        let account = self.account("alice");
-        ImapSync::new(account.clone(), self.sign_in(&account), self.tls.clone())
-    }
-
-    /// Another mail client, signed in as `user`.
-    async fn client(&self, user: &str) -> Connection {
-        let account = self.account(user);
-        session::connect(&account, &self.sign_in(&account), &self.tls)
-            .await
-            .unwrap()
-    }
-}
-
-async fn append(c: &mut Connection, folder: &str, raw: &[u8]) {
-    c.session.append(folder, None, None, raw).await.unwrap();
-}
-
-/// The UID and flags of the message with `tag` in its subject, in
-/// `folder`, if there are both.
-async fn find(c: &mut Connection, folder: &str, tag: &str) -> Option<(u32, Vec<String>)> {
-    if let Err(e) = c.session.select(folder).await {
-        assert!(format!("{e}").contains("NONEXISTENT"), "{e}");
-        return None;
-    }
-    let uids = c
-        .session
-        .uid_search(format!("SUBJECT \"{tag} \""))
-        .await
-        .unwrap();
-    let uid = *uids.iter().next()?;
-    let fetches: Vec<_> = c
-        .session
-        .uid_fetch(uid.to_string(), "(UID FLAGS)")
-        .await
-        .unwrap()
-        .try_collect()
-        .await
-        .unwrap();
-    let flags = fetches[0].flags().map(|f| format!("{f:?}")).collect();
-    Some((uid, flags))
-}
-
-async fn store(c: &mut Connection, folder: &str, uid: u32, query: &str) {
-    c.session.select(folder).await.unwrap();
-    let _: Vec<_> = c
-        .session
-        .uid_store(uid.to_string(), query)
-        .await
-        .unwrap()
-        .try_collect()
-        .await
-        .unwrap();
+/// uplink's side of Alice's account.
+fn provider(stalwart: &Stalwart) -> ImapSync {
+    let account = stalwart.account("alice");
+    let sign_in = stalwart.sign_in(account.login());
+    ImapSync::new(account, sign_in, stalwart.tls.clone())
 }
 
 fn dispatched(response: ServerResponse) -> uplink_protocol::TxLogId {
@@ -242,7 +45,7 @@ async fn mirrors_the_folders_and_pushes_changes() {
 
     // Mail present before the first sync, and mail arriving afterwards.
     append(&mut other, "INBOX", &message("first", "hello world")).await;
-    let sync = uplink.start(stalwart.provider(), ALICE);
+    let sync = uplink.start(provider(&stalwart), ALICE);
     let first = uplink.arrived("first").await;
     assert_eq!(
         uplink.labels(first),
@@ -381,7 +184,7 @@ async fn mirrors_the_folders_and_pushes_changes() {
     let settled = uplink.settled().await;
     sync.abort();
     let _ = sync.await;
-    let sync = uplink.start(stalwart.provider(), ALICE);
+    let sync = uplink.start(provider(&stalwart), ALICE);
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(uplink.log_len(), settled, "the restarted sync re-synced");
     append(&mut other, "INBOX", &message("third", "after restart")).await;
@@ -397,7 +200,7 @@ async fn a_first_sync_lists_the_mailbox_in_steps() {
     for i in 0..120 {
         append(&mut other, "INBOX", &message(&format!("m{i:03}"), "")).await;
     }
-    let sync = uplink.start(stalwart.provider(), ALICE);
+    let sync = uplink.start(provider(&stalwart), ALICE);
     eventually("the listing to be done", || async {
         uplink.synced().then_some(())
     })
@@ -426,7 +229,7 @@ async fn sends_mail_by_smtp_and_files_it_in_sent() {
     let stalwart = Stalwart::start(uplink.dir.path()).await;
     let mut other = stalwart.client("alice").await;
     append(&mut other, "INBOX", &message("original", "lunch?")).await;
-    let sync = uplink.start(stalwart.provider(), ALICE);
+    let sync = uplink.start(provider(&stalwart), ALICE);
     let original = uplink.arrived("original").await;
     let (original_message, _, original_thread) = uplink.message_of(original);
 
@@ -519,9 +322,9 @@ async fn signs_in_by_xoauth2() {
         oauth: Some(oauth.clone()),
         ..stalwart.account("alice")
     };
-    let grant = session::grant(&account, &oauth);
+    let grant = sign_in::grant(account.login(), &oauth);
     oauth::store(&stalwart.key, &grant, refresh_token.into()).unwrap();
-    let sign_in = stalwart.sign_in(&account);
+    let sign_in = stalwart.sign_in(account.login());
     assert!(matches!(sign_in, SignIn::OAuth(_)));
 
     let mut alice = session::connect(&account, &sign_in, &stalwart.tls)
@@ -532,7 +335,7 @@ async fn signs_in_by_xoauth2() {
         "Message-ID: <oauth@uplink.test>\r\nFrom: {ALICE}\r\nTo: {BOB}\r\n\
          Date: Tue, 3 Nov 2026 10:00:00 +0000\r\nSubject: oauth \r\n\r\nhi\r\n"
     );
-    smtp::send(&account, &sign_in, &stalwart.tls, raw.as_bytes())
+    smtp::send(account.login(), &sign_in, &stalwart.tls, raw.as_bytes())
         .await
         .unwrap();
     eventually("the message to reach Bob", || async {

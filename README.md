@@ -156,7 +156,7 @@ uplink is young. What it connects to so far:
 
 |          | Supported                                   | Planned                                    |
 |----------|---------------------------------------------|--------------------------------------------|
-| Mail     | Gmail, Microsoft 365, any IMAP/SMTP server  | POP3, JMAP                                 |
+| Mail     | Gmail, Microsoft 365, any IMAP or POP3 server | JMAP                                     |
 | Calendar | Microsoft 365 (viewing)                     | Editing; Google Calendar, CalDAV, iCalendar feeds |
 | Chat     | Matrix, and every network bridged to it     |                                            |
 | To-dos   | uplink's own                                | Google Tasks, Microsoft To Do, CalDAV      |
@@ -265,7 +265,7 @@ the account up once restarted; changes made in Outlook arrive within
 labels too. The account's calendar, from a month ago to a year ahead,
 is under Calendar (`g c`), within 5 minutes of a change.
 
-### Connecting any other mail account (IMAP and SMTP)
+### Connecting any other mail account (IMAP or POP3, and SMTP)
 
 In `uplink.yaml`, uncomment the IMAP account and set `address` and the
 two servers' `host`. They are reached over TLS on ports 993 (IMAP) and
@@ -291,6 +291,13 @@ made if there is none. Read and starred are the `\Seen` and `\Flagged`
 flags, and other keywords are labels. Changes made in other mail
 clients arrive within 30 s. Sent mail goes by SMTP, and uplink files
 the copy in Sent itself.
+
+A server reached by POP3 instead takes the POP3 account of the example
+(`kind: pop3`, its `pop3` server on port 995, or 110 by STARTTLS), set
+up the same way. uplink then downloads the mail, within a minute of its
+arrival, and keeps its labels itself: nothing you do to it in uplink
+reaches the server. The mail is left on the server for other clients,
+unless the account says `delete_after_download: true`.
 
 ### Connecting a Matrix account
 

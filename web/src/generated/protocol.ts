@@ -350,7 +350,7 @@ listing: ListingProgress | null, labels: Array<Label>, };
 /**
  * Who keeps a mail account.
  */
-export type MailProvider = "gmail" | "m365" | "imap";
+export type MailProvider = "gmail" | "m365" | "imap" | "pop3";
 
 export type Label = { id: LabelId, 
 /**
@@ -1124,4 +1124,4 @@ exception: boolean, };
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "c039fcef885b7105"
+export const PROTOCOL_VERSION = "207975b6aadbc8ed"

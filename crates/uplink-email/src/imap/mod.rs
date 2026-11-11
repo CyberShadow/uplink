@@ -3,5 +3,4 @@
 
 mod names;
 pub mod session;
-pub mod smtp;
 pub mod sync;

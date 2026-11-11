@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::io::{AsyncBufReadExt, BufReader};
-use uplink_config::{AccountConfig, Config, M365AccountConfig};
+use uplink_config::{AccountConfig, Config, Login, M365AccountConfig};
 use uplink_email::{
-    gmail::oauth as gmail_oauth, imap::session as imap_session, m365::oauth as m365_oauth, oauth,
+    gmail::oauth as gmail_oauth, m365::oauth as m365_oauth, mail_server::sign_in, oauth,
 };
 use uplink_matrix::client;
 use uplink_storage::seal::MasterKey;
@@ -30,7 +30,7 @@ enum Command {
     /// Print the bcrypt hash of a password read from standard input, for
     /// `server.basic_auth.password_bcrypt`.
     HashPassword,
-    /// Set the password an IMAP account signs in to its servers with,
+    /// Set the password an IMAP or POP3 account signs in to its servers with,
     /// sealing it in the data directory; read from the terminal, or from
     /// standard input.
     Password {
@@ -115,22 +115,19 @@ fn set_password(config_path: &std::path::Path, id: &str) -> Result<()> {
         .accounts
         .iter()
         .find_map(|account| match account {
-            AccountConfig::Imap(imap) if imap.id == id => Some(imap),
+            AccountConfig::Imap(imap) if imap.id == id => Some(imap.login()),
+            AccountConfig::Pop3(pop3) if pop3.id == id => Some(pop3.login()),
             _ => None,
         })
-        .with_context(|| format!("no IMAP account {id} in {}", config_path.display()))?;
+        .with_context(|| format!("no IMAP or POP3 account {id} in {}", config_path.display()))?;
     anyhow::ensure!(
         account.oauth.is_none(),
         "{id} signs in with OAuth: authorize it with `uplink oauth init --account {id}`"
     );
     let key = MasterKey::open(&config.master_key_file())?;
-    let password = Prompt::new().secret(&format!(
-        "Password of {} at {}: ",
-        account.user(),
-        account.imap.host
-    ))?;
+    let password = Prompt::new().secret(&format!("Password of {} ({id}): ", account.user))?;
     anyhow::ensure!(!password.is_empty(), "no password given");
-    imap_session::store_password(&key, account, &password)?;
+    sign_in::store_password(&key, account, &password)?;
     println!(
         "The password is sealed in {}; a running uplink signs in with it from its next attempt.",
         account.password_file.display()
@@ -311,28 +308,8 @@ async fn oauth_init(config_path: &std::path::Path, id: &str) -> Result<()> {
             .await?;
             &account.oauth.token_file
         }
-        AccountConfig::Imap(account) => {
-            imap_session::authorize(
-                account,
-                &key,
-                |url| {
-                    println!(
-                        "Open this URL in a browser and sign in as {}:\n\n{url}\n",
-                        account.address
-                    );
-                    println!(
-                        "If the browser is on another machine, paste the URL it is redirected to here."
-                    );
-                },
-                oauth::read_pasted_url(),
-            )
-            .await?;
-            &account
-                .oauth
-                .as_ref()
-                .expect("authorize refuses accounts without OAuth")
-                .token_file
-        }
+        AccountConfig::Imap(account) => mail_server_init(account.login(), &key).await?,
+        AccountConfig::Pop3(account) => mail_server_init(account.login(), &key).await?,
         AccountConfig::M365(account) => {
             m365_init(account, &key).await?;
             &account.oauth.token_file
@@ -346,6 +323,29 @@ async fn oauth_init(config_path: &std::path::Path, id: &str) -> Result<()> {
         token_file.display()
     );
     Ok(())
+}
+
+/// An IMAP or POP3 account's authorization; returns where its token is.
+async fn mail_server_init<'a>(account: Login<'a>, key: &MasterKey) -> Result<&'a Path> {
+    sign_in::authorize(
+        account,
+        key,
+        |url| {
+            println!(
+                "Open this URL in a browser and sign in as {}:\n\n{url}\n",
+                account.address
+            );
+            println!(
+                "If the browser is on another machine, paste the URL it is redirected to here."
+            );
+        },
+        oauth::read_pasted_url(),
+    )
+    .await?;
+    Ok(&account
+        .oauth
+        .expect("authorize refuses accounts without OAuth")
+        .token_file)
 }
 
 /// Nothing listens at a public client's redirect URI, so the user copies

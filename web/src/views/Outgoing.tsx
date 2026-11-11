@@ -299,6 +299,7 @@ function providerName(provider: MailProvider | undefined): string {
     case 'm365':
       return 'Microsoft 365'
     case 'imap':
+    case 'pop3':
       return 'the mail server'
     case undefined:
       return 'the provider'

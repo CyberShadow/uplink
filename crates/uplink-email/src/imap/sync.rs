@@ -18,11 +18,15 @@
 
 use super::{
     names,
-    session::{self, Connection, SignIn},
-    smtp,
+    session::{self, Connection},
 };
 use crate::{
     account::{Account, Outgoing, Pending, Provider, SendError, SyncTask},
+    mail_server::{
+        self,
+        sign_in::{self, SignIn},
+        smtp,
+    },
     mailbox::{
         self, EntryLabels, LabelChange, LabelsPushed, LabelsRefused, MailboxObserved, NewEntry,
         ObservedLabel, Rekeyed,
@@ -34,7 +38,7 @@ use async_imap::{
     types::{Fetch, Flag, NameAttribute},
 };
 use futures_util::TryStreamExt;
-use mail_parser::{HeaderName, MessageParser};
+use mail_parser::MessageParser;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -121,8 +125,8 @@ pub fn task(
     Ok(SyncTask::new(
         ImapSync::new(
             config.clone(),
-            SignIn::of(config, key, http),
-            session::tls(vec![])?,
+            SignIn::of(config.login(), key, http),
+            sign_in::tls(vec![])?,
         ),
         config.id.clone(),
         config.address.clone(),
@@ -235,7 +239,7 @@ impl Provider for ImapSync {
     /// Submits the message by SMTP, then files it in Sent; the copy there
     /// becomes its entry when synced.
     async fn send(&self, _account: &Account, mail: Outgoing<'_>) -> Result<(), SendError> {
-        smtp::send(&self.config, &self.sign_in, &self.tls, mail.raw).await?;
+        smtp::send(self.config.login(), &self.sign_in, &self.tls, mail.raw).await?;
         // Sent: if it cannot be filed, it stays listed as waiting for its
         // copy, which is so.
         if let Err(e) = self.file_sent(mail.raw).await {
@@ -526,7 +530,7 @@ impl ImapSync {
                     .with_context(|| format!("message {uid} of {} has no date", folder.name))?
                     .timestamp_millis();
                 let labels = labels_of(folder, &fetch);
-                let thread_id = thread_of(&raw);
+                let thread_id = mail_server::thread_of(&raw);
                 let (variant, parsed, size_bytes) = account.store_raw(raw).await?;
                 entries.push(NewEntry {
                     external_id: Key {
@@ -906,24 +910,6 @@ fn labels_of(folder: &Folder, fetch: &Fetch) -> Vec<String> {
     labels
 }
 
-/// The conversation of a message, as its headers tell (SPEC §4.4): the
-/// first message its References name, else the one it replies to, else
-/// itself.
-fn thread_of(raw: &[u8]) -> Option<String> {
-    let message = MessageParser::new().with_message_ids().parse_headers(raw)?;
-    // One id is text, more a list.
-    let first = |name| {
-        let value = message.header(name)?;
-        value
-            .as_text_list()
-            .and_then(|l| l.first().map(|s| s.to_string()))
-            .or_else(|| value.as_text().map(str::to_owned))
-    };
-    first(HeaderName::References)
-        .or_else(|| first(HeaderName::InReplyTo))
-        .or_else(|| message.message_id().map(str::to_owned))
-}
-
 /// The account's entries as recorded.
 async fn known(account: &Account) -> Result<Vec<Known>> {
     let id = account.id.clone();
@@ -1040,20 +1026,5 @@ mod tests {
     fn uid_sets_are_ranges() {
         assert_eq!(uid_set([5, 1, 2, 3, 9, 10].into_iter()), "1:3,5,9:10");
         assert_eq!(uid_set([4].into_iter()), "4");
-    }
-
-    #[test]
-    fn threads_are_the_first_message_referred_to() {
-        let thread = |headers: &str| thread_of(format!("{headers}\r\n\r\nbody").as_bytes());
-        assert_eq!(
-            thread("Message-ID: <c@x>\r\nIn-Reply-To: <b@x>\r\nReferences: <a@x> <b@x>"),
-            Some("a@x".into())
-        );
-        assert_eq!(
-            thread("Message-ID: <b@x>\r\nIn-Reply-To: <a@x>"),
-            Some("a@x".into())
-        );
-        assert_eq!(thread("Message-ID: <a@x>"), Some("a@x".into()));
-        assert_eq!(thread("Subject: none"), None);
     }
 }

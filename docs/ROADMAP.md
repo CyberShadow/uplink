@@ -71,6 +71,9 @@ MVP:
 - M365 via Graph (mail) with delta-link polling every 30 s (no push;
   see SPEC §8.3 and §15.11 — EWS Streaming deferred).
 - Any IMAP server, polled every 30 s (SPEC §8.10).
+- Any POP3 server, polled every 60 s: mail downloaded, labels kept in
+  uplink only; deleting from the server after download opt-in per
+  account (SPEC §8.12).
 - Per-account configuration via single YAML file.
 
 Deferred:
@@ -78,8 +81,8 @@ Deferred:
   Outlook successor uses if one ships first — research bundled with
   the implementation work). See SPEC §15.11. The polling baseline
   stays in place as the always-available fallback.
-- POP3 accounts: mail downloaded, labels kept in uplink only; deleting
-  from the server after download opt-in per account.
+- Labels of the user's own for POP3 accounts (which have only the
+  system ones, as uplink makes no labels yet).
 - IMAP push by IDLE (or NOTIFY, RFC 5465, for all folders at once).
 - Deciding an SMTP send of unknown outcome in the outbox ("send again",
   "it went out"; SPEC §8.11).

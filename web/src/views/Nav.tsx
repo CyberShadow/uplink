@@ -32,7 +32,12 @@ const SYSTEM: Record<string, { name: string; icon: IconName }> = {
   TRASH: { name: 'Trash', icon: 'trash' },
 }
 
-const PROVIDER: Record<MailProvider, string> = { gmail: 'Gmail', m365: 'Outlook', imap: 'Server' }
+const PROVIDER: Record<MailProvider, string> = {
+  gmail: 'Gmail',
+  m365: 'Outlook',
+  imap: 'Server',
+  pop3: 'Server',
+}
 
 /** The account's system labels worth listing, then its own; All Mail goes
  * between them. */

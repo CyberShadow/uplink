@@ -1,6 +1,6 @@
 //! Sending an account's mail by SMTP submission (SPEC §8.11).
 
-use super::session::{Secret, SignIn};
+use super::sign_in::{Secret, SignIn};
 use crate::account::SendError;
 use anyhow::anyhow;
 use mail_parser::{Address, HeaderName, MessageParser};
@@ -10,7 +10,7 @@ use mail_send::{
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_rustls::TlsConnector;
-use uplink_config::{ImapAccountConfig, Security};
+use uplink_config::{Login, Security};
 
 /// How long the server may take to answer.
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -20,7 +20,7 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 /// says whether the message may have gone out: only once all of it is
 /// written, and before the server's answer, may it have.
 pub async fn send(
-    account: &ImapAccountConfig,
+    account: Login<'_>,
     sign_in: &SignIn,
     tls: &TlsConnector,
     raw: &[u8],
@@ -29,7 +29,7 @@ pub async fn send(
     if recipients.is_empty() {
         return Err(SendError::Rejected("the message has no recipients".into()));
     }
-    let user = account.user().to_owned();
+    let user = account.user.to_owned();
     let credentials = match sign_in.secret().await.map_err(SendError::NotSent)? {
         Secret::Password(password) => Credentials::new(user, password),
         Secret::AccessToken(token) => Credentials::new_xoauth2(user, token),
@@ -53,13 +53,7 @@ pub async fn send(
             ));
         }
     };
-    let result = submit(
-        &mut client,
-        &account.address,
-        &recipients,
-        &without_bcc(raw),
-    )
-    .await;
+    let result = submit(&mut client, account.address, &recipients, &without_bcc(raw)).await;
     // Whatever the server says to leaving, the message is settled.
     let _ = client.quit().await;
     result

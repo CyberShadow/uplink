@@ -52,6 +52,8 @@ pub enum MailProvider {
     M365,
     /// Any mail server, by IMAP and SMTP.
     Imap,
+    /// Any mail server, by POP3 and SMTP.
+    Pop3,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]

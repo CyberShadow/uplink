@@ -124,7 +124,7 @@ Quick references so the reader doesn't have to flip:
 - E2EE on the client — server decrypts, client receives plaintext.
 - SPA-side Matrix device-verification UI. Pairing is a CLI subcommand.
 - SMTP send for Gmail and M365: Gmail sends via Gmail API, M365 via Graph;
-  SMTP serves IMAP accounts only (§8.11).
+  SMTP serves IMAP and POP3 accounts only (§8.11).
 - Drafts on the wire (only local drafts in MVP).
 - Calendar write (M365 read-only). Google Calendar, CalDAV, ICS feeds: out.
 - TODO backends other than local SQLite.
@@ -282,6 +282,14 @@ accounts:
     address: alice@example.org
     imap: { host: imap.example.org }
     smtp: { host: smtp.example.org }
+
+  # — A mail server by POP3 (§8.12) — as IMAP, ports 995 or 110; mail is
+  # left on the server unless `delete_after_download: true`.
+  - id: alice-pop
+    kind: pop3
+    address: alice@example.net
+    pop3: { host: pop.example.net }
+    smtp: { host: smtp.example.net }
 
   # — Matrix — the device is created once by `uplink matrix pair` (§9.4).
   # No password in YAML.
@@ -1192,10 +1200,10 @@ that a cancel knows whether it can still be fulfilled locally. Then:
   - Graph the same way, its copy filed in Sent Items. As Graph sends a
     draft created first, by its id (§8.4), sending it again is safe
     regardless: a draft already sent is not sent twice.
-  - SMTP (IMAP accounts) not so: the copy in Sent is filed by uplink
-    once the server accepted the message, so its absence shows nothing,
-    and the send stays unknown until a copy turns up or the user
-    decides (§8.11). Providers say which they are (`FILES_SENT`).
+  - SMTP (IMAP and POP3 accounts) not so: the copy in Sent is filed by
+    uplink once the server accepted the message, so its absence shows
+    nothing, and the send stays unknown until a copy turns up or the
+    user decides (§8.11). Providers say which they are (`FILES_SENT`).
 
 SMTP and Gmail's `messages.send` take no idempotency key (RFC 1047
 describes the duplicate a lost acknowledgement causes); observing the
@@ -1330,7 +1338,7 @@ sent, remove it once acknowledged, and re-send pending edits on startup.
 
 ---
 
-## 8. Email pipeline (Gmail, M365, IMAP)
+## 8. Email pipeline (Gmail, M365, IMAP, POP3)
 
 ### 8.1 Gmail — receive
 
@@ -1820,6 +1828,40 @@ fit uplink better (§8.1, §8.3).
   send stays unknown until its copy turns up (a server that files
   submitted mail itself) or the user decides. (Open: a way to decide in
   the outbox: "send again" or "it went out".)
+
+### 8.12 POP3 — receive
+
+For servers with POP3 only, or accounts kept that way: kind `pop3`, read
+by POP3 (uplink's own client, RFC 1939: `UIDL`, `RETR`, `DELE`; TLS from
+the start, port 995, or by `STLS`, 110; signed in by `USER`/`PASS` or
+`AUTH XOAUTH2`, as IMAP accounts are) and sent from by SMTP (§8.11).
+
+- **Mail is downloaded**, and is uplink's from then on: an entry per
+  message, keyed `uidl:<unique id>`; the maildrop's ids not among the
+  entries are new, downloaded newest first, 50 a step, each step one log
+  entry, as IMAP's are (§8.10). A message gone from the server (deleted
+  by another client) stays. `received_at` is the first `Received`
+  header's date (the last hop's), else the `Date`, else the download's
+  time; threads are the headers' (§8.10). `account.sync_state` says only
+  whether the first sync is still listing: what was downloaded is the
+  entries.
+- **Deleting from the server** is the account's choice
+  (`delete_after_download`, off by default, so that other clients still
+  see the mail): each step, once its downloads are recorded, `DELE`s
+  every message of the maildrop already downloaded, which the server
+  deletes as the session ends (`QUIT`); a session that fails before it
+  deletes nothing, and the next step deletes again.
+- **Labels are uplink's**: POP3 has no folders or flags to keep in step,
+  so the account has Gmail's system labels (`INBOX`, `UNREAD`, `STARRED`,
+  `SENT`, `SPAM`, `TRASH`; none a folder, so archiving takes `INBOX`
+  away); new mail is in `INBOX`, unread. A change takes effect as it is
+  pushed (§6.6), touching nothing at the server.
+- **Sent mail** is filed by uplink: once the SMTP server accepts it, its
+  entry (`sent:<Message-ID>`, labelled `SENT`) is recorded, which settles
+  the send (§8.6). An unknown outcome waits for the user, as an IMAP
+  account's does (§8.11).
+- Polled every 60 s: each poll signs in anew, which providers may limit.
+  A server without `UIDL` cannot be synced (the step fails, saying so).
 
 ---
 
@@ -3004,7 +3046,7 @@ rather than requested per sign-in:
   file the attacker must also exfiltrate (a backup that leaves it out
   leaves the tokens sealed).
 - Costs: ~50 LOC. Worth it.
-- IMAP accounts' passwords are sealed the same way
+- IMAP and POP3 accounts' passwords are sealed the same way
   (`accounts/<id>.password`, by `uplink password --account <id>`,
   which reads it from the terminal or standard input): the server needs
   the password itself to sign in, so it cannot be hashed, and none is
@@ -3036,7 +3078,7 @@ into `uplink matrix pair` once.
 - Mail servers (§8.10–8.11) are verified as browsers verify sites
   (`rustls-platform-verifier`: the system's roots).
 
-### 13.7 OAuth flow (IMAP and SMTP)
+### 13.7 OAuth flow (IMAP, POP3 and SMTP)
 
 For servers that sign in by XOAUTH2, an account's `oauth` names the
 provider's client and endpoints (`client_id`, optional `client_secret`,
@@ -3475,9 +3517,10 @@ request).
   MIME (`POST /me/messages`), sent by id (`POST /me/messages/{id}/send`,
   refused for a message no longer a draft), and a folder's messages
   filtered by `internetMessageId`.
-- **IMAP and SMTP:** Stalwart (single-binary Rust mail server, from
-  nixpkgs; IMAP, POP3, SMTP and JMAP), a real server rather than a fake.
-  The Rust tests (`tests/imap_sync.rs`) start one per test
+- **IMAP, POP3 and SMTP:** Stalwart (single-binary Rust mail server,
+  from nixpkgs; IMAP, POP3, SMTP and JMAP), a real server rather than a
+  fake. The Rust tests (`tests/imap_sync.rs`, `tests/pop3_sync.rs`, the
+  server in `tests/common/stalwart.rs`) start one per test
   (`UPLINK_STALWART`), its users in its in-memory directory and its TLS
   by a certificate the test makes and trusts, and play other mail
   clients over IMAP: delivering by `APPEND`, flagging, moving and
@@ -3486,7 +3529,9 @@ request).
   which uplink then makes. It is an OAuth provider too: a code it grants
   (by its API, as it refuses the loopback redirect of `uplink oauth
   init`, not being HTTPS) yields the refresh token that uplink redeems
-  to sign in by XOAUTH2.
+  to sign in by XOAUTH2. POP3 is reached by STLS, so both ways of TLS
+  are tested; mail delivered by SMTP has a `Received` header, as on
+  port 25 (which, by default, alone adds one).
 - **Matrix:** Conduit (single-binary Rust homeserver, from nixpkgs), a
   real homeserver rather than a fake. The Rust tests start one per test
   (`UPLINK_CONDUIT`, set by the dev shell and the checks; in the build

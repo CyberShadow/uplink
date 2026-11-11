@@ -8,6 +8,7 @@
 
 #![allow(dead_code)]
 
+pub mod stalwart;
 pub mod uplink;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
