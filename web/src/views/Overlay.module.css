@@ -146,3 +146,15 @@
   box-shadow: 0 4px 24px rgb(0 0 0 / 0.3);
   font-size: 13px;
 }
+
+.about {
+  max-width: 60ch;
+  margin: 0 0 8px;
+  color: var(--muted);
+}
+
+.dialog h3 {
+  margin: 12px 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}

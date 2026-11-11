@@ -92,7 +92,8 @@ export interface Binding {
 /** As tinykeys tells macOS, for `$mod`, which is Cmd there and Ctrl
  * elsewhere. */
 const MAC = /Mac|iPod|iPhone|iPad/.test(navigator.platform)
-const MOD = MAC ? 'Cmd' : 'Ctrl'
+export const MOD = MAC ? 'Cmd' : 'Ctrl'
+export const ALT = MAC ? 'Option' : 'Alt'
 
 /** A go-to's keys: `g` and `key`; and, from within fields too, Alt+Shift
  * and `key`, the modifiers least taken by browsers and systems. On macOS,
@@ -109,7 +110,7 @@ function go(key: string): Pick<Binding, 'keys' | 'label'> {
 /** Of a move in the nav, by Alt (Option) and an arrow, from within
  * fields too, as Element's and Slack's moves through rooms. */
 function nav(action: Action, key: string, label: string, help: string): Binding {
-  return { action, keys: [`Alt+${key}`], label: `${MAC ? 'Option' : 'Alt'}+${label}`, help, repeats: true }
+  return { action, keys: [`Alt+${key}`], label: `${ALT}+${label}`, help, repeats: true }
 }
 
 export const KEYMAP: Binding[] = [
@@ -266,7 +267,7 @@ export function useKeymap(actions: Actions, where?: Where) {
       b.keys.map((keys) => ({
         presses: parseKeybinding(keys),
         shown: keys.split(' ').map((press) => press.replace('[Shift]+', '')),
-        help: b.help,
+        binding: b,
         repeats: b.repeats === true && !keys.includes(' '),
         scope,
         fire: (event: KeyboardEvent) => {
@@ -297,7 +298,7 @@ interface Bound {
   presses: KeybindingPress[]
   /** The presses, as shown while a sequence waits for one. */
   shown: string[]
-  help: string
+  binding: Binding
   /** Fires on a held key's repeats; a single press. */
   repeats: boolean
   /** Counts only while the focus is within it. */
@@ -307,6 +308,11 @@ interface Bound {
 
 /** The window's bindings, by component, in the order they mounted. */
 const windowBindings: Bound[][] = []
+
+/** The actions the views on show bind, for the help to list first. */
+export function boundActions(): Set<Action> {
+  return new Set(windowBindings.flat().map((b) => b.binding.action))
+}
 /** Whether a press is a field's own: what is typed into one, but with
  * Ctrl, Cmd or Alt held. */
 const typed = (event: KeyboardEvent) =>
@@ -421,7 +427,12 @@ function sequences(
       if (show) {
         which = setTimeout(() => {
           clearTimeout(timer)
-          const next = new Map(candidates.map((b) => [`${b.shown[events.length]} ${b.help}`, { key: b.shown[events.length], help: b.help }]))
+          const next = new Map(
+            candidates.map((b) => {
+              const key = b.shown[events.length]
+              return [`${key} ${b.binding.help}`, { key, help: b.binding.help }]
+            }),
+          )
           show({ typed: events.map((e) => e.key).join(' '), next: [...next.values()] })
         }, WHICH_MS)
       }

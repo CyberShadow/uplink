@@ -686,9 +686,19 @@ describe('mail', () => {
     const user = await start('/mail/work/INBOX')
     await user.keyboard('?')
     const help = screen.getByRole('dialog', { name: 'Keyboard shortcuts' })
-    expect(within(help).getByText('Archive')).toBeTruthy()
-    await user.keyboard('{Escape}')
+    // Those of the view on show first, then the rest.
+    const here = within(help).getByRole('region', { name: 'Here' })
+    expect(within(here).getByText('Archive')).toBeTruthy()
+    expect(within(here).queryByText('Today (in the calendar)')).toBeNull()
+    expect(within(within(help).getByRole('region', { name: 'Elsewhere' })).getByText('Today (in the calendar)')).toBeTruthy()
+    // Keys reach nothing behind it; ? again closes it.
+    await user.keyboard('j')
+    expect(focusedSubject()).toBe('First')
+    await user.keyboard('?')
     expect(screen.queryByRole('dialog')).toBeNull()
+    await user.keyboard('?{Escape}')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(location.pathname).toBe('/mail/work/INBOX')
   })
 })
 

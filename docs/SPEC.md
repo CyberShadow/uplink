@@ -2445,6 +2445,10 @@ as a native list does), `Enter` chooses and `Esc` closes.
   actions" menu. No `n`/`p` (a conversation's next or previous message)
   yet.
 
+- **`?` shows the shortcuts**: how keys work (what a box keeps, `Esc`,
+  sequences), then those the view on show binds ("Here"), then the rest
+  ("Elsewhere"), each with the platform's modifiers. Keys reach nothing
+  behind it; `Esc` or `?` close it.
 - **`Alt+↑`/`Alt+↓` move through the nav** (`Option` on macOS), from
   within fields too, as Element's and Slack's do through rooms: to the
   view linked before or after the one on show, in the nav as shown
