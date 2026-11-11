@@ -815,3 +815,25 @@
   color: var(--error-fg);
   font-size: 13px;
 }
+
+/* A message's details (`MessageDetails`). */
+.facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 8px;
+  margin: 0;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.id {
+  font-family: monospace;
+  font-size: 12px;
+}

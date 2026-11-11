@@ -2376,7 +2376,11 @@ message, as Slack's do on the one it focuses: `r` replies, `e` edits
 one's own, `t` opens its thread or replies in one, `+` opens its
 reactions (with the focus in the box to type one, and back on the line
 once closed), `p` pins or unpins it and `#` deletes one's own; what its
-buttons do, but by keys. The line is the one that has the focus (its
+buttons do, but by keys. `o`/`Enter` (of the main timeline) open its
+details beside the timeline: who sent it and when, its type, event id
+and encryption, who has read up to it, its reactions, its edits and its
+source; while open, they show the line that has the focus, so that
+`j`/`k` (or a click) go on to the next, as in an open conversation. The line is the one that has the focus (its
 outline shows only when keys put it there), so Tab goes on to its links
 and buttons, where the keys still act on it; but Enter and Space, on a
 link or button that has the focus, are its own: no window binding takes

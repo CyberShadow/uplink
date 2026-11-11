@@ -459,7 +459,7 @@ function Raw(props: { event: RoomEvent }) {
   )
 }
 
-function pretty(raw: string): string {
+export function pretty(raw: string): string {
   return JSON.stringify(JSON.parse(raw), null, 2)
 }
 
@@ -730,10 +730,23 @@ function Edited(props: { room: Room; event: RoomEvent }) {
 
 /** The message as first sent, then as each edit made it. */
 function EditHistory(props: { room: Room; event: RoomEvent; close: () => void }) {
-  const { room, event, close } = props
+  const { close } = props
+  useEscape(close)
+  return (
+    <div class={overlay.backdrop} onClick={close}>
+      <div class={overlay.dialog} role="dialog" aria-label="Edit history" onClick={(e) => e.stopPropagation()}>
+        <h2>Edit history</h2>
+        <Versions room={props.room} event={props.event} />
+      </div>
+    </div>
+  )
+}
+
+/** The message as first sent, then as each edit made it. */
+export function Versions(props: { room: Room; event: RoomEvent }) {
+  const { room, event } = props
   const { matrix } = useServices()
   const [edits, setEdits] = useState<RoomEvent[] | null>(null)
-  useEscape(close)
   useEffect(() => {
     let current = true
     matrix.edits(room.id, event.id).then((edits) => {
@@ -748,24 +761,17 @@ function EditHistory(props: { room: Room; event: RoomEvent; close: () => void })
     const body = json(edit).content?.['m.new_content']?.body
     versions.push({ ts: edit.ts, body: typeof body === 'string' ? body : '' })
   }
-  return (
-    <div class={overlay.backdrop} onClick={close}>
-      <div class={overlay.dialog} role="dialog" aria-label="Edit history" onClick={(e) => e.stopPropagation()}>
-        <h2>Edit history</h2>
-        {edits === null ? (
-          <p class={styles.muted}>Loading…</p>
-        ) : (
-          <ol class={styles.history}>
-            {versions.map((version, i) => (
-              <li key={i}>
-                <time class={styles.muted}>{dateTime(version.ts)}</time>
-                <div class={styles.body}>{version.body}</div>
-              </li>
-            ))}
-          </ol>
-        )}
-      </div>
-    </div>
+  return edits === null ? (
+    <p class={styles.muted}>Loading…</p>
+  ) : (
+    <ol class={styles.history} aria-label="Versions">
+      {versions.map((version, i) => (
+        <li key={i}>
+          <time class={styles.muted}>{dateTime(version.ts)}</time>
+          <div class={styles.body}>{version.body}</div>
+        </li>
+      ))}
+    </ol>
   )
 }
 

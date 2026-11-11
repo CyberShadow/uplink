@@ -1242,6 +1242,16 @@ describe('matrix', () => {
       { type: 'redaction', event: mine.event_id },
     ])
 
+    // Enter shows the message's details, which follow the line j/k move to.
+    await user.keyboard('k{Enter}')
+    const details = () => screen.getByRole('complementary', { name: 'Message details' })
+    expect(within(details()).getByText(theirs.event_id)).toBeTruthy()
+    expect(document.activeElement).toBe(lineOf(theirs))
+    await user.keyboard('j')
+    expect(within(details()).getByText(mine.event_id)).toBeTruthy()
+    await user.click(within(details()).getByRole('button', { name: 'Close message details' }))
+    expect(screen.queryByRole('complementary', { name: 'Message details' })).toBeNull()
+
     // Tab goes on to a line's links, where Enter is the link's.
     await user.keyboard('k')
     const link = within(lineOf(theirs)!).getByRole('link', { name: 'https://example.org/plan' })

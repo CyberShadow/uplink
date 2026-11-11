@@ -30,6 +30,7 @@ import { Icon } from './Icon'
 import { RoomSearch } from './RoomSearch'
 import { Composer, type Mode } from './RoomComposer'
 import { RoomInfo } from './RoomInfo'
+import { MessageDetails } from './RoomMessage'
 import { ThreadPanel } from './RoomThread'
 import { RoomTagPicker } from './RoomTagPicker'
 import { tagName } from '../roomTags'
@@ -165,7 +166,16 @@ function Timeline(props: { room: Room; words: string | null }) {
         {room.pinned.length > 0 && <PinnedBar room={room} />}
         {/* Reversed, so that it stays scrolled to the latest event. */}
         <div ref={scroller} class={styles.scroller}>
-          <ol ref={lines} class={styles.events} aria-label="Timeline">
+          <ol
+            ref={lines}
+            class={styles.events}
+            aria-label="Timeline"
+            // Open, a message's details show the line that has the focus.
+            onFocusIn={(event) => {
+              const line = (event.target as Element).closest<HTMLElement>('[data-event]')
+              if (panel?.type === 'message' && line) setPanel({ type: 'message', event: Number(line.dataset.event) })
+            }}
+          >
             {timeline.moreBefore.value && <Earlier room={room} />}
             {events === null && <li class={styles.muted}>Loading…</li>}
             <Events
@@ -178,6 +188,7 @@ function Timeline(props: { room: Room; words: string | null }) {
               readers={readers}
               act={act}
               openThread={(root) => setPanel({ type: 'thread', root })}
+              details={(event) => setPanel({ type: 'message', event })}
             />
           </ol>
         </div>
@@ -226,13 +237,34 @@ function Timeline(props: { room: Room; words: string | null }) {
           }}
         />
       )}
+      {panel?.type === 'message' && <Details room={room} events={events} readers={readers} id={panel.event} close={() => setPanel(null)} />}
       {tagging && <RoomTagPicker rooms={[room]} close={() => setTagging(false)} />}
     </div>
   )
 }
 
+/** A message's details, while it is in the timeline. */
+function Details(props: {
+  room: Room
+  events: readonly RoomEvent[] | null
+  readers: ReadonlyMap<RoomEventId, readonly MemberReceipt[]>
+  id: RoomEventId
+  close: () => void
+}) {
+  const event = props.events?.find((e) => e.id === props.id)
+  if (!event) return null
+  return (
+    <MessageDetails room={props.room} event={event} readers={props.readers.get(event.id) ?? NO_READERS} close={props.close} />
+  )
+}
+
 /** What shows beside the timeline, if anything. */
-type Panel = null | { type: 'info' } | { type: 'thread'; root: RoomEventId } | { type: 'search'; words: string }
+type Panel =
+  | null
+  | { type: 'info' }
+  | { type: 'thread'; root: RoomEventId }
+  | { type: 'search'; words: string }
+  | { type: 'message'; event: RoomEventId }
 
 /** The rows of a timeline, or a thread, and the sends that follow; and,
  * while one of its lines has the focus, the keys that act on its event
@@ -249,8 +281,10 @@ export function Events(props: {
   act: (mode: Mode) => void
   /** Of the main timeline, opens a thread by its root. */
   openThread: ((root: RoomEventId) => void) | null
+  /** Of the main timeline, shows a message's details. */
+  details: ((event: RoomEventId) => void) | null
 }) {
-  const { room, me, overlay, act, openThread } = props
+  const { room, me, overlay, act, openThread, details } = props
   const { matrix } = useServices()
   const [reacting, setReacting] = useState<{ event: RoomEventId; how: Reacting } | null>(null)
   const line = (event: RoomEvent): Line => ({
@@ -287,6 +321,12 @@ export function Events(props: {
       },
       delete: () => focused().delete?.(),
       pin: () => focused().pin?.toggle(),
+      ...(details && {
+        open: () => {
+          const { id } = focused()
+          if (!Number.isNaN(id)) details(id)
+        },
+      }),
     },
     { focus: props.list },
   )

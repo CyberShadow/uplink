@@ -64,6 +64,7 @@ export function ThreadPanel(props: { room: Room; root: RoomEventId; me: string; 
             readers={NO_READERS_BY_EVENT}
             act={act}
             openThread={null}
+            details={null}
           />
         </ol>
       </div>
