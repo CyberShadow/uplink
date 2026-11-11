@@ -44,4 +44,37 @@ describe('HistoryStore', () => {
     expect(client.history.more.value).toBe(false)
     expect(listed()!.at(-1)).toEqual(["Added 't0'", false])
   })
+
+  it('undoes the last op, then the ones before it, until something else is done', async () => {
+    for (const title of ['One', 'Two', 'Three']) await client.todos.create(title)
+    client.reset()
+    await vi.waitFor(() => expect(listed()).toHaveLength(3))
+    const titles = () => client.todos.todos.value!.map((t) => t.title).sort()
+
+    // Pressed in quick succession, each goes on from the last.
+    client.history.undoLast()
+    await client.history.undoLast()
+    expect(listed()).toEqual([
+      ['Undid it', false],
+      ['Undid it', false],
+      ["Added 'Three'", true],
+      ["Added 'Two'", true],
+      ["Added 'One'", false],
+    ])
+
+    // Something done since: it is the last op.
+    await client.todos.create('Four')
+    await client.history.undoLast()
+    await client.history.undoLast()
+    expect(listed()!.filter(([, undone]) => !undone).map(([d]) => d)).toEqual([
+      'Undid it',
+      'Undid it',
+      'Undid it',
+      'Undid it',
+    ])
+    await vi.waitFor(() => expect(titles()).toEqual([]))
+
+    await client.history.undoLast()
+    expect(client.ops.notice.value).toEqual({ kind: 'failed', message: 'Nothing more to undo' })
+  })
 })

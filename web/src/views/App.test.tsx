@@ -1943,6 +1943,19 @@ describe('to-dos', () => {
 describe('history', () => {
   const items = () => within(screen.getByRole('list', { name: 'History' })).getAllByRole('listitem')
 
+  it('undoes the last action with z anywhere, and the one before with z again', async () => {
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('e')
+    await waitFor(() => expect(subjects()).toEqual(['Second', 'Third']))
+    await user.keyboard('e')
+    await waitFor(() => expect(subjects()).toEqual(['Third']))
+
+    await user.keyboard('z')
+    await waitFor(() => expect(subjects()).toEqual(['Second', 'Third']))
+    await user.keyboard('z')
+    await waitFor(() => expect(subjects()).toEqual(['First', 'Second', 'Third']))
+  })
+
   it('lists what was done, newest first, and undoes and redoes with z', async () => {
     const user = await start('/mail/work/INBOX')
     await user.keyboard('e')

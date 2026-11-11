@@ -100,7 +100,7 @@ export const KEYMAP: Binding[] = [
   { action: 'delete', keys: ['[Shift]+#'], label: '#', help: 'Delete (mail: move to Trash)' },
   { action: 'spam', keys: ['[Shift]+!'], label: '!', help: 'Report spam, or not spam' },
   { action: 'add', keys: ['a'], label: 'a', help: 'Add a to-do (in to-dos)' },
-  { action: 'undo', keys: ['z'], label: 'z', help: 'Undo or redo (in history)' },
+  { action: 'undo', keys: ['z'], label: 'z', help: 'Undo the last action; again, the one before it (in history: undo or redo the one focused)' },
   { action: 'compose', keys: ['c'], label: 'c', help: 'Compose' },
   { action: 'reply', keys: ['r'], label: 'r', help: 'Reply (in a room: write a message)' },
   { action: 'replyAll', keys: ['a'], label: 'a', help: 'Reply all' },

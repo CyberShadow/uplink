@@ -77,6 +77,7 @@ function Shell() {
     goTodos: () => route('/todos'),
     goHome: () => route('/'),
     goHistory: () => route('/history'),
+    undo: () => history.undoLast(),
     goCalendar: () => route(calendarPath('week', today())),
     compose: async () => {
       const id = account()

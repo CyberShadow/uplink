@@ -28,7 +28,7 @@ export class Client {
     this.drafts = new DraftStore(server, this.ops)
     this.matrix = new MatrixStore(server, this.ops)
     this.todos = new TodoStore(server, this.ops)
-    this.history = new HistoryStore(server)
+    this.history = new HistoryStore(server, this.ops)
     this.calendar = new CalendarStore(server)
     this.home = new HomeStore(server)
   }

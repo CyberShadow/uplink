@@ -2379,12 +2379,16 @@ In the pickers (`l`, `v`, `gl`, `Ctrl+K`), `Up`/`Down` move by one
 option and `PageUp`/`PageDown` by a page (the options in view, less one,
 as a native list does), `Enter` chooses and `Esc` closes.
 
-- **No global `z` for undo.** Undo lives in the history view and in the
-  notice shown after each op. A global `z` would have to mean "undo the
-  latest op", which is not always the one the user has in mind; the
-  history is the better surface for the multi-step undo we support.
-  Within the history (`gh`), `j`/`k` move and `z` undoes, or redoes, the
-  focused entry.
+- **`z` rewinds.** Anywhere, `z` undoes the latest op (an undo, it
+  redoes). As each undo is itself an op, pressing `z` again would undo
+  that undo; instead, the history store keeps where the last press got
+  to, and the next goes on to the op before it, passing over what is
+  undone and the undos (each of something older, passed over too). It
+  goes on only while the latest op is the one the last press left at the
+  top: anything done since, in any tab, starts afresh from it. Presses
+  are handled one after another, each from where the last got to. A
+  failed undo is passed over too. Within the history (`g z`), `j`/`k`
+  move and `z` undoes, or redoes, the focused entry instead.
 - **No `;`/`:`, `m`, `b`, `.`:** uplink has no mute, snooze or "more
   actions" menu. No `n`/`p` (a conversation's next or previous message)
   yet.
