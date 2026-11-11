@@ -150,7 +150,8 @@ async fn refused_changes_hold_up_no_others() {
     else {
         panic!()
     };
-    assert_eq!(uplink.pending(first_entry, label), (Some(labelled.0), None));
+    // Pending; refused or not yet, as the sync may already have tried it.
+    assert_eq!(uplink.pending(first_entry, label).0, Some(labelled.0));
     uplink
         .mail
         .modify_labels(vec![second_entry], vec![], vec![uplink.label("INBOX")])
