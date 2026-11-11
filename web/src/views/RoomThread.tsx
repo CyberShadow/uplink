@@ -5,7 +5,7 @@
 import { useMemo, useRef, useState } from 'preact/hooks'
 import type { Room, RoomEventId } from '../generated/protocol'
 import { useServices } from '../context'
-import { keepFocus } from '../keymap'
+import { keepFocus, pages } from '../keymap'
 import { TEXT, shown } from '../matrix'
 import { Events, NO_READERS_BY_EVENT, overlaid, rows } from './Room'
 import { Composer, type Mode } from './RoomComposer'
@@ -20,6 +20,7 @@ export function ThreadPanel(props: { room: Room; root: RoomEventId; me: string; 
   const state = thread.state.value
   const sends = matrix.timeline(room.id).sends.value
   const composer = useRef<HTMLTextAreaElement>(null)
+  const scroller = useRef<HTMLDivElement>(null)
   const [mode, setMode] = useState<Mode>({ type: 'new' })
   const events = useMemo(() => (state ? [state.root, ...state.replies] : []), [state])
   const rootId = state?.root.event_id ?? null
@@ -49,7 +50,7 @@ export function ThreadPanel(props: { room: Room; root: RoomEventId; me: string; 
           {thread.error.value}
         </p>
       )}
-      <div class={styles.scroller}>
+      <div ref={scroller} class={styles.scroller}>
         <ol class={styles.events} aria-label="Thread messages">
           {state === null && <li class={styles.muted}>Loading…</li>}
           <Events
@@ -73,6 +74,7 @@ export function ThreadPanel(props: { room: Room; root: RoomEventId; me: string; 
           lastOwn={lastOwn}
           thread={rootId}
           attachments={null}
+          scrolling={pages(scroller)}
         />
       )}
     </aside>

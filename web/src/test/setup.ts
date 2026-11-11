@@ -4,6 +4,7 @@ import './intersection'
 
 // jsdom does no layout, nor media queries: the system's theme is light.
 Element.prototype.scrollIntoView = () => {}
+Element.prototype.scrollBy = () => {}
 window.matchMedia = (query: string) =>
   ({
     matches: false,

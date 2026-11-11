@@ -20,7 +20,7 @@ import type {
   TimelineGap,
 } from '../generated/protocol'
 import { useServices } from '../context'
-import { keepFocus, useKeymap } from '../keymap'
+import { keepFocus, pages, useKeymap } from '../keymap'
 import styles from './Room.module.css'
 import { RoomAvatar } from './RoomAvatar'
 import { date } from '../format'
@@ -78,7 +78,9 @@ function Timeline(props: { room: Room; words: string | null }) {
   }
   const [tagging, setTagging] = useState(false)
   const write = () => composer.current?.focus()
-  useKeymap({ reply: write, write, label: () => setTagging(true) })
+  const scroller = useRef<HTMLDivElement>(null)
+  const scrolling = pages(scroller)
+  useKeymap({ reply: write, write, label: () => setTagging(true), ...scrolling })
   useMarkRead(room, events)
 
   const [overlay, outgoing] = useMemo(() => overlaid(events ?? [], sends ?? [], null), [events, sends])
@@ -159,7 +161,7 @@ function Timeline(props: { room: Room; words: string | null }) {
         )}
         {room.pinned.length > 0 && <PinnedBar room={room} />}
         {/* Reversed, so that it stays scrolled to the latest event. */}
-        <div class={styles.scroller}>
+        <div ref={scroller} class={styles.scroller}>
           <ol class={styles.events} aria-label="Timeline">
             {timeline.moreBefore.value && <Earlier room={room} />}
             {events === null && <li class={styles.muted}>Loading…</li>}
@@ -185,6 +187,7 @@ function Timeline(props: { room: Room; words: string | null }) {
             lastOwn={lastOwn}
             thread={null}
             attachments={{ files, setFiles }}
+            scrolling={scrolling}
           />
         )}
       </section>

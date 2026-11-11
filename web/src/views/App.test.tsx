@@ -1159,6 +1159,14 @@ describe('matrix', () => {
     }
     expect(box().value).toBe('gh')
 
+    // The page keys scroll the timeline, from the box or not.
+    const scroller = screen.getByRole('list', { name: 'Timeline' }).parentElement!
+    Object.defineProperty(scroller, 'clientHeight', { value: 400 })
+    const scrolled = vi.spyOn(scroller, 'scrollBy')
+    await user.keyboard('{PageUp}{Escape}{PageDown}')
+    expect(scrolled.mock.calls).toEqual([[{ top: -350 }], [{ top: 350 }]])
+    await user.keyboard('i')
+
     // Ctrl+K dismissed gives the focus back; to a room, it is its box's.
     await user.keyboard('{Control>}k{/Control}{Escape}')
     expect(document.activeElement).toBe(box())

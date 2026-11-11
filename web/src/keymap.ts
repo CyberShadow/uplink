@@ -13,6 +13,8 @@ import {
 export type Action =
   | 'next'
   | 'previous'
+  | 'pageUp'
+  | 'pageDown'
   | 'open'
   | 'back'
   | 'select'
@@ -62,6 +64,9 @@ export type Action =
   | 'switch'
   | 'help'
 
+/** What a component does by actions' keys. */
+export type Actions = Partial<Record<Action, () => void>>
+
 export interface Binding {
   action: Action
   /** tinykeys key bindings; a space separates the presses of a sequence. */
@@ -77,6 +82,8 @@ export interface Binding {
 export const KEYMAP: Binding[] = [
   { action: 'next', keys: ['j'], label: 'j', help: 'Next conversation (in the calendar: the next week or agenda)', repeats: true },
   { action: 'previous', keys: ['k'], label: 'k', help: 'Previous conversation (in the calendar: the previous week or agenda)', repeats: true },
+  { action: 'pageUp', keys: ['PageUp'], label: 'PgUp', help: "Scroll up a page (in a room, its box's too)", repeats: true },
+  { action: 'pageDown', keys: ['PageDown'], label: 'PgDn', help: "Scroll down a page (in a room, its box's too)", repeats: true },
   { action: 'open', keys: ['o', 'Enter'], label: 'o, Enter', help: 'Open conversation' },
   { action: 'back', keys: ['u'], label: 'u', help: 'Back to the list' },
   { action: 'select', keys: ['x'], label: 'x', help: 'Select conversation' },
@@ -165,6 +172,17 @@ export function useEscape(close: (() => void) | null) {
   }, [close])
 }
 
+/** Scrolls `scroller` by a page, as the browser's page keys do: by what
+ * it shows, less a little to read on from. */
+export function pages(scroller: RefObject<HTMLElement>): Actions {
+  const by = (sign: number) => () =>
+    scroller.current!.scrollBy({ top: sign * scroller.current!.clientHeight * PAGE })
+  return { pageUp: by(-1), pageDown: by(1) }
+}
+
+/** What a page's scroll moves of what is shown. */
+const PAGE = 0.875
+
 /** Binds `actions` to their keys while the component is mounted: on the
  * window, where typing in a field does not trigger them (but for presses
  * with Ctrl, Cmd or Alt held), or on `within`,
@@ -172,7 +190,7 @@ export function useEscape(close: (() => void) | null) {
  * one keymap, so that a sequence's first press (`g`) keeps a shorter
  * binding of its second (`s`) from firing too. */
 export function useKeymap(
-  actions: Partial<Record<Action, () => void>>,
+  actions: Actions,
   within?: RefObject<HTMLElement>,
 ) {
   // The handlers change with every render; the bindings need not.

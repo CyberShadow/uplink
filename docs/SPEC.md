@@ -2368,7 +2368,9 @@ switcher's too) or one of its threads focuses its box, and closing the
 thread focuses the room's again. In the box `Enter` sends,
 `Shift+Enter` breaks the line and `Esc` leaves it (once a reply or edit
 is cancelled), for the shortcuts, as vim's normal mode; `i`, `Enter`
-and `r` go back to it. The room's box unfocused is then the exception
+and `r` go back to it. `PageUp`/`PageDown` scroll the timeline a page
+(less an eighth), from the box too, as Element's; from a thread's box,
+the thread. The room's box unfocused is then the exception
 (`Esc`, a click elsewhere on the page). Dialogs opened from the box
 (edit history, a menu) close by `Esc` all the same, and a picker
 closed gives the focus back to where it was, so that `Ctrl+K Esc` (or
