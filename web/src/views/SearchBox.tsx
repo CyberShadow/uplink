@@ -29,6 +29,9 @@ export function SearchBox() {
           if (event.key === 'Escape') event.currentTarget.blur()
         }}
       />
+      <a href="/help/search" class={styles.searchHelp} title="Search help" aria-label="Search help">
+        ?
+      </a>
     </form>
   )
 }

@@ -8,12 +8,17 @@ use crate::{
     mailbox::{LabelChange, SetLabels},
     outbox,
     parse::{self, html_body, parse},
-    query::{self, ConfiguredAccount},
+    query::{self, ConfiguredAccount, ListError},
+    search,
 };
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{
+    path::Path,
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 use uplink_protocol::{
     compose::{BlobId, DraftAttachmentId, DraftContent, DraftId, OutboxId, Splice, UploadedBlob},
-    mail::{EntryId, EntryList, LabelId, ListPosition, MessageContent, MessageId},
+    mail::{EntryId, LabelId, ListPosition, MessageContent, MessageId},
     ErrorCode, ServerError, ServerResponse, TxLogId,
 };
 use uplink_storage::rusqlite::{Connection, OptionalExtension};
@@ -71,48 +76,34 @@ impl Mail {
             .await
     }
 
+    /// The conversations `query` lists (SPEC §8.7); dates in it are of
+    /// UTC.
     pub async fn list_entries(
         &self,
-        list: EntryList,
+        query: String,
         after: Option<ListPosition>,
         limit: u32,
     ) -> Response {
         check_limit(limit)?;
-        if let EntryList::AllMail { account } = &list {
-            if !self.accounts.iter().any(|a| a.id == *account) {
-                return Err(error(ErrorCode::NotFound, format!("no account {account}")));
-            }
-        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("the clock is after 1970")
+            .as_millis() as i64;
+        let query = search::parse(&query, now).map_err(|e| error(ErrorCode::Invalid, e.0))?;
+        let accounts = self.accounts.clone();
         self.reader
             .read(move |conn| {
-                if let EntryList::Label { label } = list {
-                    if query::label_accounts(conn, &[label]).map_err(internal)?[0].is_none() {
-                        return Err(error(ErrorCode::NotFound, format!("no label {}", label.0)));
-                    }
-                }
-                let page = query::conversations(conn, &list, after, limit).map_err(internal)?;
+                let page = query::conversations(conn, &accounts, &query, after, limit).map_err(
+                    |e| match e {
+                        ListError::Invalid(e) => error(ErrorCode::Invalid, e.0),
+                        ListError::Internal(e) => internal(e),
+                    },
+                )?;
                 Ok(ServerResponse::Conversations {
                     as_of: page.as_of,
                     conversations: page.conversations,
                     next: page.next,
-                })
-            })
-            .await
-    }
-
-    pub async fn search(&self, query: String, limit: u32) -> Response {
-        check_limit(limit)?;
-        if query.split_whitespace().next().is_none() {
-            return Err(error(ErrorCode::Invalid, "empty search query".into()));
-        }
-        self.reader
-            .read(move |conn| {
-                let (as_of, conversations) =
-                    query::search(conn, &query, limit).map_err(internal)?;
-                Ok(ServerResponse::Conversations {
-                    as_of,
-                    conversations,
-                    next: None,
+                    scope: page.scope,
                 })
             })
             .await

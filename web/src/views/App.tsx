@@ -18,6 +18,7 @@ import { NoticeBar } from './NoticeBar'
 import { RoomView } from './Room'
 import { composePath, Drafts, Outbox } from './Outgoing'
 import { SearchBox } from './SearchBox'
+import { SearchHelp } from './SearchHelp'
 import { SecurityView } from './Security'
 import { RecordVisits, Switcher } from './Switcher'
 import { Todos } from './Todos'
@@ -118,6 +119,7 @@ function Shell() {
           <Route path="/mail/:account/:label/:entry?" component={Mail} />
           <Route path="/all/:account/:entry?" component={Mail} />
           <Route path="/search/:terms/:entry?" component={Mail} />
+          <Route path="/help/search" component={SearchHelp} />
           <Route path="/message/:message" component={Mail} />
           <Route path="/todos" component={Todos} />
           <Route path="/history" component={History} />

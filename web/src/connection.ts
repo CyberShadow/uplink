@@ -62,7 +62,6 @@ function isResendable(body: ClientRequest): boolean {
   switch (body.type) {
     case 'list_accounts':
     case 'list_entries':
-    case 'search':
     case 'load_message':
     case 'list_drafts':
     case 'list_outbox':

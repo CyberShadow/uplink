@@ -586,4 +586,36 @@ mod tests {
             .unwrap();
         assert_eq!(event, "$e");
     }
+
+    /// The full-text index gets Cc (V0031), from what was stored before.
+    #[test]
+    fn search_indexes_cc() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = migrated_to(dir.path(), 30);
+        conn.execute_batch(
+            r#"INSERT INTO message (id, message_id, preferred_variant, subject, from_addr,
+                                   to_addrs, cc_addrs, senders, snippet)
+               VALUES (1, '1@x', 'h1', 'One', 'a@x', '["b@x"]', '["c@x","d@y"]', '[]', ''),
+                      (2, '2@x', 'h2', 'Two', 'a@x', '["b@x"]', '[]', '[]', '');
+               INSERT INTO message_fts (rowid, subject, from_addr, from_name, to_addrs, body_text)
+               VALUES (1, 'One', 'a@x', '', 'b@x', 'body one'),
+                      (2, 'Two', 'a@x', '', 'b@x', 'body two');"#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open(dir.path()).unwrap();
+        let found = |fts: &str| -> Vec<i64> {
+            conn.prepare("SELECT rowid FROM message_fts WHERE message_fts MATCH ?1 ORDER BY rowid")
+                .unwrap()
+                .query_map([fts], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        assert_eq!(found("{cc_addrs} : \"d@y\""), [1]);
+        assert_eq!(found("{cc_addrs} : \"b\""), Vec::<i64>::new());
+        assert_eq!(found("body"), [1, 2]);
+        assert_eq!(found("{to_addrs} : \"b@x\""), [1, 2]);
+    }
 }

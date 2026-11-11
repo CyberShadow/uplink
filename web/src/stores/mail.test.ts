@@ -125,4 +125,34 @@ describe('MailStore', () => {
     // A search lists entries whatever their labels.
     expect(subjects()).toHaveLength(2)
   })
+
+  it('asks for lists as queries', async () => {
+    server.addAccount('a "b"')
+    mail.reset()
+    const queries = () => server.requests.flatMap((r) => (r.type === 'list_entries' ? [r.query] : []))
+    for (const view of [
+      { kind: 'label', account: 'work', label: 'Label_1' },
+      { kind: 'all', account: 'a "b"' },
+      { kind: 'inbox' },
+    ] as const) {
+      mail.show(view)
+      await vi.waitFor(() => expect(mail.list.value?.loaded).toBe(true))
+    }
+    expect(queries()).toEqual(['account:"work" label:"Projects"', 'account:"a \\"b\\""', 'in:inbox'])
+  })
+
+  it('reloads a search as labels change, in the scope the server lists', async () => {
+    const old = server.deliver('work', 'Old report', ['TRASH'])
+    const kept = server.deliver('work', 'Kept report', ['INBOX'])
+    mail.reset()
+    mail.show({ kind: 'search', query: 'report in:trash' })
+    await vi.waitFor(() => expect(subjects()).toEqual(['Old report']))
+    expect(mail.list.value!.scope).toEqual({ type: 'within', labels: [server.labelId('work', 'TRASH')] })
+
+    // Out of Trash, out of the list at once; what joins it, the server says.
+    server.relabel(old.id, server.labelId('work', 'TRASH'), false)
+    expect(subjects()).toEqual([])
+    server.relabel(kept.id, server.labelId('work', 'TRASH'), true)
+    await vi.waitFor(() => expect(subjects()).toEqual(['Kept report']))
+  })
 })

@@ -457,8 +457,9 @@ CREATE INDEX entry_label_pending ON entry_label(entry) WHERE desired != observed
 
 -- Full-text index, one row per logical message (rowid = message.id).
 CREATE VIRTUAL TABLE message_fts USING fts5(
-  subject, from_addr, from_name, to_addrs, body_text,
-  tokenize = 'unicode61 remove_diacritics 2'
+  subject, from_addr, from_name, to_addrs, cc_addrs, body_text,  -- cc: V0031
+  tokenize = 'unicode61 remove_diacritics 2',
+  prefix = '1 2 3'                                               -- V0009
 );
 
 -- ── matrix (V0004; §9) ───────────────────────────────────────────────
@@ -645,11 +646,12 @@ CREATE INDEX tx_log_by_ts ON tx_log(ts DESC);
   messages a thread. We don't synthesize threads when the provider
   doesn't give them; an entry without one is a conversation by itself.
 - **Lists are of conversations**, as Gmail's are (in its Conversation
-  view, the only one uplink has): a conversation is the entries of one
-  account's thread in the list's *scope* (in a list of Trash or Spam,
-  the entries with that label; in any other, those in neither). A list
-  holds the conversations with an entry that is on it (has its label, or
-  matches the search), ordered by their newest entry in scope, which need
+  view, the only one uplink has), and every list is a query (§8.7), as
+  in notmuch: the Inbox is `in:inbox`. A conversation is the entries of
+  one account's thread in the list's *scope* (in a query that names
+  Trash or Spam, the entries with that label; with `in:anywhere`, all;
+  in any other, those in neither). A list holds the conversations with
+  an entry that matches, ordered by their newest entry in scope, which need
   not be on it itself: a reply the user sent brings a conversation in the
   Inbox to the top. Label counts are of conversations too.
 - **Flags are labels.** Gmail already models read and starred as system
@@ -797,14 +799,18 @@ than it buffers is closed; the client reconnects and resumes.
   messages stored of `listing_total`, which the nav shows as a
   percentage; its tooltip estimates the time left, from the pace the
   count rose at over the last ten minutes the page saw.
-- `ListEntries { list, after, limit }` — a page of a list's
-  conversations (§4), newest first: of a label, every account's Inbox,
-  or an account's All Mail (§8.1). Each has its newest entry in full,
-  the others' ids, messages and labels (enough to act on them and follow
-  label changes), its senders, and whether any has attachments; a page
-  ends at its last conversation's newest entry.
-- `Search { query, limit }` — FTS5 cross-account search: the
-  conversations with an entry that matches.
+- `ListEntries { query, after, limit }` — a page of the conversations a
+  query lists (§4, §8.7), in every account, newest first: a label's is
+  `account:… label:…`, every account's Inbox `in:inbox`, an account's All
+  Mail (§8.1) `account:…`, and a search the user's query. Each has its
+  newest entry in full, the others' ids, messages and labels (enough to
+  act on them and follow label changes), its senders, and whether any
+  has attachments; a page ends at its last conversation's newest entry.
+  The response says the list's scope, as labels an entry has one of or
+  none of, so the client keeps it as labels change; how a search's
+  matches change, only the server knows, so the client reloads it. A
+  query that does not parse, or names a label or account there is none
+  of, is `Invalid`, with why.
 - `ListConversation { entry }` — the entries of the entry's conversation,
   in Trash and Spam too (the client keeps the list's scope), oldest
   first: the conversation view's.
@@ -1468,24 +1474,49 @@ variant.) The same observation settles a send whose outcome was unknown
 ### 8.7 Body extraction & FTS
 
 See §4.5. mail-parser accepts anything; a message it cannot make sense of
-is still stored and listed, with empty fields. Search matches every word
-of the query as a word prefix; the query is not interpreted as FTS5
-syntax.
+is still stored and listed, with empty fields.
+
+**The query language** (`uplink_email::search`), after Gmail's and
+notmuch's, lists conversations by their entries: every term must match
+one entry. A word matches as a prefix of a word in the subject, sender,
+To, Cc or body; a "quoted phrase" exactly (punctuation splits words, as
+FTS5 does: `alice@x.org` is the phrase `alice x org`). Terms side by side
+(or with `AND`) must all match; `OR`, `NOT` or a leading `-`, and
+parentheses combine them, uppercase so that "or" is a word. Operators:
+`from:`, `to:` (To or Cc), `cc:`, `subject:`, `body:`, of which `from:me`,
+`to:me` and `cc:me` are the entry's own account's address;
+`label:`/`tag:` (by name, in any account, ignoring case), `in:` (a label,
+`drafts`, or `anywhere`), `is:unread|read|starred|important`,
+`category:` (Gmail's), `has:attachment`, `account:` (id or address),
+`after:`/`before:` (a date, `2026-11-09` or `2026/11/9`, UTC),
+`newer_than:`/`older_than:` (`3d`, `2w`, `6m` of 30 days, `1y` of 365),
+`larger:`/`smaller:` (bytes, or K, M, G of 1024), and `id:`/`rfc822msgid:`.
+Trash and Spam are left out unless the query names them outside a
+negation, as notmuch's excluded tags are: then the list is of them, as
+Gmail's Trash is, or with `in:anywhere` of everything. Errors fail fast:
+an operator uplink does not know is an error, not text (adding one must
+never change what a query meant), and so is a label no account has.
+The web app explains the language at `/help/search`.
+
+The parsed query becomes one SQL condition on an entry. Its text terms,
+those it must lack too, become one FTS5 expression where they can,
+since that is one index lookup.
 
 Speed (M10): `message_fts` has prefix indexes (`prefix = '1 2 3'`), so a
 short prefix is one index lookup rather than a merge of every term it
 starts. Results, like lists, are newest first, and a page is found one of
-two ways, by how many candidates there are (counted first, cheaply):
-up to 2000 are all sorted; more, and entries are walked newest first by
-an index (`mail_entry(received_at)`, or `(account_id, received_at)` for a
-label's or All Mail's list) until the page is full, which many
-candidates make quick. A page so costs about 2000 rows at most, however
+two ways, by how many candidates there are (counted first, cheaply, of
+each term of the query an index finds: its text, or a label): up to
+2000 of the fewest are all sorted; more, and entries are walked newest
+first by an index (`mail_entry(received_at)`, or `(account_id,
+received_at)` for a query of one account) until the page is full, which
+many candidates make quick. A page so costs about 2000 rows at most, however
 large the mailbox. Label counts are kept by the schema as entries change
 (§4.3), so reading them costs nothing like the mailbox's size; a change
 of labels costs about 0.25 ms more for it. The ignored test
 `speed_of_search_and_listing` measures a 50,000-message mailbox: search
-3–35 ms, a page of the Inbox (of conversations) 9 ms, All Mail 3 ms, the
-counts 0.03 ms.
+3–49 ms (words, `OR`, `-`, labels, dates), a page of the Inbox (of
+conversations) 16 ms, All Mail 3 ms, the counts 0.03 ms.
 
 ### 8.8 Error semantics
 
@@ -3127,6 +3158,7 @@ visible. Routes (handled by `preact-iso`):
 | `/all/:account`, `/all/:account/:entry` | All Mail, and a conversation in it     |
 | `/search/:terms`                       | Search results                         |
 | `/search/:terms/:entry`                | A conversation, within the results     |
+| `/help/search`                         | The query language, with examples (§8.7) |
 | `/message/:message`                    | A message's conversation (from a to-do) |
 | `/compose/:draft`                      | Compose (new or continued draft)       |
 | `/drafts`, `/outbox`                   | Drafts; what is not yet at the providers (§6.6) |

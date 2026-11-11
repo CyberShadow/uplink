@@ -56,7 +56,7 @@ fn main() {
         ServerError,
         ErrorCode,
         LogEntry,
-        EntryList,
+        ListScope,
         HistoryEntry,
         Source,
         ServerEvent,

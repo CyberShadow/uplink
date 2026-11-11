@@ -537,14 +537,16 @@ fn insert_message(
         |r| r.get(0),
     )?;
     tx.execute(
-        "INSERT INTO message_fts (rowid, subject, from_addr, from_name, to_addrs, body_text)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO message_fts (rowid, subject, from_addr, from_name, to_addrs, cc_addrs,
+                                  body_text)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             id,
             parsed.subject,
             parsed.from_addr,
             parsed.from_name,
             parsed.to_addrs.join(" "),
+            parsed.cc_addrs.join(" "),
             parse::truncate(&parsed.body_text, INDEXED_BODY_BYTES),
         ],
     )?;

@@ -935,7 +935,7 @@ pub(crate) mod service {
     use super::*;
     use crate::{query::ConfiguredAccount, service::Mail};
     use uplink_protocol::{
-        mail::{EntryList, ListPosition},
+        mail::{ListPosition, ListScope},
         ErrorCode, ServerResponse,
     };
 
@@ -1253,13 +1253,7 @@ pub(crate) mod service {
                 .collect()
         };
         let list = |label: &str, after, limit| {
-            mail.list_entries(
-                EntryList::Label {
-                    label: db.label("a", label),
-                },
-                after,
-                limit,
-            )
+            mail.list_entries(format!("account:a label:{label}"), after, limit)
         };
         // Bob's reply puts t1 first; z1, in Trash, is not part of t3 here.
         assert_eq!(
@@ -1271,32 +1265,17 @@ pub(crate) mod service {
             [vec!["w1"], vec!["x1", "x2", "x3"]]
         );
         assert_eq!(ids(list("TRASH", None, 10).await.unwrap()), [vec!["z1"]]);
-        let all = || {
-            mail.list_entries(
-                EntryList::AllMail {
-                    account: "a".into(),
-                },
-                None,
-                10,
-            )
-        };
+        let all = || mail.list_entries("account:a".into(), None, 10);
         assert_eq!(
             ids(all().await.unwrap()),
             [vec!["w1"], vec!["x1", "x2", "x3"], vec!["y1"], vec!["z2"]]
         );
         // Page by page, each conversation once.
-        for list in [
-            EntryList::Label {
-                label: db.label("a", "INBOX"),
-            },
-            EntryList::AllMail {
-                account: "a".into(),
-            },
-        ] {
+        for list in ["account:a in:inbox", "account:a"] {
             let mut paged = vec![];
             let mut after = None;
             loop {
-                let response = mail.list_entries(list.clone(), after, 1).await.unwrap();
+                let response = mail.list_entries(list.into(), after, 1).await.unwrap();
                 let ServerResponse::Conversations { next, .. } = &response else {
                     panic!()
                 };
@@ -1307,11 +1286,11 @@ pub(crate) mod service {
                 }
             }
             let ServerResponse::Conversations { conversations, .. } =
-                mail.list_entries(list.clone(), None, 10).await.unwrap()
+                mail.list_entries(list.into(), None, 10).await.unwrap()
             else {
                 panic!()
             };
-            assert_eq!(paged.len(), conversations.len(), "{list:?}");
+            assert_eq!(paged.len(), conversations.len(), "{list}");
         }
         // Senders once each, as first seen; attachments of any.
         let ServerResponse::Conversations { conversations, .. } =
@@ -1334,7 +1313,7 @@ pub(crate) mod service {
         assert_eq!(conversations[0].earlier[1].labels, [db.label("a", "SENT")]);
         // Search finds the conversation of a match.
         let ServerResponse::Conversations { conversations, .. } =
-            mail.search("x2".into(), 10).await.unwrap()
+            mail.list_entries("x2".into(), None, 10).await.unwrap()
         else {
             panic!()
         };
@@ -1372,7 +1351,7 @@ pub(crate) mod service {
         let mail = mail_with(&db).await;
         let inbox = db.label("a", "INBOX");
         let first = mail
-            .list_entries(EntryList::Label { label: inbox }, None, 2)
+            .list_entries("account:a in:inbox".into(), None, 2)
             .await
             .unwrap();
         assert_eq!(subjects(&first), ["Subject 5", "Subject 4"]);
@@ -1390,7 +1369,7 @@ pub(crate) mod service {
             }
         );
         let rest = mail
-            .list_entries(EntryList::Label { label: inbox }, Some(next), 10)
+            .list_entries("account:a in:inbox".into(), Some(next), 10)
             .await
             .unwrap();
         assert_eq!(subjects(&rest), ["Subject 3", "Subject 2", "Subject 1"]);
@@ -1405,21 +1384,17 @@ pub(crate) mod service {
         let entries: Vec<_> = conversations.into_iter().map(|c| c.latest).collect();
         assert_eq!(entries[0].labels, [inbox, db.label("a", "UNREAD")]);
         assert_eq!(entries[0].snippet, "body number3 common");
+        for (query, message) in [
+            ("label:nosuch", "no label nosuch"),
+            ("account:c", "no account c"),
+            ("a OR", "OR needs a term after it"),
+        ] {
+            let error = mail.list_entries(query.into(), None, 2).await.unwrap_err();
+            assert_eq!(error.code, ErrorCode::Invalid);
+            assert_eq!(error.message, message);
+        }
         assert_eq!(
-            mail.list_entries(
-                EntryList::Label {
-                    label: LabelId(999)
-                },
-                None,
-                2
-            )
-            .await
-            .unwrap_err()
-            .code,
-            ErrorCode::NotFound
-        );
-        assert_eq!(
-            mail.list_entries(EntryList::Label { label: inbox }, None, 0)
+            mail.list_entries("in:inbox".into(), None, 0)
                 .await
                 .unwrap_err()
                 .code,
@@ -1431,23 +1406,165 @@ pub(crate) mod service {
     async fn search_matches_word_prefixes() {
         let db = Db::new();
         let mail = mail_with(&db).await;
+        let search = |query: &str, limit| mail.list_entries(query.into(), None, limit);
         assert_eq!(
-            subjects(&mail.search("number2".into(), 10).await.unwrap()),
+            subjects(&search("number2", 10).await.unwrap()),
             ["Subject 2"]
         );
         assert_eq!(
-            subjects(&mail.search("COMM sender".into(), 2).await.unwrap()),
+            subjects(&search("COMM sender", 2).await.unwrap()),
             ["Subject 5", "Subject 4"]
         );
         assert_eq!(
-            subjects(&mail.search("subject 3".into(), 10).await.unwrap()),
+            subjects(&search("subject 3", 10).await.unwrap()),
             ["Subject 3"]
         );
-        // Query syntax is not interpreted.
-        assert!(subjects(&mail.search("\"a OR b\" NEAR(".into(), 10).await.unwrap()).is_empty());
+        // A phrase is exact; FTS5's own syntax is text.
+        assert!(subjects(&search("\"numb\"", 10).await.unwrap()).is_empty());
+        assert!(subjects(&search("\"a OR b\" NEAR", 10).await.unwrap()).is_empty());
+        // No terms: every account's mail.
+        assert_eq!(subjects(&search("  ", 10).await.unwrap()).len(), 5);
+    }
+
+    /// Each operator of the query language (SPEC §8.7), over the service.
+    #[tokio::test]
+    async fn query_operators() {
+        use crate::parse::tests::WITH_PARTS;
+        let db = Db::new();
+        let store = db.store();
+        let day = |date: &str| crate::search::parse(&format!("after:{date}"), 0).unwrap();
+        let at = |date: &str| match day(date) {
+            crate::search::Query::Term(crate::search::Term::After(at)) => at,
+            q => panic!("{q:?}"),
+        };
+        let entry = |id: &str, labels: &[&str], date: &str, raw: &[u8]| {
+            let mut e = new_entry(&store, id, labels, raw);
+            e.received_at = at(date) + 3_600_000;
+            e
+        };
+        let message = |id: &str, from: &str, to: &str, cc: &str, subject: &str, body: &str| {
+            format!(
+                "Message-ID: <{id}@x>\r\nFrom: {from}\r\nTo: {to}\r\nCc: {cc}\r\n\
+                 Date: {DATE}\r\nSubject: {subject}\r\n\r\n{body}\r\n"
+            )
+            .into_bytes()
+        };
+        let a = vec![
+            entry(
+                "o1",
+                &["INBOX"],
+                "2026-01-15",
+                &message(
+                    "o1",
+                    "Alice <alice@x>",
+                    "a@x",
+                    "carol@y",
+                    "Quarterly report",
+                    "numbers",
+                ),
+            ),
+            entry(
+                "o2",
+                &["SENT", "STARRED"],
+                "2026-03-01",
+                &message("o2", "A <a@x>", "bob@z", "dave@z", "Lunch", "tomorrow?"),
+            ),
+            entry(
+                "o3",
+                &["INBOX", "UNREAD", "Label_1"],
+                "2026-03-02",
+                &message(
+                    "o3",
+                    "Bob <bob@z>",
+                    "A <A@X>",
+                    "dave@z",
+                    "Re: Lunch",
+                    "sure",
+                ),
+            ),
+            entry("parts", &["INBOX"], "2026-05-01", WITH_PARTS.as_bytes()),
+        ];
+        db.observe(
+            "a",
+            observed(
+                labels(&[
+                    "INBOX", "SENT", "UNREAD", "STARRED", "TRASH", "SPAM", "Label_1",
+                ]),
+                a,
+                vec![],
+                &[],
+            ),
+        )
+        .await;
+        let b = vec![entry(
+            "b1",
+            &["INBOX"],
+            "2026-02-01",
+            &message("b1", "alice@x", "b@x", "a@x", "Hello b", "hi"),
+        )];
+        db.observe("b", observed(labels(&["INBOX"]), b, vec![], &[]))
+            .await;
+        let mail = mail_of(&db);
+        let all = [
+            "Report",
+            "Re: Lunch",
+            "Lunch",
+            "Hello b",
+            "Quarterly report",
+        ];
+        for (query, expected) in [
+            ("from:alice", &["Hello b", "Quarterly report"][..]),
+            ("from:me", &["Lunch"]),
+            // To or Cc, of the entry's account, whatever its case.
+            ("to:me", &["Re: Lunch", "Hello b", "Quarterly report"]),
+            ("to:alice OR to:b@x", &["Hello b"]),
+            ("to:carol", &["Quarterly report"]),
+            ("cc:carol", &["Quarterly report"]),
+            ("cc:dave -from:me", &["Re: Lunch"]),
+            // b1's Cc, a@x, is not account b's.
+            ("cc:me", &[]),
+            ("subject:lunch", &["Re: Lunch", "Lunch"]),
+            ("body:lunch", &[]),
+            ("lunch -re", &["Lunch"]),
+            ("\"quarterly report\"", &["Quarterly report"]),
+            ("\"report quarterly\"", &[]),
+            ("\"quart\"", &[]),
+            ("label:label_1", &["Re: Lunch"]),
+            ("tag:Label_1 OR is:starred", &["Re: Lunch", "Lunch"]),
+            ("in:sent", &["Lunch"]),
+            ("is:unread", &["Re: Lunch"]),
+            (
+                "account:a is:read in:inbox",
+                &["Report", "Quarterly report"],
+            ),
+            ("NOT in:inbox", &["Lunch"]),
+            ("has:attachment", &["Report"]),
+            ("-has:attachment account:b", &["Hello b"]),
+            ("after:2026-03-01", &["Report", "Re: Lunch", "Lunch"]),
+            ("before:2026-03-01", &["Hello b", "Quarterly report"]),
+            ("after:2026/2/1 before:2026-03-02", &["Lunch", "Hello b"]),
+            ("older_than:1d", &all),
+            ("newer_than:1d", &[]),
+            ("larger:1M", &[]),
+            ("smaller:1M", &all),
+            ("id:<o2@x>", &["Lunch"]),
+            ("rfc822msgid:o2@x OR id:o3@x", &["Re: Lunch", "Lunch"]),
+            ("account:B@X", &["Hello b"]),
+            (
+                "(from:alice OR from:bob) -account:b",
+                &["Re: Lunch", "Quarterly report"],
+            ),
+        ] {
+            let response = mail.list_entries(query.into(), None, 10).await.unwrap();
+            assert_eq!(subjects(&response), expected, "{query}");
+        }
+        let error = mail
+            .list_entries("category:social".into(), None, 10)
+            .await
+            .unwrap_err();
         assert_eq!(
-            mail.search("  ".into(), 10).await.unwrap_err().code,
-            ErrorCode::Invalid
+            (error.code, error.message.as_str()),
+            (ErrorCode::Invalid, "no label CATEGORY_SOCIAL")
         );
     }
 
@@ -1476,7 +1593,7 @@ pub(crate) mod service {
             observed(labels(&["INBOX", "UNREAD", "TRASH"]), entries, vec![], &[]),
         )
         .await;
-        let inbox = |after, limit| mail.list_entries(EntryList::Inbox, after, limit);
+        let inbox = |after, limit| mail.list_entries("in:inbox".into(), after, limit);
         assert_eq!(
             subjects(&inbox(None, 10).await.unwrap()),
             [
@@ -1551,32 +1668,68 @@ pub(crate) mod service {
         mail.modify_labels(vec![m3], vec![spam], vec![])
             .await
             .unwrap();
-        let list = |label| mail.list_entries(EntryList::Label { label }, None, 10);
-        assert_eq!(
-            subjects(&list(inbox).await.unwrap()),
-            ["Subject 5", "Subject 4", "Subject 2"]
-        );
-        assert_eq!(subjects(&list(label).await.unwrap()), ["Subject 2"]);
-        assert_eq!(subjects(&list(trash).await.unwrap()), ["Subject 1"]);
-        assert_eq!(subjects(&list(spam).await.unwrap()), ["Subject 3"]);
-        let all_mail = |account: &str| {
-            mail.list_entries(
-                EntryList::AllMail {
-                    account: account.into(),
-                },
-                None,
-                10,
-            )
+        let list = |query: &str| mail.list_entries(query.into(), None, 10);
+        let scope = |query: &'static str| async move {
+            let ServerResponse::Conversations { scope, .. } = list(query).await.unwrap() else {
+                panic!()
+            };
+            scope
         };
         assert_eq!(
-            subjects(&all_mail("a").await.unwrap()),
+            subjects(&list("account:a in:inbox").await.unwrap()),
             ["Subject 5", "Subject 4", "Subject 2"]
         );
-        assert!(subjects(&all_mail("b").await.unwrap()).is_empty());
-        assert_eq!(all_mail("c").await.unwrap_err().code, ErrorCode::NotFound);
         assert_eq!(
-            subjects(&mail.search("common".into(), 10).await.unwrap()),
+            subjects(&list("account:a label:Label_1").await.unwrap()),
+            ["Subject 2"]
+        );
+        assert_eq!(
+            subjects(&list("account:a in:trash").await.unwrap()),
+            ["Subject 1"]
+        );
+        assert_eq!(
+            subjects(&list("account:a in:spam").await.unwrap()),
+            ["Subject 3"]
+        );
+        assert_eq!(
+            subjects(&list("account:a").await.unwrap()),
             ["Subject 5", "Subject 4", "Subject 2"]
+        );
+        assert!(subjects(&list("account:b").await.unwrap()).is_empty());
+        assert_eq!(
+            subjects(&list("common").await.unwrap()),
+            ["Subject 5", "Subject 4", "Subject 2"]
+        );
+        // Naming Trash or Spam lists theirs instead; in:anywhere, all.
+        assert_eq!(
+            subjects(&list("common in:trash").await.unwrap()),
+            ["Subject 1"]
+        );
+        assert_eq!(
+            subjects(&list("common -in:trash").await.unwrap()),
+            ["Subject 5", "Subject 4", "Subject 2"]
+        );
+        assert_eq!(
+            subjects(&list("in:trash OR in:spam").await.unwrap()),
+            ["Subject 3", "Subject 1"]
+        );
+        assert_eq!(subjects(&list("in:anywhere").await.unwrap()).len(), 5);
+        // Account b has neither.
+        assert_eq!(
+            scope("in:inbox").await,
+            ListScope::Except {
+                labels: vec![trash, spam]
+            }
+        );
+        assert_eq!(
+            scope("in:trash").await,
+            ListScope::Within {
+                labels: vec![trash]
+            }
+        );
+        assert_eq!(
+            scope("in:anywhere in:trash").await,
+            ListScope::Except { labels: vec![] }
         );
         let ServerResponse::Accounts { accounts, .. } = mail.list_accounts().await.unwrap() else {
             panic!()
@@ -1717,6 +1870,22 @@ pub(crate) mod service {
     }
 }
 
+/// The conversations `query` lists, with accounts `a` and `b`.
+fn list(
+    conn: &mut Connection,
+    query: &str,
+    after: Option<uplink_protocol::mail::ListPosition>,
+    limit: u32,
+) -> crate::query::Page {
+    let accounts = ["a", "b"].map(|id| crate::query::ConfiguredAccount {
+        id: id.into(),
+        address: format!("{id}@x"),
+        provider: uplink_protocol::mail::MailProvider::Gmail,
+    });
+    let query = crate::search::parse(query, 0).unwrap();
+    crate::query::conversations(conn, &accounts, &query, after, limit).unwrap()
+}
+
 /// Fills an empty database with `messages` messages over accounts `a` and
 /// `b` (even and odd ids), as a mailbox looks to the queries: some words
 /// very common and most rare (word `i` drawn with weight about 1/i), most
@@ -1809,9 +1978,6 @@ fn fill(conn: &mut Connection, messages: i64, thread: fn(i64) -> Option<String>)
 /// do, page by page.
 #[test]
 fn large_lists_and_searches_page_in_order() {
-    use crate::query;
-    use uplink_protocol::mail::EntryList;
-
     let dir = tempfile::tempdir().unwrap();
     let mut conn = uplink_storage::open(dir.path()).unwrap();
     fill(&mut conn, 6000, |_| None);
@@ -1836,12 +2002,10 @@ fn large_lists_and_searches_page_in_order() {
         .unwrap()
     };
     let (inbox, unread) = (label(&conn, "INBOX"), label(&conn, "UNREAD"));
-    for (list, sql) in [
+    for (query, sql) in [
         // 3000 entries: walked.
         (
-            EntryList::Label {
-                label: LabelId(inbox),
-            },
+            "account:a label:INBOX",
             format!(
                 "SELECT e.id FROM mail_entry e JOIN entry_label el ON el.entry = e.id
                  WHERE el.label = {inbox} AND el.desired AND {unhidden} {order}"
@@ -1849,18 +2013,14 @@ fn large_lists_and_searches_page_in_order() {
         ),
         // 600: sorted.
         (
-            EntryList::Label {
-                label: LabelId(unread),
-            },
+            "account:a is:unread",
             format!(
                 "SELECT e.id FROM mail_entry e JOIN entry_label el ON el.entry = e.id
                  WHERE el.label = {unread} AND el.desired AND {unhidden} {order}"
             ),
         ),
         (
-            EntryList::AllMail {
-                account: "b".into(),
-            },
+            "account:b",
             format!(
                 "SELECT e.id FROM mail_entry e WHERE e.account_id = 'b' AND {unhidden} {order}"
             ),
@@ -1869,14 +2029,14 @@ fn large_lists_and_searches_page_in_order() {
         let mut listed = vec![];
         let mut after = None;
         loop {
-            let page = query::conversations(&mut conn, &list, after, 250).unwrap();
+            let page = list(&mut conn, query, after, 250);
             listed.extend(page.conversations.iter().map(|c| c.latest.id.0));
             match page.next {
                 Some(next) => after = Some(next),
                 None => break,
             }
         }
-        assert_eq!(listed, plain(&conn, &sql), "{list:?}");
+        assert_eq!(listed, plain(&conn, &sql), "{query}");
     }
     // Common words (walked), rare ones (sorted), and both.
     for words in ["w0", "w1 w2", "w4321", "w12 w3000"] {
@@ -1893,9 +2053,8 @@ fn large_lists_and_searches_page_in_order() {
             ),
         );
         expected.truncate(100);
-        let found: Vec<i64> = query::search(&mut conn, words, 100)
-            .unwrap()
-            .1
+        let found: Vec<i64> = list(&mut conn, words, None, 100)
+            .conversations
             .iter()
             .map(|c| c.latest.id.0)
             .collect();
@@ -1913,9 +2072,7 @@ fn threads(id: i64) -> Option<String> {
 /// of them does, page by page.
 #[test]
 fn large_threaded_lists_page_in_order() {
-    use crate::query;
     use std::collections::{BTreeMap, BTreeSet};
-    use uplink_protocol::mail::EntryList;
 
     let dir = tempfile::tempdir().unwrap();
     let mut conn = uplink_storage::open(dir.path()).unwrap();
@@ -1954,61 +2111,45 @@ fn large_threaded_lists_page_in_order() {
             .collect::<Result<_, _>>()
             .unwrap();
     }
-    let label = |name: &str| -> i64 {
-        conn.query_row(
-            "SELECT id FROM label WHERE account_id = 'a' AND external_id = ?1",
-            [name],
-            |r| r.get(0),
-        )
-        .unwrap()
-    };
     let hidden = |r: &Row| r.labels.contains("TRASH") || r.labels.contains("SPAM");
     // Each list: its scope, and what puts a conversation on it.
     type Test<'a> = (
-        EntryList,
+        &'static str,
         Box<dyn Fn(&Row) -> bool + 'a>,
         Box<dyn Fn(&Row) -> bool + 'a>,
     );
     let tests: Vec<Test> = vec![
         // 3000 entries: walked.
         (
-            EntryList::Label {
-                label: LabelId(label("INBOX")),
-            },
+            "account:a label:INBOX",
             Box::new(|r: &Row| !hidden(r)),
             Box::new(|r: &Row| r.account == "a" && r.labels.contains("INBOX")),
         ),
         // 600: sorted.
         (
-            EntryList::Label {
-                label: LabelId(label("UNREAD")),
-            },
+            "account:a is:unread",
             Box::new(|r: &Row| !hidden(r)),
             Box::new(|r: &Row| r.account == "a" && r.labels.contains("UNREAD")),
         ),
         // 60: sorted, of Trash alone.
         (
-            EntryList::Label {
-                label: LabelId(label("TRASH")),
-            },
+            "account:a in:trash",
             Box::new(|r: &Row| r.labels.contains("TRASH")),
             Box::new(|r: &Row| r.account == "a" && r.labels.contains("TRASH")),
         ),
         (
-            EntryList::AllMail {
-                account: "b".into(),
-            },
+            "account:b",
             Box::new(|r: &Row| !hidden(r)),
             Box::new(|r: &Row| r.account == "b"),
         ),
         // Every account's: walked.
         (
-            EntryList::Inbox,
+            "in:inbox",
             Box::new(|r: &Row| !hidden(r)),
             Box::new(|r: &Row| r.labels.contains("INBOX")),
         ),
     ];
-    for (list, scope, matches) in tests {
+    for (query, scope, matches) in tests {
         // Conversations by their newest entry, newest first, with their
         // entries oldest first.
         let mut conversations: BTreeMap<(String, String), Vec<&Row>> = BTreeMap::new();
@@ -2037,7 +2178,7 @@ fn large_threaded_lists_page_in_order() {
         let mut listed = vec![];
         let mut after = None;
         loop {
-            let page = query::conversations(&mut conn, &list, after, 250).unwrap();
+            let page = list(&mut conn, query, after, 250);
             listed.extend(page.conversations.iter().map(|c| {
                 let mut ids: Vec<i64> = c.earlier.iter().map(|m| m.id.0).collect();
                 ids.push(c.latest.id.0);
@@ -2048,8 +2189,8 @@ fn large_threaded_lists_page_in_order() {
                 None => break,
             }
         }
-        assert_eq!(listed.len(), expected.len(), "{list:?}");
-        assert_eq!(listed, expected, "{list:?}");
+        assert_eq!(listed.len(), expected.len(), "{query}");
+        assert_eq!(listed, expected, "{query}");
     }
 }
 
@@ -2061,7 +2202,6 @@ fn large_threaded_lists_page_in_order() {
 fn speed_of_search_and_listing() {
     use crate::query;
     use std::time::Instant;
-    use uplink_protocol::mail::EntryList;
 
     const MESSAGES: i64 = 50_000;
     let dir = tempfile::tempdir().unwrap();
@@ -2070,13 +2210,6 @@ fn speed_of_search_and_listing() {
     fill(&mut conn, MESSAGES, threads);
     eprintln!("set up {MESSAGES} messages in {:?}", started.elapsed());
 
-    let inbox: i64 = conn
-        .query_row(
-            "SELECT id FROM label WHERE account_id = 'a' AND external_id = 'INBOX'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
     let mut slowest = std::time::Duration::ZERO;
     let mut time = |what: &str, f: &mut dyn FnMut(&mut Connection) -> usize| {
         // The first run warms the page cache, as a running server's is.
@@ -2087,36 +2220,32 @@ fn speed_of_search_and_listing() {
         slowest = slowest.max(took);
         eprintln!("{what}: {found} in {took:?}");
     };
-    for query in ["w0", "w1 w2", "w4321", "w12 w3000", "w"] {
+    for query in [
+        "w0",
+        "w1 w2",
+        "w4321",
+        "w12 w3000",
+        "w",
+        "w1 OR w2",
+        "w1 -w2",
+        "account:a is:unread w3",
+        "in:inbox -is:unread",
+        "after:1970-01-01 w5",
+    ] {
         time(&format!("search {query:?}"), &mut |conn| {
-            query::search(conn, query, 100).unwrap().1.len()
+            list(conn, query, None, 100).conversations.len()
         });
     }
     time("Inbox, first page", &mut |conn| {
-        query::conversations(
-            conn,
-            &EntryList::Label {
-                label: LabelId(inbox),
-            },
-            None,
-            100,
-        )
-        .unwrap()
-        .conversations
-        .len()
+        list(conn, "account:a in:inbox", None, 100)
+            .conversations
+            .len()
+    });
+    time("every Inbox, first page", &mut |conn| {
+        list(conn, "in:inbox", None, 100).conversations.len()
     });
     time("All Mail, first page", &mut |conn| {
-        query::conversations(
-            conn,
-            &EntryList::AllMail {
-                account: "a".into(),
-            },
-            None,
-            100,
-        )
-        .unwrap()
-        .conversations
-        .len()
+        list(conn, "account:a", None, 100).conversations.len()
     });
     time("accounts and counts", &mut |conn| {
         query::accounts(
@@ -2138,8 +2267,7 @@ fn speed_of_search_and_listing() {
 /// .eml once, before the dispatcher takes the writer.
 #[tokio::test]
 async fn attachments_are_indexed_for_messages_stored_before() {
-    use crate::{mailbox::index_attachments, parse::tests::WITH_PARTS, query};
-    use uplink_protocol::mail::EntryList;
+    use crate::{mailbox::index_attachments, parse::tests::WITH_PARTS};
 
     let db = Db::new();
     let store = db.store();
@@ -2169,20 +2297,17 @@ async fn attachments_are_indexed_for_messages_stored_before() {
     .await;
     let mut conn = uplink_storage::open(db.dir.path()).unwrap();
     let listed = |conn: &mut Connection| -> Vec<(String, bool)> {
-        let inbox = db.label("a", "INBOX");
-        let mut entries: Vec<_> =
-            query::conversations(conn, &EntryList::Label { label: inbox }, None, 10)
-                .unwrap()
-                .conversations
-                .into_iter()
-                .map(|c| c.latest)
-                .map(|e| {
-                    (
-                        e.snippet.chars().take(2).collect::<String>(),
-                        e.has_attachments,
-                    )
-                })
-                .collect();
+        let mut entries: Vec<_> = list(conn, "account:a in:inbox", None, 10)
+            .conversations
+            .into_iter()
+            .map(|c| c.latest)
+            .map(|e| {
+                (
+                    e.snippet.chars().take(2).collect::<String>(),
+                    e.has_attachments,
+                )
+            })
+            .collect();
         entries.sort();
         entries
     };

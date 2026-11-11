@@ -22,6 +22,7 @@ import type {
   Label,
   LabelId,
   LabelState,
+  ListScope,
   ListingProgress,
   MailProvider,
   LogEntry,
@@ -520,20 +521,40 @@ export class FakeServer implements Requester, Blobs {
       case 'list_accounts':
         return { type: 'accounts', as_of: this.head(), accounts: this.listAccounts() }
       case 'list_entries': {
-        const list = body.list
-        const trash = list.type === 'label' && HIDING.includes(this.labelById(list.label).external_id)
-        const all = this.conversations(
-          (e) => (trash && list.type === 'label' ? e.labels.includes(list.label) : !this.hidden(e)),
-          (e) => {
-            switch (list.type) {
-              case 'label':
-                return e.labels.includes(list.label)
-              case 'all_mail':
-                return e.account === list.account
-              case 'inbox':
-                return e.labels.some((l) => this.labelById(l).external_id === 'INBOX')
+        // The query language as the client writes it: terms that must all
+        // match, of account:, label: and in:, and words of the subject or
+        // snippet.
+        const terms = [...body.query.matchAll(/(?:(\w+):)?(?:"((?:[^"\\]|\\.)*)"|(\S+))/g)].map(
+          ([, name, quoted, word]) => ({ name, value: quoted?.replace(/\\(.)/g, '$1') ?? word }),
+        )
+        const labels = this.accounts.flatMap((a) => a.labels)
+        const named = (name: string) => labels.filter((l) => l.name.toLowerCase() === name.toLowerCase())
+        const matchers = terms.map(({ name, value }): ((e: Entry) => boolean) => {
+          switch (name) {
+            case 'account':
+              return (e) => e.account === value
+            case 'label':
+            case 'in': {
+              const ids = named(value).map((l) => l.id)
+              return (e) => e.labels.some((l) => ids.includes(l))
             }
-          },
+            case undefined:
+              return (e) => `${e.subject} ${e.snippet}`.toLowerCase().includes(value.toLowerCase())
+            default:
+              throw new Error(`the test server knows no ${name}:`)
+          }
+        })
+        const hiding = labels.filter((l) => HIDING.includes(l.external_id))
+        const within = terms
+          .filter(({ name }) => name === 'label' || name === 'in')
+          .flatMap(({ value }) => named(value))
+          .filter((l) => HIDING.includes(l.external_id))
+          .map((l) => l.id)
+        const scope: ListScope =
+          within.length > 0 ? { type: 'within', labels: within } : { type: 'except', labels: hiding.map((l) => l.id) }
+        const all = this.conversations(
+          (e) => e.labels.some((l) => scope.labels.includes(l)) === (scope.type === 'within'),
+          (e) => matchers.every((m) => m(e)),
         )
         const start = body.after ? all.findIndex((c) => c.latest.id === body.after!.entry) + 1 : 0
         const page = all.slice(start, start + body.limit)
@@ -544,15 +565,8 @@ export class FakeServer implements Requester, Blobs {
           as_of: this.head(),
           conversations: page,
           next: more && last ? { received_at: last.received_at, entry: last.id } : null,
+          scope,
         }
-      }
-      case 'search': {
-        const query = body.query.toLowerCase()
-        const found = this.conversations(
-          (e) => !this.hidden(e),
-          (e) => `${e.subject} ${e.snippet}`.toLowerCase().includes(query),
-        )
-        return { type: 'conversations', as_of: this.head(), conversations: found.slice(0, body.limit), next: null }
       }
       case 'list_conversation': {
         const entry = this.entries.find((e) => e.id === body.entry)!

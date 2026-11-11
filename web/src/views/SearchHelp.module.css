@@ -1,0 +1,31 @@
+.help {
+  max-width: 820px;
+  padding: 8px 16px 24px;
+  overflow: auto;
+}
+
+.help h3 {
+  margin: 20px 0 6px;
+  font-size: 14px;
+}
+
+.help table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.help td {
+  padding: 4px 12px 4px 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.help td:first-child {
+  width: 34%;
+  white-space: nowrap;
+}
+
+.help a {
+  color: var(--accent);
+  text-decoration: none;
+}

@@ -1,29 +1,17 @@
 //! Read-only queries over mailbox state, on a reader connection. Each runs
 //! in one read transaction and reports the log position it reflects.
 
+use crate::search::{Fields, Invalid, Query, Term};
 use anyhow::{Context, Result};
 use uplink_protocol::{
     mail::{
-        Conversation, Entry, EntryId, EntryList, Label, LabelId, ListPosition, ListingProgress,
+        Conversation, Entry, EntryId, Label, LabelId, ListPosition, ListScope, ListingProgress,
         MailProvider, Member, MessageId, Sender,
     },
     TxLogId,
 };
-use uplink_storage::rusqlite::{
-    params, Connection, OptionalExtension, Row, Statement, ToSql, Transaction,
-};
+use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 use uplink_tx_log::as_of;
-
-/// SQL: whether the entry with id `entry` is in Trash or Spam, which, as
-/// in Gmail, hides it from every list but theirs, from the other labels'
-/// counts, and from search.
-fn hidden(entry: &str) -> String {
-    format!(
-        "EXISTS (SELECT 1 FROM entry_label hl JOIN label h ON h.id = hl.label
-                 WHERE hl.entry = {entry} AND hl.desired
-                   AND h.external_id IN ('TRASH', 'SPAM'))"
-    )
-}
 
 /// A configured mail account.
 #[derive(Debug, Clone)]
@@ -102,6 +90,26 @@ pub struct Page {
     pub as_of: TxLogId,
     pub conversations: Vec<Conversation>,
     pub next: Option<ListPosition>,
+    pub scope: ListScope,
+}
+
+/// Why a query lists nothing: it names what does not exist.
+#[derive(Debug)]
+pub enum ListError {
+    Invalid(Invalid),
+    Internal(anyhow::Error),
+}
+
+impl From<anyhow::Error> for ListError {
+    fn from(e: anyhow::Error) -> Self {
+        Self::Internal(e)
+    }
+}
+
+impl From<uplink_storage::rusqlite::Error> for ListError {
+    fn from(e: uplink_storage::rusqlite::Error) -> Self {
+        Self::Internal(e.into())
+    }
 }
 
 /// Below this many candidates, a page is found by sorting them all; above,
@@ -110,120 +118,313 @@ pub struct Page {
 /// many rows at most, however large the mailbox.
 const SORT_AT_MOST: i64 = 2000;
 
-/// Which entries a list's conversations are made of, as SQL over an entry
-/// alias: in a list of Trash or Spam, the entries with its label (bound as
-/// `:label`); in any other, those in neither.
-#[derive(Clone, Copy)]
-enum Scope {
-    Labelled,
-    Unhidden,
+/// A query as SQL is made of: a condition on an entry, with the parts
+/// a page can be found by kept apart.
+enum Condition {
+    And(Vec<Condition>),
+    Or(Vec<Condition>),
+    Not(Box<Condition>),
+    /// Its message matches the FTS5 expression.
+    Fts(String),
+    /// It has one of the labels.
+    Label(Vec<LabelId>),
+    /// It is the account's.
+    Account(String),
+    /// Any other: SQL over the entry alias it is given.
+    Sql(Box<dyn Fn(&str) -> String>),
 }
 
-impl Scope {
-    fn sql(self, x: &str) -> String {
+impl Condition {
+    /// SQL: whether entry `x` meets it.
+    fn sql(&self, x: &str) -> String {
+        let join = |all: &[Condition], with: &str, empty: &str| match all {
+            [] => empty.to_owned(),
+            _ => all
+                .iter()
+                .map(|c| format!("({})", c.sql(x)))
+                .collect::<Vec<_>>()
+                .join(with),
+        };
         match self {
-            Scope::Labelled => format!(
-                "EXISTS (SELECT 1 FROM entry_label sl
-                         WHERE sl.entry = {x}.id AND sl.label = :label AND sl.desired)"
+            Condition::And(all) => join(all, " AND ", "1"),
+            Condition::Or(any) => join(any, " OR ", "0"),
+            Condition::Not(c) => format!("NOT ({})", c.sql(x)),
+            Condition::Fts(fts) => format!(
+                "{x}.message IN (SELECT rowid FROM message_fts WHERE message_fts MATCH {})",
+                literal(fts)
             ),
-            Scope::Unhidden => format!("NOT {}", hidden(&format!("{x}.id"))),
+            Condition::Label(labels) => format!(
+                "EXISTS (SELECT 1 FROM entry_label ml
+                         WHERE ml.entry = {x}.id AND ml.label IN ({}) AND ml.desired)",
+                ids(labels)
+            ),
+            Condition::Account(account) => format!("{x}.account_id = {}", literal(account)),
+            Condition::Sql(sql) => sql(x),
         }
     }
 }
 
-/// How a list finds its conversations: those with an entry in scope that
-/// `matches`. A conversation is listed by its newest entry in scope, which
-/// need not match itself (a reply in Sent, to a thread in the Inbox).
-struct Listing {
-    scope: Scope,
-    /// SQL: whether entry `x` (in scope) puts its conversation on the list.
-    matches: Box<dyn Fn(&str) -> String>,
-    /// Candidates, when few: `FROM … WHERE …`, naming the entries `c`;
-    /// with `None`, or many, the list walks `walk` instead.
-    candidates: Option<(String, String)>,
-    /// The index to walk entries newest first by, and the SQL its entries
-    /// `e` must also meet (e.g. their account).
-    walk: (&'static str, String),
+/// A string as an SQL literal.
+fn literal(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
 }
 
-/// The list's conversations, newest first, after `after`.
+fn ids(labels: &[LabelId]) -> String {
+    labels
+        .iter()
+        .map(|l| l.0.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// SQL: whether entry `x` is in `scope`.
+fn in_scope(scope: &ListScope, x: &str) -> String {
+    let with = |labels: &[LabelId]| {
+        format!(
+            "EXISTS (SELECT 1 FROM entry_label sl
+                         WHERE sl.entry = {x}.id AND sl.label IN ({}) AND sl.desired)",
+            ids(labels)
+        )
+    };
+    match scope {
+        ListScope::Within { labels } => with(labels),
+        ListScope::Except { labels } if labels.is_empty() => "1".into(),
+        ListScope::Except { labels } => format!("NOT {}", with(labels)),
+    }
+}
+
+/// A query made SQL, with the names it holds resolved.
+struct Compiler<'a> {
+    tx: &'a Transaction<'a>,
+    accounts: &'a [ConfiguredAccount],
+    /// Trash's and Spam's labels the query names, but not to exclude them.
+    hiding: Vec<LabelId>,
+    /// Whether it names `in:anywhere`, but not to exclude it.
+    anywhere: bool,
+}
+
+impl Compiler<'_> {
+    fn condition(&mut self, query: &Query, positive: bool) -> Result<Condition, ListError> {
+        if let Some(fts) = fts(query) {
+            return Ok(Condition::Fts(fts));
+        }
+        Ok(match query {
+            // Its text, in one FTS5 expression, is one index lookup.
+            Query::And(all) => {
+                let (text, rest) = fts_and(all);
+                let mut conditions: Vec<Condition> = text.into_iter().map(Condition::Fts).collect();
+                for q in rest {
+                    conditions.push(self.condition(q, positive)?);
+                }
+                match conditions.len() {
+                    1 => conditions.pop().unwrap(),
+                    _ => Condition::And(conditions),
+                }
+            }
+            Query::Or(any) => Condition::Or(
+                any.iter()
+                    .map(|q| self.condition(q, positive))
+                    .collect::<Result<_, _>>()?,
+            ),
+            Query::Not(q) => Condition::Not(Box::new(self.condition(q, !positive)?)),
+            Query::Term(term) => self.term(term, positive)?,
+        })
+    }
+
+    fn term(&mut self, term: &Term, positive: bool) -> Result<Condition, ListError> {
+        let sql = |f: Box<dyn Fn(&str) -> String>| Ok(Condition::Sql(f));
+        match term {
+            Term::Text { .. } => unreachable!("text is FTS"),
+            Term::Me(fields) => {
+                let addresses: Vec<(String, String)> = self
+                    .accounts
+                    .iter()
+                    .map(|a| (literal(&a.id), literal(&a.address)))
+                    .collect();
+                let field = *fields;
+                sql(Box::new(move |x| {
+                    let of = |address: &str| match field {
+                        Fields::From => format!("mm.from_addr = {address} COLLATE NOCASE"),
+                        Fields::To => {
+                            format!("{} OR {}", among("to", address), among("cc", address))
+                        }
+                        Fields::Cc => among("cc", address),
+                        Fields::Subject | Fields::Body => unreachable!("no me: in {field:?}"),
+                    };
+                    let accounts: Vec<String> = addresses
+                        .iter()
+                        .map(|(id, address)| {
+                            format!("({x}.account_id = {id} AND ({}))", of(address))
+                        })
+                        .collect();
+                    match accounts.is_empty() {
+                        true => "0".into(),
+                        false => format!(
+                            "EXISTS (SELECT 1 FROM message mm WHERE mm.id = {x}.message AND ({}))",
+                            accounts.join(" OR ")
+                        ),
+                    }
+                }))
+            }
+            Term::Label(name) => {
+                let labels: Vec<(LabelId, bool)> = self
+                    .tx
+                    .prepare(
+                        "SELECT id, external_id IN ('TRASH', 'SPAM') FROM label
+                         WHERE name = ?1 COLLATE NOCASE ORDER BY id",
+                    )?
+                    .query_map([name], |r| Ok((LabelId(r.get(0)?), r.get(1)?)))?
+                    .collect::<Result<_, _>>()?;
+                if labels.is_empty() {
+                    return Err(ListError::Invalid(Invalid(format!("no label {name}"))));
+                }
+                if positive {
+                    self.hiding
+                        .extend(labels.iter().filter(|(_, hiding)| *hiding).map(|(l, _)| *l));
+                }
+                Ok(Condition::Label(
+                    labels.into_iter().map(|(l, _)| l).collect(),
+                ))
+            }
+            Term::Anywhere => {
+                self.anywhere |= positive;
+                sql(Box::new(|_| "1".into()))
+            }
+            Term::Account(account) => {
+                let configured = self
+                    .accounts
+                    .iter()
+                    .find(|a| a.id == *account || a.address.eq_ignore_ascii_case(account))
+                    .ok_or_else(|| ListError::Invalid(Invalid(format!("no account {account}"))))?;
+                Ok(Condition::Account(configured.id.clone()))
+            }
+            Term::HasAttachment => sql(Box::new(|x| {
+                format!(
+                    "EXISTS (SELECT 1 FROM message mm
+                             WHERE mm.id = {x}.message AND mm.has_attachments)"
+                )
+            })),
+            &Term::After(at) => sql(Box::new(move |x| format!("{x}.received_at >= {at}"))),
+            &Term::Before(at) => sql(Box::new(move |x| format!("{x}.received_at < {at}"))),
+            &Term::Larger(bytes) => sql(Box::new(move |x| format!("{} > {bytes}", size(x)))),
+            &Term::Smaller(bytes) => sql(Box::new(move |x| format!("{} < {bytes}", size(x)))),
+            Term::MessageId(id) => {
+                let id = literal(id);
+                sql(Box::new(move |x| {
+                    format!("{x}.message IN (SELECT id FROM message WHERE message_id = {id})")
+                }))
+            }
+        }
+    }
+}
+
+/// SQL: whether `address` is among message `mm`'s `field` (`to`, `cc`).
+fn among(field: &str, address: &str) -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM json_each(mm.{field}_addrs) WHERE value = {address} COLLATE NOCASE)"
+    )
+}
+
+/// SQL: the size of entry `x`'s copy of its message.
+fn size(x: &str) -> String {
+    format!("(SELECT size_bytes FROM message_variant WHERE sha256 = {x}.variant)")
+}
+
+/// Of terms that must all match, the text as one FTS5 expression, and
+/// the rest. Text a term must lack is left out of it (FTS5's NOT is
+/// binary) unless there is text it must have.
+fn fts_and(all: &[Query]) -> (Option<String>, Vec<&Query>) {
+    let mut have = vec![];
+    let mut lack = vec![];
+    let mut rest = vec![];
+    for q in all {
+        match (fts(q), q) {
+            (Some(f), _) => have.push(format!("({f})")),
+            (None, Query::Not(n)) if fts(n).is_some() => lack.push((q, fts(n).unwrap())),
+            (None, _) => rest.push(q),
+        }
+    }
+    if have.is_empty() {
+        rest.extend(lack.into_iter().map(|(q, _)| q));
+        return (None, rest);
+    }
+    let mut text = format!("({})", have.join(" AND "));
+    for (_, f) in lack {
+        text = format!("{text} NOT ({f})");
+    }
+    (Some(text), rest)
+}
+
+/// The query as one FTS5 expression, if it is of text alone.
+fn fts(query: &Query) -> Option<String> {
+    match query {
+        Query::And(queries) => match fts_and(queries) {
+            (text, rest) if rest.is_empty() => text,
+            _ => None,
+        },
+        Query::Or(queries) => {
+            let parts = queries
+                .iter()
+                .map(|q| fts(q).map(|f| format!("({f})")))
+                .collect::<Option<Vec<_>>>()?;
+            (!parts.is_empty()).then(|| parts.join(" OR "))
+        }
+        Query::Not(_) => None,
+        Query::Term(Term::Text {
+            fields,
+            text,
+            exact,
+        }) => {
+            let columns = match fields {
+                None => "",
+                Some(Fields::From) => "{from_addr from_name} : ",
+                Some(Fields::To) => "{to_addrs cc_addrs} : ",
+                Some(Fields::Cc) => "{cc_addrs} : ",
+                Some(Fields::Subject) => "{subject} : ",
+                Some(Fields::Body) => "{body_text} : ",
+            };
+            let prefix = if *exact { "" } else { "*" };
+            Some(format!(
+                "{columns}\"{}\"{prefix}",
+                text.replace('"', "\"\"")
+            ))
+        }
+        Query::Term(_) => None,
+    }
+}
+
+/// The conversations `query` lists, newest first, after `after`.
 pub fn conversations(
     conn: &mut Connection,
-    list: &EntryList,
+    accounts: &[ConfiguredAccount],
+    query: &Query,
     after: Option<ListPosition>,
     limit: u32,
-) -> Result<Page> {
+) -> Result<Page, ListError> {
     let tx = conn.transaction()?;
     let as_of = as_of(&tx)?;
-    type Params = Vec<(&'static str, Box<dyn ToSql>)>;
-    let has_label = |label: &'static str| {
-        move |x: &str| {
-            format!(
-                "EXISTS (SELECT 1 FROM entry_label ml
-                         WHERE ml.entry = {x}.id AND ml.label {label} AND ml.desired)"
-            )
-        }
+    let mut compiler = Compiler {
+        tx: &tx,
+        accounts,
+        hiding: vec![],
+        anywhere: false,
     };
-    let (params, listing): (Params, Listing) = match list {
-        EntryList::Label { label } => {
-            let (account, external_id): (String, String) = tx.query_row(
-                "SELECT account_id, external_id FROM label WHERE id = ?1",
-                [label.0],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )?;
-            let scope = match external_id.as_str() {
-                "TRASH" | "SPAM" => Scope::Labelled,
-                _ => Scope::Unhidden,
-            };
-            (
-                vec![
-                    (":label", Box::new(label.0)),
-                    (":account", Box::new(account)),
-                ],
-                Listing {
-                    scope,
-                    matches: Box::new(has_label("= :label")),
-                    candidates: Some((
-                        "entry_label el JOIN mail_entry c ON c.id = el.entry".into(),
-                        "el.label = :label AND el.desired".into(),
-                    )),
-                    walk: (
-                        "mail_entry_by_account_received",
-                        "e.account_id = :account".into(),
-                    ),
-                },
-            )
+    let condition = compiler.condition(query, true)?;
+    let scope = match (compiler.anywhere, compiler.hiding) {
+        (true, _) => ListScope::Except { labels: vec![] },
+        (false, mut hiding) if !hiding.is_empty() => {
+            hiding.sort();
+            hiding.dedup();
+            ListScope::Within { labels: hiding }
         }
-        EntryList::AllMail { account } => (
-            vec![(":account", Box::new(account.clone()))],
-            Listing {
-                scope: Scope::Unhidden,
-                matches: Box::new(|_| "1".into()),
-                candidates: None,
-                walk: (
-                    "mail_entry_by_account_received",
-                    "e.account_id = :account".into(),
-                ),
-            },
-        ),
-        EntryList::Inbox => {
-            const INBOXES: &str = "IN (SELECT id FROM label WHERE external_id = 'INBOX')";
-            (
-                vec![],
-                Listing {
-                    scope: Scope::Unhidden,
-                    matches: Box::new(has_label(INBOXES)),
-                    candidates: Some((
-                        "entry_label el JOIN mail_entry c ON c.id = el.entry".into(),
-                        format!("el.label {INBOXES} AND el.desired"),
-                    )),
-                    walk: ("mail_entry_by_received", "1".into()),
-                },
-            )
-        }
+        (false, _) => ListScope::Except {
+            labels: tx
+                .prepare("SELECT id FROM label WHERE external_id IN ('TRASH', 'SPAM') ORDER BY id")?
+                .query_map([], |r| Ok(LabelId(r.get(0)?)))?
+                .collect::<Result<_, _>>()?,
+        },
     };
-    let params: Vec<(&str, &dyn ToSql)> = params.iter().map(|(n, v)| (*n, &**v)).collect();
-    let conversations = page(&tx, &listing, &params, after, limit)?;
+    let conversations = page(&tx, &scope, condition, after, limit)?;
     let next = (conversations.len() == limit as usize).then(|| {
         let last = &conversations
             .last()
@@ -238,49 +439,89 @@ pub fn conversations(
         as_of,
         conversations,
         next,
+        scope,
     })
 }
 
-/// The listing's conversations, newest first, after `after`.
+/// The conversations with an entry in scope that meets `condition`,
+/// newest first, after `after`. A conversation is listed by its newest
+/// entry in scope, which need not meet it itself (a reply in Sent, to a
+/// thread in the Inbox).
 fn page(
     tx: &Transaction,
-    listing: &Listing,
-    params: &[(&str, &dyn ToSql)],
+    scope: &ListScope,
+    condition: Condition,
     after: Option<ListPosition>,
     limit: u32,
 ) -> Result<Vec<Conversation>> {
-    let scope = |x: &str| listing.scope.sql(x);
-    let candidates = match &listing.candidates {
-        Some((from, condition)) => {
-            let mut count =
-                tx.prepare(&format!("SELECT count(*) FROM {from} WHERE {condition}"))?;
-            let count: i64 = count.query_row(&*named(&count, params), |r| r.get(0))?;
-            (count <= SORT_AT_MOST).then_some((from, condition))
-        }
-        None => None,
+    let scope_sql = |x: &str| in_scope(scope, x);
+    let mut conjuncts = match condition {
+        Condition::And(all) => all,
+        c => vec![c],
     };
-    let (from, condition) = match candidates {
-        // The conversations of the candidates, by their newest entries.
-        Some((from, condition)) => (
-            format!(
-                "(SELECT DISTINCT
-                    CASE WHEN c.thread_id IS NULL THEN c.id
-                    ELSE (SELECT n.id FROM mail_entry n
-                          WHERE n.account_id = c.account_id AND n.thread_id = c.thread_id
-                            AND {scope_n}
-                          ORDER BY n.received_at DESC, n.id DESC LIMIT 1)
-                    END AS id
-                  FROM {from} WHERE {condition} AND {scope_c}) newest
-                 JOIN mail_entry e ON e.id = newest.id",
-                scope_n = scope("n"),
-                scope_c = scope("c"),
+    // The fewest candidates a conjunct is met by, if it is of an index:
+    // `FROM … WHERE …`, naming the entries `c`.
+    let mut fewest: Option<(i64, usize, String, String)> = None;
+    for (at, conjunct) in conjuncts.iter().enumerate() {
+        let (from, condition) = match conjunct {
+            Condition::Fts(fts) => (
+                "message_fts f JOIN mail_entry c ON c.message = f.rowid",
+                format!("message_fts MATCH {}", literal(fts)),
             ),
-            "1".to_owned(),
-        ),
+            Condition::Label(labels) => (
+                "entry_label el JOIN mail_entry c ON c.id = el.entry",
+                format!("el.label IN ({}) AND el.desired", ids(labels)),
+            ),
+            _ => continue,
+        };
+        let count: i64 = tx.query_row(
+            &format!("SELECT count(*) FROM {from} WHERE {condition}"),
+            [],
+            |r| r.get(0),
+        )?;
+        if fewest.as_ref().is_none_or(|(least, ..)| count < *least) {
+            fewest = Some((count, at, from.to_owned(), condition));
+        }
+    }
+    let (from, condition) = match fewest {
+        // The conversations of the candidates, by their newest entries.
+        Some((count, at, from, condition)) if count <= SORT_AT_MOST => {
+            conjuncts.remove(at);
+            let rest = Condition::And(conjuncts);
+            (
+                format!(
+                    "(SELECT DISTINCT
+                        CASE WHEN c.thread_id IS NULL THEN c.id
+                        ELSE (SELECT n.id FROM mail_entry n
+                              WHERE n.account_id = c.account_id AND n.thread_id = c.thread_id
+                                AND {scope_n}
+                              ORDER BY n.received_at DESC, n.id DESC LIMIT 1)
+                        END AS id
+                      FROM {from} WHERE {condition} AND {rest_c} AND {scope_c}) newest
+                     JOIN mail_entry e ON e.id = newest.id",
+                    scope_n = scope_sql("n"),
+                    rest_c = rest.sql("c"),
+                    scope_c = scope_sql("c"),
+                ),
+                "1".to_owned(),
+            )
+        }
         // Entries that are their conversation's newest, and whose
-        // conversation has an entry that matches.
-        None => {
-            let (index, walked) = &listing.walk;
+        // conversation has an entry that meets the condition, walked
+        // newest first by an index: an account's, if the condition is of
+        // one, since its conversations are.
+        _ => {
+            let (index, walked) = match conjuncts.iter().find_map(|c| match c {
+                Condition::Account(account) => Some(account),
+                _ => None,
+            }) {
+                Some(account) => (
+                    "mail_entry_by_account_received",
+                    format!("e.account_id = {}", literal(account)),
+                ),
+                None => ("mail_entry_by_received", "1".to_owned()),
+            };
+            let condition = Condition::And(conjuncts);
             (
                 format!("mail_entry e INDEXED BY {index}"),
                 format!(
@@ -297,11 +538,11 @@ fn page(
                                           WHERE x.account_id = e.account_id
                                             AND x.thread_id = e.thread_id AND x.id <> e.id
                                             AND {matches_x} AND {scope_x})))",
-                    scope_e = scope("e"),
-                    scope_n = scope("n"),
-                    scope_x = scope("x"),
-                    matches_e = (listing.matches)("e"),
-                    matches_x = (listing.matches)("x"),
+                    scope_e = scope_sql("e"),
+                    scope_n = scope_sql("n"),
+                    scope_x = scope_sql("x"),
+                    matches_e = condition.sql("e"),
+                    matches_x = condition.sql("x"),
                 ),
             )
         }
@@ -312,44 +553,36 @@ fn page(
         received_at: i64::MAX,
         entry: EntryId(i64::MAX),
     });
-    let mut all: Vec<(&str, &dyn ToSql)> = params.to_vec();
-    all.extend([
-        (":received_at", &after.received_at as &dyn ToSql),
-        (":entry", &after.entry.0),
-        (":limit", &limit),
-    ]);
     let mut latest = tx.prepare(&format!(
         "SELECT {ENTRY_COLUMNS}
          FROM {from}
          JOIN message m ON m.id = e.message
          WHERE {condition}
-           AND (e.received_at, e.id) < (:received_at, :entry)
+           AND (e.received_at, e.id) < (?1, ?2)
          ORDER BY e.received_at DESC, e.id DESC
-         LIMIT :limit"
+         LIMIT ?3"
     ))?;
     let latest = latest
-        .query_map(&*named(&latest, &all), entry_row)?
+        .query_map(params![after.received_at, after.entry.0, limit], entry_row)?
         .collect::<Result<Vec<_>, _>>()?;
     let latest = with_labels(tx, latest)?;
-    conversations_of(tx, listing.scope, params, latest)
+    conversations_of(tx, scope, latest)
 }
 
 /// The conversations whose newest entries in scope are `latest`.
 fn conversations_of(
     tx: &Transaction,
-    scope: Scope,
-    params: &[(&str, &dyn ToSql)],
+    scope: &ListScope,
     latest: Vec<Entry>,
 ) -> Result<Vec<Conversation>> {
     let mut members = tx.prepare(&format!(
         "SELECT e.id, e.message, m.from_name, m.from_addr, m.has_attachments
          FROM mail_entry e JOIN message m ON m.id = e.message
-         WHERE e.account_id = :account_id AND e.thread_id = :thread_id AND e.id <> :latest
+         WHERE e.account_id = ?1 AND e.thread_id = ?2 AND e.id <> ?3
            AND {}
          ORDER BY e.received_at, e.id",
-        scope.sql("e")
+        in_scope(scope, "e")
     ))?;
-    let named = named(&members, params);
     let mut labels =
         tx.prepare("SELECT label FROM entry_label WHERE entry = ?1 AND desired ORDER BY label")?;
     latest
@@ -369,13 +602,7 @@ fn conversations_of(
                 }
             };
             if let Some(thread_id) = &latest.thread_id {
-                let mut all = named.clone();
-                all.extend([
-                    (":account_id", &latest.account as &dyn ToSql),
-                    (":thread_id", thread_id),
-                    (":latest", &latest.id.0),
-                ]);
-                let mut rows = members.query(&*all)?;
+                let mut rows = members.query(params![latest.account, thread_id, latest.id.0])?;
                 while let Some(r) = rows.next()? {
                     let id = EntryId(r.get(0)?);
                     add_sender(r.get(2)?, r.get(3)?);
@@ -398,47 +625,6 @@ fn conversations_of(
             })
         })
         .collect()
-}
-
-/// Of `params`, those `statement` names: a list's SQL varies with its size.
-fn named<'a>(
-    statement: &Statement,
-    params: &[(&'a str, &'a dyn ToSql)],
-) -> Vec<(&'a str, &'a dyn ToSql)> {
-    params
-        .iter()
-        .filter(|(name, _)| matches!(statement.parameter_index(name), Ok(Some(_))))
-        .copied()
-        .collect()
-}
-
-/// Conversations with messages matching `query`, newest first. Each word
-/// of the query must match, as a prefix of a word in the message.
-pub fn search(
-    conn: &mut Connection,
-    query: &str,
-    limit: u32,
-) -> Result<(TxLogId, Vec<Conversation>)> {
-    let fts_query = query
-        .split_whitespace()
-        .map(|word| format!("\"{}\"*", word.replace('"', "\"\"")))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let tx = conn.transaction()?;
-    let as_of = as_of(&tx)?;
-    let listing = Listing {
-        scope: Scope::Unhidden,
-        matches: Box::new(|x| {
-            format!("{x}.message IN (SELECT rowid FROM message_fts WHERE message_fts MATCH :query)")
-        }),
-        candidates: Some((
-            "message_fts f JOIN mail_entry c ON c.message = f.rowid".into(),
-            "message_fts MATCH :query".into(),
-        )),
-        walk: ("mail_entry_by_received", "1".into()),
-    };
-    let conversations = page(&tx, &listing, &[(":query", &fts_query)], None, limit)?;
-    Ok((as_of, conversations))
 }
 
 /// The message's entries, in every account, newest first; `None` if there

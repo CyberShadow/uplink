@@ -123,16 +123,14 @@ pub struct Sender {
     pub addr: Option<String>,
 }
 
-/// What a message list is of.
+/// Which entries a list's conversations are made of (SPEC §4): those
+/// with one of the labels, in a list of Trash or Spam; else those with
+/// none of them, Trash and Spam (none at all with `in:anywhere`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum EntryList {
-    /// The entries with the label.
-    Label { label: LabelId },
-    /// The account's entries outside Trash and Spam: Gmail's All Mail.
-    AllMail { account: String },
-    /// Every account's Inbox, as one.
-    Inbox,
+pub enum ListScope {
+    Within { labels: Vec<LabelId> },
+    Except { labels: Vec<LabelId> },
 }
 
 /// Where a page of a message list ends: its last conversation's latest

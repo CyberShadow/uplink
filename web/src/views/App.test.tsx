@@ -547,6 +547,15 @@ describe('mail', () => {
     expect(subjects()).toEqual(['Second'])
   })
 
+  it('explains search, with examples to try', async () => {
+    const user = await start('/mail/work/INBOX')
+    await user.click(screen.getByRole('link', { name: 'Search help' }))
+    expect(location.pathname).toBe('/help/search')
+    await user.click(screen.getByRole('link', { name: 'in:inbox' }))
+    expect(location.pathname).toBe('/search/in%3Ainbox')
+    expect(screen.getByRole<HTMLInputElement>('searchbox').value).toBe('in:inbox')
+  })
+
   it('jumps to labels with g', async () => {
     server.deliver('work', 'Outgoing', ['SENT'])
     const user = await start('/mail/work/INBOX')

@@ -14,7 +14,7 @@ pub mod matrix;
 pub mod todos;
 
 use compose::{BlobId, Draft, DraftAttachmentId, DraftContent, DraftId, OutboxId, Splice};
-use mail::{EntryId, EntryList, LabelId, ListPosition, MessageId};
+use mail::{EntryId, LabelId, ListPosition, MessageId};
 use matrix::{MatrixSendId, MembershipChange, RoomEventId, RoomId, TimelinePage};
 use todos::{TodoEdit, TodoId};
 
@@ -110,17 +110,12 @@ pub enum ClientRequest {
     },
     /// The configured mail accounts and their labels.
     ListAccounts,
-    /// A page of the list's conversations, newest first, starting after
-    /// `after`.
+    /// A page of the conversations `query` lists (SPEC §8.7), in every
+    /// account, newest first, starting after `after`. Lists of labels are
+    /// queries too, as in notmuch: the Inbox is `in:inbox`.
     ListEntries {
-        list: EntryList,
-        after: Option<ListPosition>,
-        limit: u32,
-    },
-    /// Full-text search across all accounts: the conversations with a
-    /// match, newest first.
-    Search {
         query: String,
+        after: Option<ListPosition>,
         limit: u32,
     },
     /// The entries of the entry's conversation, in Trash and Spam too,
@@ -395,6 +390,9 @@ pub enum ServerResponse {
         conversations: Vec<mail::Conversation>,
         /// Where the next page starts, if there may be one.
         next: Option<ListPosition>,
+        /// The entries the list's conversations are made of, as label
+        /// changes move entries into and out of them.
+        scope: mail::ListScope,
     },
     Entries {
         as_of: TxLogId,

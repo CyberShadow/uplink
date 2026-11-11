@@ -3,7 +3,7 @@ import { useLocation } from 'preact-iso'
 import type { Conversation, Entry, EntryId, Label, MessageContent, Sender } from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus, useKeymap } from '../keymap'
-import { conversationKey, hasEntry, threadOf, type MailStore, type Thread, type View } from '../stores/mail'
+import { conversationKey, hasEntry, inScope, threadOf, type MailStore, type Thread, type View } from '../stores/mail'
 import { respond, type Response } from '../compose/reply'
 import { allMailPath, inboxPath, mailPath, searchPath } from './App'
 import { HtmlBody, QuoteToggle } from './HtmlBody'
@@ -78,7 +78,8 @@ export function Mail(props: Props) {
   const opened = openId === null ? undefined : conversations.find((c) => hasEntry(c, openId))
   useEffect(() => mail.showConversation(opened ? openId : null), [mail, opened, openId])
   // Of the conversation open, the entries in the list's scope.
-  const shown = mail.open.value?.entries?.filter((e) => mail.inScope(view, e.labels)) ?? null
+  const scope = list?.scope
+  const shown = (scope && mail.open.value?.entries?.filter((e) => inScope(scope, e.labels))) ?? null
   const openThread: Thread | null =
     opened && shown && shown.length > 0
       ? { account: opened.latest.account, subject: shown.at(-1)!.subject, entries: shown }

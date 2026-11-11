@@ -15,6 +15,7 @@ import type {
   Label,
   LabelId,
   ListPosition,
+  ListScope,
   LogEntry,
   MessageContent,
   MessageId,
@@ -26,8 +27,6 @@ import { query } from './query'
 export const PAGE = 100
 /** The server's limit on a page. */
 const MAX_PAGE = 500
-/** Labels whose entries no other list shows, nor search (SPEC §8.1). */
-const HIDING = new Set(['TRASH', 'SPAM'])
 
 export type View =
   | { kind: 'label'; account: string; label: string }
@@ -60,6 +59,21 @@ export interface List {
   loaded: boolean
   conversations: Conversation[]
   next: ListPosition | null
+  /** The entries its conversations are made of; known once loaded. */
+  scope: ListScope | null
+}
+
+/** Every entry, as a message's conversation is made of. */
+const EVERY: ListScope = { type: 'except', labels: [] }
+
+/** Whether an entry with `labels` is in `scope`. */
+export function inScope(scope: ListScope, labels: LabelId[]): boolean {
+  return labels.some((l) => scope.labels.includes(l)) === (scope.type === 'within')
+}
+
+/** A value of the query language (SPEC §8.7), quoted. */
+export function quoted(value: string): string {
+  return `"${value.replace(/[\\"]/g, '\\$&')}"`
 }
 
 /** An entry as actions take it. */
@@ -190,15 +204,6 @@ export class MailStore {
     }
   }
 
-  /** Whether the view's conversations include an entry with `labels`:
-   * those in Trash, in a list of Trash (or Spam); else those in neither. */
-  inScope(view: View, labels: LabelId[]): boolean {
-    if (view.kind === 'message') return true
-    const shown = view.kind === 'label' ? this.labelOf(view) : undefined
-    if (shown && HIDING.has(shown.external_id)) return labels.includes(shown.id)
-    return !labels.some((l) => HIDING.has(this.labels.value.get(l)!.external_id))
-  }
-
   private removeEntries(gone: Set<EntryId>) {
     let stale = false
     this.updateList((conversations) =>
@@ -234,8 +239,9 @@ export class MailStore {
     if (open?.entries) this.open.value = { ...open, entries: open.entries.map(relabel) }
 
     const list = this.list.value
-    if (!list) return
-    const { view } = list
+    // Until the list is loaded, the response on its way reflects them.
+    if (!list?.scope) return
+    const { view, scope } = list
     const shown = view.kind === 'label' ? this.labelOf(view) : null
     // The labels that put a conversation on the list, if it is of labels.
     const listing: ((label: LabelId) => boolean) | null =
@@ -245,18 +251,19 @@ export class MailStore {
           ? (label) => label === shown.id
           : null
     const present = new Set(list.conversations.flatMap((c) => threadOf(c).entries.map((e) => e.id)))
-    // Leaving Trash or Spam brings an entry into scope, except in theirs.
-    const hides = view.kind !== 'message' && !(shown && HIDING.has(shown.external_id))
-    const hiding = (label: LabelId) => HIDING.has(this.labels.value.get(label)!.external_id)
-    const joins = (c: (typeof changes)[number]) =>
-      (!!listing && listing(c.label) && c.desired) || (hides && hiding(c.label) && !c.desired)
-    let stale = changes.some((c) => !present.has(c.entry) && joins(c))
+    // Gaining a label of a scope of them, or losing one of a scope
+    // without them, brings an entry into scope.
+    const enters = (c: (typeof changes)[number]) =>
+      scope.labels.includes(c.label) && c.desired === (scope.type === 'within')
+    const joins = (c: (typeof changes)[number]) => (!!listing && listing(c.label) && c.desired) || enters(c)
+    // What a search lists by, only the server knows.
+    let stale = view.kind === 'search' || changes.some((c) => !present.has(c.entry) && joins(c))
     this.updateList((conversations) =>
       conversations.flatMap((c) => {
         if (![c.latest, ...c.earlier].some((e) => byEntry.has(e.id))) return [c]
         const latest = relabel(c.latest)
-        const earlier = c.earlier.map(relabel).filter((m) => this.inScope(view, m.labels))
-        const latestIn = this.inScope(view, latest.labels)
+        const earlier = c.earlier.map(relabel).filter((m) => inScope(scope, m.labels))
+        const latestIn = inScope(scope, latest.labels)
         if (!latestIn && earlier.length === 0) return []
         const entries = latestIn ? [...earlier, latest] : earlier
         if (listing && !entries.some((e) => e.labels.some(listing))) return []
@@ -347,7 +354,7 @@ export class MailStore {
     if (this.list.value && sameView(this.list.value.view, view)) return
     this.generation++
     batch(() => {
-      this.list.value = { view, loaded: false, conversations: [], next: null }
+      this.list.value = { view, loaded: false, conversations: [], next: null, scope: null }
       this.focus.value = null
       this.selected.value = new Set()
     })
@@ -386,11 +393,11 @@ export class MailStore {
       return
     }
     this.listLoad = load
-    let page: { conversations: Conversation[]; next: ListPosition | null } | undefined
+    let page: { conversations: Conversation[]; next: ListPosition | null; scope: ListScope } | undefined
     try {
       if (request.type === 'list_message_entries') {
         const response = await query(this.server, request, 'entries')
-        page = { conversations: response.entries.map(alone), next: null }
+        page = { conversations: response.entries.map(alone), next: null, scope: EVERY }
       } else {
         page = await query(this.server, request, 'conversations')
       }
@@ -403,9 +410,9 @@ export class MailStore {
       const current = this.list.value!
       const conversations =
         load === 'reload' ? page.conversations : [...current.conversations, ...page.conversations]
-      const next = page.next
+      const { next, scope } = page
       batch(() => {
-        this.list.value = { ...current, loaded: true, conversations, next }
+        this.list.value = { ...current, loaded: true, conversations, next, scope }
         this.keepFocus(current.conversations, conversations)
       })
     }
@@ -418,20 +425,21 @@ export class MailStore {
     const limit =
       load === 'reload' ? Math.min(Math.max(list.conversations.length, PAGE), MAX_PAGE) : PAGE
     const after = load === 'reload' ? null : list.next
-    if (list.view.kind === 'search') {
-      return { type: 'search', query: list.view.query, limit }
+    const entries = (query: string): ClientRequest => ({ type: 'list_entries', query, after, limit })
+    switch (list.view.kind) {
+      case 'search':
+        return entries(list.view.query)
+      case 'message':
+        return { type: 'list_message_entries', message: list.view.message }
+      case 'all':
+        return entries(`account:${quoted(list.view.account)}`)
+      case 'inbox':
+        return entries('in:inbox')
+      case 'label': {
+        const label = this.labelOf(list.view)
+        return label ? entries(`account:${quoted(list.view.account)} label:${quoted(label.name)}`) : null
+      }
     }
-    if (list.view.kind === 'message') {
-      return { type: 'list_message_entries', message: list.view.message }
-    }
-    if (list.view.kind === 'all') {
-      return { type: 'list_entries', list: { type: 'all_mail', account: list.view.account }, after, limit }
-    }
-    if (list.view.kind === 'inbox') {
-      return { type: 'list_entries', list: { type: 'inbox' }, after, limit }
-    }
-    const label = this.labelOf(list.view)
-    return label ? { type: 'list_entries', list: { type: 'label', label: label.id }, after, limit } : null
   }
 
   // ── the conversation open ───────────────────────────────────────────────

@@ -85,8 +85,11 @@ async fn mirrors_the_mailbox_and_pushes_changes() {
 
     // Search covers subject, body and sender.
     for query in ["second", "quixot", "tester@uplink"] {
-        let ServerResponse::Conversations { conversations, .. } =
-            uplink.mail.search(query.into(), 10).await.unwrap()
+        let ServerResponse::Conversations { conversations, .. } = uplink
+            .mail
+            .list_entries(query.into(), None, 10)
+            .await
+            .unwrap()
         else {
             panic!()
         };
