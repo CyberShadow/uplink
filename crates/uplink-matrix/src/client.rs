@@ -11,7 +11,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use matrix_sdk::{
     authentication::matrix::MatrixSession,
     config::SyncSettings,
-    encryption::{BackupDownloadStrategy, EncryptionSettings},
+    encryption::{verification::VerificationRequest, BackupDownloadStrategy, EncryptionSettings},
     media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings},
     ruma::{
         api::client::{
@@ -35,17 +35,26 @@ use uplink_storage::seal::{self, MasterKey};
 
 /// The accounts' clients, by account id, once their sync tasks have
 /// restored them: for what else needs to reach the homeserver as the
-/// account (its media).
+/// account (its media, its devices), with the client's verifications.
 #[derive(Clone, Default)]
-pub struct Clients(Arc<Mutex<HashMap<String, Client>>>);
+pub struct Clients(Arc<Mutex<HashMap<String, Connected>>>);
+
+struct Connected {
+    client: Client,
+    /// Going on, or ended since the last began, oldest first.
+    verifications: Vec<VerificationRequest>,
+}
 
 impl Clients {
     /// Of a sync task that starts again, its client replaces the last.
     pub fn insert(&self, account: &str, client: Client) {
-        self.0
-            .lock()
-            .expect("clients poisoned")
-            .insert(account.to_owned(), client);
+        self.0.lock().expect("clients poisoned").insert(
+            account.to_owned(),
+            Connected {
+                client,
+                verifications: vec![],
+            },
+        );
     }
 
     pub fn get(&self, account: &str) -> Option<Client> {
@@ -53,7 +62,29 @@ impl Clients {
             .lock()
             .expect("clients poisoned")
             .get(account)
-            .cloned()
+            .map(|c| c.client.clone())
+    }
+
+    /// Keeps a verification of the account's client, which begins; those
+    /// ended are forgotten.
+    pub fn track(&self, account: &str, request: VerificationRequest) {
+        let mut clients = self.0.lock().expect("clients poisoned");
+        let connected = clients
+            .get_mut(account)
+            .unwrap_or_else(|| panic!("verifying with {account}, which has no client"));
+        connected
+            .verifications
+            .retain(|r| !r.is_done() && !r.is_cancelled());
+        connected.verifications.push(request);
+    }
+
+    pub fn verifications(&self, account: &str) -> Vec<VerificationRequest> {
+        self.0
+            .lock()
+            .expect("clients poisoned")
+            .get(account)
+            .map(|c| c.verifications.clone())
+            .unwrap_or_default()
     }
 }
 

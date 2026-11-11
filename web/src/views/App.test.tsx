@@ -1381,6 +1381,56 @@ describe('matrix security', () => {
     expect((clicked.mock.contexts[0] as HTMLAnchorElement).download).toBe('element-keys-mx.txt')
   })
 
+  it('verifies with another device by comparing emoji', async () => {
+    const user = await start('/matrix/mx/security')
+    const page = await screen.findByRole('region', { name: 'This device' })
+    await user.click(within(page).getByRole('button', { name: 'Verify with another device' }))
+    const verification = await screen.findByRole('region', { name: 'Verification' })
+    within(verification).getByText(/Waiting for another device of the account to accept/)
+    expect(within(page).getByRole('button', { name: 'Verify with another device' })).toHaveProperty('disabled', true)
+
+    const emoji = [
+      { symbol: '🐶', description: 'Dog' },
+      { symbol: '🔑', description: 'Key' },
+    ]
+    server.verificationChanged('mx', 'flow1', {
+      other_device: 'PHONE',
+      phase: { type: 'compare', emoji, decimals: [1234, 5678, 9012] },
+    })
+    const shown = await within(verification).findByRole('list', { name: 'Emoji to compare' })
+    expect(within(shown).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['🐶Dog', '🔑Key'])
+    within(verification).getByText(/Check that Element Android shows these/)
+    within(verification).getByText('Or these numbers: 1234 5678 9012')
+    await user.click(within(verification).getByRole('button', { name: 'They match' }))
+    await within(verification).findByText('Waiting for Element Android to confirm…')
+    expect(server.requests).toContainEqual({ type: 'answer_verification', account: 'mx', flow_id: 'flow1', answer: 'confirm' })
+
+    const security = server.security.get('mx')!
+    server.securityChanged('mx', {
+      ...security,
+      verified: true,
+      verifications: security.verifications.map((v) => ({ ...v, phase: { type: 'done' } })),
+    })
+    await within(verification).findByText('Verified with Element Android.')
+    within(page).getByText(/Verified by the account/)
+  })
+
+  it('answers another device asking to verify, which the nav counts', async () => {
+    const user = await start('/matrix/mx/security')
+    await screen.findByText('Element Android')
+    server.verificationAsked('mx', 'theirs', 'PHONE')
+    const verification = await screen.findByRole('region', { name: 'Verification' })
+    within(verification).getByText('Element Android asks to verify this device.')
+    const securityLink = screen.getByText('Security').closest('a')!
+    await waitFor(() => expect(securityLink.textContent).toBe('Security1'))
+
+    await user.click(within(verification).getByRole('button', { name: 'Accept' }))
+    await within(verification).findByText(/^Starting to compare with Element Android…/)
+    await waitFor(() => expect(securityLink.textContent).toBe('Security'))
+    await user.click(within(verification).getByRole('button', { name: 'Cancel' }))
+    await within(verification).findByText('Cancelled: The user cancelled the verification.')
+  })
+
   it('loads again when the client says it changed', async () => {
     await start('/matrix/mx/security')
     await screen.findByText('Element Android')

@@ -107,3 +107,49 @@
   padding: 16px;
   color: var(--muted);
 }
+
+.wide {
+  grid-column: 2;
+}
+
+.inline {
+  margin-left: 8px;
+}
+
+.verification {
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.verification + .verification {
+  margin-top: 8px;
+}
+
+.verification p {
+  margin: 4px 0;
+}
+
+/* The seven emoji, side by side with their names beneath, as clients
+   show them. */
+.emoji {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.emoji li {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 4.5em;
+  font-size: 12px;
+}
+
+.symbol {
+  font-size: 32px;
+  line-height: 1.2;
+}

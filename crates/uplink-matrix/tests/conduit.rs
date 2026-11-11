@@ -464,23 +464,15 @@ async fn restarting_resumes_from_the_recorded_sync() {
     assert_eq!(events.len(), before + 1, "no event is stored twice");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn pairing_with_the_recovery_key_verifies_the_device() {
-    let dir = tempfile::tempdir().unwrap();
-    let homeserver = Homeserver::start(dir.path()).await;
-    let alice_phone = homeserver.register(dir.path(), "alice").await;
-    // The other device has set up cross-signing and Secret Storage.
-    alice_phone
-        .sync_once(SyncSettings::default())
-        .await
-        .unwrap();
+/// Sets up cross-signing for alice, from `client`.
+async fn bootstrap_cross_signing(client: &Client) {
     let mut password = matrix_sdk::ruma::api::client::uiaa::Password::new(
         matrix_sdk::ruma::api::client::uiaa::UserIdentifier::Matrix(
             matrix_sdk::ruma::api::client::uiaa::MatrixUserIdentifier::new("alice".into()),
         ),
         PASSWORD.to_owned(),
     );
-    let session = match alice_phone.encryption().bootstrap_cross_signing(None).await {
+    let session = match client.encryption().bootstrap_cross_signing(None).await {
         Ok(()) => None,
         Err(e) => Some(
             e.as_uiaa_response()
@@ -491,12 +483,25 @@ async fn pairing_with_the_recovery_key_verifies_the_device() {
     };
     if let Some(session) = session {
         password.session = session;
-        alice_phone
+        client
             .encryption()
             .bootstrap_cross_signing(Some(AuthData::Password(password)))
             .await
             .unwrap();
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pairing_with_the_recovery_key_verifies_the_device() {
+    let dir = tempfile::tempdir().unwrap();
+    let homeserver = Homeserver::start(dir.path()).await;
+    let alice_phone = homeserver.register(dir.path(), "alice").await;
+    // The other device has set up cross-signing and Secret Storage.
+    alice_phone
+        .sync_once(SyncSettings::default())
+        .await
+        .unwrap();
+    bootstrap_cross_signing(&alice_phone).await;
     let recovery_key = alice_phone.encryption().recovery().enable().await.unwrap();
 
     let uplink = Uplink::new(&homeserver);
@@ -1093,4 +1098,132 @@ async fn events_undecryptable_are_decrypted_once_their_keys_are_imported() {
     assert!(String::from_utf8(export)
         .unwrap()
         .starts_with("-----BEGIN MEGOLM SESSION DATA-----"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn verifying_with_another_device_by_emoji() {
+    use matrix_sdk::encryption::verification::{Verification, VerificationRequestState};
+    use matrix_sdk::ruma::events::key::verification::request::ToDeviceKeyVerificationRequestEvent;
+    use matrix_sdk::stream::StreamExt;
+    use uplink_protocol::matrix::{VerificationAnswer, VerificationPhase};
+
+    let dir = tempfile::tempdir().unwrap();
+    let homeserver = Homeserver::start(dir.path()).await;
+    let alice_phone = homeserver.register(dir.path(), "alice").await;
+    alice_phone
+        .sync_once(SyncSettings::default())
+        .await
+        .unwrap();
+    bootstrap_cross_signing(&alice_phone).await;
+    // The phone accepts uplink's request, and the comparison uplink
+    // starts, and passes it on.
+    let (compared, mut comparing) = mpsc::unbounded_channel();
+    alice_phone.add_event_handler(
+        move |event: ToDeviceKeyVerificationRequestEvent, client: Client| {
+            let compared = compared.clone();
+            async move {
+                let request = client
+                    .encryption()
+                    .get_verification_request(&event.sender, &event.content.transaction_id)
+                    .await
+                    .unwrap();
+                // Handlers run as sync goes: what follows needs it to.
+                tokio::spawn(async move {
+                    let mut changes = request.changes();
+                    request.accept().await.unwrap();
+                    while let Some(state) = changes.next().await {
+                        if let VerificationRequestState::Transitioned {
+                            verification: Verification::SasV1(sas),
+                        } = state
+                        {
+                            sas.accept().await.unwrap();
+                            compared.send(sas).unwrap();
+                            return;
+                        }
+                    }
+                });
+            }
+        },
+    );
+    let phone = alice_phone.clone();
+    tokio::spawn(async move { phone.sync(SyncSettings::default()).await });
+
+    let uplink = Uplink::new(&homeserver);
+    let _sync = uplink.pair_and_sync().await;
+    let security = |uplink: &Uplink| {
+        let matrix = uplink.matrix.clone();
+        async move {
+            match matrix.get_security("mx").await.unwrap() {
+                ServerResponse::MatrixSecurity { security } => security,
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    };
+    let unverified = eventually("uplink's client", || async {
+        match uplink.matrix.get_security("mx").await {
+            Ok(ServerResponse::MatrixSecurity { security }) => Some(security),
+            Ok(other) => panic!("unexpected {other:?}"),
+            Err(_) => None,
+        }
+    })
+    .await;
+    assert!(!unverified.verified);
+    // Once uplink's client knows the account's cross-signing identity.
+    let asked = eventually("uplink to ask to verify", || async {
+        match uplink.matrix.verify_device("mx", None).await {
+            Ok(ServerResponse::MatrixSecurity { security }) => Some(security),
+            Ok(other) => panic!("unexpected {other:?}"),
+            Err(_) => None,
+        }
+    })
+    .await;
+    let flow_id = asked.verifications.last().unwrap().flow_id.clone();
+    assert!(asked.verifications.last().unwrap().we_started);
+
+    let sas = tokio::time::timeout(Duration::from_secs(30), comparing.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let emoji = eventually("both to show emoji", || async {
+        let shown = security(&uplink).await;
+        let phase = &shown
+            .verifications
+            .iter()
+            .find(|v| v.flow_id == flow_id)?
+            .phase;
+        match (phase, sas.emoji()) {
+            (VerificationPhase::Compare { emoji, decimals }, Some(phone)) => {
+                assert_eq!(decimals.len(), 3);
+                Some((emoji.clone(), phone))
+            }
+            _ => None,
+        }
+    })
+    .await;
+    assert_eq!(
+        emoji
+            .0
+            .iter()
+            .map(|e| e.symbol.as_str())
+            .collect::<Vec<_>>(),
+        emoji.1.iter().map(|e| e.symbol).collect::<Vec<_>>()
+    );
+
+    uplink
+        .matrix
+        .answer_verification("mx", &flow_id, VerificationAnswer::Confirm)
+        .await
+        .unwrap();
+    sas.confirm().await.unwrap();
+    let verified = eventually("uplink's device to be verified", || async {
+        let shown = security(&uplink).await;
+        (shown.verified
+            && shown
+                .verifications
+                .iter()
+                .any(|v| v.flow_id == flow_id && v.phase == VerificationPhase::Done))
+        .then_some(shown)
+    })
+    .await;
+    assert!(verified.devices.iter().all(|d| d.verified));
 }

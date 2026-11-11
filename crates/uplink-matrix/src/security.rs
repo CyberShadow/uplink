@@ -3,16 +3,24 @@
 //! devices; recovering with the recovery key, and importing and exporting
 //! room keys.
 
+use crate::verification;
 use anyhow::{Context, Result};
 use matrix_sdk::{
-    encryption::{backups::BackupState, recovery::RecoveryState},
+    encryption::{
+        backups::BackupState, recovery::RecoveryState, verification::VerificationRequest,
+    },
     Client,
 };
 use std::io::Write;
 use uplink_protocol::matrix::{KeyBackup, MatrixDevice, MatrixSecurity, Recovery};
 
-/// The account's security, as its client has it now.
-pub async fn security(account: &str, client: &Client) -> Result<MatrixSecurity> {
+/// The account's security, as its client has it now, with its
+/// verifications.
+pub async fn security(
+    account: &str,
+    client: &Client,
+    verifications: &[VerificationRequest],
+) -> Result<MatrixSecurity> {
     let encryption = client.encryption();
     let own_user = client.user_id().context("the client has no user")?;
     let own_device = client.device_id().context("the client has no device")?;
@@ -60,6 +68,7 @@ pub async fn security(account: &str, client: &Client) -> Result<MatrixSecurity> 
             RecoveryState::Incomplete => Recovery::Incomplete,
         },
         devices,
+        verifications: verifications.iter().map(verification::shown).collect(),
     })
 }
 

@@ -4,7 +4,13 @@
 // exporting room keys, as Element's Security & Privacy settings do.
 
 import { useState } from 'preact/hooks'
-import type { KeyBackup, MatrixDevice, MatrixSecurity, Recovery } from '../generated/protocol'
+import type {
+  KeyBackup,
+  MatrixSecurity,
+  MatrixVerification,
+  Recovery,
+  VerificationAnswer,
+} from '../generated/protocol'
 import { useServices } from '../context'
 import { dateTime } from '../format'
 import type { Security } from '../stores/matrix'
@@ -34,10 +40,11 @@ export function SecurityView(props: { account: string }) {
         <p class={styles.placeholder}>Loading…</p>
       ) : (
         <>
-          <ThisDevice state={state} />
+          <ThisDevice security={security} state={state} />
+          {state.verifications.length > 0 && <Verifications security={security} state={state} />}
           {(!state.verified || state.recovery !== 'enabled') && <Recover security={security} />}
           <RoomKeys security={security} />
-          <Devices devices={state.devices} />
+          <Devices security={security} state={state} />
         </>
       )}
     </div>
@@ -61,8 +68,9 @@ const RECOVERY: Record<Recovery, string> = {
   incomplete: 'This device lacks secrets: recover with the recovery key',
 }
 
-function ThisDevice(props: { state: MatrixSecurity }) {
+function ThisDevice(props: { security: Security; state: MatrixSecurity }) {
   const { state } = props
+  const verifying = state.verifications.some((v) => live(v))
   return (
     <section aria-label="This device">
       <h2>This device</h2>
@@ -81,6 +89,13 @@ function ThisDevice(props: { state: MatrixSecurity }) {
             </span>
           )}
         </dd>
+        {!state.verified && (
+          <dd class={styles.wide}>
+            <button type="button" disabled={verifying} onClick={() => props.security.verify(null)}>
+              Verify with another device
+            </button>
+          </dd>
+        )}
         <dt>Cross-signing keys</dt>
         <dd>{state.cross_signing ? 'On this device' : 'Not on this device'}</dd>
         <dt>Key backup</dt>
@@ -237,7 +252,9 @@ function download(blob: Blob, name: string) {
   URL.revokeObjectURL(url)
 }
 
-function Devices(props: { devices: readonly MatrixDevice[] }) {
+function Devices(props: { security: Security; state: MatrixSecurity }) {
+  const { state } = props
+  const verifying = state.verifications.some((v) => live(v))
   return (
     <section aria-label="Devices">
       <h2>Devices</h2>
@@ -250,7 +267,7 @@ function Devices(props: { devices: readonly MatrixDevice[] }) {
           </tr>
         </thead>
         <tbody>
-          {props.devices.map((device) => (
+          {state.devices.map((device) => (
             <tr key={device.device_id}>
               <td>
                 {device.name ?? device.device_id}
@@ -269,11 +286,106 @@ function Devices(props: { devices: readonly MatrixDevice[] }) {
                 ) : (
                   <span class={styles.unverified}>Not verified</span>
                 )}
+                {!device.current && !state.verified && (
+                  <button
+                    type="button"
+                    class={styles.inline}
+                    aria-label={`Verify with ${device.name ?? device.device_id}`}
+                    disabled={verifying}
+                    onClick={() => props.security.verify(device.device_id)}
+                  >
+                    Verify with it
+                  </button>
+                )}
               </td>
             </tr>
           ))}
         </tbody>
       </table>
+    </section>
+  )
+}
+
+/** Whether the verification goes on. */
+export function live(verification: MatrixVerification): boolean {
+  return verification.phase.type !== 'done' && verification.phase.type !== 'cancelled'
+}
+
+/** Whether the verification waits for the user. */
+export function awaitsUser(verification: MatrixVerification): boolean {
+  return (verification.phase.type === 'requested' && !verification.we_started) || verification.phase.type === 'compare'
+}
+
+/** Verifications going on, or ended since the last began: what each
+ * asks of the user, as Element shows it. */
+function Verifications(props: { security: Security; state: MatrixSecurity }) {
+  const { security, state } = props
+  const deviceName = (id: string | null) => {
+    const device = state.devices.find((d) => d.device_id === id)
+    return device ? (device.name ?? device.device_id) : (id ?? 'another device')
+  }
+  return (
+    <section aria-label="Verification">
+      <h2>Verification</h2>
+      {state.verifications.map((v) => {
+        const answer = (answer: VerificationAnswer) => () => security.answer(v.flow_id, answer)
+        const cancel = (
+          <button type="button" onClick={answer('cancel')}>
+            Cancel
+          </button>
+        )
+        const other = deviceName(v.other_device)
+        return (
+          <div key={v.flow_id} class={styles.verification}>
+            {v.phase.type === 'requested' && v.we_started && (
+              <p>
+                Waiting for {v.other_device ? other : 'another device of the account'} to accept… {cancel}
+              </p>
+            )}
+            {v.phase.type === 'requested' && !v.we_started && (
+              <p>
+                {other} asks to verify this device.{' '}
+                <button type="button" onClick={answer('accept')}>
+                  Accept
+                </button>{' '}
+                <button type="button" onClick={answer('cancel')}>
+                  Decline
+                </button>
+              </p>
+            )}
+            {(v.phase.type === 'ready' || v.phase.type === 'started') && <p>Starting to compare with {other}… {cancel}</p>}
+            {v.phase.type === 'compare' && (
+              <>
+                <p>Check that {other} shows these, in this order:</p>
+                <ol class={styles.emoji} aria-label="Emoji to compare">
+                  {v.phase.emoji.map((e, i) => (
+                    <li key={i}>
+                      <span class={styles.symbol}>{e.symbol}</span>
+                      {e.description}
+                    </li>
+                  ))}
+                </ol>
+                <p class={styles.muted}>Or these numbers: {v.phase.decimals.join(' ')}</p>
+                <p>
+                  <button type="button" onClick={answer('confirm')}>
+                    They match
+                  </button>{' '}
+                  <button type="button" onClick={answer('mismatch')}>
+                    They don't match
+                  </button>
+                </p>
+              </>
+            )}
+            {v.phase.type === 'confirmed' && <p>Waiting for {other} to confirm…</p>}
+            {v.phase.type === 'done' && <p class={styles.verified}>Verified with {other}.</p>}
+            {v.phase.type === 'cancelled' && (
+              <p class={styles.unverified}>
+                {v.phase.by_us ? 'Cancelled' : `Cancelled by ${other}`}: {v.phase.reason}
+              </p>
+            )}
+          </div>
+        )
+      })}
     </section>
   )
 }

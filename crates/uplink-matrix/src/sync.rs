@@ -12,9 +12,11 @@ use crate::{
     membership::{self, MembershipChanged},
     rooms::{self, Decrypted, ObservedEvent, ObservedRoom, ReceiptSent, SpaceChild, Synced},
     send::{self, SendFailed, SendStarted, SendSucceeded},
+    verification,
 };
 use anyhow::{Context, Result};
 use matrix_sdk::encryption::backups::BackupState;
+use matrix_sdk::ruma::events::key::verification::request::ToDeviceKeyVerificationRequestEvent;
 use matrix_sdk::ruma::{events::room::encrypted::OriginalSyncRoomEncryptedEvent, serde::Raw};
 use matrix_sdk::stream::StreamExt;
 use matrix_sdk::{
@@ -113,6 +115,28 @@ impl Sync {
         })
         .await;
         self.clients.insert(&id, client.clone());
+        // Verifications other devices of the account ask for.
+        let (clients, dispatcher, account) =
+            (self.clients.clone(), self.dispatcher.clone(), id.clone());
+        client.add_event_handler(
+            move |event: ToDeviceKeyVerificationRequestEvent, client: Client| {
+                let (clients, dispatcher, account) =
+                    (clients.clone(), dispatcher.clone(), account.clone());
+                async move {
+                    if Some(&*event.sender) != client.user_id() {
+                        return;
+                    }
+                    let Some(request) = client
+                        .encryption()
+                        .get_verification_request(&event.sender, &event.content.transaction_id)
+                        .await
+                    else {
+                        return;
+                    };
+                    verification::track(&clients, &dispatcher, &account, request);
+                }
+            },
+        );
         let reader = |what| {
             uplink_storage::open_reader(&self.data_root)
                 .map(|conn| Arc::new(Mutex::new(conn)))

@@ -1752,6 +1752,21 @@ passphrase as the body, as a download: a POST, as it reads a secret).
 The sync task watches the backup's, recovery's, devices' and
 identities' streams, and pushes `SecurityChanged` notices (§5.5).
 
+A device paired without the recovery key verifies itself with another
+of the account's devices, by comparing emoji (SAS), as Element does:
+`VerifyMatrixDevice` asks a device, or every device of the account
+(whichever answers), and `AnswerVerification` accepts one asked of
+uplink, confirms that the emoji match or says they do not, or cancels.
+Only verifications with the account's own devices are answered:
+requests of other users are ignored. The verifications are the SDK's;
+the account's entry in `Clients` keeps their requests (those ended are
+dropped when another begins), listed in `MatrixSecurity`. Each is
+watched while it lasts: comparing starts once a request is ready, a
+comparison the other device starts is accepted, and every change pushes
+a `SecurityChanged` notice. Once done, a device with the cross-signing
+keys signs uplink's, and the SDK asks it for the account's secrets,
+which a verified device gives.
+
 ### 9.5 Rooms list / unread counts
 
 - A room's unread count is computed locally: messages (and undecryptable
@@ -1804,10 +1819,9 @@ identities' streams, and pushes `SecurityChanged` notices (§5.5).
   invited to (by id or alias); invitations are joined or declined, and
   rooms left (§9.7).
 - No backfill (§9.2).
-- No interactive verification of devices (§9.4): a device verifies
-  itself with the recovery key. No setting up cross-signing, Secret
-  Storage or a key backup, nor renaming or signing out devices: another
-  client does.
+- No verifying other users, nor by QR code (§9.4). No setting up
+  cross-signing, Secret Storage or a key backup, nor renaming or signing
+  out devices: another client does.
 - No moderation UI (kick/ban, deleting others' messages): one deletes
   one's own messages only.
 
@@ -2262,6 +2276,16 @@ keys were new) and export (a passphrase typed twice, downloaded as
 `element-keys-<account>.txt`); and the account's devices, most
 recently seen first, with when and where from, and whether each is
 verified. It loads again on `SecurityChanged` notices and on reconnect.
+
+While the device is unverified, it offers to verify with another
+device, or with a device of the list. A verification shows what it
+asks of the user, as Element does: waiting for the other device;
+accepting or declining one asked of uplink; the seven emoji with their
+names (and the numbers), to say whether they match the other device's;
+then that it is done, or why it was cancelled. The nav counts, by the
+account's Security item, verifications waiting for the user, so that a
+request from another device is seen from any view: every Matrix
+account's security is loaded for it.
 
 ## 13. Authentication & secrets
 

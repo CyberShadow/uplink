@@ -7,6 +7,7 @@ use crate::{
     rooms::{self, MarkRead},
     security,
     send::{self, CancelMessage, KeepSent, SendMessage},
+    verification,
 };
 use matrix_sdk::ruma::events::room::MediaSource as MatrixMediaSource;
 use std::sync::Arc;
@@ -14,7 +15,7 @@ use uplink_protocol::{
     compose::BlobId,
     matrix::{
         MatrixAccount, MatrixContent, MatrixSendId, MemberReceipt, Membership, MembershipChange,
-        RoomEventId, RoomId, RoomMember, TimelinePage,
+        RoomEventId, RoomId, RoomMember, TimelinePage, VerificationAnswer,
     },
     ErrorCode, ServerError, ServerResponse,
 };
@@ -233,10 +234,90 @@ impl Matrix {
     /// The account's device and its encryption (SPEC §9.4).
     pub async fn get_security(&self, account: &str) -> Response {
         let client = self.client(account)?;
-        let security = security::security(account, &client)
+        let verifications = self.clients.verifications(account);
+        let security = security::security(account, &client, &verifications)
             .await
             .map_err(internal)?;
         Ok(ServerResponse::MatrixSecurity { security })
+    }
+
+    /// Asks to verify uplink's device with `device`, or with whichever of
+    /// the account's answers first.
+    pub async fn verify_device(&self, account: &str, device: Option<&str>) -> Response {
+        let client = self.client(account)?;
+        let encryption = client.encryption();
+        let own = client.user_id().expect("a restored client has its user");
+        let request = match device {
+            Some(device) => {
+                let device = <&matrix_sdk::ruma::DeviceId>::from(device);
+                encryption
+                    .get_device(own, device)
+                    .await
+                    .map_err(|e| internal(e.into()))?
+                    .ok_or_else(|| {
+                        error(
+                            ErrorCode::NotFound,
+                            format!("{account} has no device {device}"),
+                        )
+                    })?
+                    .request_verification_with_methods(verification::methods())
+                    .await
+                    .map_err(|e| internal(e.into()))?
+            }
+            None => encryption
+                .get_user_identity(own)
+                .await
+                .map_err(|e| internal(e.into()))?
+                .ok_or_else(|| {
+                    error(
+                        ErrorCode::Invalid,
+                        format!("{account} has no cross-signing identity: verify with a device"),
+                    )
+                })?
+                .request_verification_with_methods(verification::methods())
+                .await
+                .map_err(|e| internal(e.into()))?,
+        };
+        verification::track(&self.clients, &self.dispatcher, account, request);
+        self.get_security(account).await
+    }
+
+    /// Answers the account's verification `flow_id`.
+    pub async fn answer_verification(
+        &self,
+        account: &str,
+        flow_id: &str,
+        answer: VerificationAnswer,
+    ) -> Response {
+        let request = self
+            .clients
+            .verifications(account)
+            .into_iter()
+            .find(|r| r.flow_id() == flow_id)
+            .ok_or_else(|| {
+                error(
+                    ErrorCode::NotFound,
+                    format!("{account} has no verification {flow_id}"),
+                )
+            })?;
+        let comparing = || {
+            verification::sas(&request).ok_or_else(|| {
+                error(
+                    ErrorCode::Invalid,
+                    format!("verification {flow_id} is not comparing"),
+                )
+            })
+        };
+        match answer {
+            VerificationAnswer::Accept => {
+                request.accept_with_methods(verification::methods()).await
+            }
+            VerificationAnswer::Confirm => comparing()?.confirm().await,
+            VerificationAnswer::Mismatch => comparing()?.mismatch().await,
+            VerificationAnswer::Cancel => request.cancel().await,
+        }
+        .map_err(|e| internal(e.into()))?;
+        self.get_security(account).await
     }
 
     /// Unlocks Secret Storage with the recovery key or passphrase.

@@ -11,6 +11,7 @@ pub mod security;
 pub mod send;
 pub mod service;
 pub mod sync;
+pub mod verification;
 
 #[cfg(test)]
 mod tests;

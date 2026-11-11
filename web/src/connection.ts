@@ -96,6 +96,8 @@ function isResendable(body: ClientRequest): boolean {
     case 'keep_matrix_sent':
     case 'mark_room_read':
     case 'recover_matrix':
+    case 'verify_matrix_device':
+    case 'answer_verification':
     case 'import_room_keys':
     case 'change_membership':
     case 'create_todo':

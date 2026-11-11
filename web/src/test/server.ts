@@ -28,6 +28,8 @@ import type {
   MatrixAccount,
   MatrixSecurity,
   MatrixSend,
+  MatrixVerification,
+  VerificationPhase,
   Membership,
   Room,
   RoomEvent,
@@ -231,6 +233,33 @@ export class FakeServer implements Requester, Blobs {
           current: false,
         },
       ],
+      verifications: [],
+    })
+  }
+
+  /** A verification of the account went on, as the other device says. */
+  verificationChanged(account: string, flow_id: string, change: Partial<MatrixVerification>) {
+    this.setVerification(account, flow_id, change)
+    this.client.notice({ type: 'security_changed', account })
+  }
+
+  /** Another device of the account asks to verify. */
+  verificationAsked(account: string, flow_id: string, other_device: string) {
+    const security = this.security.get(account)!
+    this.securityChanged(account, {
+      ...security,
+      verifications: [
+        ...security.verifications,
+        { flow_id, other_device, we_started: false, phase: { type: 'requested' } },
+      ],
+    })
+  }
+
+  private setVerification(account: string, flow_id: string, change: Partial<MatrixVerification>) {
+    const security = this.security.get(account)!
+    this.security.set(account, {
+      ...security,
+      verifications: security.verifications.map((v) => (v.flow_id === flow_id ? { ...v, ...change } : v)),
     })
   }
 
@@ -665,6 +694,27 @@ export class FakeServer implements Requester, Blobs {
         }
         this.security.set(body.account, recovered)
         return { type: 'matrix_security', security: recovered }
+      }
+      case 'verify_matrix_device': {
+        const security = this.security.get(body.account)!
+        const verification: MatrixVerification = {
+          flow_id: `flow${security.verifications.length + 1}`,
+          other_device: body.device,
+          we_started: true,
+          phase: { type: 'requested' },
+        }
+        this.security.set(body.account, { ...security, verifications: [...security.verifications, verification] })
+        return { type: 'matrix_security', security: this.security.get(body.account)! }
+      }
+      case 'answer_verification': {
+        const phase: VerificationPhase = {
+          accept: { type: 'ready' } as const,
+          confirm: { type: 'confirmed' } as const,
+          mismatch: { type: 'cancelled', reason: 'The short auth string did not match.', by_us: true } as const,
+          cancel: { type: 'cancelled', reason: 'The user cancelled the verification.', by_us: true } as const,
+        }[body.answer]
+        this.setVerification(body.account, body.flow_id, { phase })
+        return { type: 'matrix_security', security: this.security.get(body.account)! }
       }
       case 'import_room_keys':
         if (!this.blobs.has(body.blob)) throw new Error(`no blob ${body.blob}`)

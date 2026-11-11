@@ -899,6 +899,18 @@ impl Backend for Services {
             ClientRequest::GetMatrixSecurity { account } => {
                 self.matrix.get_security(&account).await
             }
+            ClientRequest::VerifyMatrixDevice { account, device } => {
+                self.matrix.verify_device(&account, device.as_deref()).await
+            }
+            ClientRequest::AnswerVerification {
+                account,
+                flow_id,
+                answer,
+            } => {
+                self.matrix
+                    .answer_verification(&account, &flow_id, answer)
+                    .await
+            }
             ClientRequest::RecoverMatrix { account, recovery } => {
                 self.matrix.recover(&account, &recovery).await
             }

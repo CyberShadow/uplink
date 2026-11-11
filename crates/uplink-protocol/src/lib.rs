@@ -264,6 +264,18 @@ pub enum ClientRequest {
         account: String,
         recovery: String,
     },
+    /// Ask to verify uplink's device with another of the account's: `device`,
+    /// or whichever answers first. Answered with the security.
+    VerifyMatrixDevice {
+        account: String,
+        device: Option<String>,
+    },
+    /// Answer a verification. Answered with the security.
+    AnswerVerification {
+        account: String,
+        flow_id: String,
+        answer: matrix::VerificationAnswer,
+    },
     /// Import room keys from an export (an uploaded blob), as another
     /// client makes it, encrypted with `passphrase`.
     ImportRoomKeys {
@@ -313,7 +325,8 @@ pub enum ServerResponse {
     },
     /// Done, and nothing logged: of what is of the moment.
     Done,
-    /// Of `GetMatrixSecurity` and `RecoverMatrix`: as the client has it
+    /// Of `GetMatrixSecurity`, `RecoverMatrix`, `VerifyMatrixDevice` and
+    /// `AnswerVerification`: as the client has it
     /// now, not logged.
     MatrixSecurity {
         security: matrix::MatrixSecurity,

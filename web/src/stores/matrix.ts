@@ -20,6 +20,7 @@ import type {
   RoomId,
   ServerResponse,
   TxLogId,
+  VerificationAnswer,
 } from '../generated/protocol'
 import type { Blobs } from '../blobs'
 import type { Requester } from '../connection'
@@ -352,6 +353,21 @@ export class Security {
 
   changed() {
     this.loader.invalidate()
+  }
+
+  /** Asks to verify uplink's device with `device`, or with whichever of
+   * the account's answers first. */
+  async verify(device: string | null) {
+    const response = await this.request({ type: 'verify_matrix_device', account: this.account, device }, 'matrix_security')
+    if (response) this.state.value = response.security
+  }
+
+  async answer(flow_id: string, answer: VerificationAnswer) {
+    const response = await this.request(
+      { type: 'answer_verification', account: this.account, flow_id, answer },
+      'matrix_security',
+    )
+    if (response) this.state.value = response.security
   }
 
   /** Unlocks Secret Storage with the recovery key or passphrase; returns

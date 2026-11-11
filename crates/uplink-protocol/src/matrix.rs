@@ -331,6 +331,67 @@ pub struct MatrixSecurity {
     /// The account's devices, uplink's among them, most recently seen
     /// first.
     pub devices: Vec<MatrixDevice>,
+    /// Verifications of the account's devices with uplink's, going on or
+    /// ended since the last began, oldest first.
+    pub verifications: Vec<MatrixVerification>,
+}
+
+/// A verification of uplink's device with another of the account's, by
+/// comparing emoji (SAS), as clients do (SPEC §9.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MatrixVerification {
+    pub flow_id: String,
+    /// The other device, once known: a request uplink makes goes to every
+    /// device of the account, and one answers.
+    pub other_device: Option<String>,
+    /// Whether uplink asked.
+    pub we_started: bool,
+    pub phase: VerificationPhase,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum VerificationPhase {
+    /// Asked: of the other device, which has not answered yet, or of the
+    /// user, who accepts or not.
+    Requested,
+    /// Accepted; comparing starts.
+    Ready,
+    /// The devices are exchanging keys.
+    Started,
+    /// Both devices show these: the user says whether they match.
+    Compare {
+        emoji: Vec<SasEmoji>,
+        decimals: Vec<u16>,
+    },
+    /// They match here; the other device has yet to say.
+    Confirmed,
+    Done,
+    Cancelled {
+        reason: String,
+        by_us: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SasEmoji {
+    pub symbol: String,
+    pub description: String,
+}
+
+/// What the user says of a verification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationAnswer {
+    /// Of one asked of the user.
+    Accept,
+    /// The emoji match.
+    Confirm,
+    /// They do not: the other device may be an impostor's.
+    Mismatch,
+    Cancel,
 }
 
 /// The state of the key backup, which keeps room keys on the homeserver
