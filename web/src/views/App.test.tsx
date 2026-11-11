@@ -993,18 +993,31 @@ describe('outbox', () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')
     const user = await start('/outbox')
-    server.sentThoughCancelledToRoom(room.id, 'oops')
+    server.sentThoughCancelledToRoom(room.id, { type: 'topic', topic: 'oops' })
     const section = await screen.findByRole('region', { name: 'mx' })
     const [row] = within(section).getAllByRole('listitem')
     expect(row.querySelector('[class*=from]')!.textContent).toBe('Lounge')
     expect(row.querySelector('[class*=summary]')!.textContent).toBe(
-      'oopsSent before the cancel could take it back',
+      'Topic: oopsSent before the cancel could take it back',
     )
     expect(within(screen.getByRole('link', { name: /Outbox/ })).getByText('1').title).toBe(
       'Something needs your attention',
     )
     await user.click(within(row).getByRole('button', { name: 'Keep it sent' }))
     await screen.findByText('The outbox is empty: everything you did is at the providers.')
+  })
+
+  it('lists Matrix messages being taken back, needing nothing of the user', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    await start('/outbox')
+    server.sentThoughCancelledToRoom(room.id, text('oops'))
+    const section = await screen.findByRole('region', { name: 'mx' })
+    const [row] = within(section).getAllByRole('listitem')
+    expect(row.querySelector('[class*=summary]')!.textContent).toBe('oopsTaking back…')
+    expect(within(screen.getByRole('link', { name: /Outbox/ })).getByText('1').title).not.toBe(
+      'Something needs your attention',
+    )
   })
 
   it('asks about mail sent though cancelled, until kept sent', async () => {

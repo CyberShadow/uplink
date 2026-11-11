@@ -934,7 +934,7 @@ export type TimelinePage = { "type": "latest" } | { "type": "before", event: Roo
  * Where a Matrix message being sent is (SPEC §9.3). Never unknown: the
  * homeserver deduplicates the transaction id, so it is sent again.
  */
-export type MatrixSendState = "queued" | "sending" | "sent" | "refused";
+export type MatrixSendState = "queued" | "sending" | "sent" | "refused" | "taking_back";
 
 /**
  * What a send sends to a room (SPEC §9.3). Events it is of are named
@@ -961,14 +961,19 @@ thread: string | null, } | { "type": "reaction", event: string, key: string, } |
 
 /**
  * A message being sent, sent and not yet synced back, or sent though
- * cancelled (needing a decision).
+ * cancelled (being taken back, or needing a decision).
  */
 export type MatrixSend = { id: MatrixSendId, room: RoomId, content: MatrixContent, state: MatrixSendState, 
 /**
  * Whether it is to be sent: `false` once cancelled while being
- * sent. Sent, it needs a decision: keeping it sent.
+ * sent, or after.
  */
-wanted: boolean, error: string | null, 
+wanted: boolean, 
+/**
+ * Whether, sent, cancelling it takes it back: see
+ * [`MatrixContent::retractable`].
+ */
+retractable: boolean, error: string | null, 
 /**
  * Ms since the Unix epoch.
  */
@@ -1119,4 +1124,4 @@ exception: boolean, };
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "18bf3d1fa963b4a6"
+export const PROTOCOL_VERSION = "c039fcef885b7105"

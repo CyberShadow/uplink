@@ -1112,6 +1112,99 @@ async fn replies_edits_reactions_redactions_and_files() {
     assert_eq!(deleted.edit, None, "a redacted message shows no edit");
 }
 
+/// Undone once sent, a message is redacted, and an edit too (the message
+/// shows as it was). Redone, a message is sent anew.
+#[tokio::test(flavor = "multi_thread")]
+async fn sends_undone_are_taken_back() {
+    use uplink_protocol::matrix::MatrixContent;
+    let dir = tempfile::tempdir().unwrap();
+    let homeserver = Homeserver::start(dir.path()).await;
+    let bob = homeserver.register(dir.path(), "bob").await;
+    let alice_phone = homeserver.register(dir.path(), "alice").await;
+    let _bob_received = sync_messages(&bob);
+    let uplink = Uplink::new(&homeserver);
+    let _sync = uplink.pair_and_sync().await;
+    let room_id = shared_room(&bob, &alice_phone).await;
+    let room = eventually("uplink to see the room", || async {
+        uplink
+            .room(&room_id)
+            .await
+            .filter(|r| r.membership == Membership::Joined && r.encrypted)
+    })
+    .await;
+    let settled = || async { (uplink.sends(&room).await == 0).then_some(()) };
+    // Sends `content`, and waits for it to sync back: its op.
+    let send = |content: MatrixContent| async {
+        let ServerResponse::Dispatched { tx_log_id } =
+            uplink.matrix.send_message(room.id, content).await.unwrap()
+        else {
+            panic!()
+        };
+        eventually("the send to sync back", settled).await;
+        tx_log_id
+    };
+    let (uplink, room) = (&uplink, &room);
+    let find = move |body: &'static str| async move {
+        uplink
+            .timeline(room)
+            .await
+            .into_iter()
+            .filter(|e| e.body.as_deref() == Some(body))
+            .collect::<Vec<_>>()
+    };
+
+    // A message, taken back: redacted.
+    let sent = send(text("oops")).await;
+    let [oops] = &find("oops").await[..] else {
+        panic!()
+    };
+    let cancel = uplink.dispatcher.undo(sent).await.unwrap();
+    eventually("the message to be redacted", || async {
+        let timeline = uplink.timeline(room).await;
+        timeline
+            .iter()
+            .any(|e| e.event_id == oops.event_id && e.redacted)
+            .then_some(())
+    })
+    .await;
+    eventually("the take-back to be settled", settled).await;
+    // Redone, sent anew, as another event.
+    uplink.dispatcher.undo(cancel).await.unwrap();
+    eventually("the message sent anew", || async {
+        find("oops")
+            .await
+            .iter()
+            .any(|e| e.event_id != oops.event_id)
+            .then_some(())
+    })
+    .await;
+    eventually("the send to sync back", settled).await;
+
+    // An edit, taken back: the message shows as it was.
+    send(text("first")).await;
+    let [first] = &find("first").await[..] else {
+        panic!()
+    };
+    let edited = send(MatrixContent::Text {
+        body: "second".into(),
+        markdown: true,
+        emote: false,
+        reply_to: None,
+        replaces: Some(first.event_id.clone()),
+        thread: None,
+    })
+    .await;
+    uplink.dispatcher.undo(edited).await.unwrap();
+    eventually("the edit to be taken back", || async {
+        let [message] = &find("first").await[..] else {
+            panic!()
+        };
+        message.edit.is_none().then_some(())
+    })
+    .await;
+    eventually("the take-back to be settled", settled).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn typing_and_receipts_are_noticed() {
     use uplink_protocol::Notice;

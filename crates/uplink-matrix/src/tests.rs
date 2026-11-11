@@ -3,7 +3,9 @@
 
 use crate::{
     rooms::{ObservedEvent, ObservedRoom, ReceiptSent, Synced},
-    send::{SendFailed, SendStarted, SendSucceeded},
+    send::{
+        SendFailed, SendStarted, SendSucceeded, TakeBackFailed, TakeBackStarted, TakeBackSucceeded,
+    },
     service::{ConfiguredAccount, Matrix},
 };
 use serde_json::json;
@@ -11,8 +13,8 @@ use std::sync::Arc;
 use uplink_protocol::{
     compose::{AccountOutbox, Pending},
     matrix::{
-        Encryption, MatrixSend, MatrixSendId, MatrixSendState, Membership, Room, RoomEvent,
-        RoomEventId, RoomId,
+        Encryption, MatrixContent, MatrixSend, MatrixSendId, MatrixSendState, Membership, Room,
+        RoomEvent, RoomEventId, RoomId,
     },
     ServerEvent, ServerResponse, TxLogId,
 };
@@ -172,6 +174,49 @@ impl Db {
             .iter()
             .map(|s| (s.state, s.wanted))
             .collect()
+    }
+
+    /// What the sync task would take back, and how.
+    fn take_backs(&self) -> Vec<(MatrixSendId, MatrixContent)> {
+        let conn = uplink_storage::open_reader(self._dir.path()).unwrap();
+        crate::send::take_backs_due(&conn, "mx")
+            .unwrap()
+            .into_iter()
+            .map(|d| (d.item, d.content))
+            .collect()
+    }
+
+    /// Sends `content`, and has the homeserver accept it as `event_id`
+    /// and sync it back.
+    async fn sent(&self, content: MatrixContent, event_id: Option<&str>) -> TxLogId {
+        let room = self.room().await;
+        let ServerResponse::Dispatched { tx_log_id } =
+            self.matrix.send_message(room.id, content).await.unwrap()
+        else {
+            panic!()
+        };
+        let item = start(self).await;
+        self.observe(SendSucceeded {
+            item,
+            event_id: event_id.map(Into::into),
+        })
+        .await
+        .unwrap();
+        if let Some(id) = event_id {
+            self.sync(&[(id, ME)], &[]).await;
+        }
+        assert!(self.sends().await.is_empty());
+        tx_log_id
+    }
+
+    fn description(&self, id: TxLogId) -> String {
+        let conn = uplink_storage::open_reader(self._dir.path()).unwrap();
+        conn.query_row(
+            "SELECT description FROM tx_log WHERE id = ?1",
+            [id.0],
+            |r| r.get(0),
+        )
+        .unwrap()
     }
 
     /// The outbox, as the server lists it of Matrix accounts.
@@ -401,13 +446,13 @@ async fn sent_messages_are_reconciled_once_synced() {
     db.sync(&[("$first", ME)], &[]).await;
     assert!(db.sends().await.is_empty());
 
-    // Undoing it now can't take it back: it needs a decision, which
-    // keeping it sent (undoing the undo) makes.
+    // Undone before it is taken back, then redone: nothing to do.
     let cancel = db.dispatcher.undo(sent).await.unwrap();
     assert_eq!(db.shown().await, [(MatrixSendState::Sent, false)]);
     assert_eq!(db.outbox().len(), 1);
     db.dispatcher.undo(cancel).await.unwrap();
     assert!(db.sends().await.is_empty());
+    assert!(db.take_backs().is_empty());
 
     // Synced before the homeserver answered.
     db.send("second").await;
@@ -1789,4 +1834,196 @@ mod query {
         assert!(matching("in:inbox OR subject:deploy").is_empty());
         assert_eq!(matching("deploy is:room").len(), 5);
     }
+}
+
+/// Undone once sent, a message is taken back: redacted; undone again, it
+/// is sent anew.
+#[tokio::test]
+async fn sent_messages_undone_are_taken_back() {
+    let db = Db::new();
+    db.sync(&[("$1", "@bob:x")], &[]).await;
+    let sent = db.sent(text("hi"), Some("$hi")).await;
+    let cancel = db.dispatcher.undo(sent).await.unwrap();
+    assert_eq!(db.description(cancel), "Took back 'hi'");
+    let item = db.sends().await[0].id;
+    assert!(db.sends().await[0].retractable);
+    assert_eq!(
+        db.take_backs(),
+        [(
+            item,
+            MatrixContent::Redaction {
+                event: "$hi".into()
+            }
+        )]
+    );
+    db.observe(TakeBackStarted { item }).await.unwrap();
+    assert_eq!(db.shown().await, [(MatrixSendState::TakingBack, false)]);
+    // Interrupted, or failing for a passing reason: tried again.
+    db.observe(TakeBackFailed {
+        item,
+        refused: None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(db.take_backs().len(), 1);
+    db.observe(TakeBackStarted { item }).await.unwrap();
+    db.observe(TakeBackSucceeded { item }).await.unwrap();
+    assert!(db.sends().await.is_empty());
+    assert!(db.outbox().is_empty());
+    assert!(db.take_backs().is_empty());
+
+    // Redone, it is sent anew, as a send of its own.
+    let again = db.dispatcher.undo(cancel).await.unwrap();
+    assert_eq!(db.description(again), "Sent 'hi' again");
+    let [resent] = &db.sends().await[..] else {
+        panic!()
+    };
+    assert_ne!(resent.id, item);
+    assert_eq!(
+        (resent.state, resent.wanted),
+        (MatrixSendState::Queued, true)
+    );
+    // Whose undo cancels it, as any.
+    db.dispatcher.undo(again).await.unwrap();
+    assert!(db.sends().await.is_empty());
+}
+
+/// Redone while being taken back, it is sent anew, the take-back going on.
+#[tokio::test]
+async fn sends_redone_while_taken_back_are_sent_anew() {
+    let db = Db::new();
+    db.sync(&[("$1", "@bob:x")], &[]).await;
+    let sent = db.sent(text("hi"), Some("$hi")).await;
+    let cancel = db.dispatcher.undo(sent).await.unwrap();
+    let item = db.sends().await[0].id;
+    db.observe(TakeBackStarted { item }).await.unwrap();
+    db.dispatcher.undo(cancel).await.unwrap();
+    assert_eq!(
+        db.shown().await,
+        [
+            (MatrixSendState::TakingBack, false),
+            (MatrixSendState::Queued, true)
+        ]
+    );
+    db.observe(TakeBackSucceeded { item }).await.unwrap();
+    assert_eq!(db.shown().await, [(MatrixSendState::Queued, true)]);
+}
+
+/// A take-back the homeserver refuses needs a decision: keeping it sent.
+#[tokio::test]
+async fn take_backs_refused_need_a_decision() {
+    let db = Db::new();
+    db.sync(&[("$1", "@bob:x")], &[]).await;
+    let sent = db.sent(text("hi"), Some("$hi")).await;
+    db.dispatcher.undo(sent).await.unwrap();
+    let item = db.sends().await[0].id;
+    db.observe(TakeBackStarted { item }).await.unwrap();
+    db.observe(TakeBackFailed {
+        item,
+        refused: Some("M_FORBIDDEN".into()),
+    })
+    .await
+    .unwrap();
+    let [refused] = &db.sends().await[..] else {
+        panic!()
+    };
+    assert_eq!(
+        (refused.state, refused.wanted, refused.error.as_deref()),
+        (MatrixSendState::Sent, false, Some("M_FORBIDDEN"))
+    );
+    assert!(db.take_backs().is_empty());
+    db.matrix.keep_sent(item).await.unwrap();
+    assert!(db.sends().await.is_empty());
+}
+
+/// Cancelled while being sent, a message that went out is taken back.
+#[tokio::test]
+async fn sends_cancelled_while_sent_are_taken_back_once_out() {
+    let db = Db::new();
+    db.sync(&[("$1", "@bob:x")], &[]).await;
+    let sent = db.send("hi").await;
+    let item = start(&db).await;
+    db.dispatcher.undo(sent).await.unwrap();
+    db.observe(SendSucceeded {
+        item,
+        event_id: Some("$hi".into()),
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        db.take_backs(),
+        [(
+            item,
+            MatrixContent::Redaction {
+                event: "$hi".into()
+            }
+        )]
+    );
+}
+
+/// A pin is taken back by unpinning; one that changed nothing needs
+/// nothing.
+#[tokio::test]
+async fn pins_are_taken_back_by_reversing_them() {
+    let db = Db::new();
+    db.sync(&[("$1", "@bob:x")], &[]).await;
+    let pin = MatrixContent::Pin {
+        event: "$1".into(),
+        pinned: true,
+    };
+    let pinned = db.sent(pin.clone(), Some("$pins")).await;
+    db.dispatcher.undo(pinned).await.unwrap();
+    let item = db.sends().await[0].id;
+    assert_eq!(
+        db.take_backs(),
+        [(
+            item,
+            MatrixContent::Pin {
+                event: "$1".into(),
+                pinned: false
+            }
+        )]
+    );
+
+    db.observe(TakeBackStarted { item }).await.unwrap();
+    db.observe(TakeBackSucceeded { item }).await.unwrap();
+
+    let unchanged = db.sent(pin, None).await;
+    let cancel = db.dispatcher.undo(unchanged).await.unwrap();
+    assert!(db.sends().await.is_empty());
+    assert!(db.take_backs().is_empty());
+    // Redone, it is sent anew.
+    db.dispatcher.undo(cancel).await.unwrap();
+    assert_eq!(db.shown().await, [(MatrixSendState::Queued, true)]);
+}
+
+/// What Matrix can't take back, or uplink does not yet, needs a decision
+/// once sent.
+#[tokio::test]
+async fn sends_not_retractable_need_a_decision() {
+    let db = Db::new();
+    db.sync(&[("$1", "@bob:x")], &[]).await;
+    let named = db
+        .sent(
+            MatrixContent::Name {
+                name: "Lounge".into(),
+            },
+            Some("$name"),
+        )
+        .await;
+    let cancel = db.dispatcher.undo(named).await.unwrap();
+    assert_eq!(
+        db.description(cancel),
+        "Cancelled sending the name 'Lounge', which went out"
+    );
+    let [send] = &db.sends().await[..] else {
+        panic!()
+    };
+    assert_eq!(
+        (send.state, send.wanted, send.retractable),
+        (MatrixSendState::Sent, false, false)
+    );
+    assert!(db.take_backs().is_empty());
+    db.dispatcher.undo(cancel).await.unwrap();
+    assert!(db.sends().await.is_empty());
 }

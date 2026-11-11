@@ -29,6 +29,7 @@ import type {
   LogEntry,
   MatrixAccount,
   MatrixSecurity,
+  MatrixContent,
   MatrixSend,
   MatrixVerification,
   MemberInfo,
@@ -59,7 +60,7 @@ import type {
 } from '../generated/protocol'
 import type { Client } from '../stores/client'
 import { apply } from '../compose/splice'
-import { sendSummary, text } from '../matrix'
+import { sendSummary } from '../matrix'
 
 /** The Matrix account's user. */
 export const ME = '@me:example.org'
@@ -461,8 +462,17 @@ export class FakeServer implements Requester, Blobs {
   }
 
   /** The homeserver took a message that was cancelled meanwhile. */
-  sentThoughCancelledToRoom(room: RoomId, body: string) {
-    this.matrixSends.push({ id: this.nextOutbox++, room, content: text(body), state: 'sent', wanted: false, error: null, queued_at: 0 })
+  sentThoughCancelledToRoom(room: RoomId, content: MatrixContent) {
+    this.matrixSends.push({
+      id: this.nextOutbox++,
+      room,
+      content,
+      state: 'sent',
+      wanted: false,
+      retractable: retractable(content),
+      error: null,
+      queued_at: 0,
+    })
     this.observe('mx', this.matrixSendsChanged(room))
   }
 
@@ -919,6 +929,7 @@ export class FakeServer implements Requester, Blobs {
           content: body.content,
           state: 'queued',
           wanted: true,
+          retractable: retractable(body.content),
           error: null,
           queued_at: Date.now(),
         })
@@ -1372,4 +1383,9 @@ export class FakeServer implements Requester, Blobs {
       }
     })
   }
+}
+
+/** As `MatrixContent::retractable` has it. */
+function retractable(content: MatrixContent): boolean {
+  return !['redaction', 'name', 'topic', 'member'].includes(content.type)
 }

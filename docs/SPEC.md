@@ -538,7 +538,8 @@ CREATE TABLE matrix_send (     -- (V0023: was matrix_outbox)
   wanted       INTEGER NOT NULL,     -- desired, as mail_send's (§6.7)
   desired_by   INTEGER NOT NULL REFERENCES tx_log(id),
   state        TEXT NOT NULL,        -- 'queued' | 'sending' | 'sent' | 'refused'
-  error        TEXT,                 -- set iff refused
+                                     -- | 'taking_back' | 'taken_back' (V0037, §9.3)
+  error        TEXT,                 -- why refused, or refused taking back (V0037)
   event_id     TEXT,                 -- set if sent, but of a member's change (V0029)
   synced       INTEGER NOT NULL      -- the event is synced: out of the outbox
 );
@@ -1021,8 +1022,10 @@ a future UI may let the user pick which version to keep.
 Ops change desired state, never provider state directly (§6.6), so every
 inverse is itself just a desired-state change. Whether the provider can
 still be brought in line is the reconciler's to find out, not the
-inverse's to decide: un-sending a message that has gone out is applied,
-and shown in the outbox as irreconcilable until resolved (§6.6, §6.7).
+inverse's to decide: un-sending a mail that has gone out is applied,
+and shown in the outbox as irreconcilable until resolved (§6.6, §6.7);
+a Matrix message is taken back as nearly as Matrix allows, by redacting
+it (§9.3).
 
 ### 6.3 Undo
 
@@ -1198,9 +1201,10 @@ SMTP and Gmail's `messages.send` take no idempotency key (RFC 1047
 describes the duplicate a lost acknowledgement causes); observing the
 outcome, by the Message-ID or the draft, is what makes a retry safe.
 
-Matrix messages (§9.3) differ in two ways. They have no send delay, since
-chat expects immediacy: a cancel is fulfilled at once only until the
-task claims the message. And the homeserver deduplicates a transaction
+Matrix messages (§9.3) differ in three ways. They have no send delay,
+since chat expects immediacy: a cancel is fulfilled at once only until
+the task claims the message. Sent, a cancel is fulfilled as nearly as
+Matrix allows: the message is redacted. And the homeserver deduplicates a transaction
 id, so a message whose outcome is unknown is simply sent again. Showing
 queued items in Sent / the room timeline as a local echo is deferred;
 the outbox stands in for it.
@@ -2024,7 +2028,7 @@ at once) and sends it with transaction id `uplink-<id>`:
 
 - accepted: `sent`, with its event id; `synced` once that event is synced
   (or at once, if sync delivered it first). If it was cancelled
-  meanwhile, it is irreconcilable until kept (`KeepMatrixSent`);
+  meanwhile, it is taken back (below);
 - refused (4xx other than 429): `refused`, with the homeserver's reason;
   it needs a decision, and cancelling drops it. Cancelled meanwhile, it
   is dropped at once;
@@ -2032,6 +2036,25 @@ at once) and sends it with transaction id `uplink-<id>`:
   again and retried with backoff — the homeserver deduplicates the
   transaction id, so a retry cannot duplicate the message. Cancelled
   meanwhile, it is dropped instead.
+
+Cancelled once sent (as undoing it usually is, there being no send
+delay), a send is taken back as nearly as Matrix allows
+(`MatrixContent::retractable`), however long ago it was sent: a message,
+a reply, a file or a reaction is redacted (others may have read it, or
+been notified, and the room shows it deleted); an edit is redacted, which
+shows the message as it was before it; a pin is reversed (and one that
+changed nothing needs nothing). The sending loop does it as it sends,
+after the queued messages: it claims the send (`taking_back`), sends
+what takes it back with transaction id `uplink-<id>-back`, and marks it
+`taken_back`, reconciled. Failing for a passing reason, or interrupted,
+it is tried again; refused, the send is `sent` again with the reason, and
+needs a decision, as does one that can't be taken back: a deletion, or,
+not yet, a name, a topic or a change to a member. Keeping it sent
+(`KeepMatrixSent`, or undoing the cancel) resolves it. Undoing the cancel
+before the take-back is claimed wants it sent again, which it is; once
+claimed or done, it sends the message anew, as a send of its own (another
+event, notifying again): the taken-back row stays, so that it knows what
+to send.
 
 ### 9.4 Cross-signing pairing
 
@@ -3352,9 +3375,11 @@ if it went out, it is irreconcilable and the user keeps it sent. A retry
 after an unknown outcome is made safe by observing the Message-ID in
 Sent, not by refusing to retry. (Before: the outbox held sends only,
 label changes were pushed unseen, and undo refused a sent mail.)
-Matrix redaction as an "undo" after sending is best-effort at most
-(recipients may already have the plaintext); if wanted, it would be an
-explicit action of its own.
+A Matrix send that went out is taken back by redacting it (§9.3), though
+that is best-effort at most (recipients may already have the plaintext,
+and the room shows a deletion): an undo the user asks for is done as
+nearly as the provider allows, rather than left irreconcilable. (Before:
+only a deletion of its own would redact it.)
 
 ### 15.10 Test infrastructure
 

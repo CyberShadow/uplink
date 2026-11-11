@@ -6,12 +6,15 @@
 //! messages have no send delay, so cancelling takes one back at once only
 //! until the task claims it (in practice, while the homeserver is
 //! unreachable); after, it makes the send unwanted, settled by the
-//! outcome: not sent or refused takes it back, sent needs a decision,
-//! which keeping it sent makes.
+//! outcome: not sent or refused takes it back. Sent, the task takes it
+//! back as nearly as Matrix allows ([`MatrixContent::retractable`]):
+//! redacts it, or reverses a pin. What can't be taken back, or what the
+//! homeserver refused to, needs a decision, which keeping it sent makes.
+//! Wanted again once taken back (the undo undone), it is sent anew.
 //!
 //! Since the homeserver deduplicates a transaction id, sending a message
 //! again is safe; so a passing failure, or an interrupted send, queues it
-//! again, and its outcome is never unknown.
+//! again, and its outcome is never unknown. Taking it back is the same.
 
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -43,20 +46,48 @@ pub fn transaction_id(item: MatrixSendId) -> String {
     format!("uplink-{}", item.0)
 }
 
+/// The transaction id a send is taken back with.
+pub fn take_back_transaction_id(item: MatrixSendId) -> String {
+    format!("uplink-{}-back", item.0)
+}
+
+/// What takes back `content`, sent as `event_id`: `None` if nothing
+/// need be, as the pin it sent changed nothing.
+fn take_back(content: &MatrixContent, event_id: Option<&str>) -> Option<MatrixContent> {
+    assert!(
+        content.retractable(),
+        "only what is retractable is taken back"
+    );
+    match content {
+        MatrixContent::Pin { event, pinned } => event_id.map(|_| MatrixContent::Pin {
+            event: event.clone(),
+            pinned: !pinned,
+        }),
+        _ => Some(MatrixContent::Redaction {
+            event: event_id
+                .expect("a message, file or reaction is sent as an event")
+                .to_owned(),
+        }),
+    }
+}
+
 const COLUMNS: &str = "s.id, s.room, s.content, s.state, s.wanted, s.error, s.queued_at";
 
 /// A send of [`COLUMNS`], from `offset` on.
 fn send_row_at(r: &Row, offset: usize) -> uplink_storage::rusqlite::Result<MatrixSend> {
     let state: String = r.get(offset + 3)?;
+    let content = content(&r.get::<_, String>(offset + 2)?);
     Ok(MatrixSend {
         id: MatrixSendId(r.get(offset)?),
         room: RoomId(r.get(offset + 1)?),
-        content: content(&r.get::<_, String>(offset + 2)?),
+        retractable: content.retractable(),
+        content,
         state: match state.as_str() {
             "queued" => MatrixSendState::Queued,
             "sending" => MatrixSendState::Sending,
             "sent" => MatrixSendState::Sent,
             "refused" => MatrixSendState::Refused,
+            "taking_back" => MatrixSendState::TakingBack,
             _ => unreachable!("the schema allows no send state {state}"),
         },
         wanted: r.get(offset + 4)?,
@@ -74,13 +105,16 @@ fn send_row(r: &Row) -> uplink_storage::rusqlite::Result<MatrixSend> {
     send_row_at(r, 0)
 }
 
-/// The room's sends not yet reconciled: being sent, sent and not yet
-/// synced back, or sent though cancelled.
+/// Of `matrix_send s`, those not yet reconciled: being sent, sent and
+/// not yet synced back, or sent though cancelled and not yet taken back.
+const UNRECONCILED: &str = "NOT ((s.wanted AND s.synced) OR s.state = 'taken_back')";
+
+/// The room's sends not yet reconciled.
 pub fn sends(tx: &Transaction, room: RoomId) -> Result<Vec<MatrixSend>> {
     Ok(tx
         .prepare(&format!(
             "SELECT {COLUMNS} FROM matrix_send s
-             WHERE s.room = ?1 AND (NOT s.synced OR NOT s.wanted) ORDER BY s.id"
+             WHERE s.room = ?1 AND {UNRECONCILED} ORDER BY s.id"
         ))?
         .query_map([room.0], send_row)?
         .collect::<Result<_, _>>()?)
@@ -91,16 +125,19 @@ pub(crate) fn unreconciled(tx: &Transaction) -> Result<Vec<(String, MatrixSend)>
     Ok(tx
         .prepare(&format!(
             "SELECT r.account_id, {COLUMNS} FROM matrix_send s JOIN matrix_room r ON r.id = s.room
-             WHERE NOT s.synced OR NOT s.wanted ORDER BY s.id"
+             WHERE {UNRECONCILED} ORDER BY s.id"
         ))?
         .query_map([], |r| Ok((r.get(0)?, send_row_at(r, 1)?)))?
         .collect::<Result<_, _>>()?)
 }
 
+/// The send, unless it is gone or taken back.
 fn send(tx: &Transaction, id: MatrixSendId) -> Result<Option<MatrixSend>> {
     Ok(tx
         .query_row(
-            &format!("SELECT {COLUMNS} FROM matrix_send s WHERE s.id = ?1"),
+            &format!(
+                "SELECT {COLUMNS} FROM matrix_send s WHERE s.id = ?1 AND s.state <> 'taken_back'"
+            ),
             [id.0],
             send_row,
         )
@@ -118,11 +155,31 @@ pub(crate) fn sends_synced(tx: &Transaction, room: RoomId) -> Result<bool> {
     )? > 0)
 }
 
+/// Wanted again, a send refused taking back needs no decision.
 fn set_wanted(tx: &Transaction, item: MatrixSendId, wanted: bool) -> Result<()> {
     tx.execute(
-        "UPDATE matrix_send SET wanted = ?1, desired_by = ?2 WHERE id = ?3",
+        "UPDATE matrix_send SET wanted = ?1, desired_by = ?2, error = NULL WHERE id = ?3",
         params![wanted, this_entry(tx)?.0, item.0],
     )?;
+    Ok(())
+}
+
+/// A sent send no longer wanted that nothing need take back (a pin that
+/// changed nothing) is taken back already.
+fn settle_unwanted(tx: &Transaction, item: MatrixSendId) -> Result<()> {
+    let (sent, event_id): (String, Option<String>) = tx.query_row(
+        "SELECT content, event_id FROM matrix_send
+         WHERE id = ?1 AND state = 'sent' AND NOT wanted",
+        [item.0],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let sent = content(&sent);
+    if sent.retractable() && take_back(&sent, event_id.as_deref()).is_none() {
+        tx.execute(
+            "UPDATE matrix_send SET state = 'taken_back' WHERE id = ?1",
+            [item.0],
+        )?;
+    }
     Ok(())
 }
 
@@ -282,21 +339,31 @@ impl Op for CancelMessage {
             }
             MatrixSendState::Sending | MatrixSendState::Sent => {
                 set_wanted(tx, self.item, false)?;
+                let body = named(&item.content);
+                let description = match (item.state, item.retractable) {
+                    (MatrixSendState::Sending, _) => {
+                        format!("Cancelled sending {body}, which may have gone out")
+                    }
+                    (_, true) => format!("Took back {body}"),
+                    (_, false) => format!("Cancelled sending {body}, which went out"),
+                };
+                if item.state == MatrixSendState::Sent {
+                    settle_unwanted(tx, self.item)?;
+                }
                 Ok(Applied {
-                    description: format!(
-                        "Cancelled sending {}, which may have gone out",
-                        named(&item.content)
-                    ),
+                    description,
                     inverse: Inverse::of(&KeepSent { item: self.item }),
                     events,
                 })
             }
+            MatrixSendState::TakingBack => unreachable!("only what is unwanted is taken back"),
         }
     }
 }
 
 /// Wants a send cancelled when it could no longer be taken back for sure
-/// again: resolves one that went out regardless.
+/// again: resolves one that went out regardless. One being taken back,
+/// or taken back, is sent anew.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KeepSent {
@@ -307,15 +374,33 @@ impl Op for KeepSent {
     const KIND: &'static str = "matrix.keep_sent";
 
     fn apply(self, tx: &Transaction) -> Result<Applied> {
-        let item = send(tx, self.item)?
-            .filter(|i| !i.wanted)
+        let (room, content, state): (i64, String, String) = tx
+            .query_row(
+                "SELECT room, content, state FROM matrix_send WHERE id = ?1 AND NOT wanted",
+                [self.item.0],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?
             .ok_or_else(|| Conflict("sending it is no longer being cancelled".into()))?;
-        set_wanted(tx, self.item, true)?;
-        Ok(Applied {
-            description: format!("Kept {} sent", named(&item.content)),
-            inverse: Inverse::of(&CancelMessage { item: self.item }),
-            events: changed(tx, item.room)?,
-        })
+        let (room, content) = (RoomId(room), self::content(&content));
+        match state.as_str() {
+            "sending" | "sent" => {
+                set_wanted(tx, self.item, true)?;
+                Ok(Applied {
+                    description: format!("Kept {} sent", named(&content)),
+                    inverse: Inverse::of(&CancelMessage { item: self.item }),
+                    events: changed(tx, room)?,
+                })
+            }
+            "taking_back" | "taken_back" => {
+                let sent = SendMessage { room, content }.apply(tx)?;
+                Ok(Applied {
+                    description: format!("{} again", sent.description),
+                    ..sent
+                })
+            }
+            _ => unreachable!("the schema has a send unwanted only once handed over"),
+        }
     }
 }
 
@@ -353,6 +438,48 @@ pub fn interrupted(conn: &Connection, account: &str) -> Result<Vec<MatrixSendId>
         .prepare(
             "SELECT s.id FROM matrix_send s JOIN matrix_room r ON r.id = s.room
              WHERE r.account_id = ?1 AND s.state = 'sending'",
+        )?
+        .query_map([account], |r| Ok(MatrixSendId(r.get(0)?)))?
+        .collect::<Result<_, _>>()?)
+}
+
+/// The account's sends cancelled once sent, to take back, in the order
+/// they were queued: each with what takes it back.
+pub fn take_backs_due(conn: &Connection, account: &str) -> Result<Vec<Due>> {
+    let rows: Vec<(i64, String, String, i64, Option<String>)> = conn
+        .prepare(
+            "SELECT s.id, r.room_id, s.content, s.room, s.event_id
+             FROM matrix_send s JOIN matrix_room r ON r.id = s.room
+             WHERE r.account_id = ?1 AND s.state = 'sent' AND NOT s.wanted AND s.error IS NULL
+             ORDER BY s.id",
+        )?
+        .query_map([account], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?
+        .collect::<Result<_, _>>()?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(item, room_id, sent, room, event_id)| {
+            let sent = content(&sent);
+            sent.retractable().then(|| Due {
+                item: MatrixSendId(item),
+                room: RoomId(room),
+                room_id,
+                // Those that need nothing are taken back when cancelled.
+                content: take_back(&sent, event_id.as_deref())
+                    .expect("a send that needs nothing to take it back is taken back"),
+            })
+        })
+        .collect())
+}
+
+/// Sends a previous run of the account's sync task was interrupted
+/// taking back.
+pub fn interrupted_take_backs(conn: &Connection, account: &str) -> Result<Vec<MatrixSendId>> {
+    Ok(conn
+        .prepare(
+            "SELECT s.id FROM matrix_send s JOIN matrix_room r ON r.id = s.room
+             WHERE r.account_id = ?1 AND s.state = 'taking_back'",
         )?
         .query_map([account], |r| Ok(MatrixSendId(r.get(0)?)))?
         .collect::<Result<_, _>>()?)
@@ -415,15 +542,17 @@ impl Observation for SendSucceeded {
             params![self.event_id, self.item.0],
         )?;
         sends_synced(tx, item.room)?;
+        let body = named(&item.content);
+        let description = match (item.wanted, item.retractable) {
+            (true, _) => format!("Sent {body}"),
+            (false, true) => format!("Sent {body} before the cancel; taking it back"),
+            (false, false) => format!("Sent {body} before the cancel could take it back"),
+        };
+        if !item.wanted {
+            settle_unwanted(tx, self.item)?;
+        }
         Ok(Observed {
-            description: if item.wanted {
-                format!("Sent {}", named(&item.content))
-            } else {
-                format!(
-                    "Sent {} before the cancel could take it back",
-                    named(&item.content)
-                )
-            },
+            description,
             events: changed(tx, item.room)?,
         })
     }
@@ -467,6 +596,94 @@ impl Observation for SendFailed {
         };
         Ok(Observed {
             description,
+            events: changed(tx, item.room)?,
+        })
+    }
+}
+
+/// The send being taken back, claimed by the sync task.
+fn taking_back(tx: &Transaction, item: MatrixSendId) -> Result<MatrixSend> {
+    let send = send(tx, item)?.context("the send is gone")?;
+    ensure!(
+        send.state == MatrixSendState::TakingBack,
+        "message {} is not being taken back",
+        item.0
+    );
+    Ok(send)
+}
+
+/// The sync task is about to take back a message sent though cancelled.
+/// Refused with a [`Conflict`] if it is no longer to be (kept sent
+/// meanwhile).
+#[derive(Debug, Serialize)]
+pub struct TakeBackStarted {
+    pub item: MatrixSendId,
+}
+
+impl Observation for TakeBackStarted {
+    const KIND: &'static str = "matrix.take_back_started";
+
+    fn apply(self, _account: &str, tx: &Transaction) -> Result<Observed> {
+        let item = send(tx, self.item)?
+            .filter(|i| i.state == MatrixSendState::Sent && !i.wanted && i.error.is_none())
+            .ok_or_else(|| Conflict("no longer to be taken back".into()))?;
+        tx.execute(
+            "UPDATE matrix_send SET state = 'taking_back' WHERE id = ?1",
+            [self.item.0],
+        )?;
+        Ok(Observed {
+            description: format!("Taking back {}", named(&item.content)),
+            events: changed(tx, item.room)?,
+        })
+    }
+}
+
+/// The homeserver took back a message sent though cancelled.
+#[derive(Debug, Serialize)]
+pub struct TakeBackSucceeded {
+    pub item: MatrixSendId,
+}
+
+impl Observation for TakeBackSucceeded {
+    const KIND: &'static str = "matrix.take_back_succeeded";
+
+    fn apply(self, _account: &str, tx: &Transaction) -> Result<Observed> {
+        let item = taking_back(tx, self.item)?;
+        tx.execute(
+            "UPDATE matrix_send SET state = 'taken_back' WHERE id = ?1",
+            [self.item.0],
+        )?;
+        Ok(Observed {
+            description: format!("Took back {}", named(&item.content)),
+            events: changed(tx, item.room)?,
+        })
+    }
+}
+
+/// Taking back a message did not succeed: `refused` with the
+/// homeserver's reason, which needs a decision; or else, for a passing
+/// reason or an interrupted attempt, it is tried again.
+#[derive(Debug, Serialize)]
+pub struct TakeBackFailed {
+    pub item: MatrixSendId,
+    pub refused: Option<String>,
+}
+
+impl Observation for TakeBackFailed {
+    const KIND: &'static str = "matrix.take_back_failed";
+
+    fn apply(self, _account: &str, tx: &Transaction) -> Result<Observed> {
+        let item = taking_back(tx, self.item)?;
+        tx.execute(
+            "UPDATE matrix_send SET state = 'sent', error = ?1 WHERE id = ?2",
+            params![self.refused, self.item.0],
+        )?;
+        let body = named(&item.content);
+        Ok(Observed {
+            description: match &self.refused {
+                Some(reason) => format!("Could not take back {body}: {reason}"),
+                None => format!("Will retry taking back {body}"),
+            },
             events: changed(tx, item.room)?,
         })
     }

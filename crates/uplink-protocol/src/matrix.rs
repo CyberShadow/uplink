@@ -250,11 +250,16 @@ pub enum MatrixSendState {
     Queued,
     /// Being handed to the homeserver.
     Sending,
-    /// Accepted; listed until its event is synced back.
+    /// Accepted; listed until its event is synced back. Cancelled, it is
+    /// taken back if `retractable`; if not, or if the homeserver refused
+    /// to (`error` says why), that needs a decision: keeping it sent.
     Sent,
     /// Refused by the homeserver; `error` says why. Needs a decision:
     /// cancelling drops it.
     Refused,
+    /// Cancelled once sent, and being taken back. Once it is, it is
+    /// listed no more.
+    TakingBack,
 }
 
 /// What a send sends to a room (SPEC §9.3). Events it is of are named
@@ -305,6 +310,25 @@ pub enum MatrixContent {
     },
 }
 
+impl MatrixContent {
+    /// Whether, once sent, it is taken back if cancelled (SPEC §6.7,
+    /// §9.3), as nearly as Matrix allows: a message, a file, a reaction or
+    /// an edit is redacted (others may have seen it; an edit redacted
+    /// shows the message as it was), a pin reversed. A redaction cannot
+    /// be taken back; a name, topic or change to a member is not, yet.
+    pub fn retractable(&self) -> bool {
+        match self {
+            Self::Text { .. } | Self::Reaction { .. } | Self::File { .. } | Self::Pin { .. } => {
+                true
+            }
+            Self::Redaction { .. }
+            | Self::Name { .. }
+            | Self::Topic { .. }
+            | Self::Member { .. } => false,
+        }
+    }
+}
+
 /// What a send does to a member of the room.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -316,7 +340,7 @@ pub enum MemberAction {
 }
 
 /// A message being sent, sent and not yet synced back, or sent though
-/// cancelled (needing a decision).
+/// cancelled (being taken back, or needing a decision).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct MatrixSend {
@@ -325,8 +349,11 @@ pub struct MatrixSend {
     pub content: MatrixContent,
     pub state: MatrixSendState,
     /// Whether it is to be sent: `false` once cancelled while being
-    /// sent. Sent, it needs a decision: keeping it sent.
+    /// sent, or after.
     pub wanted: bool,
+    /// Whether, sent, cancelling it takes it back: see
+    /// [`MatrixContent::retractable`].
+    pub retractable: bool,
     pub error: Option<String>,
     /// Ms since the Unix epoch.
     pub queued_at: i64,

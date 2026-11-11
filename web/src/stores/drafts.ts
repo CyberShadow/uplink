@@ -237,7 +237,7 @@ export function outboxCount(outbox: readonly AccountOutbox[]): number {
 }
 
 /** Whether something in the outbox needs the user: an account failing,
- * something refused, or mail sent though cancelled. */
+ * something refused, or sent though cancelled and not to be taken back. */
 export function outboxNeedsAttention(outbox: readonly AccountOutbox[]): boolean {
   const decision = (s: { state: string; wanted: boolean }) => s.state === 'refused' || (s.state === 'sent' && !s.wanted)
   return outbox.some(({ failing, pending }) => {
@@ -246,7 +246,10 @@ export function outboxNeedsAttention(outbox: readonly AccountOutbox[]): boolean 
       case 'mail':
         return pending.changes.some((c) => c.refused.length > 0) || pending.sends.some(decision)
       case 'matrix':
-        return pending.sends.some(decision) || pending.memberships.some((m) => m.refused !== null)
+        return (
+          pending.sends.some((s) => decision(s) && (!s.retractable || s.error !== null || s.state === 'refused')) ||
+          pending.memberships.some((m) => m.refused !== null)
+        )
     }
   })
 }

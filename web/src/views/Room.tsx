@@ -748,9 +748,13 @@ export function matrixSendState(item: MatrixSend): string {
     case 'sending':
       return item.wanted ? 'Sending…' : 'Sending; cancelling if it does not go out'
     case 'sent':
-      return item.wanted ? 'Sent' : 'Sent before the cancel could take it back'
+      if (item.wanted) return 'Sent'
+      if (item.error !== null) return `Sent; could not take it back: ${item.error}`
+      return item.retractable ? 'Taking back…' : 'Sent before the cancel could take it back'
     case 'refused':
       return `Not sent: ${item.error}`
+    case 'taking_back':
+      return 'Taking back…'
   }
 }
 

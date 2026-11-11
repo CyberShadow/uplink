@@ -12,7 +12,10 @@ use crate::{
     membership::{self, MembershipChanged},
     room_tags::{self, RoomTagSet},
     rooms::{self, Decrypted, ObservedEvent, ObservedRoom, Push, ReceiptSent, SpaceChild, Synced},
-    send::{self, SendFailed, SendStarted, SendSucceeded},
+    send::{
+        self, SendFailed, SendStarted, SendSucceeded, TakeBackFailed, TakeBackStarted,
+        TakeBackSucceeded,
+    },
     space_order::{self, SpaceOrderSet},
     verification,
 };
@@ -816,13 +819,26 @@ impl Sender {
         }
     }
 
-    /// Queues again the messages a previous run was interrupted sending:
-    /// their transaction ids make sending them again safe.
+    /// Queues again the messages a previous run was interrupted sending,
+    /// or taking back: their transaction ids make doing it again safe.
     async fn recover(&self) -> Result<()> {
         let account = self.account.clone();
-        let interrupted = read(&self.reader, move |conn| send::interrupted(conn, &account)).await?;
+        let (interrupted, taking_back) = read(&self.reader, move |conn| {
+            Ok((
+                send::interrupted(conn, &account)?,
+                send::interrupted_take_backs(conn, &account)?,
+            ))
+        })
+        .await?;
         for item in interrupted {
             self.observe(SendFailed {
+                item,
+                refused: None,
+            })
+            .await?;
+        }
+        for item in taking_back {
+            self.observe(TakeBackFailed {
                 item,
                 refused: None,
             })
@@ -836,6 +852,7 @@ impl Sender {
         self.order_spaces().await?;
         self.tag_rooms().await?;
         self.send_due().await?;
+        self.take_back_due().await?;
         self.push_receipts().await
     }
 
@@ -1007,6 +1024,49 @@ impl Sender {
                     .await?;
                     if refused.is_none() {
                         return Err(e).context("sending a message");
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Takes back the messages sent though cancelled, in order; stops at
+    /// the first that fails for a passing reason.
+    async fn take_back_due(&self) -> Result<()> {
+        let account = self.account.clone();
+        let due = read(&self.reader, move |conn| {
+            send::take_backs_due(conn, &account)
+        })
+        .await?;
+        for item in due {
+            match self.observe(TakeBackStarted { item: item.item }).await {
+                Ok(()) => {}
+                // Kept sent meanwhile.
+                Err(e) if e.is::<Conflict>() => continue,
+                Err(e) => return Err(e),
+            }
+            let room_id = <&RoomId>::try_from(item.room_id.as_str())?;
+            let Some(room) = self.client.get_room(room_id) else {
+                self.observe(TakeBackFailed {
+                    item: item.item,
+                    refused: Some("uplink is not in the room".into()),
+                })
+                .await?;
+                continue;
+            };
+            let txn_id: OwnedTransactionId = send::take_back_transaction_id(item.item).into();
+            match self.send(&room, item.room, &item.content, txn_id).await? {
+                Ok(_) => self.observe(TakeBackSucceeded { item: item.item }).await?,
+                Err(e) => {
+                    let refused = refusal(&e);
+                    self.observe(TakeBackFailed {
+                        item: item.item,
+                        refused: refused.clone(),
+                    })
+                    .await?;
+                    if refused.is_none() {
+                        return Err(e).context("taking back a message");
                     }
                 }
             }
