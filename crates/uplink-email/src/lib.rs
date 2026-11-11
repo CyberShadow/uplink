@@ -12,7 +12,6 @@ pub mod parse;
 pub mod query;
 pub mod remote;
 pub mod service;
-pub mod store;
 
 #[cfg(test)]
 mod tests;

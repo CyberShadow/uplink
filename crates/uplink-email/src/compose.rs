@@ -14,7 +14,6 @@
 use crate::{
     mailbox::{insert_variant, outbox_changed},
     parse::Parsed,
-    store::{Store, VariantHash},
 };
 use anyhow::{bail, ensure, Context, Result};
 use mail_builder::{
@@ -33,6 +32,7 @@ use uplink_protocol::{
     ServerEvent,
 };
 use uplink_storage::rusqlite::{params, OptionalExtension, Row, Transaction};
+use uplink_storage::store::{Store, VariantHash};
 use uplink_tx_log::{this_entry, Applied, Conflict, Inverse, Observation, Observed, Op, Registry};
 
 pub fn register(registry: &mut Registry) {

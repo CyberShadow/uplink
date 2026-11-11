@@ -11,7 +11,6 @@
 use crate::{
     compose,
     parse::{self, Parsed},
-    store::{Store, VariantHash},
 };
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -25,6 +24,7 @@ use uplink_protocol::{
     ServerEvent, TxLogId,
 };
 use uplink_storage::rusqlite::{params, OptionalExtension, Transaction};
+use uplink_storage::store::{Store, VariantHash};
 use uplink_tx_log::{this_entry, Applied, Conflict, Inverse, Observation, Observed, Op, Registry};
 
 /// Bytes of body text indexed for search (SPEC §8.7).

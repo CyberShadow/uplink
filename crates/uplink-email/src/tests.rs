@@ -4,7 +4,6 @@ use crate::{
         ObservedLabel, SetLabels,
     },
     parse::parse,
-    store::Store,
 };
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -14,6 +13,7 @@ use uplink_protocol::{
 };
 use uplink_realtime::Hub;
 use uplink_storage::rusqlite::{params, Connection};
+use uplink_storage::store::Store;
 use uplink_tx_log::{push::PushFailing, Conflict, Dispatcher, Registry, UndoError};
 
 pub(crate) struct Db {
@@ -309,7 +309,7 @@ async fn colliding_message_ids_stay_separate() {
             *synthetic,
             format!(
                 "{}@variant.uplink.invalid",
-                crate::store::VariantHash::of(raw).0
+                uplink_storage::store::VariantHash::of(raw).0
             )
         );
     }

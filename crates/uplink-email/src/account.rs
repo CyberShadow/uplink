@@ -14,7 +14,6 @@ use crate::{
         SendOutcome, SendStarted, SendSucceeded,
     },
     parse::{parse, Parsed},
-    store::{Store, VariantHash},
 };
 use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
@@ -32,6 +31,7 @@ use uplink_protocol::{
     LogEntry, Source,
 };
 use uplink_storage::rusqlite::{params, Connection, OptionalExtension};
+use uplink_storage::store::{Store, VariantHash};
 use uplink_tx_log::{
     push::{self, PushFailing},
     Conflict, Dispatcher, Observation,

@@ -210,7 +210,10 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
     uplink_todos::register(&mut registry);
     let root = &config.data_dir;
     let mut writer = uplink_storage::open(root)?;
-    uplink_email::mailbox::index_attachments(&mut writer, &uplink_email::store::Store::mail(root))?;
+    uplink_email::mailbox::index_attachments(
+        &mut writer,
+        &uplink_storage::store::Store::mail(root),
+    )?;
     let dispatcher = Dispatcher::new(writer, registry, Arc::new(Hub::new(HUB_CAPACITY)));
     let mail_accounts = config
         .accounts

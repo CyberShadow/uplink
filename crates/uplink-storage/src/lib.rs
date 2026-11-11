@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 pub use rusqlite;
 
 pub mod seal;
+pub mod store;
 
 mod embedded {
     refinery::embed_migrations!("migrations");

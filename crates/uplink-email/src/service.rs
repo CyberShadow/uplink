@@ -9,7 +9,6 @@ use crate::{
     outbox,
     parse::{self, html_body, parse},
     query::{self, ConfiguredAccount},
-    store::{Store, VariantHash},
 };
 use std::{path::Path, sync::Arc, time::Duration};
 use uplink_protocol::{
@@ -18,6 +17,7 @@ use uplink_protocol::{
     ErrorCode, ServerError, ServerResponse, TxLogId,
 };
 use uplink_storage::rusqlite::{Connection, OptionalExtension};
+use uplink_storage::store::{Store, VariantHash};
 use uplink_tx_log::{
     answer::{error, internal, Reader, Response},
     Dispatcher,
