@@ -15,8 +15,16 @@
 }
 
 .brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-weight: 600;
   width: 188px;
+}
+
+.brand img {
+  width: 24px;
+  height: 24px;
 }
 
 /* The nav's, where it is a drawer. */

@@ -98,7 +98,10 @@ function Shell() {
         >
           <Icon name="menu" />
         </button>
-        <span class={styles.brand}>uplink</span>
+        <span class={styles.brand}>
+          <img src="/logo.svg" alt="" />
+          uplink
+        </span>
         <SearchBox />
         {status.value === 'connecting' && <span class={styles.status}>Connecting…</span>}
       </header>

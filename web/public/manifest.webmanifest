@@ -1,0 +1,14 @@
+{
+  "name": "uplink",
+  "short_name": "uplink",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d0e0e",
+  "theme_color": "#0d0e0e",
+  "icons": [
+    { "src": "/logo.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any" },
+    { "src": "/logo-192.png", "type": "image/png", "sizes": "192x192", "purpose": "any" },
+    { "src": "/logo-512.png", "type": "image/png", "sizes": "512x512", "purpose": "any" },
+    { "src": "/logo-maskable-512.png", "type": "image/png", "sizes": "512x512", "purpose": "maskable" }
+  ]
+}
