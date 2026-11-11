@@ -37,6 +37,7 @@ import type {
   RoomEventId,
   VerificationPhase,
   Membership,
+  PendingRoomTags,
   PendingSpaceOrders,
   Room,
   RoomEvent,
@@ -45,6 +46,7 @@ import type {
   RoomId,
   Sender,
   ServerEvent,
+  RoomTagChange,
   SpaceOrderChange,
   TimelinePage,
   Todo,
@@ -107,6 +109,7 @@ export class FakeServer implements Requester, Blobs {
   private readonly membershipBy = new Map<RoomId, number>()
   /** Spaces reordered, not yet at the homeserver. */
   private spaceOrders: PendingSpaceOrders[] = []
+  private roomTags: PendingRoomTags[] = []
   readonly events = new Map<RoomId, RoomEvent[]>()
   /** Of Matrix accounts, their security: unverified until recovered. */
   readonly security = new Map<string, MatrixSecurity>()
@@ -311,6 +314,7 @@ export class FakeServer implements Requester, Blobs {
       pinned: [],
       may_pin: true,
       space_order: null,
+      tags: [],
     }
     this.rooms.push(room)
     this.events.set(room.id, [])
@@ -680,7 +684,8 @@ export class FakeServer implements Requester, Blobs {
             op: { id: this.membershipBy.get(r.id)!, description: `${r.pending === 'join' ? 'Joined' : 'Left'} '${r.name}'`, ts: 0 },
             refused: r.membership_error,
           }))
-        if (this.matrixSends.length > 0 || memberships.length > 0 || this.spaceOrders.length > 0) {
+        const matrixPending = [this.matrixSends, memberships, this.spaceOrders, this.roomTags]
+        if (matrixPending.some((pending) => pending.length > 0)) {
           accounts.push({
             account: 'mx',
             failing: null,
@@ -689,6 +694,7 @@ export class FakeServer implements Requester, Blobs {
               sends: [...this.matrixSends],
               memberships,
               space_orders: [...this.spaceOrders].reverse(),
+              room_tags: [...this.roomTags].reverse(),
               receipts: [],
             },
           })
@@ -992,6 +998,16 @@ export class FakeServer implements Requester, Blobs {
       }
       case 'order_spaces':
         return { type: 'dispatched', tx_log_id: this.orderSpaces(body.changes) }
+      case 'modify_room_tags':
+        return {
+          type: 'dispatched',
+          tx_log_id: this.setRoomTags(
+            body.rooms.flatMap((room) => [
+              ...body.add.map((tag) => ({ room, tag, desired: true })),
+              ...body.remove.map((tag) => ({ room, tag, desired: false })),
+            ]),
+          ),
+        }
     }
   }
 
@@ -1017,6 +1033,42 @@ export class FakeServer implements Requester, Blobs {
       undone: false,
     })
     return id
+  }
+
+  /** Tags rooms, as the server applies `SetRoomTags`: a favourite is not
+   * of low priority, and the other way. */
+  private setRoomTags(changes: RoomTagChange[]): number {
+    const exclusive: Record<string, string> = { 'm.favourite': 'm.lowpriority', 'm.lowpriority': 'm.favourite' }
+    const implied = changes.flatMap((c) =>
+      c.desired && exclusive[c.tag] ? [{ room: c.room, tag: exclusive[c.tag]!, desired: false }] : [],
+    )
+    const done: RoomTagChange[] = []
+    for (const change of [...changes, ...implied]) {
+      const room = this.rooms.find((r) => r.id === change.room)!
+      if (room.tags.includes(change.tag) === change.desired) continue
+      room.tags = change.desired ? [...room.tags, change.tag].sort() : room.tags.filter((t) => t !== change.tag)
+      done.push(change)
+    }
+    const described = done.filter((c) => changes.includes(c))
+    const description = described
+      .map((c) => `${c.desired ? 'Tagged' : 'Untagged'} '${this.rooms.find((r) => r.id === c.room)!.name}' ${c.tag}`)
+      .join(', ')
+    const id = this.commit({ type: 'user' }, description || 'Changed nothing', [
+      { type: 'rooms_changed', rooms: [...new Set(done.map((c) => c.room))] },
+      { type: 'outbox_changed', accounts: ['mx'] },
+    ])
+    this.roomTags.push({ op: { id, description, ts: 0 }, changes: done, refused: null })
+    this.undoable.set(id, {
+      revert: () => this.setRoomTags(done.map((c) => ({ ...c, desired: !c.desired }))),
+      undone: false,
+    })
+    return id
+  }
+
+  /** The homeserver has the tags asked for. */
+  roomTagsSet() {
+    this.roomTags = []
+    this.observe('mx', [{ type: 'outbox_changed', accounts: ['mx'] }])
   }
 
   /** The homeserver has the orders asked for. */

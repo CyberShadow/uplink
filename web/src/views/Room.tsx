@@ -31,6 +31,8 @@ import { RoomSearch } from './RoomSearch'
 import { Composer, type Mode } from './RoomComposer'
 import { RoomInfo } from './RoomInfo'
 import { ThreadPanel } from './RoomThread'
+import { RoomTagPicker } from './RoomTagPicker'
+import { tagName } from '../roomTags'
 
 export function roomPath(room: number): string {
   return `/rooms/${room}`
@@ -74,7 +76,8 @@ function Timeline(props: { room: Room; words: string | null }) {
     if (words !== null) route(roomPath(room.id))
     setOpened(panel)
   }
-  useKeymap({ reply: () => composer.current?.focus() })
+  const [tagging, setTagging] = useState(false)
+  useKeymap({ reply: () => composer.current?.focus(), label: () => setTagging(true) })
   useMarkRead(room, events)
 
   const [overlay, outgoing] = useMemo(() => overlaid(events ?? [], sends ?? [], null), [events, sends])
@@ -118,6 +121,21 @@ function Timeline(props: { room: Room; words: string | null }) {
               </p>
             )}
           </div>
+          <button
+            type="button"
+            class={styles.tags}
+            aria-label="Tags"
+            title="Tags (l)"
+            onMouseDown={keepFocus}
+            onClick={() => setTagging(true)}
+          >
+            {room.tags.map((tag) => (
+              <span key={tag} class={styles.chip}>
+                {tagName(tag)}
+              </span>
+            ))}
+            <Icon name="tag" />
+          </button>
           <span class={styles.muted}>
             <button
               type="button"
@@ -190,6 +208,7 @@ function Timeline(props: { room: Room; words: string | null }) {
       {panel?.type === 'thread' && (
         <ThreadPanel key={panel.root} room={room} root={panel.root} me={me} close={() => setPanel(null)} />
       )}
+      {tagging && <RoomTagPicker rooms={[room]} close={() => setTagging(false)} />}
     </div>
   )
 }

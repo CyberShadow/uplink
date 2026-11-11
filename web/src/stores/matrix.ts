@@ -295,6 +295,13 @@ export class MatrixStore {
     return this.ops.dispatch({ type: 'order_spaces', changes })
   }
 
+  /** Tags the rooms `tag`, or, if each has it already, untags them. */
+  toggleTag(rooms: readonly Room[], tag: string) {
+    const each = rooms.every((r) => r.tags.includes(tag))
+    const ids = rooms.map((r) => r.id)
+    return this.ops.dispatch({ type: 'modify_room_tags', rooms: ids, add: each ? [] : [tag], remove: each ? [tag] : [] })
+  }
+
   /** Quietly: reading a room is not news. */
   markRead(room: RoomId, event: RoomEventId) {
     return this.ops.dispatch({ type: 'mark_room_read', room, event }, true)

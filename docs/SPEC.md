@@ -1951,6 +1951,22 @@ which a verified device gives.
   room's levels allow), and whether it may invite and change the name
   and the topic. It is not logged; clients load it again as events
   arrive.
+- **Tags**: a room's `m.tag` room account data, as Element keeps it:
+  `m.favourite`, `m.lowpriority`, and the user's own, `u.` and a name
+  (others' tags, as other clients may set, are kept and may be removed,
+  not added). V0035: `matrix_room_tag`, as `entry_label` is of mail
+  (§6.6): `observed` as the client's store has it on sync, `desired` as
+  asked, `desired_by` the op while they differ, `refused` the
+  homeserver's reason. `ModifyRoomTags { rooms, add, remove }` applies
+  `SetRoomTags`, a list of `{ room, tag, desired }`, skipping those in
+  effect so its inverse reverts exactly them; tagging a room a favourite
+  untags it of low priority, and the other way, as Element and the SDK
+  do (implied changes undescribed). The sender loop sets and removes each
+  tag asked for (`PUT`/`DELETE .../tags/{tag}`, without an order); a
+  refusal waits in the outbox, listed by op, for a decision (undoing the
+  op). Sync settles a tag had as asked, however it came about; others'
+  changes show unless one is asked for. `Room.tags` lists those shown
+  (as asked), sorted.
 - **Pinned events**: a room records, as its client has them on sync,
   the events pinned (`m.room.pinned_events`, in its order) and whether
   the account may pin (by the room's power levels; of a room invited
@@ -2232,7 +2248,10 @@ Implemented: `j k o Enter u x *a *n e s l Shift+i Shift+u gi gs gt gd /
 uplink's own drafts; Gmail's DRAFT label is listed as "Gmail drafts".
 `ga` goes to All Mail. `#` moves to
 Trash and `!` reports spam, or not spam (§8.1; M10). Opening a message marks it read, as Gmail does, without
-an undo notice. In a Matrix room (M7), `r` goes to the message box, where
+an undo notice. In a Matrix room, `l` tags it (§9.5), from a picker of
+Element's two tags, the user's own of the account's rooms and the room's
+others, toggling one; a name typed that no tag has is offered as a new
+tag of the user's. In a Matrix room (M7), `r` goes to the message box, where
 `Enter` sends, `Shift+Enter` breaks the line and `Esc` leaves.
 M10 added `*r *u *s *t [ ] v + = - gl`.
 `Shift+t` flags the targets for follow-up, or unflags them (M9; ⚑ marks
@@ -2399,8 +2418,9 @@ event, its time (`HH:MM`; the date on hover), its sender (a small avatar
 and the name, in the colour Element gives that user id, cut to a column
 of its own), and what it says. A line marks each day, and one ("New")
 where the unread began when the room was opened. The header has the
-room's avatar, name, topic, member count, whether it is encrypted, and
-the membership's buttons.
+room's avatar, name, topic, its tags (a button that opens `l`'s
+picker), member count, whether it is encrypted, and the membership's
+buttons.
 
 - **Messages** show as last edited, marked `(edited)`; a click lists the
   edits (`ListEdits`). Their HTML is the server's sanitized

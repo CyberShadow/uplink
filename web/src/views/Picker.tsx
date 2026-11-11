@@ -29,6 +29,9 @@ export function Picker<T>(props: {
   render: (item: T) => ComponentChildren
   /** Shows a checkbox per item. */
   check?: (item: T) => Check
+  /** An item the filter makes, offered after those it matches: `null`
+   * if it makes none. */
+  create?: (filter: string) => T | null
   choose: (item: T) => void
   close: () => void
 }) {
@@ -41,7 +44,8 @@ export function Picker<T>(props: {
   useLayoutEffect(() => input.current?.focus(), [])
   useLayoutEffect(() => list.current!.children[highlight]?.scrollIntoView({ block: 'nearest' }), [highlight])
 
-  const items = props.items.filter((item) => matches(props.text(item), filter))
+  const created = props.create?.(filter) ?? null
+  const items = [...props.items.filter((item) => matches(props.text(item), filter)), ...(created ? [created] : [])]
   const choose = (item: T) => {
     props.choose(item)
     props.close()

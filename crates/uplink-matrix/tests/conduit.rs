@@ -844,6 +844,71 @@ async fn spaces_are_ordered_as_other_clients_order_them() {
     assert!(uplink.dispatcher.undo(moved).await.is_err());
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn rooms_are_tagged_as_other_clients_tag_them() {
+    use matrix_sdk::ruma::events::tag::{TagInfo, TagName};
+
+    let dir = tempfile::tempdir().unwrap();
+    let homeserver = Homeserver::start(dir.path()).await;
+    let alice_phone = homeserver.register(dir.path(), "alice").await;
+    let room = alice_phone.create_room(Default::default()).await.unwrap();
+    room.set_tag(TagName::LowPriority, TagInfo::new())
+        .await
+        .unwrap();
+
+    let uplink = Uplink::new(&homeserver);
+    let _sync = uplink.pair_and_sync().await;
+    let synced = eventually("uplink to see the tag", || async {
+        uplink
+            .room(room.room_id())
+            .await
+            .filter(|r| r.tags == ["m.lowpriority"])
+    })
+    .await;
+
+    // A favourite in uplink: the phone sees it, no longer of low priority.
+    let tagged = match uplink
+        .matrix
+        .modify_room_tags(vec![synced.id], vec!["m.favourite".into()], vec![])
+        .await
+        .unwrap()
+    {
+        ServerResponse::Dispatched { tx_log_id } => tx_log_id,
+        other => panic!("unexpected {other:?}"),
+    };
+    let phone_tags = || async {
+        alice_phone
+            .sync_once(SyncSettings::default())
+            .await
+            .unwrap();
+        let tags = room.tags().await.unwrap().unwrap_or_default();
+        tags.keys().map(|t| t.to_string()).collect::<Vec<_>>()
+    };
+    eventually("the phone to see uplink's tags", || async {
+        (phone_tags().await == ["m.favourite"]).then_some(())
+    })
+    .await;
+    let settled = || async {
+        let mut conn = uplink_storage::open_reader(uplink.dir.path()).unwrap();
+        let tx = conn.transaction().unwrap();
+        uplink_matrix::outbox::outbox(&tx)
+            .unwrap()
+            .is_empty()
+            .then_some(())
+    };
+    eventually("the tags to be settled", settled).await;
+
+    // Undone, the room is of low priority again.
+    uplink.dispatcher.undo(tagged).await.unwrap();
+    eventually("the phone to see the undo", || async {
+        (phone_tags().await == ["m.lowpriority"]).then_some(())
+    })
+    .await;
+    eventually("the undo to be settled", settled).await;
+    let room = uplink.room(room.room_id()).await.unwrap();
+    assert_eq!(room.tags, ["m.lowpriority"]);
+}
+
 /// A plain message.
 fn text(body: &str) -> uplink_protocol::matrix::MatrixContent {
     uplink_protocol::matrix::MatrixContent::Text {

@@ -35,7 +35,7 @@ use uplink_tx_log::{Applied, Inverse, Observation, Observed, Op};
 use crate::{
     html,
     membership::{parse_desired, parse_membership},
-    outbox, send, space_order,
+    outbox, room_tags, send, space_order,
 };
 
 pub const ACCOUNT_KIND: &str = "matrix";
@@ -74,6 +74,8 @@ pub struct ObservedRoom {
     pub children: Vec<SpaceChild>,
     /// Its MSC3230 order among the top-level spaces, if valid.
     pub space_order: Option<String>,
+    /// Its tags (`m.tag`), as the homeserver has them.
+    pub tags: Vec<String>,
     /// `m.room.topic`, if set and not empty.
     pub topic: Option<String>,
     /// The events pinned (`m.room.pinned_events`), in its order.
@@ -267,7 +269,8 @@ impl Observation for Synced {
         let mut added_total = 0;
         for room in self.rooms {
             let (id, upserted) = upsert_room(tx, account, &room)?;
-            let changed = set_children(tx, id, &room.children)? || upserted;
+            let tagged = room_tags::observe(tx, id, &room.tags)?;
+            let changed = set_children(tx, id, &room.children)? || upserted || tagged;
             let positions = synced_positions(tx, id, room.events.len())?;
             let inserted = insert_events(tx, id, &room.events, &positions)?;
             if let (true, Some(Some(first))) = (room.limited, inserted.first()) {
@@ -960,7 +963,7 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
                     -- Of threads too, as Element counts them.
                     (SELECT count(*) FROM matrix_event e WHERE {unread} AND e.notify),
                     (SELECT count(*) FROM matrix_event e WHERE {unread} AND e.highlight),
-                    {shown_order}
+                    {shown_order}, {shown_tags}
              FROM matrix_room r
              WHERE r.account_id = ?1 AND (r.membership != 'left' OR r.desired = 'joined')
              ORDER BY 8 DESC NULLS LAST, r.id",
@@ -973,6 +976,7 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
                 read_pos = pos_of("r.read_up_to"),
             ),
             shown_order = space_order::SHOWN,
+            shown_tags = room_tags::SHOWN,
         ))?
         .query_map([account, mxid], |r| {
             Ok(Room {
@@ -1006,6 +1010,8 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
                 pinned: serde_json::from_str(&r.get::<_, String>(17)?)
                     .expect("pinned is a JSON array of strings"),
                 space_order: r.get(21)?,
+                tags: serde_json::from_str(&r.get::<_, String>(22)?)
+                    .expect("json_group_array makes an array of strings"),
             })
         })?
         .collect::<Result<_, _>>()?)

@@ -110,6 +110,7 @@ impl Db {
                 avatar: None,
                 children: vec![],
                 space_order: None,
+                tags: vec![],
                 topic: None,
                 pinned: pinned.iter().map(|p| p.to_string()).collect(),
                 may_pin: true,
@@ -500,6 +501,7 @@ mod membership {
                     avatar: None,
                     children: vec![],
                     space_order: None,
+                    tags: vec![],
                     topic: None,
                     pinned: vec![],
                     may_pin: false,
@@ -670,6 +672,214 @@ mod membership {
     }
 }
 
+mod room_tags {
+    use super::*;
+    use crate::room_tags::RoomTagSet;
+    use uplink_protocol::{
+        matrix::{PendingRoomTags, RoomTagChange},
+        ErrorCode, ServerError,
+    };
+
+    const FAV: &str = "m.favourite";
+    const LOW: &str = "m.lowpriority";
+
+    impl Db {
+        /// Syncs the room, its tags as the homeserver has them.
+        async fn sync_tags(&self, tags: &[&str]) -> TxLogId {
+            self.observe(Synced {
+                next_batch: "next".into(),
+                rooms: vec![ObservedRoom {
+                    room_id: ROOM.into(),
+                    name: "Room".into(),
+                    encrypted: false,
+                    membership: Membership::Joined,
+                    events: vec![],
+                    limited: false,
+                    own_receipts: vec![],
+                    space: false,
+                    avatar: None,
+                    children: vec![],
+                    space_order: None,
+                    tags: tags.iter().map(|t| t.to_string()).collect(),
+                    topic: None,
+                    pinned: vec![],
+                    may_pin: false,
+                    joined_members: 1,
+                    version: "11".into(),
+                }],
+            })
+            .await
+            .unwrap()
+        }
+
+        async fn tag(&self, add: &[&str], remove: &[&str]) -> Result<TxLogId, ServerError> {
+            let room = self.room().await.id;
+            let strings = |tags: &[&str]| tags.iter().map(|t| t.to_string()).collect();
+            match self
+                .matrix
+                .modify_room_tags(vec![room], strings(add), strings(remove))
+                .await?
+            {
+                ServerResponse::Dispatched { tx_log_id } => Ok(tx_log_id),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+
+        /// The homeserver tagged the room, or untagged it, or refused.
+        async fn tag_set(&self, tag: &str, tagged: bool, refused: Option<&str>) {
+            let room = self.room().await.id;
+            self.observe(RoomTagSet {
+                room,
+                tag: tag.into(),
+                tagged,
+                refused: refused.map(Into::into),
+            })
+            .await
+            .unwrap();
+        }
+
+        async fn tags(&self) -> Vec<String> {
+            self.room().await.tags
+        }
+
+        /// The tags still to set, `+tag` or `-tag`.
+        fn wanted_tags(&self) -> Vec<String> {
+            let conn = uplink_storage::open_reader(self._dir.path()).unwrap();
+            crate::room_tags::wanted(&conn, "mx")
+                .unwrap()
+                .into_iter()
+                .map(|w| format!("{}{}", if w.desired { '+' } else { '-' }, w.tag))
+                .collect()
+        }
+
+        fn pending_tags(&self) -> Vec<PendingRoomTags> {
+            match self.outbox().into_iter().next().map(|a| a.pending) {
+                Some(Pending::Matrix { room_tags, .. }) => room_tags,
+                None => vec![],
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn tags_show_at_once_and_are_set_then_undone() {
+        let db = Db::new();
+        db.sync_tags(&["u.work"]).await;
+        assert_eq!(db.tags().await, ["u.work"]);
+        let tagged = db.tag(&[FAV], &[]).await.unwrap();
+        assert_eq!(db.tags().await, [FAV, "u.work"]);
+        assert_eq!(db.wanted_tags(), ["+m.favourite"]);
+        let room = db.room().await.id;
+        let [pending] = &db.pending_tags()[..] else {
+            panic!()
+        };
+        assert_eq!(
+            (pending.op.id, &pending.op.description[..], &pending.refused),
+            (tagged, "Tagged 'Room' Favourite", &None)
+        );
+        assert_eq!(
+            pending.changes,
+            [RoomTagChange {
+                room,
+                tag: FAV.into(),
+                desired: true
+            }]
+        );
+
+        db.tag_set(FAV, true, None).await;
+        assert!(db.wanted_tags().is_empty());
+        assert!(db.pending_tags().is_empty());
+        // The echo changes nothing.
+        db.sync_tags(&[FAV, "u.work"]).await;
+        assert_eq!(db.tags().await, [FAV, "u.work"]);
+
+        db.dispatcher.undo(tagged).await.unwrap();
+        assert_eq!(db.tags().await, ["u.work"]);
+        assert_eq!(db.wanted_tags(), ["-m.favourite"]);
+        // Had as asked for, however it came about.
+        db.sync_tags(&["u.work"]).await;
+        assert!(db.wanted_tags().is_empty());
+        assert!(db.pending_tags().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_favourite_is_not_of_low_priority() {
+        let db = Db::new();
+        db.sync_tags(&[LOW]).await;
+        let tagged = db.tag(&[FAV], &[]).await.unwrap();
+        assert_eq!(db.tags().await, [FAV]);
+        assert_eq!(db.wanted_tags(), ["+m.favourite", "-m.lowpriority"]);
+        assert_eq!(
+            db.pending_tags()[0].op.description,
+            "Tagged 'Room' Favourite"
+        );
+        db.dispatcher.undo(tagged).await.unwrap();
+        assert_eq!(db.tags().await, [LOW]);
+        assert!(db.wanted_tags().is_empty());
+        let code = db.tag(&[FAV, LOW], &[]).await.unwrap_err().code;
+        assert_eq!(code, ErrorCode::Invalid);
+    }
+
+    #[tokio::test]
+    async fn others_changes_show_unless_one_is_asked_for() {
+        let db = Db::new();
+        db.sync_tags(&[]).await;
+        db.tag(&["u.a"], &[]).await.unwrap();
+        // Another client's tags meanwhile: those asked for prevail.
+        db.sync_tags(&["u.b"]).await;
+        assert_eq!(db.tags().await, ["u.a", "u.b"]);
+        assert_eq!(db.wanted_tags(), ["+u.a"]);
+        db.sync_tags(&[]).await;
+        assert_eq!(db.tags().await, ["u.a"]);
+        // Removing a tag the room lacks changes nothing.
+        let entry = db.tag(&[], &["u.b"]).await.unwrap();
+        assert_eq!(db.events_of(entry), []);
+    }
+
+    #[tokio::test]
+    async fn refusals_wait_for_a_decision() {
+        let db = Db::new();
+        db.sync_tags(&[]).await;
+        let tagged = db.tag(&["u.x"], &[]).await.unwrap();
+        db.tag_set("u.x", true, Some("M_FORBIDDEN")).await;
+        assert!(db.wanted_tags().is_empty(), "not asked again");
+        assert_eq!(db.pending_tags()[0].refused.as_deref(), Some("M_FORBIDDEN"));
+        assert_eq!(db.tags().await, ["u.x"]);
+        db.dispatcher.undo(tagged).await.unwrap();
+        assert!(db.tags().await.is_empty());
+        assert!(db.pending_tags().is_empty());
+    }
+
+    #[tokio::test]
+    async fn only_valid_tags_are_added() {
+        let db = Db::new();
+        db.sync_tags(&["legacy"]).await;
+        let long = format!("u.{}", "a".repeat(254));
+        for tag in ["work", "m.other", "u.", "u. ", &long] {
+            let code = db.tag(&[tag], &[]).await.unwrap_err().code;
+            assert_eq!(code, ErrorCode::Invalid, "{tag}");
+        }
+        let code = db.tag(&["u.a"], &["u.a"]).await.unwrap_err().code;
+        assert_eq!(code, ErrorCode::Invalid, "added and removed");
+        let code = db.tag(&[], &[]).await.unwrap_err().code;
+        assert_eq!(code, ErrorCode::Invalid, "nothing to change");
+        // Another client's tag may be removed.
+        db.tag(&[], &["legacy"]).await.unwrap();
+        assert!(db.tags().await.is_empty());
+    }
+
+    #[test]
+    fn tags_are_the_keys_of_the_content() {
+        let parse = |content| crate::room_tags::parse(&content).unwrap();
+        assert_eq!(
+            parse(json!({ "tags": { "m.favourite": { "order": 0.5 }, "u.x": {} } })),
+            ["m.favourite", "u.x"]
+        );
+        assert!(parse(json!({})).is_empty());
+        assert!(crate::room_tags::parse(&json!({ "tags": [] })).is_err());
+    }
+}
+
 mod space_order {
     use super::*;
     use crate::space_order::SpaceOrderSet;
@@ -696,6 +906,7 @@ mod space_order {
                     avatar: None,
                     children: vec![],
                     space_order: order.map(Into::into),
+                    tags: vec![],
                     topic: None,
                     pinned: vec![],
                     may_pin: false,

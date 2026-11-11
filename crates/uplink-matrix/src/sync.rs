@@ -10,6 +10,7 @@
 use crate::{
     client,
     membership::{self, MembershipChanged},
+    room_tags::{self, RoomTagSet},
     rooms::{self, Decrypted, ObservedEvent, ObservedRoom, Push, ReceiptSent, SpaceChild, Synced},
     send::{self, SendFailed, SendStarted, SendSucceeded},
     space_order::{self, SpaceOrderSet},
@@ -34,6 +35,7 @@ use matrix_sdk::{
         events::{
             receipt::ReceiptThread,
             room::message::{AddMentions, FormattedBody},
+            tag::{TagInfo, TagName},
             AnyRoomAccountDataEventContent, RoomAccountDataEventType, StateEventType,
         },
         EventId, OwnedEventId, OwnedTransactionId, RoomId, UserId,
@@ -431,6 +433,7 @@ impl Syncer {
             avatar: avatar(&room).await?,
             children: space_children(&room).await?,
             space_order: order(&room).await?,
+            tags: tags(&room).await?,
             topic: room.topic().filter(|t| !t.trim().is_empty()),
             pinned: room
                 .pinned_event_ids()
@@ -497,6 +500,15 @@ async fn order(room: &Room) -> Result<Option<String>> {
     };
     let event: serde_json::Value = serde_json::from_str(raw.json().get())?;
     Ok(space_order::parse(&event["content"]))
+}
+
+/// The room's tags, as the client's store has them.
+async fn tags(room: &Room) -> Result<Vec<String>> {
+    let Some(raw) = room.account_data(RoomAccountDataEventType::Tag).await? else {
+        return Ok(vec![]);
+    };
+    let event: serde_json::Value = serde_json::from_str(raw.json().get())?;
+    room_tags::parse(&event["content"])
 }
 
 /// The sync filter: no presence, and of ephemeral events receipts and
@@ -821,6 +833,7 @@ impl Sender {
     async fn step(&self) -> Result<()> {
         self.change_memberships().await?;
         self.order_spaces().await?;
+        self.tag_rooms().await?;
         self.send_due().await?;
         self.push_receipts().await
     }
@@ -895,6 +908,40 @@ impl Sender {
             self.observe(SpaceOrderSet {
                 room: wanted.room,
                 order: wanted.order,
+                refused,
+            })
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Tags and untags the rooms the user asked to.
+    async fn tag_rooms(&self) -> Result<()> {
+        let account = self.account.clone();
+        let wanted = read(&self.reader, move |conn| room_tags::wanted(conn, &account)).await?;
+        for wanted in wanted {
+            let room_id = <&RoomId>::try_from(wanted.room_id.as_str())?;
+            let room = self
+                .client
+                .get_room(room_id)
+                .with_context(|| format!("room {room_id} is not in the client"))?;
+            let tag = TagName::from(wanted.tag.as_str());
+            let done = if wanted.desired {
+                room.set_tag(tag, TagInfo::new()).await.map(drop)
+            } else {
+                room.remove_tag(tag).await.map(drop)
+            };
+            let refused = match &done {
+                Ok(()) => None,
+                Err(e) => match refusal(e) {
+                    Some(refused) => Some(refused),
+                    None => return done.context("tagging a room"),
+                },
+            };
+            self.observe(RoomTagSet {
+                room: wanted.room,
+                tag: wanted.tag,
+                tagged: wanted.desired,
                 refused,
             })
             .await?;

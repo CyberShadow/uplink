@@ -6,6 +6,7 @@ use crate::{
     media,
     membership::ChangeMembership,
     preview,
+    room_tags::{self, SetRoomTags},
     rooms::{self, Filled, MarkRead},
     security,
     send::{self, CancelMessage, KeepSent, SendMessage},
@@ -19,7 +20,7 @@ use uplink_protocol::{
     matrix::{
         GapId, MatrixAccount, MatrixContent, MatrixSendId, MemberAction, MemberInfo, MemberReceipt,
         MemberState, Membership, MembershipChange, NewRoom, RoomEventId, RoomId, RoomMember,
-        RoomPowers, SpaceOrderChange, TimelinePage, VerificationAnswer,
+        RoomPowers, RoomTagChange, SpaceOrderChange, TimelinePage, VerificationAnswer,
     },
     ErrorCode, ServerError, ServerResponse,
 };
@@ -1143,6 +1144,62 @@ impl Matrix {
             })
             .await?;
         self.dispatcher.answer(OrderSpaces { changes }).await
+    }
+
+    /// Tagging stored rooms `add` and untagging them `remove`.
+    pub async fn modify_room_tags(
+        &self,
+        rooms: Vec<RoomId>,
+        add: Vec<String>,
+        remove: Vec<String>,
+    ) -> Response {
+        let invalid = |why: String| Err(error(ErrorCode::Invalid, why));
+        if rooms.is_empty() {
+            return invalid("no rooms to tag".to_owned());
+        }
+        if add.is_empty() && remove.is_empty() {
+            return invalid("no tags to change".to_owned());
+        }
+        if let Some(tag) = add.iter().find(|t| !room_tags::valid(t)) {
+            return invalid(format!("invalid tag {tag:?}"));
+        }
+        if let Some(tag) = add.iter().find(|t| remove.contains(t)) {
+            return invalid(format!("tag {tag:?} both added and removed"));
+        }
+        if [room_tags::FAVOURITE, room_tags::LOW_PRIORITY]
+            .iter()
+            .all(|t| add.iter().any(|a| a == t))
+        {
+            return invalid("a favourite is not of low priority".to_owned());
+        }
+        let asked = rooms.clone();
+        self.reader
+            .read(move |conn| {
+                for &room in &asked {
+                    if rooms::room_account(conn, room).map_err(internal)?.is_none() {
+                        return Err(no_room(room));
+                    }
+                }
+                Ok(())
+            })
+            .await?;
+        let changes = rooms
+            .iter()
+            .flat_map(|&room| {
+                let added = add.iter().map(move |tag| RoomTagChange {
+                    room,
+                    tag: tag.clone(),
+                    desired: true,
+                });
+                let removed = remove.iter().map(move |tag| RoomTagChange {
+                    room,
+                    tag: tag.clone(),
+                    desired: false,
+                });
+                added.chain(removed)
+            })
+            .collect();
+        self.dispatcher.answer(SetRoomTags { changes }).await
     }
 
     pub async fn mark_read(&self, room: RoomId, event: RoomEventId) -> Response {

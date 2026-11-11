@@ -122,6 +122,8 @@ fn main() {
         PendingMembership,
         SpaceOrderChange,
         PendingSpaceOrders,
+        RoomTagChange,
+        PendingRoomTags,
         RoomsChanged,
         TimelineAdded,
         TimelineChanged,

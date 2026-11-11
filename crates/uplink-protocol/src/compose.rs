@@ -167,6 +167,9 @@ pub enum Pending {
         memberships: Vec<crate::matrix::PendingMembership>,
         /// Spaces being reordered, by the op that asked, newest first.
         space_orders: Vec<crate::matrix::PendingSpaceOrders>,
+        /// Rooms being tagged or untagged, by the op that asked, newest
+        /// first.
+        room_tags: Vec<crate::matrix::PendingRoomTags>,
         /// Rooms read past their latest read receipt.
         receipts: Vec<crate::matrix::RoomId>,
     },

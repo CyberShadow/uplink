@@ -25,6 +25,7 @@ const space = (name: string, space_order: string | null = null): Room => ({
   pinned: [],
   may_pin: false,
   space_order,
+  tags: [],
 })
 
 /** The spaces with `changes` made, as they then go. */

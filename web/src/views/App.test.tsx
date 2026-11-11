@@ -1003,6 +1003,55 @@ describe('matrix', () => {
     expect(within(nav).queryByRole('link', { name: /^Party/ })).toBeNull()
   })
 
+  it('tags a room by l, a favourite not of low priority, and new tags of the user', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    server.addRoom('Work').tags = ['u.work']
+    const user = await start(`/rooms/${room.id}`)
+    const tags = () => [...screen.getByRole('button', { name: 'Tags' }).querySelectorAll('[class*=chip]')].map((c) => c.textContent)
+    expect(tags()).toEqual([])
+
+    await user.keyboard('l')
+    const picker = screen.getByRole('dialog', { name: 'Tag' })
+    expect(within(picker).getAllByRole('option').map((o) => o.textContent)).toEqual(['☐Favourite', '☐Low priority', '☐work'])
+    await user.keyboard('low{Enter}')
+    await waitFor(() => expect(tags()).toEqual(['Low priority']))
+    expect(server.requests).toContainEqual({ type: 'modify_room_tags', rooms: [room.id], add: ['m.lowpriority'], remove: [] })
+
+    // A favourite is no longer of low priority.
+    await user.click(screen.getByRole('button', { name: 'Tags' }))
+    await user.click(within(screen.getByRole('dialog', { name: 'Tag' })).getByRole('option', { name: '☐Favourite' }))
+    await waitFor(() => expect(tags()).toEqual(['Favourite']))
+
+    await user.keyboard('l')
+    await user.keyboard('Reading list')
+    const options = within(screen.getByRole('dialog', { name: 'Tag' })).getAllByRole('option')
+    expect(options.map((o) => o.textContent)).toEqual(['☐New tag: Reading list'])
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(tags()).toEqual(['Favourite', 'Reading list']))
+
+    // Untagged by choosing it again; undone, it is back.
+    await user.keyboard('l')
+    await user.click(within(screen.getByRole('dialog', { name: 'Tag' })).getByRole('option', { name: '☑Favourite' }))
+    await waitFor(() => expect(tags()).toEqual(['Reading list']))
+    await user.click(within(screen.getByRole('status')).getByRole('button', { name: 'Undo' }))
+    await waitFor(() => expect(tags()).toEqual(['Favourite', 'Reading list']))
+  })
+
+  it('lists tags being set in the outbox, until the homeserver has them', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const user = await start(`/rooms/${room.id}`)
+    await user.keyboard('l')
+    await user.keyboard('fav{Enter}')
+    await waitFor(() => expect(room.tags).toEqual(['m.favourite']))
+    await user.click(within(screen.getByRole('navigation')).getByRole('link', { name: /^Outbox/ }))
+    const pending = await screen.findByText("Tagged 'Lounge' m.favourite", { selector: '[class*=subject]' })
+    expect(pending.closest('li')!.textContent).toContain('to go: +Favourite Lounge')
+    server.roomTagsSet()
+    await screen.findByText(/^The outbox is empty/)
+  })
+
   it('shows events it does not display otherwise as raw JSON', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge', true)

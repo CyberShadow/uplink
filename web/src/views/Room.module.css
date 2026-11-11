@@ -33,6 +33,32 @@
   border-bottom: 1px solid var(--line);
 }
 
+/* The room's tags, a button that tags it. */
+.tags {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.tags:hover {
+  background: var(--hover);
+}
+
+.chip {
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--line);
+  color: var(--fg);
+  font-size: 12px;
+}
+
 .title {
   display: flex;
   flex-direction: column;

@@ -90,7 +90,7 @@ export const KEYMAP: Binding[] = [
   { action: 'markRead', keys: ['Shift+i'], label: 'Shift+i', help: 'Mark as read' },
   { action: 'markUnread', keys: ['Shift+u'], label: 'Shift+u', help: 'Mark as unread' },
   { action: 'star', keys: ['s'], label: 's', help: 'Star or unstar' },
-  { action: 'label', keys: ['l'], label: 'l', help: 'Label' },
+  { action: 'label', keys: ['l'], label: 'l', help: 'Label (in a room: tag it)' },
   { action: 'move', keys: ['v'], label: 'v', help: 'Move to a label (out of the one on show, or the Inbox)' },
   { action: 'important', keys: ['[Shift]++', '='], label: '+, =', help: 'Mark as important' },
   { action: 'notImportant', keys: ['-'], label: '-', help: 'Mark as not important' },

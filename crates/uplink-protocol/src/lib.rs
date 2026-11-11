@@ -340,6 +340,14 @@ pub enum ClientRequest {
     OrderSpaces {
         changes: Vec<matrix::SpaceOrderChange>,
     },
+    /// Tag rooms and untag them (`m.tag`): added tags are `m.favourite`,
+    /// `m.lowpriority` or the user's own, `u.` and a name. A favourite
+    /// is not of low priority, and the other way.
+    ModifyRoomTags {
+        rooms: Vec<RoomId>,
+        add: Vec<String>,
+        remove: Vec<String>,
+    },
     /// The events overlapping `from`–`to` (ms since the Unix epoch), of
     /// every account's calendar, by start.
     ListEvents {

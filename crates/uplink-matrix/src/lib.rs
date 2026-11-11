@@ -1,6 +1,6 @@
 //! Matrix (SPEC §9): rooms and timelines synced with matrix-rust-sdk, the
-//! read marker, joining and leaving, the order of spaces, and messages
-//! sent.
+//! read marker, joining and leaving, the order of spaces, rooms' tags,
+//! and messages sent.
 
 pub mod backfill;
 pub mod client;
@@ -9,6 +9,7 @@ pub mod media;
 pub mod membership;
 pub mod outbox;
 pub mod preview;
+pub mod room_tags;
 pub mod rooms;
 pub mod security;
 pub mod send;
@@ -30,4 +31,5 @@ pub fn register(registry: &mut Registry) {
     registry.register::<membership::ChangeMembership>();
     registry.register::<membership::RevertMembership>();
     registry.register::<space_order::OrderSpaces>();
+    registry.register::<room_tags::SetRoomTags>();
 }

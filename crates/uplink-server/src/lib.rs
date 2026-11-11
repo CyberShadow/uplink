@@ -1007,6 +1007,9 @@ impl Backend for Services {
                 self.matrix.change_membership(room, change).await
             }
             ClientRequest::OrderSpaces { changes } => self.matrix.order_spaces(changes).await,
+            ClientRequest::ModifyRoomTags { rooms, add, remove } => {
+                self.matrix.modify_room_tags(rooms, add, remove).await
+            }
             ClientRequest::ListTodos => self.todos.list().await,
             ClientRequest::ListEvents { from, to } => self.calendar.list(from, to).await,
             ClientRequest::CreateTodo {

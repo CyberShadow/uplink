@@ -88,6 +88,9 @@ pub struct Room {
     /// Of a space, where the user puts it among the top-level spaces
     /// (MSC3230): its `order`, as asked for if being changed.
     pub space_order: Option<String>,
+    /// Its tags (`m.tag`: `m.favourite`, `m.lowpriority`, the user's own
+    /// `u.*`), as asked for if being changed, in order.
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -337,6 +340,28 @@ pub struct SpaceOrderChange {
     pub space: RoomId,
     pub from: Option<String>,
     pub to: Option<String>,
+}
+
+/// A room tagged, or untagged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RoomTagChange {
+    pub room: RoomId,
+    pub tag: String,
+    pub desired: bool,
+}
+
+/// Rooms being tagged or untagged by one op.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PendingRoomTags {
+    /// The op that asked: undoing it puts the tags back.
+    pub op: crate::compose::PendingOp,
+    /// The changes yet to reach the homeserver.
+    pub changes: Vec<RoomTagChange>,
+    /// Why the homeserver refused one, if it did: it needs a decision,
+    /// which undoing the op makes.
+    pub refused: Option<String>,
 }
 
 /// Spaces being reordered by one op.
