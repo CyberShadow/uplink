@@ -4,7 +4,6 @@
 // its JSON.
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
-import { tinykeys } from 'tinykeys'
 import type {
   MatrixSend,
   MemberReceipt,
@@ -16,7 +15,7 @@ import type {
   UrlPreview,
 } from '../generated/protocol'
 import { useServices } from '../context'
-import { keepFocus } from '../keymap'
+import { keepFocus, useEscape } from '../keymap'
 import { dateTime, time } from '../format'
 import {
   displayName,
@@ -679,7 +678,7 @@ function EditHistory(props: { room: Room; event: RoomEvent; close: () => void })
   const { room, event, close } = props
   const { matrix } = useServices()
   const [edits, setEdits] = useState<RoomEvent[] | null>(null)
-  useEffect(() => tinykeys(window, { Escape: close }), [close])
+  useEscape(close)
   useEffect(() => {
     let current = true
     matrix.edits(room.id, event.id).then((edits) => {

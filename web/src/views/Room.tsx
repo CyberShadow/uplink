@@ -77,7 +77,8 @@ function Timeline(props: { room: Room; words: string | null }) {
     setOpened(panel)
   }
   const [tagging, setTagging] = useState(false)
-  useKeymap({ reply: () => composer.current?.focus(), label: () => setTagging(true) })
+  const write = () => composer.current?.focus()
+  useKeymap({ reply: write, write, label: () => setTagging(true) })
   useMarkRead(room, events)
 
   const [overlay, outgoing] = useMemo(() => overlaid(events ?? [], sends ?? [], null), [events, sends])
@@ -206,7 +207,17 @@ function Timeline(props: { room: Room; words: string | null }) {
         />
       )}
       {panel?.type === 'thread' && (
-        <ThreadPanel key={panel.root} room={room} root={panel.root} me={me} close={() => setPanel(null)} />
+        <ThreadPanel
+          key={panel.root}
+          room={room}
+          root={panel.root}
+          me={me}
+          close={() => {
+            setPanel(null)
+            // From the thread's box, back to the room's.
+            write()
+          }}
+        />
       )}
       {tagging && <RoomTagPicker rooms={[room]} close={() => setTagging(false)} />}
     </div>

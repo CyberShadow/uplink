@@ -1,10 +1,8 @@
-import { useEffect } from 'preact/hooks'
-import { tinykeys } from 'tinykeys'
-import { KEYMAP } from '../keymap'
+import { KEYMAP, useEscape } from '../keymap'
 import styles from './Overlay.module.css'
 
 export function Help({ close }: { close: () => void }) {
-  useEffect(() => tinykeys(window, { Escape: close }), [close])
+  useEscape(close)
   return (
     <div class={styles.backdrop} onClick={close}>
       <div class={styles.dialog} role="dialog" aria-label="Keyboard shortcuts">

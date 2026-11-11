@@ -2357,8 +2357,22 @@ Trash and `!` reports spam, or not spam (§8.1; M10). Opening a message marks it
 an undo notice. In a Matrix room, `l` tags it (§9.5), from a picker of
 Element's two tags, the user's own of the account's rooms and the room's
 others, toggling one; a name typed that no tag has is offered as a new
-tag of the user's. In a Matrix room (M7), `r` goes to the message box, where
-`Enter` sends, `Shift+Enter` breaks the line and `Esc` leaves.
+tag of the user's. In a Matrix room (M7), the message box has the focus, as a chat
+app's does, so that keys are text: opening the room (by any means, the
+switcher's too) or one of its threads focuses its box, and closing the
+thread focuses the room's again. In the box `Enter` sends,
+`Shift+Enter` breaks the line and `Esc` leaves it (once a reply or edit
+is cancelled), for the shortcuts, as vim's normal mode; `i`, `Enter`
+and `r` go back to it. The room's box unfocused is then the exception
+(`Esc`, a click elsewhere on the page). Dialogs opened from the box
+(edit history, a menu) close by `Esc` all the same, and a picker
+dismissed (`Esc`, a click outside, its shortcut again) gives the focus
+back to where it was, so that `Ctrl+K Esc` leaves one writing; one
+chosen leaves it where the choice leads. The `g` sequences also have
+synonyms, `Alt+Shift` and the sequence's second key (`Alt+Shift+H`
+home, `Alt+Shift+I` Inbox…), which work from within fields, as all
+presses with Ctrl, Cmd or Alt held do. (On macOS, where Option changes
+the key typed, they do not match, and Option types as before.)
 M10 added `*r *u *s *t [ ] v + = - gl`.
 Above the list, Gmail's toolbar does the same by pointer: a box selecting
 all or none (some selected, it selects none), with a menu of which to
@@ -2379,7 +2393,8 @@ the most recently visited first, then the rest in the nav's order, and
 the one on show last, so that `Ctrl+K Enter` goes back to the one
 before. The filter matches every word typed, in the name or the
 account's address. It works from within fields too: window bindings
-ignore what is typed into a field, but not presses with Ctrl or Cmd held.
+ignore what is typed into a field, but not presses with Ctrl, Cmd or Alt
+held.
 In the pickers (`l`, `v`, `gl`, `Ctrl+K`), `Up`/`Down` move by one
 option and `PageUp`/`PageDown` by a page (the options in view, less one,
 as a native list does), `Enter` chooses and `Esc` closes.

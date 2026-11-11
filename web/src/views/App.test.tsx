@@ -1083,7 +1083,8 @@ describe('matrix', () => {
     const tags = () => [...screen.getByRole('button', { name: 'Tags' }).querySelectorAll('[class*=chip]')].map((c) => c.textContent)
     expect(tags()).toEqual([])
 
-    await user.keyboard('l')
+    // Out of the room's box, which has the focus.
+    await user.keyboard('{Escape}l')
     const picker = screen.getByRole('dialog', { name: 'Tag' })
     expect(within(picker).getAllByRole('option').map((o) => o.textContent)).toEqual(['☐Favourite', '☐Low priority', '☐work'])
     await user.keyboard('low{Enter}')
@@ -1114,7 +1115,7 @@ describe('matrix', () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')
     const user = await start(`/rooms/${room.id}`)
-    await user.keyboard('l')
+    await user.keyboard('{Escape}l')
     await user.keyboard('fav{Enter}')
     await waitFor(() => expect(room.tags).toEqual(['m.favourite']))
     await user.click(within(screen.getByRole('navigation')).getByRole('link', { name: /^Outbox/ }))
@@ -1139,11 +1140,60 @@ describe('matrix', () => {
     expect(screen.getByText('Unable to decrypt this message.')).toBeTruthy()
   })
 
+  it('writes in the box, which Esc leaves to the shortcuts, and i, Enter or r go back to', async () => {
+    server.addMatrixAccount()
+    const lounge = server.addRoom('Lounge')
+    const hall = server.addRoom('Hall')
+    const user = await start(`/rooms/${lounge.id}`)
+    const box = () => screen.getByRole('textbox', { name: /^Message / }) as HTMLTextAreaElement
+    // Opened, the room's box has the focus: keys are text.
+    expect(document.activeElement).toBe(box())
+    await user.keyboard('gh')
+    expect(box().value).toBe('gh')
+    expect(location.pathname).toBe(`/rooms/${lounge.id}`)
+    for (const key of ['i', '{Enter}', 'r']) {
+      await user.keyboard('{Escape}')
+      expect(document.activeElement).toBe(document.body)
+      await user.keyboard(key)
+      expect(document.activeElement).toBe(box())
+    }
+    expect(box().value).toBe('gh')
+
+    // Ctrl+K dismissed gives the focus back; to a room, it is its box's.
+    await user.keyboard('{Control>}k{/Control}{Escape}')
+    expect(document.activeElement).toBe(box())
+    await user.keyboard('{Control>}k{/Control}hall{Enter}')
+    expect(location.pathname).toBe(`/rooms/${hall.id}`)
+    expect(document.activeElement).toBe(box())
+    expect(box().getAttribute('aria-label')).toBe('Message Hall')
+
+    // Alt+Shift and the second key of a g sequence go there, even while
+    // typing; out of the box, so does the sequence.
+    await user.keyboard('{Alt>}{Shift>}h{/Shift}{/Alt}')
+    expect(location.pathname).toBe('/')
+    await user.click(within(document.querySelector('nav')!).getByRole('link', { name: 'Lounge' }))
+    expect(document.activeElement).toBe(box())
+    await user.keyboard('{Escape}gk')
+    expect(location.pathname).toBe('/todos')
+  })
+
+  it('moves the focus to a thread\'s box, and back to the room\'s once it closes', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const root = server.receive(room.id, { body: 'Plans' })
+    server.receiveInThread(room.id, root, { body: 'lunch then' })
+    const user = await start(`/rooms/${room.id}`)
+    await user.click(await within(screen.getByRole('list', { name: 'Timeline' })).findByRole('button', { name: /1 reply/ }))
+    const reply = await screen.findByRole('textbox', { name: 'Reply in thread' })
+    expect(document.activeElement).toBe(reply)
+    await user.click(screen.getByRole('button', { name: 'Close thread' }))
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Message Lounge' }))
+  })
+
   it('sends with Enter, showing the message until it is synced back', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')
     const user = await start(`/rooms/${room.id}`)
-    await user.keyboard('r')
     const box = screen.getByRole('textbox', { name: 'Message Lounge' })
     expect(document.activeElement).toBe(box)
     await user.keyboard('First line{Shift>}{Enter}{/Shift}second line{Enter}')
@@ -1449,7 +1499,7 @@ describe('room timeline', () => {
     expect(within(timeline()).queryByText('Lunch at noon?')).toBeNull()
 
     // The box at the top searches the room on show, not mail.
-    await user.keyboard('/')
+    await user.keyboard('{Escape}/')
     expect(document.activeElement).toBe(screen.getByRole('searchbox', { name: 'Search Lounge' }))
     expect(screen.queryByRole('link', { name: 'Search help' })).toBeNull()
     await user.keyboard('LUNCH{Enter}')
@@ -1599,7 +1649,6 @@ describe('room timeline', () => {
     await within(line('First')).findByLabelText('Read by Bob')
     within(line('Second')).getByLabelText('Read by Carol')
 
-    await user.keyboard('r')
     await user.keyboard('h')
     expect(server.requests).toContainEqual({ type: 'set_typing', room: room.id, typing: true })
     await user.keyboard('{Backspace}')

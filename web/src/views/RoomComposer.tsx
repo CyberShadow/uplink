@@ -65,6 +65,9 @@ export function Composer(props: {
   // `:code:` typed whole becomes its emoji, as in Element.
   const emoji = useEmoji(value.includes(':'))
 
+  // A room's box, or a thread's, has the focus once it shows: typing is
+  // what one does there. Esc leaves it, to the shortcuts.
+  useLayoutEffect(() => props.textarea.current!.focus(), [props.textarea])
   useLayoutEffect(() => {
     if (placeCaret.current === null) return
     props.textarea.current!.setSelectionRange(placeCaret.current, placeCaret.current)

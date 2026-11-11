@@ -3,7 +3,7 @@
 // the whole map.
 
 import { type RefObject } from 'preact'
-import { useLayoutEffect, useRef } from 'preact/hooks'
+import { useEffect, useLayoutEffect, useRef } from 'preact/hooks'
 import {
   matchKeybindingPress,
   parseKeybinding,
@@ -40,6 +40,7 @@ export type Action =
   | 'undo'
   | 'compose'
   | 'reply'
+  | 'write'
   | 'replyAll'
   | 'forward'
   | 'send'
@@ -103,20 +104,21 @@ export const KEYMAP: Binding[] = [
   { action: 'undo', keys: ['z'], label: 'z', help: 'Undo the last action; again, the one before it (in history: undo or redo the one focused)' },
   { action: 'compose', keys: ['c'], label: 'c', help: 'Compose' },
   { action: 'reply', keys: ['r'], label: 'r', help: 'Reply (in a room: write a message)' },
+  { action: 'write', keys: ['i', 'Enter'], label: 'i, Enter', help: 'Write a message (in a room, whose box Esc leaves)' },
   { action: 'replyAll', keys: ['a'], label: 'a', help: 'Reply all' },
   { action: 'forward', keys: ['f'], label: 'f', help: 'Forward' },
   { action: 'send', keys: ['$mod+Enter'], label: 'Ctrl+Enter', help: 'Send (in compose)' },
   { action: 'close', keys: ['Escape'], label: 'Esc', help: 'Close compose (the draft is kept)' },
-  { action: 'goHome', keys: ['g h'], label: 'g h', help: 'Go home' },
-  { action: 'goInbox', keys: ['g i'], label: 'g i', help: 'Go to Inbox' },
-  { action: 'goStarred', keys: ['g s'], label: 'g s', help: 'Go to Starred' },
-  { action: 'goSent', keys: ['g t'], label: 'g t', help: 'Go to Sent' },
-  { action: 'goDrafts', keys: ['g d'], label: 'g d', help: 'Go to Drafts' },
-  { action: 'goAll', keys: ['g a'], label: 'g a', help: 'Go to All Mail' },
-  { action: 'goLabel', keys: ['g l'], label: 'g l', help: 'Go to a label' },
-  { action: 'goTodos', keys: ['g k'], label: 'g k', help: 'Go to To-dos' },
-  { action: 'goHistory', keys: ['g z'], label: 'g z', help: 'Go to History (undo anything)' },
-  { action: 'goCalendar', keys: ['g c'], label: 'g c', help: 'Go to the calendar' },
+  { action: 'goHome', keys: ['g h', 'Alt+Shift+h'], label: 'g h, Alt+Shift+H', help: 'Go home' },
+  { action: 'goInbox', keys: ['g i', 'Alt+Shift+i'], label: 'g i, Alt+Shift+I', help: 'Go to Inbox' },
+  { action: 'goStarred', keys: ['g s', 'Alt+Shift+s'], label: 'g s, Alt+Shift+S', help: 'Go to Starred' },
+  { action: 'goSent', keys: ['g t', 'Alt+Shift+t'], label: 'g t, Alt+Shift+T', help: 'Go to Sent' },
+  { action: 'goDrafts', keys: ['g d', 'Alt+Shift+d'], label: 'g d, Alt+Shift+D', help: 'Go to Drafts' },
+  { action: 'goAll', keys: ['g a', 'Alt+Shift+a'], label: 'g a, Alt+Shift+A', help: 'Go to All Mail' },
+  { action: 'goLabel', keys: ['g l', 'Alt+Shift+l'], label: 'g l, Alt+Shift+L', help: 'Go to a label' },
+  { action: 'goTodos', keys: ['g k', 'Alt+Shift+k'], label: 'g k, Alt+Shift+K', help: 'Go to To-dos' },
+  { action: 'goHistory', keys: ['g z', 'Alt+Shift+z'], label: 'g z, Alt+Shift+Z', help: 'Go to History (undo anything)' },
+  { action: 'goCalendar', keys: ['g c', 'Alt+Shift+c'], label: 'g c, Alt+Shift+C', help: 'Go to the calendar' },
   { action: 'today', keys: ['t'], label: 't', help: 'Today (in the calendar)' },
   { action: 'weekView', keys: ['w'], label: 'w', help: 'Week view (in the calendar)' },
   { action: 'agendaView', keys: ['a'], label: 'a', help: 'Agenda view (in the calendar)' },
@@ -147,9 +149,25 @@ export function returnFocus(event: MouseEvent) {
   window.addEventListener('dragend', back)
 }
 
+/** Closes an overlay, while `close` is given, by Escape: wherever the
+ * focus is (in the box being written in, say), and before the key
+ * reaches anything else. */
+export function useEscape(close: (() => void) | null) {
+  useEffect(() => {
+    if (!close) return
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.stopPropagation()
+      close()
+    }
+    window.addEventListener('keydown', escape, true)
+    return () => window.removeEventListener('keydown', escape, true)
+  }, [close])
+}
+
 /** Binds `actions` to their keys while the component is mounted: on the
  * window, where typing in a field does not trigger them (but for presses
- * with Ctrl or Cmd held), or on `within`,
+ * with Ctrl, Cmd or Alt held), or on `within`,
  * where it does. The window's bindings, from every component, make up
  * one keymap, so that a sequence's first press (`g`) keeps a shorter
  * binding of its second (`s`) from firing too. */
@@ -209,9 +227,11 @@ window.addEventListener(
       const target = event.target as Element
       return (
         event.isComposing ||
-        // What is typed into a field is its own; but not Ctrl or Cmd held.
+        // What is typed into a field is its own; but not Ctrl, Cmd or Alt
+        // held.
         (!event.ctrlKey &&
           !event.metaKey &&
+          !event.altKey &&
           target !== event.currentTarget &&
           target.matches('[contenteditable],input,select,textarea'))
       )

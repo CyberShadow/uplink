@@ -1,7 +1,7 @@
 // A button opening a menu of actions, as Gmail's "⋮" on a message does.
 
 import { useEffect, useRef, useState } from 'preact/hooks'
-import { keepFocus } from '../keymap'
+import { keepFocus, useEscape } from '../keymap'
 import { Icon, type IconName } from './Icon'
 import styles from './Menu.module.css'
 
@@ -19,23 +19,14 @@ export function MenuButton(props: { label: string; icon: IconName; groups: MenuI
   const root = useRef<HTMLSpanElement>(null)
   useEffect(() => {
     if (!open) return
-    // Anywhere else closes it, as Escape does (without the keys reaching
-    // the shortcuts).
+    // Anywhere else closes it, as Escape does.
     const outside = (event: PointerEvent) => {
       if (!root.current!.contains(event.target as Node)) setOpen(false)
     }
-    const escape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      event.stopPropagation()
-      setOpen(false)
-    }
     document.addEventListener('pointerdown', outside)
-    window.addEventListener('keydown', escape, true)
-    return () => {
-      document.removeEventListener('pointerdown', outside)
-      window.removeEventListener('keydown', escape, true)
-    }
+    return () => document.removeEventListener('pointerdown', outside)
   }, [open])
+  useEscape(open ? () => setOpen(false) : null)
   return (
     <span class={styles.root} ref={root}>
       <button
