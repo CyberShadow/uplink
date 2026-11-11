@@ -875,7 +875,32 @@ async fn replies_edits_reactions_redactions_and_files() {
     assert_eq!(image.msgtype.as_deref(), Some("m.image"));
     assert_eq!(image.body.as_deref(), Some("dot.png"));
     let raw: serde_json::Value = serde_json::from_str(&image.raw).unwrap();
-    assert!(raw["content"]["file"]["url"].is_string(), "{raw}");
+    let mxc = raw["content"]["file"]["url"].as_str().unwrap().to_owned();
+    // Fetched for the web client, decrypted.
+    let media = uplink
+        .matrix
+        .media(room.id, image.id, mxc.clone(), false)
+        .await
+        .unwrap();
+    assert_eq!(media.data, png);
+    assert_eq!(
+        (media.mime.as_str(), media.name.as_deref(), media.inline),
+        ("image/png", Some("dot.png"), true)
+    );
+    let refused = uplink
+        .matrix
+        .media(room.id, image.id, mxc, true)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(refused.code, uplink_protocol::ErrorCode::Invalid);
+    let refused = uplink
+        .matrix
+        .media(room.id, image.id, "mxc://localhost/other".into(), false)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(refused.code, uplink_protocol::ErrorCode::NotFound);
 
     // Deleting the reply.
     let timeline = send(MatrixContent::Redaction {

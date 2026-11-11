@@ -2,6 +2,7 @@
 //! read marker, joining and leaving, and plain-text messages sent.
 
 pub mod client;
+pub mod media;
 pub mod membership;
 pub mod outbox;
 pub mod rooms;

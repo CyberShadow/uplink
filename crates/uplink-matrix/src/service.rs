@@ -2,10 +2,12 @@
 
 use crate::{
     client::{self, Clients},
+    media,
     membership::ChangeMembership,
     rooms::{self, MarkRead},
     send::{self, CancelMessage, KeepSent, SendMessage},
 };
+use matrix_sdk::ruma::events::room::MediaSource as MatrixMediaSource;
 use std::sync::Arc;
 use uplink_protocol::{
     matrix::{
@@ -22,6 +24,16 @@ use uplink_tx_log::{
     answer::{error, internal, Reader, Response},
     Dispatcher,
 };
+
+/// An event's media, as served.
+pub struct Media {
+    pub mime: String,
+    /// The file name the event gives.
+    pub name: Option<String>,
+    /// Whether the browser may show it, rather than only download it.
+    pub inline: bool,
+    pub data: Vec<u8>,
+}
 
 /// The most events a timeline request may ask for.
 pub const MAX_LIMIT: u32 = 500;
@@ -88,16 +100,104 @@ impl Matrix {
                 }
             })
             .await?;
-        let client = self.clients.get(&account).ok_or_else(|| {
+        let client = self.client(&account)?;
+        let image = client::avatar_thumbnail(&client, &mxc)
+            .await
+            .map_err(internal)?;
+        let mime = media::image_type(&image).ok_or_else(|| {
+            internal(anyhow::anyhow!(
+                "the thumbnail of {mxc} is not an image shown"
+            ))
+        })?;
+        Ok((mime, image))
+    }
+
+    fn client(&self, account: &str) -> Result<matrix_sdk::Client, ServerError> {
+        self.clients.get(account).ok_or_else(|| {
             error(
                 ErrorCode::NotFound,
                 format!("{account} is not connected to its homeserver yet"),
             )
-        })?;
+        })
+    }
+
+    /// The media `mxc` that the room's event `event` names, or the
+    /// homeserver's `thumbnail` of it (SPEC §9.8).
+    pub async fn media(
+        &self,
+        room: RoomId,
+        event: RoomEventId,
+        mxc: String,
+        thumbnail: bool,
+    ) -> Result<Media, ServerError> {
+        let (account, named) = self
+            .reader
+            .read({
+                let mxc = mxc.clone();
+                move |conn| {
+                    let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                    let (account, contents) = rooms::event_contents(&tx, room, event)
+                        .map_err(internal)?
+                        .ok_or_else(|| no_event(room, event))?;
+                    let named = media::named(&contents, &mxc).ok_or_else(|| {
+                        error(
+                            ErrorCode::NotFound,
+                            format!("event {} does not name {mxc}", event.0),
+                        )
+                    })?;
+                    Ok((account, named))
+                }
+            })
+            .await?;
+        if thumbnail && !matches!(named.source, MatrixMediaSource::Plain(_)) {
+            return Err(error(
+                ErrorCode::Invalid,
+                format!("{mxc} is encrypted: the homeserver makes no thumbnail of it"),
+            ));
+        }
+        let client = self.client(&account)?;
+        let data = client::media(&client, named.source, thumbnail)
+            .await
+            .map_err(internal)?;
+        // Thumbnails are of the homeserver's making; what is not named is
+        // only shown if it is an image.
+        let mime = match (thumbnail, named.mime) {
+            (false, Some(mime)) => mime,
+            _ => media::image_type(&data)
+                .unwrap_or("application/octet-stream")
+                .to_owned(),
+        };
+        Ok(Media {
+            inline: media::shown_inline(&mime),
+            mime,
+            name: named.name,
+            data,
+        })
+    }
+
+    /// A thumbnail of `user`'s avatar in the room, and its media type.
+    pub async fn member_avatar(
+        &self,
+        room: RoomId,
+        user: String,
+    ) -> Result<(&'static str, Vec<u8>), ServerError> {
+        let (account, room_id) = self
+            .reader
+            .read(move |conn| {
+                rooms::room_of(conn, room)
+                    .map_err(internal)?
+                    .ok_or_else(|| no_room(room))
+            })
+            .await?;
+        let client = self.client(&account)?;
+        let mxc = client::member_avatar(&client, &room_id, &user)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| error(ErrorCode::NotFound, format!("{user} has no avatar")))?;
         let image = client::avatar_thumbnail(&client, &mxc)
             .await
             .map_err(internal)?;
-        let mime = image_type(&image).ok_or_else(|| {
+        let mime = media::image_type(&image).ok_or_else(|| {
             internal(anyhow::anyhow!(
                 "the thumbnail of {mxc} is not an image shown"
             ))
@@ -384,18 +484,6 @@ impl Matrix {
                 up_to: Some(event),
             })
             .await
-    }
-}
-
-/// The media type of the image formats homeservers make thumbnails in,
-/// by their signatures; the homeserver's word for it is not kept.
-fn image_type(image: &[u8]) -> Option<&'static str> {
-    match image {
-        [0x89, b'P', b'N', b'G', ..] => Some("image/png"),
-        [0xff, 0xd8, 0xff, ..] => Some("image/jpeg"),
-        [b'G', b'I', b'F', b'8', ..] => Some("image/gif"),
-        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("image/webp"),
-        _ => None,
     }
 }
 

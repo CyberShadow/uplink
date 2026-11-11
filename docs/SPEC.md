@@ -1777,6 +1777,33 @@ when it is known, and is refused if the membership changed otherwise;
 its own inverse redoes. `tests/conduit.rs` joins an invitation, undoes
 (leaves) and redoes (joins again), and declines another.
 
+### 9.8 Media
+
+The server serves the media events name, fetched by the account's
+client through the SDK's media cache (as authenticated media, and
+decrypted, of encrypted rooms):
+
+- `/api/rooms/:room/events/:event/media/:server/:media` — the media
+  `mxc://server/media`, if the event (or one of its edits) names it: as
+  the file it sends (`url`, or an encrypted `file`), its thumbnail
+  (`info.thumbnail_url` or `thumbnail_file`), or an image of its
+  `formatted_body` (custom emoji, inline images). Only those, so that
+  the web client cannot have the server fetch whatever it names. Its
+  type is the event's `info.mimetype` (a thumbnail's,
+  `thumbnail_info.mimetype`); an image named without one is known by its
+  signature. Only images the browser decodes (PNG, JPEG, GIF, WebP,
+  AVIF; not SVG, a document), video and audio are served `inline`;
+  anything else is an `attachment`, named by the event's `filename` or
+  `body`. Sandboxed (`Content-Security-Policy: sandbox`, `nosniff`), and
+  cached for good: media never change.
+- `/api/rooms/:room/events/:event/thumbnail/:server/:media` — the
+  homeserver's thumbnail of such media, scaled to fit 800×600, as
+  Element asks for: of plain media only, since the homeserver cannot
+  see encrypted ones (their senders attach thumbnails of their own).
+- `/api/rooms/:room/members/:user/avatar` — a 64 px thumbnail of a
+  member's avatar, as the SDK's store has it; cached for an hour, as
+  members change their avatars.
+
 ---
 
 ## 10. Calendar pipeline

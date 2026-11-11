@@ -78,6 +78,50 @@ pub async fn avatar_thumbnail(client: &Client, mxc: &str) -> Result<Vec<u8>> {
         .with_context(|| format!("fetching a thumbnail of {mxc}"))
 }
 
+/// The box, in pixels, that thumbnails of events' media fit in, as
+/// Element asks for.
+const THUMBNAIL: (u32, u32) = (800, 600);
+
+/// An event's media, or a thumbnail of it (only of media not encrypted:
+/// the homeserver cannot see those), cached in the client's store.
+pub async fn media(client: &Client, source: MediaSource, thumbnail: bool) -> Result<Vec<u8>> {
+    let format = if thumbnail {
+        ensure!(
+            matches!(source, MediaSource::Plain(_)),
+            "the homeserver makes no thumbnails of encrypted media"
+        );
+        MediaFormat::Thumbnail(MediaThumbnailSettings::with_method(
+            Method::Scale,
+            UInt::from(THUMBNAIL.0),
+            UInt::from(THUMBNAIL.1),
+        ))
+    } else {
+        MediaFormat::File
+    };
+    let what = match &source {
+        MediaSource::Plain(mxc) => mxc.to_string(),
+        MediaSource::Encrypted(file) => file.url.to_string(),
+    };
+    client
+        .media()
+        .get_media_content(&MediaRequestParameters { source, format }, true)
+        .await
+        .with_context(|| format!("fetching {what}"))
+}
+
+/// The avatar of `user` in the room, as the client's store has it.
+pub async fn member_avatar(client: &Client, room: &str, user: &str) -> Result<Option<String>> {
+    let room_id = <&matrix_sdk::ruma::RoomId>::try_from(room)?;
+    let room = client
+        .get_room(room_id)
+        .with_context(|| format!("room {room} is not in the client"))?;
+    let user = <&matrix_sdk::ruma::UserId>::try_from(user)?;
+    Ok(room
+        .get_member_no_sync(user)
+        .await?
+        .and_then(|member| member.avatar_url().map(ToString::to_string)))
+}
+
 /// Where the account's session is sealed.
 pub fn session_path(account: &MatrixAccountConfig) -> PathBuf {
     account.state_dir.join("session.sealed")

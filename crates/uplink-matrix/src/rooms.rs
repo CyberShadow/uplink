@@ -748,6 +748,52 @@ pub fn room_account(conn: &Connection, room: RoomId) -> Result<Option<String>> {
         .optional()?)
 }
 
+/// The account the room is of, and the contents of its event `event`: its
+/// own, then its edits' new ones, latest first; `None` if the event is
+/// not of the room.
+pub fn event_contents(
+    tx: &Transaction,
+    room: RoomId,
+    event: RoomEventId,
+) -> Result<Option<(String, Vec<serde_json::Value>)>> {
+    let Some((account, raw)): Option<(String, String)> = tx
+        .query_row(
+            "SELECT r.account_id, e.raw_json FROM matrix_event e JOIN matrix_room r ON r.id = e.room
+             WHERE e.id = ?1 AND e.room = ?2",
+            params![event.0, room.0],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    let raw: serde_json::Value = serde_json::from_str(&raw)?;
+    let mut contents = vec![raw["content"].clone()];
+    let edits: Vec<String> = tx
+        .prepare(&format!(
+            "SELECT json_extract(e.raw_json, '$.content.\"m.new_content\"')
+             FROM matrix_event t JOIN matrix_event e ON e.room = t.room AND e.relates_to = t.event_id
+             WHERE t.id = ?1 AND {EDIT} ORDER BY e.ts DESC, e.event_id DESC"
+        ))?
+        .query_map([event.0], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    for edit in edits {
+        contents.push(serde_json::from_str(&edit)?);
+    }
+    Ok(Some((account, contents)))
+}
+
+/// The account a room is of and its Matrix id, if the room exists.
+pub fn room_of(conn: &Connection, room: RoomId) -> Result<Option<(String, String)>> {
+    Ok(conn
+        .query_row(
+            "SELECT account_id, room_id FROM matrix_room WHERE id = ?1",
+            [room.0],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?)
+}
+
 /// What a send to the room needs to know of its event `event_id`.
 pub struct StoredEvent {
     pub sender: String,

@@ -461,6 +461,18 @@ fn build_app(state: AppState) -> Router {
             get(room_avatar_handler),
         )
         .route(
+            "/api/rooms/:room/events/:event/media/:server/:media",
+            get(|state, path| event_media_handler(state, path, false)),
+        )
+        .route(
+            "/api/rooms/:room/events/:event/thumbnail/:server/:media",
+            get(|state, path| event_media_handler(state, path, true)),
+        )
+        .route(
+            "/api/rooms/:room/members/:user/avatar",
+            get(member_avatar_handler),
+        )
+        .route(
             uplink_email::remote::REMOTE_IMAGE_PATH,
             get(remote_image_handler),
         )
@@ -539,6 +551,86 @@ async fn room_avatar_handler(
                     header::CACHE_CONTROL,
                     "private, max-age=31536000, immutable",
                 ),
+            ],
+            image,
+        )
+            .into_response(),
+        Err(e) if e.code == ErrorCode::NotFound => {
+            (StatusCode::NOT_FOUND, e.message).into_response()
+        }
+        Err(e) => (StatusCode::BAD_GATEWAY, e.message).into_response(),
+    }
+}
+
+/// The media `mxc://server/media` that a room's event names, or a
+/// thumbnail of it (SPEC §9.8). Media never change, so they are cached
+/// for good. Sandboxed, and only images, video and audio are shown by
+/// the browser; anything else is downloaded, as mail attachments are.
+async fn event_media_handler(
+    State(state): State<AppState>,
+    extract::Path((room, event, server, media)): extract::Path<(i64, i64, String, String)>,
+    thumbnail: bool,
+) -> Response {
+    let fetched = state
+        .services
+        .matrix
+        .media(
+            uplink_protocol::matrix::RoomId(room),
+            uplink_protocol::matrix::RoomEventId(event),
+            format!("mxc://{server}/{media}"),
+            thumbnail,
+        )
+        .await;
+    match fetched {
+        Ok(media) => {
+            let disposition = if media.inline { "inline" } else { "attachment" };
+            let disposition = match &media.name {
+                Some(name) => format!("{disposition}; filename*=UTF-8''{}", percent_encode(name)),
+                None => disposition.to_owned(),
+            };
+            (
+                [
+                    (header::CONTENT_TYPE, media.mime),
+                    (header::CONTENT_DISPOSITION, disposition),
+                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
+                    (header::CONTENT_SECURITY_POLICY, "sandbox".to_owned()),
+                    (
+                        header::CACHE_CONTROL,
+                        "private, max-age=31536000, immutable".to_owned(),
+                    ),
+                ],
+                media.data,
+            )
+                .into_response()
+        }
+        Err(e) if e.code == ErrorCode::NotFound => {
+            (StatusCode::NOT_FOUND, e.message).into_response()
+        }
+        Err(e) if e.code == ErrorCode::Invalid => {
+            (StatusCode::BAD_REQUEST, e.message).into_response()
+        }
+        Err(e) => (StatusCode::BAD_GATEWAY, e.message).into_response(),
+    }
+}
+
+/// A thumbnail of a room member's avatar. Members change their avatars,
+/// so it is cached for an hour only.
+async fn member_avatar_handler(
+    State(state): State<AppState>,
+    extract::Path((room, user)): extract::Path<(i64, String)>,
+) -> Response {
+    match state
+        .services
+        .matrix
+        .member_avatar(uplink_protocol::matrix::RoomId(room), user)
+        .await
+    {
+        Ok((mime, image)) => (
+            [
+                (header::CONTENT_TYPE, mime),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+                (header::CONTENT_SECURITY_POLICY, "sandbox"),
+                (header::CACHE_CONTROL, "private, max-age=3600"),
             ],
             image,
         )
