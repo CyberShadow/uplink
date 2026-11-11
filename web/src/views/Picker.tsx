@@ -50,7 +50,12 @@ export function Picker<T>(props: {
 
   return (
     <div class={styles.backdrop} onClick={props.close}>
-      <div class={styles.dialog} role="dialog" aria-label={props.name} onClick={(event) => event.stopPropagation()}>
+      <div
+        class={`${styles.dialog} ${styles.picker}`}
+        role="dialog"
+        aria-label={props.name}
+        onClick={(event) => event.stopPropagation()}
+      >
         <input
           ref={input}
           class={styles.filter}

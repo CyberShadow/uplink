@@ -103,7 +103,9 @@ export function Switcher(props: { close: () => void }) {
       render={(d) => (
         <span class={styles.destination}>
           {d.lead}
-          <span class={styles.name}>{d.name}</span>
+          <span class={styles.name} title={d.name}>
+            {d.name}
+          </span>
           {d.account !== null && <span class={styles.account}>{d.account}</span>}
         </span>
       )}
