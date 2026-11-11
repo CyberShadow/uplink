@@ -1717,7 +1717,11 @@ tree), the sandbox (no scripts, ever: with `allow-same-origin`, they
 could lift it), and the CSP (nothing loads but what it names). The frame
 also turns DNS prefetching off (`x-dns-prefetch-control`), so that the
 hosts a mail links to are not looked up, telling their DNS servers it was
-read.
+read. The layers are tested against hostile mail: the sanitized HTML,
+parsed as the browser parses it, against a corpus of ways past them
+(`uplink-email`'s `parse/hostile.rs`); and the frame, in Chromium and
+Firefox (the `e2e` test), for anything that runs, navigates or reaches
+the network but as asked.
 
 Remote images are fetched by the server, never by the browser. Before
 sanitizing, the HTML is parsed into a DOM (html5ever, as ammonia parses
@@ -1739,7 +1743,11 @@ them, the client lets the frame load images from uplink's origin
 frame's `'self'` to the origin it inherits); a sender then learns the server's address, a
 fixed user agent (`Mozilla/5.0 (compatible; uplink)`) and when the mail
 was shown, but nothing of the browser: no client headers, cookies or
-referrer. Remote fonts and stylesheets still don't load. The endpoint
+referrer. Remote fonts and stylesheets still don't load. In Firefox,
+images of `<style>` elements don't either: it reuses a sheet it parsed
+for an earlier document of the same text and principal (the frame's,
+shown without them), with its images as that document's CSP refused
+them. The endpoint
 (behind basic auth) fetches only from public addresses (not loopback,
 private, link-local, shared, benchmarking, multicast or reserved ones,
 nor IPv6 ones carrying such an IPv4 one: mapped, compatible, NAT64's or

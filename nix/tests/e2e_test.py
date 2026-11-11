@@ -191,4 +191,56 @@ with subtest("a draft written in two tabs at once keeps both tabs' text"):
     ).strip()
     assert row == "Plans for Friday|<p>Typed in the other tab, and more</p>", row
 
+with subtest("hostile mail runs nothing, loads nothing but through uplink when asked, and stays in its frame"):
+    hostile_html = """<p>Hostile content</p>
+<script>alert('script')</script>
+<img src=x onerror="alert('onerror')"><svg onload="alert('svg')"></svg>
+<a href="javascript:alert('javascript')">javascript</a>
+<noscript><p title="</noscript><img src=x onerror=alert('mxss')>"></noscript>
+<style>i { background: url("data:\\3C/style><img src='/api/messages/1/attachments/0'>") }</style>
+<img src="http://t.example/img.gif"><img src="/relative.gif"><img srcset="http://t.example/srcset.gif 1x">
+<div style="background: url(http://t.example/div.gif)">div</div>
+<style>@import url(http://t.example/import.css);
+@font-face { font-family: f; src: url(http://t.example/font.woff) }
+b { font-family: f; background: url(http://t.example/style.gif) }</style><b>bold</b>
+<style>u { background: url(http://t.example/plain.gif) }</style><u>u</u>
+<style>s { font-family: f; background: url(http://t.example/fontless.gif) }</style><s>s</s>
+<link rel=stylesheet href="http://t.example/link.css"><link rel=prefetch href="http://t.example/prefetch">
+<meta http-equiv=refresh content="0;url=http://t.example/refresh">
+<form action="http://t.example/form"><input name=q><button>Submit</button></form>
+<iframe src="http://t.example/frame"></iframe><object data="http://t.example/object"></object>
+<a href="http://t.example/link">A link</a>
+"""
+    raw = (
+        "Message-ID: <hostile@uplink.test>\r\nFrom: Mallory <mallory@example.org>\r\n"
+        "To: alice@example.com\r\nDate: Thu, 5 Nov 2026 10:00:00 +0000\r\n"
+        "Subject: Hostile\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\n\r\n"
+        + hostile_html
+    )
+    encoded = base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
+    gmail(token, "POST", "/messages/import", {"raw": encoded, "labelIds": ["INBOX", "UNREAD"]})
+    eventually(
+        "the message to be synced",
+        lambda: machine.succeed(
+            f"sqlite3 {STATE}/db/uplink.sqlite \"SELECT count(*) FROM message WHERE subject = 'Hostile'\""
+        ).strip() == "1",
+    )
+    for browser in ["chromium", "firefox"]:
+        result = json.loads(machine.succeed(f"uplink-ui hostile {browser}"))
+        # Remote images only once shown, and only uplink's fetches of them;
+        # never fonts, stylesheets or uplink's own URLs.
+        assert result["before"] == [], (browser, result)
+        images = {"http://t.example/div.gif", "http://t.example/img.gif"}
+        # Of <style> elements: Firefox reuses a sheet parsed for a document
+        # before, of the same text, with its images as that document's CSP
+        # refused them; shown, they are not fetched again.
+        styled = {"http://t.example/fontless.gif", "http://t.example/plain.gif", "http://t.example/style.gif"}
+        expected = sorted(images | (styled if browser == "chromium" else set()))
+        assert sorted(result["shown"]) == expected, (browser, result)
+        # Nothing beyond uplink but the link followed, in a tab of its own,
+        # without the page as opener or referrer.
+        assert result["beyond"] == ["http://t.example/link"], (browser, result)
+        assert result["followed"] == {"url": "http://t.example/link", "opener": False, "referer": ""}, (browser, result)
+        assert result["dialogs"] == [] and result["title"] and result["pages"] == 2, (browser, result)
+
 machine.copy_from_vm("/tmp/screenshots", "")

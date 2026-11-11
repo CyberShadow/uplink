@@ -1,15 +1,18 @@
-"""Drives uplink's web UI in Chromium, as a user would with the keyboard.
+"""Drives uplink's web UI in Chromium, or another browser of Playwright's
+(`firefox`), as a user would with the keyboard.
 
-  uplink-ui STEP
+  uplink-ui STEP [BROWSER]
 
 Each step starts from the Inbox and ends by printing a JSON summary; the
 test script checks the Gmail side between steps. Screenshots go to
 /tmp/screenshots.
 """
 
+import base64
 import json
 import os
 import sys
+from urllib.parse import unquote
 
 from playwright.sync_api import expect, sync_playwright
 
@@ -276,11 +279,78 @@ def home(page):
     }
 
 
-STEPS = {f.__name__: f for f in [read, archive, undo, label, search, reply, matrix, todos, home, history, trash, attachment, tabs]}
+def hostile(page):
+    """Opens the hostile mail, shows its remote images, and follows its
+    link: what it runs, where it navigates, and what is requested, as
+    the frame's own requests and anyone's beyond uplink."""
+    origin = os.environ["UPLINK_URL"]
+    dialogs = []
+    page.on("dialog", lambda d: (dialogs.append(d.message), d.dismiss()))
+    # What reaches the network: not the "request" event, which Chromium
+    # fires for requests the CSP then blocks. uplink's fetches of remote
+    # images answer with a pixel; the sender's site with a page.
+    requests = []
+    pixel = base64.b64decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")
+
+    def sent(route):
+        requests.append(route.request)
+        url = route.request.url
+        if url.startswith(f"{origin}/api/remote-image?"):
+            route.fulfill(content_type="image/gif", body=pixel)
+        elif url.startswith("http://t.example/"):
+            route.fulfill(content_type="text/html", body="<p>sender")
+        else:
+            route.continue_()
+
+    page.context.route("**/*", sent)
+    title = page.title()
+
+    rows = page.get_by_role("list", name="Messages").get_by_role("listitem")
+    rows.filter(has_text="Hostile").click()
+    body = page.frame_locator("iframe[title='Message body']")
+    expect(body.get_by_text("Hostile content")).to_be_visible()
+    expect(page.get_by_text("Remote images are not shown.")).to_be_visible()
+    page.wait_for_timeout(2000)
+
+    def framed():
+        return sorted(r.url for r in requests if r.frame.parent_frame is not None)
+
+    before = framed()
+    page.get_by_role("button", name="Show them").click()
+    expect(page.get_by_text("Remote images are not shown.")).to_be_hidden()
+    page.wait_for_timeout(2000)
+    shown = framed()
+
+    with page.expect_popup() as popup:
+        body.get_by_role("link", name="A link").click()
+    popup.value.wait_for_load_state()
+    followed = {
+        "url": popup.value.url,
+        "opener": popup.value.evaluate("window.opener !== null"),
+        "referer": popup.value.evaluate("document.referrer"),
+    }
+    page.screenshot(path=f"{SHOTS}/hostile-{page.context.browser.browser_type.name}.png")
+
+    # The frame's CSP, refusing what it was meant to (Firefox's words for
+    # a font refused: "content blocked").
+    refused = ["Content-Security-Policy", "Content Security Policy", "content blocked"]
+    errors[:] = [e for e in errors if not any(r in e for r in refused)]
+    return {
+        "before": before,
+        "shown": [unquote(url.removeprefix(f"{origin}/api/remote-image?url=")) for url in shown],
+        "beyond": sorted({r.url for r in requests if not r.url.startswith(origin + "/")}),
+        "followed": followed,
+        "dialogs": dialogs,
+        "title": page.title() == title,
+        "pages": len(page.context.pages),
+    }
+
+
+STEPS = {f.__name__: f for f in [read, archive, undo, label, search, reply, matrix, todos, home, history, trash, attachment, tabs, hostile]}
 
 step = STEPS[sys.argv[1]]
 with sync_playwright() as p:
-    browser = p.chromium.launch()
+    browser = getattr(p, sys.argv[2] if len(sys.argv) > 2 else "chromium").launch()
     context = browser.new_context(
         http_credentials={"username": os.environ["UPLINK_USER"], "password": os.environ["UPLINK_PASSWORD"]},
         ignore_https_errors=True,
