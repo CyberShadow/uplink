@@ -2379,8 +2379,12 @@ focus it takes, or none: going to another drops the focus of a field
 outside it, as the search box. The `g` sequences also have
 synonyms, `Alt+Shift` and the sequence's second key (`Alt+Shift+H`
 home, `Alt+Shift+I` Inbox…), which work from within fields, as all
-presses with Ctrl, Cmd or Alt held do. (On macOS, where Option changes
-the key typed, they do not match, and Option types as before.)
+presses with Ctrl, Cmd or Alt held do: of modifiers, those that
+browsers and systems take least. On macOS, where Option types
+characters and browsers keep `Cmd+Shift` (Slack's `Cmd+Shift` go-tos
+work only in its desktop app), they are `Ctrl+Option` and the key, as
+Google Docs' menus, matched by the key's place (`KeyboardEvent.code`),
+as Option changes what it types.
 M10 added `*r *u *s *t [ ] v + = - gl`.
 Above the list, Gmail's toolbar does the same by pointer: a box selecting
 all or none (some selected, it selects none), with a menu of which to
@@ -3429,9 +3433,11 @@ the protocol for the nav tree.
 
 ### 16.4 Keyboard shortcuts
 
-Hardcoded Gmail-derived bindings for MVP. No user-configurable keymap.
-Cross-platform Cmd-vs-Ctrl handling and preset support are deferred to
-roadmap; the source of truth is `web/src/keymap.ts`. `tinykeys` is the
+Hardcoded Gmail-derived bindings for MVP. No user-configurable keymap;
+preset support is deferred to roadmap. The bindings are the same on
+every platform but for their modifiers: Cmd for Ctrl on macOS
+(tinykeys' `$mod`), and `Ctrl+Option` for `Alt+Shift` (§12.5); the help
+shows those of the platform. The source of truth is `web/src/keymap.ts`. `tinykeys` is the
 implementation library.
 
 ### 16.5 Why nav tree + content pane is the right cut for this protocol

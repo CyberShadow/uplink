@@ -79,6 +79,23 @@ export interface Binding {
   repeats?: true
 }
 
+/** As tinykeys tells macOS, for `$mod`, which is Cmd there and Ctrl
+ * elsewhere. */
+const MAC = /Mac|iPod|iPhone|iPad/.test(navigator.platform)
+const MOD = MAC ? 'Cmd' : 'Ctrl'
+
+/** A go-to's keys: `g` and `key`; and, from within fields too, Alt+Shift
+ * and `key`, the modifiers least taken by browsers and systems. On macOS,
+ * where Option types characters and browsers keep Cmd+Shift (Slack's
+ * Cmd+Shift go-tos work only in its app), Ctrl+Option, as Google Docs'
+ * menus; by where `key` is, as Option changes what it types. */
+function go(key: string): Pick<Binding, 'keys' | 'label'> {
+  const upper = key.toUpperCase()
+  return MAC
+    ? { keys: [`g ${key}`, `Control+Alt+Key${upper}`], label: `g ${key}, Ctrl+Option+${upper}` }
+    : { keys: [`g ${key}`, `Alt+Shift+${key}`], label: `g ${key}, Alt+Shift+${upper}` }
+}
+
 export const KEYMAP: Binding[] = [
   { action: 'next', keys: ['j'], label: 'j', help: 'Next conversation (in the calendar: the next week or agenda)', repeats: true },
   { action: 'previous', keys: ['k'], label: 'k', help: 'Previous conversation (in the calendar: the previous week or agenda)', repeats: true },
@@ -114,23 +131,23 @@ export const KEYMAP: Binding[] = [
   { action: 'write', keys: ['i', 'Enter'], label: 'i, Enter', help: 'Write a message (in a room, whose box Esc leaves)' },
   { action: 'replyAll', keys: ['a'], label: 'a', help: 'Reply all' },
   { action: 'forward', keys: ['f'], label: 'f', help: 'Forward' },
-  { action: 'send', keys: ['$mod+Enter'], label: 'Ctrl+Enter', help: 'Send (in compose)' },
+  { action: 'send', keys: ['$mod+Enter'], label: `${MOD}+Enter`, help: 'Send (in compose)' },
   { action: 'close', keys: ['Escape'], label: 'Esc', help: 'Close compose (the draft is kept)' },
-  { action: 'goHome', keys: ['g h', 'Alt+Shift+h'], label: 'g h, Alt+Shift+H', help: 'Go home' },
-  { action: 'goInbox', keys: ['g i', 'Alt+Shift+i'], label: 'g i, Alt+Shift+I', help: 'Go to Inbox' },
-  { action: 'goStarred', keys: ['g s', 'Alt+Shift+s'], label: 'g s, Alt+Shift+S', help: 'Go to Starred' },
-  { action: 'goSent', keys: ['g t', 'Alt+Shift+t'], label: 'g t, Alt+Shift+T', help: 'Go to Sent' },
-  { action: 'goDrafts', keys: ['g d', 'Alt+Shift+d'], label: 'g d, Alt+Shift+D', help: 'Go to Drafts' },
-  { action: 'goAll', keys: ['g a', 'Alt+Shift+a'], label: 'g a, Alt+Shift+A', help: 'Go to All Mail' },
-  { action: 'goLabel', keys: ['g l', 'Alt+Shift+l'], label: 'g l, Alt+Shift+L', help: 'Go to a label' },
-  { action: 'goTodos', keys: ['g k', 'Alt+Shift+k'], label: 'g k, Alt+Shift+K', help: 'Go to To-dos' },
-  { action: 'goHistory', keys: ['g z', 'Alt+Shift+z'], label: 'g z, Alt+Shift+Z', help: 'Go to History (undo anything)' },
-  { action: 'goCalendar', keys: ['g c', 'Alt+Shift+c'], label: 'g c, Alt+Shift+C', help: 'Go to the calendar' },
+  { action: 'goHome', ...go('h'), help: 'Go home' },
+  { action: 'goInbox', ...go('i'), help: 'Go to Inbox' },
+  { action: 'goStarred', ...go('s'), help: 'Go to Starred' },
+  { action: 'goSent', ...go('t'), help: 'Go to Sent' },
+  { action: 'goDrafts', ...go('d'), help: 'Go to Drafts' },
+  { action: 'goAll', ...go('a'), help: 'Go to All Mail' },
+  { action: 'goLabel', ...go('l'), help: 'Go to a label' },
+  { action: 'goTodos', ...go('k'), help: 'Go to To-dos' },
+  { action: 'goHistory', ...go('z'), help: 'Go to History (undo anything)' },
+  { action: 'goCalendar', ...go('c'), help: 'Go to the calendar' },
   { action: 'today', keys: ['t'], label: 't', help: 'Today (in the calendar)' },
   { action: 'weekView', keys: ['w'], label: 'w', help: 'Week view (in the calendar)' },
   { action: 'agendaView', keys: ['a'], label: 'a', help: 'Agenda view (in the calendar)' },
   { action: 'search', keys: ['/'], label: '/', help: 'Search' },
-  { action: 'switch', keys: ['$mod+k'], label: 'Ctrl+K', help: 'Switch to a view or room, the most recent first (also while typing)' },
+  { action: 'switch', keys: ['$mod+k'], label: `${MOD}+K`, help: 'Switch to a view or room, the most recent first (also while typing)' },
   { action: 'help', keys: ['[Shift]+?'], label: '?', help: 'Keyboard shortcuts' },
 ]
 
