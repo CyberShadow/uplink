@@ -22,6 +22,7 @@ import {
   displayName,
   json,
   linkify,
+  links,
   media,
   mentions,
   senderColor,
@@ -303,7 +304,7 @@ function Body(props: { room: Room; event: RoomEvent; content: Shown; overlay: Ov
         {emote && <span style={{ color: senderColor(event.sender) }}>{displayName(event.sender, event.sender_name)} </span>}
         {content.html !== null ? <Html html={content.html} /> : <Text text={content.body} />} {edited}
       </div>
-      {!notice && !room.encrypted && <LinkPreviews room={room} event={event} body={content.body} />}
+      {!notice && !room.encrypted && <LinkPreviews room={room} event={event} body={content.body} html={content.html} />}
     </>
   )
 }
@@ -311,17 +312,15 @@ function Body(props: { room: Room; event: RoomEvent; content: Shown; overlay: Ov
 /** Links previewed under a message, at most. */
 const PREVIEWS = 2
 
-/** Previews of the pages the message's text links, as Element shows them:
- * not of links to Matrix users or rooms, nor in encrypted rooms (the
- * homeserver would learn of the links), nor of notices, which bots send. */
-function LinkPreviews(props: { room: Room; event: RoomEvent; body: string }) {
-  const urls = [
-    ...new Set(
-      linkify(props.body)
-        .flatMap((part) => (part.href === null ? [] : [part.href]))
-        .filter((url) => !url.startsWith('https://matrix.to/')),
-    ),
-  ].slice(0, PREVIEWS)
+/** Previews of the pages the message links where it shows, as Element
+ * shows them: not of links to Matrix users or rooms, nor in encrypted
+ * rooms (the homeserver would learn of the links), nor of notices, which
+ * bots send. */
+function LinkPreviews(props: { room: Room; event: RoomEvent; body: string; html: string | null }) {
+  const urls = [...new Set(links(props.body, props.html).filter((url) => !url.startsWith('https://matrix.to/')))].slice(
+    0,
+    PREVIEWS,
+  )
   return (
     <>
       {urls.map((url) => (

@@ -236,6 +236,16 @@ export function linkify(text: string): Array<{ text: string; href: string | null
 
 const URL = /\bhttps?:\/\/[^\s<>]+/g
 
+/** The web pages a message links, as it is shown: of its HTML, if it
+ * has any, its links; else what its text links. Its text may not be what
+ * the HTML says: bridges put their network's markup there (Slack's
+ * `<http://dlang.org|dlang.org>`). */
+export function links(body: string, html: string | null): string[] {
+  if (html === null) return linkify(body).flatMap((part) => (part.href === null ? [] : [part.href]))
+  const anchors = new DOMParser().parseFromString(html, 'text/html').querySelectorAll('a[href]')
+  return [...anchors].map((a) => a.getAttribute('href')!).filter((href) => /^https?:\/\//.test(href))
+}
+
 /** Whether the message mentions `user`: by `m.mentions`, or, of senders
  * that do not say, by naming them. */
 export function mentions(content: Content, user: string): boolean {

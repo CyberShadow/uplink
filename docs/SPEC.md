@@ -2115,7 +2115,8 @@ the account's homeserver for its preview of a web page (authenticated
 `/preview_url`, which fetches the page and caches it): what the page
 says of itself (OpenGraph's title, description and site name, `None` if
 neither of the first two), and its image, which the homeserver uploads.
-Only of an `http(s)` URL that the message (or one of its edits) has in
+The homeserver's answer is final, an error too: the SDK does not retry
+it (it would, for up to a quarter of an hour, of a 5xx). Only of an `http(s)` URL that the message (or one of its edits) has in
 its `body` or `formatted_body`, so that the web client cannot have the
 homeserver fetch whatever it names; and not in encrypted rooms, as
 Element by default, since it would tell the homeserver of the links.
@@ -2123,8 +2124,10 @@ Element by default, since it would tell the homeserver of the links.
 homeserver's 800×600 thumbnail of the preview's image, if it is that
 URL's preview's (asked anew: the homeserver caches it). The web client
 previews, under a message (not a notice, which bots send), up to two of
-the links in its text, but those to `matrix.to`; a page that cannot be
-previewed shows none.
+the links it shows, but those to `matrix.to`: of its HTML, its links'
+targets (its `body` may be in a bridged network's markup, as Slack's
+`<http://dlang.org|dlang.org>`); else the URLs in its text. A page that
+cannot be previewed shows none.
 
 ---
 

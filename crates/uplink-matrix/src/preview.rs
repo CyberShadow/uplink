@@ -3,7 +3,9 @@
 //! and its image, which the homeserver uploads.
 
 use anyhow::{Context, Result};
-use matrix_sdk::{ruma::api::client::authenticated_media::get_media_preview, Client};
+use matrix_sdk::{
+    config::RequestConfig, ruma::api::client::authenticated_media::get_media_preview, Client,
+};
 use uplink_protocol::matrix::UrlPreview;
 
 /// Whether one of a message's contents (its own, and its edits') links
@@ -47,10 +49,14 @@ pub fn preview(og: &serde_json::Value) -> Option<UrlPreview> {
     (preview.title.is_some() || preview.description.is_some()).then_some(preview)
 }
 
-/// The homeserver's OpenGraph data of `url`.
+/// The homeserver's OpenGraph data of `url`. Its answer is final: it
+/// fetched the page itself, so an error (a 502 of a page it could not
+/// reach) is not one to retry, as the SDK otherwise would, for up to a
+/// quarter of an hour.
 pub async fn fetch(client: &Client, url: &str) -> Result<serde_json::Value> {
     let response = client
         .send(get_media_preview::v1::Request::new(url.to_owned()))
+        .with_request_config(RequestConfig::new().disable_retry())
         .await
         .with_context(|| format!("previewing {url}"))?;
     Ok(match response.data {
