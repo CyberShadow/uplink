@@ -208,8 +208,10 @@ export class MatrixStore {
     return timeline
   }
 
+  /** Quietly: what is sent shows in the room at once, which is notice
+   * enough. */
   send(room: RoomId, content: MatrixContent) {
-    return this.ops.dispatch({ type: 'send_matrix_message', room, content })
+    return this.ops.dispatch({ type: 'send_matrix_message', room, content }, true)
   }
 
   /** Uploads `files` and sends each, in order; stops at one that fails. */

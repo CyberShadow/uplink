@@ -130,7 +130,9 @@ def matrix(page):
     expect(page.get_by_role("textbox", name="Message Planning")).to_be_focused()
     page.keyboard.type("Hello from uplink")
     page.keyboard.press("Enter")
-    expect(page.get_by_role("status")).to_contain_text("Sent 'Hello from uplink'")
+    # Shown in the room, it has no notice: the join's stays.
+    expect(timeline.get_by_text("Hello from uplink")).to_have_count(1)
+    expect(page.get_by_role("status")).to_contain_text("Joined 'Planning'")
     # Sent, and synced back: no longer pending, but in the timeline.
     expect(timeline.locator("[class*=pending]")).to_have_count(0, timeout=15000)
     expect(timeline.get_by_text("Hello from uplink")).to_have_count(1)

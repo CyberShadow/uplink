@@ -1201,6 +1201,8 @@ describe('matrix', () => {
     expect(screen.getByText('First line second line')).toBeTruthy()
     expect((box as HTMLTextAreaElement).value).toBe('')
     expect(server.requests).toContainEqual({ type: 'send_matrix_message', room: room.id, content: text('First line\nsecond line') })
+    // The room shows it: no notice.
+    expect(screen.queryByRole('status')).toBeNull()
 
     server.echo(server.matrixSends[0].id)
     await waitFor(() => expect(screen.queryByText('Waiting to send')).toBeNull())

@@ -2443,7 +2443,10 @@ sends the entries a response reflects before the response (§5.4). A
 query in flight when the socket drops is sent again on the next
 connection; an op is failed, since it may have been applied (the log will
 show it), except draft creation and edits, which can't apply twice
-(§7.2). The last op dispatched from the tab is shown with an Undo button.
+(§7.2). The last op dispatched from the tab is shown with an Undo button,
+unless what it did shows at once where it was done, which is notice
+enough: Matrix sends (the room shows them), draft creation and edits,
+attaching to a draft, and read receipts. Failures are always shown.
 Drafts apply their edits locally and reload on creation and deletion; the
 outbox, while shown, reloads on `OutboxChanged`, and the nav's count of it
 with it.
