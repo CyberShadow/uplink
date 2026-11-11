@@ -63,10 +63,16 @@ enum OauthCommand {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // By default, what uplink's crates say at info, and the migrations
+    // refinery applies to the database (a slow one holds up startup).
+    const DEFAULT_FILTER: &str = "uplink=info,uplink_calendar=info,uplink_config=info,\
+        uplink_email=info,uplink_matrix=info,uplink_protocol=info,uplink_realtime=info,\
+        uplink_server=info,uplink_storage=info,uplink_todos=info,uplink_tx_log=info,\
+        refinery_core=info";
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "uplink=info,uplink_server=info,uplink_email=info".into()),
+                .unwrap_or_else(|_| DEFAULT_FILTER.into()),
         )
         .init();
     let cli = Cli::parse();
