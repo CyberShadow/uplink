@@ -2371,7 +2371,12 @@ their own; read ones recede, their text dimmer (in the dark theme,
 onto the page's near-black). The font is Gmail's (`Google Sans`, else
 Roboto, Helvetica, Arial), narrower than most systems' own. No Important markers: Gmail's guesses, which `+` and `-`
 still set. In the nav, system labels have Gmail's icons, the user's own
-labels a tag, and Microsoft 365's folders a folder.
+labels a tag, and Microsoft 365's folders a folder. Going anywhere, by any
+means (a link, a shortcut, the switcher), brings the view's link in the
+nav into view: the folds over it (its account's section, the labels or
+spaces it is nested in) unfold, unless it is in view somewhere already
+(a room in several spaces), and the nav scrolls to it; so too when the
+narrow window's drawer opens.
 
 ### 12.10 Dates and times
 

@@ -1,10 +1,10 @@
 import { signal } from '@preact/signals'
-import { useState } from 'preact/hooks'
-import type { ComponentChildren } from 'preact'
+import { useEffect, useRef, useState } from 'preact/hooks'
+import type { ComponentChildren, RefObject } from 'preact'
 import { useLocation } from 'preact-iso'
 import { duration } from '../format'
 import { keepFocus } from '../keymap'
-import type { Account, Label, ListingProgress, MailProvider, Room, RoomId } from '../generated/protocol'
+import type { Account, Label, ListingProgress, MailProvider, MatrixAccount, Room, RoomId } from '../generated/protocol'
 import { bySpaceOrder, moveSpace } from '../spaceOrder'
 import { useServices } from '../context'
 import { outboxCount, outboxNeedsAttention } from '../stores/drafts'
@@ -137,11 +137,65 @@ function Syncing(props: { account: string; listing: ListingProgress | null }) {
 const COLLAPSED_KEY = 'uplink.nav.collapsed'
 const collapsed = signal<ReadonlySet<string>>(new Set(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '[]')))
 
+function setCollapsed(next: ReadonlySet<string>) {
+  collapsed.value = next
+  localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]))
+}
+
 function toggleCollapsed(key: string) {
   const next = new Set(collapsed.value)
   if (!next.delete(key)) next.add(key)
-  collapsed.value = next
-  localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]))
+  setCollapsed(next)
+}
+
+function unfold(keys: readonly string[]) {
+  const next = new Set(collapsed.value)
+  for (const key of keys) next.delete(key)
+  setCollapsed(next)
+}
+
+/** The folds' keys: of an account's section, of a label with labels
+ * nested in it, of a joined space. */
+const mailSection = (account: string) => `mail:${account}`
+const matrixSection = (account: string) => `matrix:${account}`
+const labelFold = (account: string, node: LabelNode) => `${account}:${node.path}`
+const spaceFold = (room: Room) => `matrix:${room.account}:${room.room_id}`
+
+/** Whether the nav links to the room: a joined space it only nests. */
+export const linksTo = (room: Room) => !(room.space && room.membership === 'joined')
+
+/** The folds over each place where the nav links to what `path` shows,
+ * outermost first; none over a link at the top. */
+export function foldsOver(
+  path: string,
+  mailAccounts: readonly Account[],
+  matrixAccounts: readonly MatrixAccount[],
+  rooms: readonly Room[],
+): string[][] {
+  const places: string[][] = views(mailAccounts)
+    .filter((view) => shows(path, view.href))
+    .map(() => [])
+  for (const account of mailAccounts) {
+    const section = mailSection(account.id)
+    const { system, user } = navLabels(account)
+    const hrefs = [...system.map((label) => mailPath(account.id, label.external_id)), allMailPath(account.id)]
+    if (hrefs.some((href) => shows(path, href))) places.push([section])
+    const walk = (node: LabelNode, folds: string[]) => {
+      if (node.label && shows(path, mailPath(account.id, node.label.external_id))) places.push(folds)
+      for (const child of node.children) walk(child, [...folds, labelFold(account.id, node)])
+    }
+    for (const node of labelTree(user)) walk(node, [section])
+  }
+  for (const account of matrixAccounts) {
+    const section = matrixSection(account.id)
+    if (shows(path, securityPath(account.id))) places.push([section])
+    const walk = (node: RoomNode, folds: string[]) => {
+      if (linksTo(node.room) && shows(path, roomPath(node.room.id))) places.push(folds)
+      for (const child of node.children) walk(child, [...folds, spaceFold(node.room)])
+    }
+    for (const node of roomTree(rooms.filter((room) => room.account === account.id))) walk(node, [section])
+  }
+  return places
 }
 
 /** A node of the user's labels, nested as Gmail nests them: by `/`. A
@@ -236,10 +290,12 @@ function roomBadge(rooms: readonly Room[]): { count: number; tone: Tone; bold: b
 export function Nav(props: { open: boolean }) {
   const { mail, drafts, matrix, todos } = useServices()
   const { path } = useLocation()
+  const nav = useRef<HTMLElement>(null)
   // The Matrix account a conversation is being started with.
   const [starting, setStarting] = useState<string | null>(null)
   // The top-level space being dragged, and where it would go.
   const [drag, setDrag] = useState<Drag | null>(null)
+  useReveal(path, props.open, nav)
   const link = (
     href: string,
     lead: ComponentChildren,
@@ -277,7 +333,7 @@ export function Nav(props: { open: boolean }) {
     </li>
   )
   const labelNode = (account: Account, node: LabelNode, depth: number) => {
-    const key = `${account.id}:${node.path}`
+    const key = labelFold(account.id, node)
     const folded = collapsed.value.has(key)
     return (
       <li key={node.path} class={styles.node}>
@@ -356,7 +412,7 @@ export function Nav(props: { open: boolean }) {
    * a space there moves. */
   const roomNode = (node: RoomNode, depth: number, spaces?: readonly Room[]) => {
     const { room } = node
-    if (!(room.space && room.membership === 'joined')) {
+    if (linksTo(room)) {
       const badge = roomBadge([room])
       return (
         <li key={room.id}>
@@ -372,7 +428,7 @@ export function Nav(props: { open: boolean }) {
         </li>
       )
     }
-    const key = `matrix:${room.account}:${room.room_id}`
+    const key = spaceFold(room)
     const folded = collapsed.value.has(key)
     const badge = folded ? roomBadge(roomsIn(node)) : null
     const row = (
@@ -427,7 +483,7 @@ export function Nav(props: { open: boolean }) {
     '/calendar': [0, false],
   }
   return (
-    <nav class={props.open ? `${styles.nav} ${styles.open}` : styles.nav}>
+    <nav ref={nav} class={props.open ? `${styles.nav} ${styles.open}` : styles.nav}>
       <ul>
         {views(mail.accounts.value ?? []).map((view) => {
           const [count, alert] = counts[view.href]!
@@ -437,7 +493,7 @@ export function Nav(props: { open: boolean }) {
       {mail.accounts.value?.map((account) => (
         <Section
           key={account.id}
-          id={`mail:${account.id}`}
+          id={mailSection(account.id)}
           title={account.address}
           tooltip={account.id}
           status={!account.synced && <Syncing account={account.id} listing={account.listing} />}
@@ -455,7 +511,7 @@ export function Nav(props: { open: boolean }) {
         return (
           <Section
             key={account.id}
-            id={`matrix:${account.id}`}
+            id={matrixSection(account.id)}
             title={account.mxid}
             tooltip={account.id}
             label={`Rooms of ${account.mxid}`}
@@ -477,6 +533,40 @@ export function Nav(props: { open: boolean }) {
       {starting !== null && <RoomStarter account={starting} close={() => setStarting(null)} />}
     </nav>
   )
+}
+
+/** Brings what `path` shows into view in the nav, once there: unfolding
+ * the folds over it, unless it is in view somewhere already, and
+ * scrolling to it. Again when the drawer opens or closes; scrolling while
+ * the nav is hidden does nothing. */
+function useReveal(path: string, open: boolean, nav: RefObject<HTMLElement>) {
+  const { mail, matrix } = useServices()
+  // What is to be done, once the nav has it: until then, a room just
+  // joined, say, is not in it.
+  const revealing = useRef(false)
+  const scrolling = useRef(false)
+  useEffect(() => {
+    revealing.current = true
+  }, [path])
+  useEffect(() => {
+    scrolling.current = true
+  }, [open])
+  // After every render: unfolding renders again, with the link.
+  useEffect(() => {
+    if (revealing.current) {
+      const places = foldsOver(path, mail.accounts.value ?? [], matrix.accounts.value ?? [], matrix.rooms.value ?? [])
+      if (places.length > 0) {
+        revealing.current = false
+        scrolling.current = true
+        if (places.every((folds) => folds.some((key) => collapsed.value.has(key)))) unfold(places[0])
+      }
+    }
+    if (!scrolling.current) return
+    const current = nav.current!.querySelector('[aria-current=page]')
+    if (!current) return
+    scrolling.current = false
+    current.scrollIntoView({ block: 'nearest' })
+  })
 }
 
 function Count(props: { count: number; tone: Tone }) {

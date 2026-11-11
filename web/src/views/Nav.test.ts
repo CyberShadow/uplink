@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { Label, Room } from '../generated/protocol'
-import { labelTree, record, remaining, roomTree, type RoomNode, type Sample } from './Nav'
+import type { Label, MatrixAccount, Room } from '../generated/protocol'
+import { foldsOver, labelTree, record, remaining, roomTree, type RoomNode, type Sample } from './Nav'
 import { avatarPath, initial } from './RoomAvatar'
 
 describe('a first sync', () => {
@@ -86,6 +86,22 @@ describe('roomTree', () => {
     // By activity, as listed.
     const rooms = [recent, loose, top, old, sub]
     expect(names(roomTree(rooms))).toEqual([{ top: [{ sub: ['old'] }, 'recent', 'old'] }, 'loose'])
+  })
+
+  it('finds the folds over each place a room is in', () => {
+    const [old, loose] = [room('old'), room('loose')]
+    const sub = space('sub', [old])
+    const top = space('top', [sub, old])
+    const rooms = [loose, top, old, sub]
+    const accounts = [{ id: 'mx', mxid: '@me:x', synced: true } as MatrixAccount]
+    expect(foldsOver(`/rooms/${old.id}`, [], accounts, rooms)).toEqual([
+      ['matrix:mx', 'matrix:mx:!top:x', 'matrix:mx:!sub:x'],
+      ['matrix:mx', 'matrix:mx:!top:x'],
+    ])
+    expect(foldsOver(`/rooms/${loose.id}`, [], accounts, rooms)).toEqual([['matrix:mx']])
+    // A joined space is not a link.
+    expect(foldsOver(`/rooms/${top.id}`, [], accounts, rooms)).toEqual([])
+    expect(foldsOver('/drafts', [], accounts, rooms)).toEqual([[]])
   })
 
   it('puts top-level spaces in the order given them, and leaves out children not listed', () => {

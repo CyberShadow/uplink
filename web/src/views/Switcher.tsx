@@ -8,7 +8,7 @@ import { useServices } from '../context'
 import type { Label } from '../generated/protocol'
 import { allMailPath, mailPath } from './App'
 import { Icon } from './Icon'
-import { labelIcon, labelName, navLabels, shows, views } from './Nav'
+import { labelIcon, labelName, linksTo, navLabels, shows, views } from './Nav'
 import { Picker } from './Picker'
 import { roomPath } from './Room'
 import { RoomAvatar } from './RoomAvatar'
@@ -23,7 +23,7 @@ interface Destination {
   lead: ComponentChildren
 }
 
-/** The nav's links, in its order; a joined space shows no view. */
+/** The nav's links, in its order. */
 function useDestinations(): Destination[] {
   const { mail, matrix } = useServices()
   const accounts = mail.accounts.value ?? []
@@ -47,7 +47,7 @@ function useDestinations(): Destination[] {
     }),
     ...(matrix.accounts.value ?? []).flatMap((account) =>
       (matrix.rooms.value ?? [])
-        .filter((room) => room.account === account.id && !(room.space && room.membership === 'joined'))
+        .filter((room) => room.account === account.id && linksTo(room))
         .map((room) => ({
           href: roomPath(room.id),
           name: room.membership === 'invited' ? `${room.name} (invited)` : room.name,

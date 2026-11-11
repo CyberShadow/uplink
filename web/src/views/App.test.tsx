@@ -1644,6 +1644,31 @@ describe('switcher', () => {
       .getAllByRole('option')
       .map((o) => o.textContent)
 
+  it('unfolds the nav over the view switched to, and scrolls to it', async () => {
+    server.addAccount('home', ['Family', 'Family/Kids'])
+    const user = await start('/mail/work/INBOX')
+    const nav = within(screen.getByRole('navigation'))
+    await user.click(nav.getByRole('button', { name: 'Collapse Family' }))
+    await user.click(nav.getByRole('button', { name: /home@example.com/ }))
+    expect(nav.queryByRole('link', { name: 'Kids' })).toBeNull()
+    const scrolled = vi.spyOn(Element.prototype, 'scrollIntoView')
+    await user.keyboard('{Control>}k{/Control}kids{Enter}')
+    const kids = await nav.findByRole('link', { name: 'Kids' })
+    expect(kids.getAttribute('aria-current')).toBe('page')
+    await waitFor(() => expect(scrolled.mock.contexts).toContain(kids))
+    const folded = JSON.parse(localStorage.getItem('uplink.nav.collapsed')!)
+    expect(folded).not.toContain('mail:home')
+    expect(folded).not.toContain('home:Family')
+    scrolled.mockRestore()
+
+    // What is in view already stays as folded as it is.
+    await user.click(nav.getByRole('button', { name: 'Collapse Family' }))
+    await user.keyboard('{Control>}k{/Control}home inbox{Enter}')
+    await waitFor(() => expect(nav.getByRole('link', { name: /Inbox/, current: 'page' })).toBeTruthy())
+    expect(nav.queryByRole('link', { name: 'Kids' })).toBeNull()
+    await user.click(nav.getByRole('button', { name: 'Expand Family' }))
+  })
+
   it('switches to the view visited before, with Ctrl+K Enter, even while typing', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')
