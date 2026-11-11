@@ -206,6 +206,8 @@
           UPLINK_EMULATE = "${emulate}/bin/emulate";
           # A Matrix homeserver, for crates/uplink-matrix/tests.
           UPLINK_CONDUIT = "${conduit}/bin/conduit";
+          # A mail server (IMAP, SMTP), for crates/uplink-email/tests.
+          UPLINK_STALWART = "${pkgs.stalwart}/bin/stalwart";
         };
 
       in {

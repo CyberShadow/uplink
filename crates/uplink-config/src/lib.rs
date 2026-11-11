@@ -95,6 +95,7 @@ pub struct BasicAuthConfig {
 pub enum AccountConfig {
     Gmail(GmailAccountConfig),
     M365(M365AccountConfig),
+    Imap(ImapAccountConfig),
     Matrix(MatrixAccountConfig),
 }
 
@@ -103,6 +104,7 @@ impl AccountConfig {
         match self {
             AccountConfig::Gmail(account) => &account.id,
             AccountConfig::M365(account) => &account.id,
+            AccountConfig::Imap(account) => &account.id,
             AccountConfig::Matrix(account) => &account.id,
         }
     }
@@ -113,6 +115,14 @@ impl AccountConfig {
         match self {
             AccountConfig::Gmail(account) => account.oauth.token_file = token_file(&account.id),
             AccountConfig::M365(account) => account.oauth.token_file = token_file(&account.id),
+            AccountConfig::Imap(account) => {
+                account.password_file = data_dir
+                    .join("accounts")
+                    .join(format!("{}.password", account.id));
+                if let Some(oauth) = &mut account.oauth {
+                    oauth.token_file = token_file(&account.id);
+                }
+            }
             AccountConfig::Matrix(account) => {
                 account.state_dir = data_dir.join("matrix").join(&account.id)
             }
@@ -202,6 +212,95 @@ impl M365OAuthConfig {
     fn graph() -> String {
         "https://graph.microsoft.com".into()
     }
+}
+
+/// An account at any mail server, read by IMAP and sent from by SMTP
+/// (SPEC §8.10–8.11).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImapAccountConfig {
+    pub id: String,
+    pub address: String,
+    /// The name the servers know the account by, if not its address.
+    #[serde(default)]
+    pub user: Option<String>,
+    pub imap: MailServer,
+    pub smtp: MailServer,
+    /// How uplink signs in to both servers: with XOAUTH2 if set, else with
+    /// the password `uplink password --account <id>` sealed.
+    #[serde(default)]
+    pub oauth: Option<OAuthConfig>,
+    /// `<data_dir>/accounts/<id>.password`.
+    #[serde(skip)]
+    pub password_file: PathBuf,
+}
+
+impl ImapAccountConfig {
+    /// The name the servers know the account by.
+    pub fn user(&self) -> &str {
+        self.user.as_deref().unwrap_or(&self.address)
+    }
+
+    /// The IMAP server's port: 993, or 143 for STARTTLS, unless set.
+    pub fn imap_port(&self) -> u16 {
+        self.imap.port.unwrap_or(match self.imap.security {
+            Security::Tls => 993,
+            Security::Starttls => 143,
+        })
+    }
+
+    /// The SMTP server's port: 465, or 587 for STARTTLS, unless set.
+    pub fn smtp_port(&self) -> u16 {
+        self.smtp.port.unwrap_or(match self.smtp.security {
+            Security::Tls => 465,
+            Security::Starttls => 587,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MailServer {
+    pub host: String,
+    /// The protocol's standard port for `security`, unless set.
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub security: Security,
+}
+
+/// How a connection to a mail server is secured. Either way it is TLS:
+/// uplink sends no credentials or mail in the clear.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Security {
+    /// TLS from the start ("implicit TLS", RFC 8314).
+    #[default]
+    Tls,
+    /// Upgraded from plain text by STARTTLS.
+    Starttls,
+}
+
+/// A provider's OAuth client, for the authorization-code flow with PKCE
+/// and a loopback redirect (SPEC §13.2), whose access tokens sign in by
+/// XOAUTH2.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OAuthConfig {
+    pub client_id: String,
+    /// For providers that give installed applications a secret too.
+    #[serde(default)]
+    pub client_secret: Option<String>,
+    /// The authorization endpoint.
+    pub auth_url: String,
+    /// The token endpoint.
+    pub token_url: String,
+    /// Space-separated, as the provider names them: mail access, and
+    /// whatever its refresh tokens need (e.g. `offline_access`).
+    pub scope: String,
+    /// `<data_dir>/accounts/<id>.token`.
+    #[serde(skip)]
+    pub token_file: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -507,7 +606,7 @@ mod tests {
                 .iter()
                 .map(AccountConfig::id)
                 .collect::<Vec<_>>(),
-            ["alice-gmail", "alice-m365", "alice-matrix"]
+            ["alice-gmail", "alice-m365", "alice-mail", "alice-matrix"]
         );
         assert_eq!(
             config.server.tls.unwrap().cert,
@@ -545,6 +644,12 @@ accounts:
     oauth:
       client_id: "11111111-2222-3333-4444-555555555555"
 
+  - id: alice-mail
+    kind: imap
+    address: alice@example.org
+    imap: { host: imap.example.org }
+    smtp: { host: smtp.example.org }
+
   - id: alice-matrix
     kind: matrix
     homeserver: "https://matrix.example.org"
@@ -564,7 +669,7 @@ accounts:
             cfg.master_key_file(),
             PathBuf::from("/var/lib/uplink/master.key")
         );
-        assert_eq!(cfg.accounts.len(), 3);
+        assert_eq!(cfg.accounts.len(), 4);
 
         let AccountConfig::Gmail(ref g) = cfg.accounts[0] else {
             panic!("expected gmail account");
@@ -591,7 +696,21 @@ accounts:
             }
         );
 
-        let AccountConfig::Matrix(ref mx) = cfg.accounts[2] else {
+        let AccountConfig::Imap(ref i) = cfg.accounts[2] else {
+            panic!("expected imap account");
+        };
+        // The address signs in, over TLS from the start, with the password
+        // `uplink password` seals.
+        assert_eq!(i.user(), "alice@example.org");
+        assert_eq!((i.imap_port(), i.smtp_port()), (993, 465));
+        assert_eq!(i.imap.security, Security::Tls);
+        assert_eq!(i.oauth, None);
+        assert_eq!(
+            i.password_file,
+            PathBuf::from("/var/lib/uplink/accounts/alice-mail.password")
+        );
+
+        let AccountConfig::Matrix(ref mx) = cfg.accounts[3] else {
             panic!("expected matrix account");
         };
         assert_eq!(mx.mxid, "@alice:example.org");
@@ -660,6 +779,49 @@ data_dir: /tmp/uplink
         let f = tempfile::NamedTempFile::new().unwrap();
         let err = Config::load(f.path()).unwrap_err();
         assert!(format!("{err:#}").contains("uplink init"), "{err:#}");
+    }
+
+    #[test]
+    fn imap_accounts_say_how_to_reach_and_sign_in() {
+        let yaml = r#"
+server:
+  basic_auth:
+    user: alice
+    password_bcrypt: "$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+data_dir: /tmp/uplink
+accounts:
+  - id: mail
+    kind: imap
+    address: alice@example.org
+    user: alice
+    imap: { host: mail.example.org, security: starttls }
+    smtp: { host: mail.example.org, security: starttls, port: 2525 }
+    oauth:
+      client_id: uplink
+      auth_url: https://auth.example.org/authorize
+      token_url: https://auth.example.org/token
+      scope: mail offline_access
+"#;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(yaml.as_bytes()).unwrap();
+        let cfg = Config::load(f.path()).unwrap();
+        let AccountConfig::Imap(ref i) = cfg.accounts[0] else {
+            panic!("expected imap account");
+        };
+        assert_eq!(i.user(), "alice");
+        assert_eq!((i.imap_port(), i.smtp_port()), (143, 2525));
+        let oauth = i.oauth.as_ref().unwrap();
+        assert_eq!(oauth.client_secret, None);
+        assert_eq!(
+            oauth.token_file,
+            PathBuf::from("/tmp/uplink/accounts/mail.token")
+        );
+
+        // Nothing goes in the clear.
+        let plain = yaml.replace("security: starttls, port", "security: none, port");
+        std::fs::write(f.path(), plain).unwrap();
+        let err = format!("{:#}", Config::load(f.path()).unwrap_err());
+        assert!(err.contains("none"), "{err}");
     }
 
     #[test]

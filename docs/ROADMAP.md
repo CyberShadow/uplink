@@ -55,10 +55,11 @@ Deferred:
 MVP:
 - Gmail send via Gmail API (`users.messages.send`).
 - M365 send via Graph (`/me/sendMail`).
+- IMAP accounts send by SMTP submission (password or XOAUTH2), the copy
+  filed in Sent (SPEC §8.11).
 - Compose: plain text + WYSIWYG (TipTap) producing HTML.
 
 Deferred:
-- SMTP+XOAUTH2 send path for generic IMAP/SMTP accounts.
 - Drafts on the wire (RFC 5322 .eml drafts persisted to provider Drafts folder). MVP keeps drafts local-only.
 - Scheduled send.
 - Mail templates / canned responses.
@@ -69,6 +70,7 @@ MVP:
 - Gmail via the Gmail API, polling `history.list` (see SPEC §8.1).
 - M365 via Graph (mail) with delta-link polling every 30 s (no push;
   see SPEC §8.3 and §15.11 — EWS Streaming deferred).
+- Any IMAP server, polled every 30 s (SPEC §8.10).
 - Per-account configuration via single YAML file.
 
 Deferred:
@@ -76,7 +78,11 @@ Deferred:
   Outlook successor uses if one ships first — research bundled with
   the implementation work). See SPEC §15.11. The polling baseline
   stays in place as the always-available fallback.
-- Generic IMAP/SMTP accounts (any non-Gmail, non-M365 server).
+- POP3 accounts: mail downloaded, labels kept in uplink only; deleting
+  from the server after download opt-in per account.
+- IMAP push by IDLE (or NOTIFY, RFC 5465, for all folders at once).
+- Deciding an SMTP send of unknown outcome in the outbox ("send again",
+  "it went out"; SPEC §8.11).
 - Gmail push: API notifications via Cloud Pub/Sub, pulled over REST (SPEC §8.1).
 - JMAP support.
 - Server-side filters/rules.

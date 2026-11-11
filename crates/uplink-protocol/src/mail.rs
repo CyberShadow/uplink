@@ -50,6 +50,8 @@ pub struct ListingProgress {
 pub enum MailProvider {
     Gmail,
     M365,
+    /// Any mail server, by IMAP and SMTP.
+    Imap,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]

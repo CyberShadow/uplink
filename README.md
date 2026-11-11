@@ -156,7 +156,7 @@ uplink is young. What it connects to so far:
 
 |          | Supported                                   | Planned                                    |
 |----------|---------------------------------------------|--------------------------------------------|
-| Mail     | Gmail, Microsoft 365                        | Any IMAP/SMTP server, JMAP                 |
+| Mail     | Gmail, Microsoft 365, any IMAP/SMTP server  | POP3, JMAP                                 |
 | Calendar | Microsoft 365 (viewing)                     | Editing; Google Calendar, CalDAV, iCalendar feeds |
 | Chat     | Matrix, and every network bridged to it     |                                            |
 | To-dos   | uplink's own                                | Google Tasks, Microsoft To Do, CalDAV      |
@@ -264,6 +264,33 @@ the account up once restarted; changes made in Outlook arrive within
 30 s. Folders are labels of which a message has one; categories are
 labels too. The account's calendar, from a month ago to a year ahead,
 is under Calendar (`g c`), within 5 minutes of a change.
+
+### Connecting any other mail account (IMAP and SMTP)
+
+In `uplink.yaml`, uncomment the IMAP account and set `address` and the
+two servers' `host`. They are reached over TLS on ports 993 (IMAP) and
+465 (SMTP); add `security: starttls` to a server reached by STARTTLS
+instead (ports 143 and 587), or `port` for another port, and `user` if
+the servers know you by a name other than your address. Then set the
+password, which uplink seals in its data directory (an app password, if
+your provider gives those for mail clients):
+
+```sh
+./result/bin/uplink password --account alice-mail
+```
+
+For a provider that signs mail clients in with OAuth (XOAUTH2) instead,
+give the account an `oauth` block of your own OAuth client (`client_id`,
+`client_secret` if it has one, `auth_url`, `token_url` and `scope`, as
+the provider documents them; the scope must yield a refresh token) and
+run `uplink oauth init --account alice-mail`.
+
+Folders are labels of which a message has one; the server's Sent,
+Drafts, Trash, Junk and Archive folders are uplink's, and an Archive is
+made if there is none. Read and starred are the `\Seen` and `\Flagged`
+flags, and other keywords are labels. Changes made in other mail
+clients arrive within 30 s. Sent mail goes by SMTP, and uplink files
+the copy in Sent itself.
 
 ### Connecting a Matrix account
 

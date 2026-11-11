@@ -3,7 +3,9 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use uplink_config::{AccountConfig, Config, M365AccountConfig};
-use uplink_email::{gmail::oauth as gmail_oauth, m365::oauth as m365_oauth};
+use uplink_email::{
+    gmail::oauth as gmail_oauth, imap::session as imap_session, m365::oauth as m365_oauth, oauth,
+};
 use uplink_matrix::client;
 use uplink_storage::seal::MasterKey;
 
@@ -28,6 +30,14 @@ enum Command {
     /// Print the bcrypt hash of a password read from standard input, for
     /// `server.basic_auth.password_bcrypt`.
     HashPassword,
+    /// Set the password an IMAP account signs in to its servers with,
+    /// sealing it in the data directory; read from the terminal, or from
+    /// standard input.
+    Password {
+        /// The account's id in the configuration.
+        #[arg(long)]
+        account: String,
+    },
     /// Manage accounts' OAuth authorization.
     Oauth {
         #[command(subcommand)]
@@ -89,6 +99,7 @@ async fn main() -> Result<()> {
             println!("{}", bcrypt::hash(password, 12)?);
             Ok(())
         }
+        Command::Password { account } => set_password(&cli.config, &account),
         Command::Oauth {
             command: OauthCommand::Init { account },
         } => oauth_init(&cli.config, &account).await,
@@ -96,6 +107,35 @@ async fn main() -> Result<()> {
             command: MatrixCommand::Pair { account },
         } => matrix_pair(&cli.config, &account).await,
     }
+}
+
+fn set_password(config_path: &std::path::Path, id: &str) -> Result<()> {
+    let config = Config::load(config_path)?;
+    let account = config
+        .accounts
+        .iter()
+        .find_map(|account| match account {
+            AccountConfig::Imap(imap) if imap.id == id => Some(imap),
+            _ => None,
+        })
+        .with_context(|| format!("no IMAP account {id} in {}", config_path.display()))?;
+    anyhow::ensure!(
+        account.oauth.is_none(),
+        "{id} signs in with OAuth: authorize it with `uplink oauth init --account {id}`"
+    );
+    let key = MasterKey::open(&config.master_key_file())?;
+    let password = Prompt::new().secret(&format!(
+        "Password of {} at {}: ",
+        account.user(),
+        account.imap.host
+    ))?;
+    anyhow::ensure!(!password.is_empty(), "no password given");
+    imap_session::store_password(&key, account, &password)?;
+    println!(
+        "The password is sealed in {}; a running uplink signs in with it from its next attempt.",
+        account.password_file.display()
+    );
+    Ok(())
 }
 
 async fn matrix_pair(config_path: &std::path::Path, id: &str) -> Result<()> {
@@ -266,10 +306,32 @@ async fn oauth_init(config_path: &std::path::Path, id: &str) -> Result<()> {
                         "If the browser is on another machine, paste the URL it is redirected to here."
                     );
                 },
-                gmail_oauth::read_pasted_url(),
+                oauth::read_pasted_url(),
             )
             .await?;
             &account.oauth.token_file
+        }
+        AccountConfig::Imap(account) => {
+            imap_session::authorize(
+                account,
+                &key,
+                |url| {
+                    println!(
+                        "Open this URL in a browser and sign in as {}:\n\n{url}\n",
+                        account.address
+                    );
+                    println!(
+                        "If the browser is on another machine, paste the URL it is redirected to here."
+                    );
+                },
+                oauth::read_pasted_url(),
+            )
+            .await?;
+            &account
+                .oauth
+                .as_ref()
+                .expect("authorize refuses accounts without OAuth")
+                .token_file
         }
         AccountConfig::M365(account) => {
             m365_init(account, &key).await?;

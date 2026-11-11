@@ -48,6 +48,13 @@ pub trait Provider: Send + Sync + 'static {
     /// `account.kind`.
     const KIND: &'static str;
 
+    /// Whether the provider files its copy of a message in Sent as it
+    /// accepts it, so that a sync not finding the copy shows a send of
+    /// unknown outcome did not go out, and it is sent again (SPEC §6.7).
+    /// Otherwise such a send stays unknown until its copy turns up, or the
+    /// user decides.
+    const FILES_SENT: bool;
+
     /// Records the mailbox's changes since the last sync (all of it, the
     /// first time), or a bounded part of them; `true` if more remain to
     /// record at once. Pushing and sending go between calls, so that
@@ -352,7 +359,7 @@ impl<P: Provider> SyncTask<P> {
             *synced_since = Some(began);
         }
         self.provider.push(&self.account).await?;
-        if let Some(since) = *synced_since {
+        if let (true, Some(since)) = (P::FILES_SENT, *synced_since) {
             self.settle_unknown(since).await?;
         }
         Ok((more, self.send_due().await?))

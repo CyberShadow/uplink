@@ -77,6 +77,10 @@ pub struct MailboxObserved {
     /// All of the account's labels, when they were listed. Required before
     /// entries may carry a label not seen before.
     pub labels: Option<Vec<ObservedLabel>>,
+    /// Known entries the provider now knows by another id, as an IMAP
+    /// server does a message moved to another folder (SPEC §8.10). Applied
+    /// first: `updated` and `removed` name entries by their new ids.
+    pub rekeyed: Vec<Rekeyed>,
     /// Entries fetched for the first time.
     pub added: Vec<NewEntry>,
     /// Current labels of known entries.
@@ -129,6 +133,13 @@ pub struct NewEntry {
 }
 
 #[derive(Debug, Serialize)]
+pub struct Rekeyed {
+    /// The entry's external id until now.
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Serialize)]
 pub struct EntryLabels {
     pub external_id: String,
     /// External label ids.
@@ -175,6 +186,18 @@ impl Observation for MailboxObserved {
                 })
                 .collect()
         };
+
+        for rekeyed in &self.rekeyed {
+            let changed = tx.execute(
+                "UPDATE mail_entry SET external_id = ?1 WHERE account_id = ?2 AND external_id = ?3",
+                [&rekeyed.to, account, &rekeyed.from],
+            )?;
+            ensure!(
+                changed == 1,
+                "entry {} of account {account} is not known",
+                rekeyed.from
+            );
+        }
 
         let mut label_changes = vec![];
 

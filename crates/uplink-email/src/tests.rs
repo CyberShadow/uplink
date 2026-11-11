@@ -155,6 +155,7 @@ pub(crate) fn observed(
     MailboxObserved {
         account_kind: "gmail",
         labels,
+        rekeyed: vec![],
         added,
         updated: updated
             .into_iter()
@@ -2345,6 +2346,7 @@ struct Stepping {
 
 impl crate::account::Provider for Stepping {
     const KIND: &'static str = "gmail";
+    const FILES_SENT: bool = true;
 
     async fn sync(&self, _: &crate::account::Account) -> anyhow::Result<bool> {
         self.calls.lock().unwrap().push("sync");
@@ -2410,6 +2412,7 @@ struct Failing {
 
 impl crate::account::Provider for Failing {
     const KIND: &'static str = "gmail";
+    const FILES_SENT: bool = true;
 
     async fn sync(&self, _: &crate::account::Account) -> anyhow::Result<bool> {
         Ok(false)

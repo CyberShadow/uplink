@@ -106,6 +106,8 @@ struct Seen {
 
 impl Provider for M365Sync {
     const KIND: &'static str = KIND;
+    // Filed as it is accepted (SPEC §6.7).
+    const FILES_SENT: bool = true;
 
     /// Records all of the changes in one call: a first sync blocks pushes
     /// and sends until done (SPEC §8.3), unlike Gmail's.
@@ -602,6 +604,7 @@ fn observed() -> MailboxObserved {
     MailboxObserved {
         account_kind: KIND,
         labels: None,
+        rekeyed: vec![],
         added: vec![],
         updated: vec![],
         removed: vec![],

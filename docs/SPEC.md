@@ -123,7 +123,8 @@ Quick references so the reader doesn't have to flip:
   event types render as raw JSON.
 - E2EE on the client — server decrypts, client receives plaintext.
 - SPA-side Matrix device-verification UI. Pairing is a CLI subcommand.
-- SMTP send. Gmail sends via Gmail API; M365 sends via Graph.
+- SMTP send for Gmail and M365: Gmail sends via Gmail API, M365 via Graph;
+  SMTP serves IMAP accounts only (§8.11).
 - Drafts on the wire (only local drafts in MVP).
 - Calendar write (M365 read-only). Google Calendar, CalDAV, ICS feeds: out.
 - TODO backends other than local SQLite.
@@ -272,6 +273,15 @@ accounts:
     address: alice@example.com
     oauth:
       client_id: "11111111-2222-3333-4444-555555555555"
+
+  # — Any mail server — IMAP and SMTP over TLS (`security: starttls` to
+  # upgrade instead; ports default to 993 and 465, or 143 and 587), the
+  # password sealed by `uplink password` (§13.4), or `oauth` (§13.7).
+  - id: alice-mail
+    kind: imap
+    address: alice@example.org
+    imap: { host: imap.example.org }
+    smtp: { host: smtp.example.org }
 
   # — Matrix — the device is created once by `uplink matrix pair` (§9.4).
   # No password in YAML.
@@ -1179,6 +1189,10 @@ that a cancel knows whether it can still be fulfilled locally. Then:
   - Graph the same way, its copy filed in Sent Items. As Graph sends a
     draft created first, by its id (§8.4), sending it again is safe
     regardless: a draft already sent is not sent twice.
+  - SMTP (IMAP accounts) not so: the copy in Sent is filed by uplink
+    once the server accepted the message, so its absence shows nothing,
+    and the send stays unknown until a copy turns up or the user
+    decides (§8.11). Providers say which they are (`FILES_SENT`).
 
 SMTP and Gmail's `messages.send` take no idempotency key (RFC 1047
 describes the duplicate a lost acknowledgement causes); observing the
@@ -1312,7 +1326,7 @@ sent, remove it once acknowledged, and re-send pending edits on startup.
 
 ---
 
-## 8. Email pipeline (Gmail + M365)
+## 8. Email pipeline (Gmail, M365, IMAP)
 
 ### 8.1 Gmail — receive
 
@@ -1707,6 +1721,97 @@ like everything) serves one as a download: `Content-Disposition:
 attachment`, `nosniff`, and `Content-Security-Policy: sandbox`, so that
 an HTML attachment opened anyway cannot act as uplink's page. Attaching
 files to drafts: §7.4.
+
+### 8.10 IMAP — receive
+
+Any mail server: account kind `imap`, read by IMAP (`async-imap`, over
+TLS from the start or by STARTTLS; never in the clear) and sent from by
+SMTP (§8.11). Gmail and Microsoft 365 keep their own kinds, whose APIs
+fit uplink better (§8.1, §8.3).
+
+- **Sign-in**: the user name (the address unless `user` says otherwise)
+  and the password `uplink password --account <id>` seals
+  (`accounts/<id>.password`, §13.4), read at each sign-in so a new one
+  applies without a restart; or, with `oauth` configured, an access
+  token by XOAUTH2 (§13.7).
+- **Folders** are labels, an entry in exactly one, as Microsoft 365's
+  (§8.3), and they take the same ids: `INBOX`, and the special-use
+  folders (RFC 6154, from `LIST`) `\Sent` → `SENT`, `\Drafts` → `DRAFT`,
+  `\Trash` → `TRASH`, `\Junk` → `SPAM`, `\Archive` → `ARCHIVE`; a server
+  without the attribute has the folder of the usual name (`Sent`, `Sent
+  Items`, …, `Archive`), and one without either has it made when first
+  filed in (`CREATE`), so that archiving works everywhere. Virtual
+  folders that show what others hold (`\All`, `\Flagged`) are left out,
+  as are those that cannot hold mail (`\Noselect`). Other folders are
+  `mailbox:<name>`, named by their decoded path (modified UTF-7, the
+  server's hierarchy delimiter shown as `/`).
+- **State labels**: `\Seen` unset is `UNREAD`, `\Flagged` is `STARRED`;
+  keywords are labels `kw:<keyword>`, but for those of clients'
+  conventions (`$Forwarded`, `$Junk`, …). A message with `\Deleted` is
+  gone, as other clients show it.
+- **Entries** are keyed `<uidvalidity>:<uid>:<folder>`. IMAP has no id
+  that survives a move (OBJECTID, RFC 8474, is not widespread), so a
+  message moved gets a new key: an entry gone from one folder whose
+  Message-ID is new in another moved there, and is re-keyed
+  (`MailboxObserved.rekeyed`), not removed and added, so that what the
+  user did to it, and its undo, stay with it. That holds for moves by
+  uplink (§6.6) and by other clients, and for a folder renamed.
+- **A step** checks every folder's `STATUS` (messages, UIDNEXT,
+  UIDVALIDITY, and with CONDSTORE, RFC 7162, HIGHESTMODSEQ); with
+  CONDSTORE, a folder as recorded has not changed and is skipped. A
+  folder that changed is selected; `UID SEARCH UNDELETED` lists what it
+  holds, against which the entries recorded in it are gone or kept, and
+  the rest is new; flags are fetched for all, or with CONDSTORE those
+  changed since the recorded mod-sequence, and recorded where they
+  differ from what is observed. A UIDVALIDITY changed makes the folder's
+  entries gone (and, by Message-ID, re-keyed to the new UIDs). New mail
+  is fetched (`BODY.PEEK[]`, so not marked read; `INTERNALDATE` is when
+  it was received) 50 at a time, Inbox first and newest first, each
+  step one log entry, so a first sync goes in steps between which the
+  task pushes and sends, as Gmail's listing does (§8.1); the account is
+  listing until the first sync has fetched all. Where it has got is not
+  kept: each step finds what is still new anew. A folder's state is
+  recorded once all its new mail is (`account.sync_state`:
+  `{"listing": …, "folders": {<name>: {uidvalidity, uidnext, messages,
+  highestmodseq}}}`); a step that changes nothing records nothing.
+  Polled every 30 s; IDLE is deferred (ROADMAP).
+- **Threading**: IMAP servers give no thread ids, so they are the
+  headers': the first message a message's `References` names, else the
+  one it replies to (`In-Reply-To`), else itself. Unlike Gmail's, such
+  threads do not join messages by subject.
+- **Push**: a message's flags are stored (`UID STORE +FLAGS.SILENT` /
+  `-FLAGS.SILENT`), then, if its folder is to change, it is moved (`UID
+  MOVE`, RFC 6851; without it, `UID COPY`, `\Deleted` and `UID EXPUNGE`,
+  RFC 4315; a server with neither refuses moves, as the plain `EXPUNGE`
+  would remove others' deleted mail too). The moved message's new key is
+  found by the next step, before any further push (§6.6's task order).
+  A `NO` is a refusal; an entry whose folder or UIDVALIDITY is gone is
+  left for the next step to re-key or remove.
+- **Connection**: one per account, kept between steps and made anew
+  after a failure.
+
+### 8.11 SMTP — send
+
+- **Transport**: SMTP submission (`mail-send`, the stalwartlabs crate
+  beside mail-parser and mail-builder), over TLS from the start (port
+  465) or by STARTTLS (587), signed in as IMAP is. The envelope is the
+  message's To, Cc and Bcc; the Bcc header is left out of what is
+  transmitted.
+- **Outcome**: a failure before the message is written (connecting,
+  signing in, `MAIL`, `RCPT`) did not send it: a 5xx reply refuses it, a
+  4xx or a broken connection leaves it to be tried again. A reply to
+  `DATA` says what became of it; no reply, once it was written, is an
+  unknown outcome (§6.7).
+- **Sent**: SMTP leaves filing to the client, so once the server accepts
+  the message, it is `APPEND`ed to Sent (`\Seen`), the copy that becomes
+  its entry when synced (§8.6). If that fails, it was sent all the same,
+  and is listed as waiting for its copy.
+- **Unknown outcomes are not resent**: as the copy in Sent is uplink's,
+  filed only once the server accepted the message, finding none does not
+  show that it did not go out (unlike Gmail's and Graph's, §6.7). Such a
+  send stays unknown until its copy turns up (a server that files
+  submitted mail itself) or the user decides. (Open: a way to decide in
+  the outbox: "send again" or "it went out".)
 
 ---
 
@@ -2863,6 +2968,11 @@ rather than requested per sign-in:
   file the attacker must also exfiltrate (a backup that leaves it out
   leaves the tokens sealed).
 - Costs: ~50 LOC. Worth it.
+- IMAP accounts' passwords are sealed the same way
+  (`accounts/<id>.password`, by `uplink password --account <id>`,
+  which reads it from the terminal or standard input): the server needs
+  the password itself to sign in, so it cannot be hashed, and none is
+  in the YAML.
 
 ### 13.5 Matrix credentials
 
@@ -2887,6 +2997,19 @@ into `uplink matrix pair` once.
   cert; existing connections continue with the old.
 - BYO cert. No ACME in MVP — user can use `certbot` or Caddy as a
   reverse-proxy for cert acquisition if needed.
+- Mail servers (§8.10–8.11) are verified as browsers verify sites
+  (`rustls-platform-verifier`: the system's roots).
+
+### 13.7 OAuth flow (IMAP and SMTP)
+
+For servers that sign in by XOAUTH2, an account's `oauth` names the
+provider's client and endpoints (`client_id`, optional `client_secret`,
+`auth_url`, `token_url`, `scope`, which must ask for a refresh token,
+e.g. `offline_access`). `uplink oauth init --account <id>` runs the
+flow Gmail's does (§13.2: PKCE, a loopback redirect on any port, or the
+redirected URL pasted), and the refresh token is sealed in
+`accounts/<id>.token`; access tokens are refreshed as they expire, and
+one the server refuses is refreshed for the next sign-in.
 
 ---
 
@@ -3314,6 +3437,15 @@ request).
   MIME (`POST /me/messages`), sent by id (`POST /me/messages/{id}/send`,
   refused for a message no longer a draft), and a folder's messages
   filtered by `internetMessageId`.
+- **IMAP and SMTP:** Stalwart (single-binary Rust mail server, from
+  nixpkgs; IMAP, POP3, SMTP and JMAP), a real server rather than a fake.
+  The Rust tests (`tests/imap_sync.rs`) start one per test
+  (`UPLINK_STALWART`), its users in its in-memory directory and its TLS
+  by a certificate the test makes and trusts, and play other mail
+  clients over IMAP: delivering by `APPEND`, flagging, moving and
+  expunging; mail uplink sends goes through its SMTP to the other
+  user's Inbox. Its folders have special-use attributes but no Archive,
+  which uplink then makes.
 - **Matrix:** Conduit (single-binary Rust homeserver, from nixpkgs), a
   real homeserver rather than a fake. The Rust tests start one per test
   (`UPLINK_CONDUIT`, set by the dev shell and the checks; in the build

@@ -18,8 +18,8 @@ import { RoomAvatar } from './RoomAvatar'
 import { RoomStarter } from './RoomStarter'
 
 /** The system labels worth a place in the nav, in Gmail's order; Microsoft
- * 365's well-known folders have the ids of the Gmail labels that mean the
- * same, and an Archive besides. */
+ * 365's well-known folders, and IMAP servers' special-use ones, have the ids
+ * of the Gmail labels that mean the same, and an Archive besides. */
 const SYSTEM: Record<string, { name: string; icon: IconName }> = {
   INBOX: { name: 'Inbox', icon: 'inbox' },
   STARRED: { name: 'Starred', icon: 'star' },
@@ -32,7 +32,7 @@ const SYSTEM: Record<string, { name: string; icon: IconName }> = {
   TRASH: { name: 'Trash', icon: 'trash' },
 }
 
-const PROVIDER: Record<MailProvider, string> = { gmail: 'Gmail', m365: 'Outlook' }
+const PROVIDER: Record<MailProvider, string> = { gmail: 'Gmail', m365: 'Outlook', imap: 'Server' }
 
 /** The account's system labels worth listing, then its own; All Mail goes
  * between them. */

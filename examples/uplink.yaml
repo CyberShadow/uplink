@@ -61,6 +61,18 @@ accounts: []
   #   oauth:
   #     client_id: "11111111-2222-3333-4444-555555555555"
 
+  # — Any other mail account — IMAP and SMTP over TLS, on ports 993 and
+  # 465 unless `port` says otherwise; `security: starttls` for STARTTLS
+  # (ports 143 and 587). Then run `uplink password --account alice-mail`,
+  # or, with an `oauth` block (see README.md), `uplink oauth init`.
+  # - id: alice-mail
+  #   kind: imap
+  #   address: alice@example.org
+  #   imap:
+  #     host: imap.example.org
+  #   smtp:
+  #     host: smtp.example.org
+
   # — Matrix — run `uplink matrix pair --account alice-matrix`.
   # - id: alice-matrix
   #   kind: matrix

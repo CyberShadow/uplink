@@ -31,7 +31,7 @@ use uplink_calendar::service::Calendar;
 use uplink_config::{
     AccountConfig, BasicAuthConfig, Config, ConfigChanged, ConfigSection, Watcher,
 };
-use uplink_email::{gmail, m365, query::ConfiguredAccount, service::Mail};
+use uplink_email::{gmail, imap, m365, query::ConfiguredAccount, service::Mail};
 use uplink_matrix::service::Matrix;
 use uplink_protocol::{
     mail::MailProvider, ClientRequest, ErrorCode, Notice, ServerError, ServerResponse, TxLogId,
@@ -173,6 +173,12 @@ pub fn start_syncs(config: &Config, services: &Services) -> Result<()> {
                 tokio::spawn(sync.run());
                 tokio::spawn(calendar.run());
             }
+            AccountConfig::Imap(account) => {
+                let sync =
+                    imap::sync::task(account, key.clone(), http.clone(), dispatcher.clone(), root)?;
+                info!(account = account.id, "starting IMAP sync");
+                tokio::spawn(sync.run());
+            }
             AccountConfig::Matrix(account) => {
                 let sync = uplink_matrix::sync::Sync::new(
                     account,
@@ -231,6 +237,11 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
                 address: m365.address.clone(),
                 provider: MailProvider::M365,
             }),
+            AccountConfig::Imap(imap) => Some(ConfiguredAccount {
+                id: imap.id.clone(),
+                address: imap.address.clone(),
+                provider: MailProvider::Imap,
+            }),
             AccountConfig::Matrix(_) => None,
         })
         .collect();
@@ -242,7 +253,7 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
                 id: matrix.id.clone(),
                 mxid: matrix.mxid.clone(),
             }),
-            AccountConfig::Gmail(_) | AccountConfig::M365(_) => None,
+            AccountConfig::Gmail(_) | AccountConfig::M365(_) | AccountConfig::Imap(_) => None,
         })
         .collect();
     Ok(Services {

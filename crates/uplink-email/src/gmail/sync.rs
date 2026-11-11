@@ -119,6 +119,8 @@ enum Next {
 
 impl Provider for GmailSync {
     const KIND: &'static str = KIND;
+    // Filed as it is accepted (SPEC §6.7).
+    const FILES_SENT: bool = true;
 
     /// Polls; or, listing the mailbox, takes one step: one page listed, or
     /// one batch of its messages fetched.
@@ -205,6 +207,7 @@ impl GmailSync {
             .observe(MailboxObserved {
                 account_kind: KIND,
                 labels,
+                rekeyed: vec![],
                 added,
                 updated,
                 removed,
@@ -466,6 +469,7 @@ fn observed() -> MailboxObserved {
     MailboxObserved {
         account_kind: KIND,
         labels: None,
+        rekeyed: vec![],
         added: vec![],
         updated: vec![],
         removed: vec![],

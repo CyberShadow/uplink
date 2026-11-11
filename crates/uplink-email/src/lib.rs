@@ -4,6 +4,7 @@
 pub mod account;
 pub mod compose;
 pub mod gmail;
+pub mod imap;
 pub mod m365;
 pub mod mailbox;
 pub mod oauth;
