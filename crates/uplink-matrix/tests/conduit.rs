@@ -1298,6 +1298,17 @@ async fn verifying_with_another_device_by_emoji() {
     })
     .await;
     assert!(!unverified.verified);
+    // The phone ignores a request from a device whose keys it has not
+    // fetched yet, as a person, slower than this test, would not see.
+    let device_id = matrix_sdk::ruma::OwnedDeviceId::from(unverified.device_id.as_str());
+    eventually("the phone to know uplink's device", || async {
+        alice_phone
+            .encryption()
+            .get_device(alice_phone.user_id().unwrap(), &device_id)
+            .await
+            .unwrap()
+    })
+    .await;
     // Once uplink's client knows the account's cross-signing identity.
     let asked = eventually("uplink to ask to verify", || async {
         match uplink.matrix.verify_device("mx", None).await {
