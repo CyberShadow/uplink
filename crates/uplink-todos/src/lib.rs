@@ -10,6 +10,7 @@ use uplink_protocol::{
     todos::{Todo, TodoEdit, TodoId, TodosChanged},
     ServerEvent,
 };
+use uplink_query::{text_matches, Kind, Query, Term};
 use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 use uplink_tx_log::{Applied, Conflict, Inverse, Op, Registry};
 
@@ -49,6 +50,61 @@ pub fn todos(conn: &Connection) -> Result<Vec<Todo>> {
         ))?
         .query_map([], todo_row)?
         .collect::<Result<_, _>>()?)
+}
+
+/// The to-dos `query` matches (SPEC §8.7), as `todos` orders them, `today`
+/// being the user's (days since 1970-01-01): by title and notes, due
+/// date, and whether done. Done ones are left out unless the query names
+/// `is:done`, as mail's Trash is unless named.
+pub fn matching(conn: &Connection, query: &Query, today: i64) -> Result<Vec<Todo>> {
+    let done = uplink_query::names(query, &|t| *t == Term::Done);
+    let today = uplink_query::date_of(today);
+    Ok(todos(conn)?
+        .into_iter()
+        .filter(|todo| done || todo.done_at.is_none())
+        .filter(|todo| uplink_query::matches(query, &|term| term_matches(todo, term, &today)))
+        .collect())
+}
+
+fn term_matches(todo: &Todo, term: &Term, today: &str) -> bool {
+    match term {
+        Term::Text {
+            fields: None,
+            text,
+            exact,
+        } => text_matches(&todo.title, text, *exact) || text_matches(&todo.notes, text, *exact),
+        Term::Kind(kind) => *kind == Kind::Todo,
+        Term::Due(day) => {
+            let today = uplink_query::days(today).expect("today is a date");
+            todo.due.as_deref() == Some(uplink_query::date_of(day.days(today)).as_str())
+        }
+        Term::Overdue => {
+            todo.done_at.is_none() && todo.due.as_deref().is_some_and(|due| due < today)
+        }
+        Term::HasDue => todo.due.is_some(),
+        Term::Done => todo.done_at.is_some(),
+        // Of everything, as Trash and Spam are not of to-dos.
+        Term::Anywhere => true,
+        Term::After(at) => todo.created_at >= *at,
+        Term::Before(at) => todo.created_at < *at,
+        // Of other kinds.
+        Term::Text {
+            fields: Some(_), ..
+        }
+        | Term::Me(_)
+        | Term::Label(_)
+        | Term::Account(_)
+        | Term::HasAttachment
+        | Term::Larger(_)
+        | Term::Smaller(_)
+        | Term::MessageId(_)
+        | Term::Unread
+        | Term::Mention
+        | Term::Notifying
+        | Term::Direct
+        | Term::Invited
+        | Term::Space(_) => false,
+    }
 }
 
 fn todo(tx: &Transaction, id: TodoId) -> Result<Todo> {

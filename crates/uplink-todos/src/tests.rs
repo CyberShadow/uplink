@@ -178,3 +178,45 @@ async fn requests_are_checked() {
     );
     assert_eq!(code(db.todos.delete(TodoId(7)).await), ErrorCode::Conflict);
 }
+
+#[tokio::test]
+async fn queries_match_todos_by_text_due_dates_and_done() {
+    let db = Db::new();
+    db.create("Pay rent", Some("2026-11-10")).await;
+    db.create("Call the dentist", Some("2026-11-11")).await;
+    db.create("Book flights", Some("2026-11-12")).await;
+    db.create("Read a book", None).await;
+    let done = db
+        .list()
+        .await
+        .into_iter()
+        .find(|t| t.title == "Read a book")
+        .unwrap();
+    db.edit(done.id, TodoEdit::Done { done: true }).await;
+    let today = uplink_query::days("2026-11-11").unwrap();
+    let matching = |query: &str| -> Vec<String> {
+        let conn = uplink_storage::open_reader(db._dir.path()).unwrap();
+        let query = uplink_query::parse(query, 0).unwrap();
+        crate::matching(&conn, &query, today)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.title)
+            .collect()
+    };
+    assert_eq!(matching("is:overdue"), ["Pay rent"]);
+    assert_eq!(matching("due:today"), ["Call the dentist"]);
+    assert_eq!(
+        matching("due:tomorrow OR due:2026-11-10"),
+        ["Pay rent", "Book flights"]
+    );
+    assert_eq!(matching("book"), ["Book flights"], "done ones are left out");
+    assert_eq!(matching("book is:done"), ["Read a book"]);
+    assert_eq!(matching("is:todo -has:due"), Vec::<String>::new());
+    assert_eq!(
+        matching("is:todo"),
+        ["Pay rent", "Call the dentist", "Book flights"]
+    );
+    // Terms of other kinds are false of to-dos.
+    assert!(matching("is:unread OR from:me OR is:room").is_empty());
+    assert_eq!(matching("-is:unread").len(), 3);
+}

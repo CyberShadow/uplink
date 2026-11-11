@@ -8,6 +8,7 @@ license.workspace = true
 uplink-calendar = { path = "../uplink-calendar" }
 uplink-config = { path = "../uplink-config" }
 uplink-protocol = { path = "../uplink-protocol" }
+uplink-query = { path = "../uplink-query" }
 uplink-realtime = { path = "../uplink-realtime" }
 uplink-storage = { path = "../uplink-storage" }
 uplink-tx-log = { path = "../uplink-tx-log" }

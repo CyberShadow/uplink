@@ -53,7 +53,7 @@ pub(crate) const SHOWN: &str = "(SELECT json_group_array(tag) FROM
 
 /// The tag as the user knows it: Element's name of its own, a user tag's
 /// name, or else as it is.
-fn name(tag: &str) -> &str {
+pub(crate) fn name(tag: &str) -> &str {
     match tag {
         FAVOURITE => "Favourite",
         LOW_PRIORITY => "Low priority",

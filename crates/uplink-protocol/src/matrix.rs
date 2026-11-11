@@ -74,6 +74,9 @@ pub struct Room {
     pub membership_error: Option<String>,
     /// Whether the room is a space.
     pub space: bool,
+    /// Whether it is a direct chat, by the account's `m.direct` as the
+    /// room was last synced.
+    pub direct: bool,
     /// `mxc://server/media`: the room's avatar, or of a direct chat without
     /// one, the other user's. Served at
     /// `/api/rooms/{id}/avatar/{server}/{media}`.

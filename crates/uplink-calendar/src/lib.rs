@@ -13,6 +13,7 @@ use uplink_protocol::{
     calendar::{CalendarChanged, CalendarEvent, EventId},
     ServerEvent,
 };
+use uplink_query::{text_matches, Kind, Query, Term};
 use uplink_storage::rusqlite::{params, Transaction};
 use uplink_tx_log::{Observation, Observed};
 
@@ -145,6 +146,58 @@ fn events(count: usize) -> String {
     match count {
         1 => "1 event".to_owned(),
         n => format!("{n} events"),
+    }
+}
+
+/// The events `query` matches (SPEC §8.7), by subject, location and
+/// preview, account and start: those yet to end first, soonest first,
+/// then those past, latest first.
+pub fn matching(tx: &Transaction, query: &Query, now: i64) -> Result<Vec<CalendarEvent>> {
+    let all = events_between(tx, i64::MIN, i64::MAX)?;
+    let (mut coming, mut past): (Vec<_>, Vec<_>) = all
+        .into_iter()
+        .filter(|event| uplink_query::matches(query, &|term| term_matches(event, term)))
+        .partition(|event| event.end > now);
+    past.reverse();
+    coming.append(&mut past);
+    Ok(coming)
+}
+
+fn term_matches(event: &CalendarEvent, term: &Term) -> bool {
+    match term {
+        Term::Text {
+            fields: None,
+            text,
+            exact,
+        } => [&event.subject, &event.location, &event.preview]
+            .iter()
+            .any(|field| text_matches(field, text, *exact)),
+        Term::Kind(kind) => *kind == Kind::Event,
+        Term::Account(account) => event.account == *account,
+        // Of everything, as Trash and Spam are not of events.
+        Term::Anywhere => true,
+        Term::After(at) => event.start >= *at,
+        Term::Before(at) => event.start < *at,
+        // Of other kinds.
+        Term::Text {
+            fields: Some(_), ..
+        }
+        | Term::Me(_)
+        | Term::Label(_)
+        | Term::HasAttachment
+        | Term::Larger(_)
+        | Term::Smaller(_)
+        | Term::MessageId(_)
+        | Term::Unread
+        | Term::Mention
+        | Term::Notifying
+        | Term::Direct
+        | Term::Invited
+        | Term::Space(_)
+        | Term::Due(_)
+        | Term::Overdue
+        | Term::HasDue
+        | Term::Done => false,
     }
 }
 

@@ -1,7 +1,6 @@
 //! Read-only queries over mailbox state, on a reader connection. Each runs
 //! in one read transaction and reports the log position it reflects.
 
-use crate::search::{Fields, Invalid, Query, Term};
 use anyhow::{Context, Result};
 use uplink_protocol::{
     mail::{
@@ -10,6 +9,7 @@ use uplink_protocol::{
     },
     TxLogId,
 };
+use uplink_query::{Fields, Invalid, Kind, Query, Term};
 use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 use uplink_tx_log::as_of;
 
@@ -87,7 +87,6 @@ const ENTRY_COLUMNS: &str = "e.id, e.account_id, e.message, e.thread_id, e.recei
 
 /// A page of conversations, newest first.
 pub struct Page {
-    pub as_of: TxLogId,
     pub conversations: Vec<Conversation>,
     pub next: Option<ListPosition>,
     pub scope: ListScope,
@@ -132,9 +131,52 @@ enum Condition {
     Account(String),
     /// Any other: SQL over the entry alias it is given.
     Sql(Box<dyn Fn(&str) -> String>),
+    /// Of every entry, or none: as a term mail lacks (`is:room`) is false.
+    Const(bool),
 }
 
 impl Condition {
+    /// All of `all`, constants folded away.
+    fn and(all: Vec<Condition>) -> Condition {
+        let mut kept = vec![];
+        for c in all {
+            match c {
+                Condition::Const(true) => {}
+                Condition::Const(false) => return Condition::Const(false),
+                c => kept.push(c),
+            }
+        }
+        match kept.len() {
+            0 => Condition::Const(true),
+            1 => kept.pop().unwrap(),
+            _ => Condition::And(kept),
+        }
+    }
+
+    /// Any of `any`, constants folded away.
+    fn or(any: Vec<Condition>) -> Condition {
+        let mut kept = vec![];
+        for c in any {
+            match c {
+                Condition::Const(false) => {}
+                Condition::Const(true) => return Condition::Const(true),
+                c => kept.push(c),
+            }
+        }
+        match kept.len() {
+            0 => Condition::Const(false),
+            1 => kept.pop().unwrap(),
+            _ => Condition::Or(kept),
+        }
+    }
+
+    fn not(c: Condition) -> Condition {
+        match c {
+            Condition::Const(b) => Condition::Const(!b),
+            c => Condition::Not(Box::new(c)),
+        }
+    }
+
     /// SQL: whether entry `x` meets it.
     fn sql(&self, x: &str) -> String {
         let join = |all: &[Condition], with: &str, empty: &str| match all {
@@ -160,6 +202,8 @@ impl Condition {
             ),
             Condition::Account(account) => format!("{x}.account_id = {}", literal(account)),
             Condition::Sql(sql) => sql(x),
+            Condition::Const(true) => "1".into(),
+            Condition::Const(false) => "0".into(),
         }
     }
 }
@@ -193,10 +237,21 @@ fn in_scope(scope: &ListScope, x: &str) -> String {
     }
 }
 
+/// What a label or account no mail account has makes of a query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unknown {
+    /// An error, as in a list of mail: a misspelt name lists nothing.
+    Refuse,
+    /// A term false of mail: of a query of other kinds too, whose names
+    /// were checked against all of them (a room's tag, a Matrix account).
+    False,
+}
+
 /// A query made SQL, with the names it holds resolved.
 struct Compiler<'a> {
     tx: &'a Transaction<'a>,
     accounts: &'a [ConfiguredAccount],
+    unknown: Unknown,
     /// Trash's and Spam's labels the query names, but not to exclude them.
     hiding: Vec<LabelId>,
     /// Whether it names `in:anywhere`, but not to exclude it.
@@ -216,17 +271,14 @@ impl Compiler<'_> {
                 for q in rest {
                     conditions.push(self.condition(q, positive)?);
                 }
-                match conditions.len() {
-                    1 => conditions.pop().unwrap(),
-                    _ => Condition::And(conditions),
-                }
+                Condition::and(conditions)
             }
-            Query::Or(any) => Condition::Or(
+            Query::Or(any) => Condition::or(
                 any.iter()
                     .map(|q| self.condition(q, positive))
                     .collect::<Result<_, _>>()?,
             ),
-            Query::Not(q) => Condition::Not(Box::new(self.condition(q, !positive)?)),
+            Query::Not(q) => Condition::not(self.condition(q, !positive)?),
             Query::Term(term) => self.term(term, positive)?,
         })
     }
@@ -266,26 +318,19 @@ impl Compiler<'_> {
                     }
                 }))
             }
-            Term::Label(name) => {
-                let labels: Vec<(LabelId, bool)> = self
-                    .tx
-                    .prepare(
-                        "SELECT id, external_id IN ('TRASH', 'SPAM') FROM label
-                         WHERE name = ?1 COLLATE NOCASE ORDER BY id",
-                    )?
-                    .query_map([name], |r| Ok((LabelId(r.get(0)?), r.get(1)?)))?
-                    .collect::<Result<_, _>>()?;
-                if labels.is_empty() {
-                    return Err(ListError::Invalid(Invalid(format!("no label {name}"))));
-                }
-                if positive {
-                    self.hiding
-                        .extend(labels.iter().filter(|(_, hiding)| *hiding).map(|(l, _)| *l));
-                }
-                Ok(Condition::Label(
-                    labels.into_iter().map(|(l, _)| l).collect(),
-                ))
-            }
+            Term::Label(name) => self.label(name, positive),
+            Term::Unread => self.label("UNREAD", positive),
+            Term::Kind(kind) => Ok(Condition::Const(*kind == Kind::Mail)),
+            // Of other kinds.
+            Term::Mention
+            | Term::Notifying
+            | Term::Direct
+            | Term::Invited
+            | Term::Space(_)
+            | Term::Due(_)
+            | Term::Overdue
+            | Term::HasDue
+            | Term::Done => Ok(Condition::Const(false)),
             Term::Anywhere => {
                 self.anywhere |= positive;
                 sql(Box::new(|_| "1".into()))
@@ -294,9 +339,14 @@ impl Compiler<'_> {
                 let configured = self
                     .accounts
                     .iter()
-                    .find(|a| a.id == *account || a.address.eq_ignore_ascii_case(account))
-                    .ok_or_else(|| ListError::Invalid(Invalid(format!("no account {account}"))))?;
-                Ok(Condition::Account(configured.id.clone()))
+                    .find(|a| a.id == *account || a.address.eq_ignore_ascii_case(account));
+                match (configured, self.unknown) {
+                    (Some(configured), _) => Ok(Condition::Account(configured.id.clone())),
+                    (None, Unknown::Refuse) => {
+                        Err(ListError::Invalid(Invalid(format!("no account {account}"))))
+                    }
+                    (None, Unknown::False) => Ok(Condition::Const(false)),
+                }
             }
             Term::HasAttachment => sql(Box::new(|x| {
                 format!(
@@ -315,6 +365,33 @@ impl Compiler<'_> {
                 }))
             }
         }
+    }
+}
+
+impl Compiler<'_> {
+    /// Entries with a label by this name, in any account.
+    fn label(&mut self, name: &str, positive: bool) -> Result<Condition, ListError> {
+        let labels: Vec<(LabelId, bool)> = self
+            .tx
+            .prepare(
+                "SELECT id, external_id IN ('TRASH', 'SPAM') FROM label
+                 WHERE name = ?1 COLLATE NOCASE ORDER BY id",
+            )?
+            .query_map([name], |r| Ok((LabelId(r.get(0)?), r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        if labels.is_empty() {
+            return match self.unknown {
+                Unknown::Refuse => Err(ListError::Invalid(Invalid(format!("no label {name}")))),
+                Unknown::False => Ok(Condition::Const(false)),
+            };
+        }
+        if positive {
+            self.hiding
+                .extend(labels.iter().filter(|(_, hiding)| *hiding).map(|(l, _)| *l));
+        }
+        Ok(Condition::Label(
+            labels.into_iter().map(|(l, _)| l).collect(),
+        ))
     }
 }
 
@@ -393,19 +470,31 @@ fn fts(query: &Query) -> Option<String> {
     }
 }
 
+/// Whether a mail label is by this name, ignoring case.
+pub fn label_known(tx: &Transaction, name: &str) -> Result<bool> {
+    Ok(tx
+        .query_row(
+            "SELECT 1 FROM label WHERE name = ?1 COLLATE NOCASE",
+            [name],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
 /// The conversations `query` lists, newest first, after `after`.
 pub fn conversations(
-    conn: &mut Connection,
+    tx: &Transaction,
     accounts: &[ConfiguredAccount],
     query: &Query,
+    unknown: Unknown,
     after: Option<ListPosition>,
     limit: u32,
 ) -> Result<Page, ListError> {
-    let tx = conn.transaction()?;
-    let as_of = as_of(&tx)?;
     let mut compiler = Compiler {
-        tx: &tx,
+        tx,
         accounts,
+        unknown,
         hiding: vec![],
         anywhere: false,
     };
@@ -424,7 +513,11 @@ pub fn conversations(
                 .collect::<Result<_, _>>()?,
         },
     };
-    let conversations = page(&tx, &scope, condition, after, limit)?;
+    let conversations = match condition {
+        // Of none, as a query of other kinds is: nothing to look for.
+        Condition::Const(false) => vec![],
+        condition => page(tx, &scope, condition, after, limit)?,
+    };
     let next = (conversations.len() == limit as usize).then(|| {
         let last = &conversations
             .last()
@@ -436,7 +529,6 @@ pub fn conversations(
         }
     });
     Ok(Page {
-        as_of,
         conversations,
         next,
         scope,

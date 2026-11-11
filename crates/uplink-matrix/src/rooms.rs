@@ -67,6 +67,8 @@ pub struct ObservedRoom {
     pub membership: Membership,
     /// Whether the room is a space (of type `m.space`).
     pub space: bool,
+    /// Whether it is a direct chat, by the account's `m.direct`.
+    pub direct: bool,
     /// `mxc://` URI: the room's avatar, or of a direct chat without one,
     /// the other user's.
     pub avatar: Option<String>,
@@ -337,7 +339,7 @@ impl Observation for Synced {
 
 /// The room's id, and whether it is new or its name, encryption,
 /// membership, type, avatar, topic, pinned events, power to pin, member
-/// count or space order changed.
+/// count, space order or being a direct chat changed.
 fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(RoomId, bool)> {
     let membership = membership_str(room.membership);
     type Stored = (
@@ -352,12 +354,13 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
         String,
         bool,
         Option<String>,
+        bool,
     );
     let pinned = serde_json::to_string(&room.pinned)?;
     let existing: Option<Stored> = tx
         .query_row(
             "SELECT id, name, encrypted, membership, space, avatar, topic, joined_members, pinned,
-                    may_pin, space_order
+                    may_pin, space_order, direct
              FROM matrix_room WHERE account_id = ?1 AND room_id = ?2",
             [account, &room.room_id],
             |r| {
@@ -373,6 +376,7 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                     r.get(8)?,
                     r.get(9)?,
                     r.get(10)?,
+                    r.get(11)?,
                 ))
             },
         )
@@ -390,6 +394,7 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
             old_pinned,
             may_pin,
             order,
+            direct,
         )) => {
             let changed = name != room.name
                 || encrypted != room.encrypted
@@ -400,7 +405,8 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                 || joined != room.joined_members
                 || old_pinned != pinned
                 || may_pin != room.may_pin
-                || order != room.space_order;
+                || order != room.space_order
+                || direct != room.direct;
             if changed {
                 // A membership or space order asked for is had, however it
                 // came about.
@@ -408,7 +414,7 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                     &format!(
                         "UPDATE matrix_room SET name = ?1, encrypted = ?2, membership = ?3,
                            space = ?4, avatar = ?5, topic = ?6, joined_members = ?7, pinned = ?9,
-                           may_pin = ?10,
+                           may_pin = ?10, direct = ?12,
                            membership_by = CASE WHEN desired = ?3 THEN NULL ELSE membership_by END,
                            membership_error =
                              CASE WHEN desired = ?3 THEN NULL ELSE membership_error END,
@@ -434,6 +440,7 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                         pinned,
                         room.may_pin,
                         room.space_order,
+                        room.direct,
                     ],
                 )?;
             }
@@ -443,8 +450,8 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
             let id = tx.query_row(
                 "INSERT INTO matrix_room
                    (account_id, room_id, name, encrypted, membership, space, avatar, topic,
-                    joined_members, pinned, may_pin, space_order)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) RETURNING id",
+                    joined_members, pinned, may_pin, space_order, direct)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) RETURNING id",
                 params![
                     account,
                     room.room_id,
@@ -458,6 +465,7 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                     pinned,
                     room.may_pin,
                     room.space_order,
+                    room.direct,
                 ],
                 |r| r.get(0),
             )?;
@@ -963,7 +971,7 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
                     -- Of threads too, as Element counts them.
                     (SELECT count(*) FROM matrix_event e WHERE {unread} AND e.notify),
                     (SELECT count(*) FROM matrix_event e WHERE {unread} AND e.highlight),
-                    {shown_order}, {shown_tags}
+                    {shown_order}, {shown_tags}, r.direct
              FROM matrix_room r
              WHERE r.account_id = ?1 AND (r.membership != 'left' OR r.desired = 'joined')
              ORDER BY 8 DESC NULLS LAST, r.id",
@@ -1012,6 +1020,7 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
                 space_order: r.get(21)?,
                 tags: serde_json::from_str(&r.get::<_, String>(22)?)
                     .expect("json_group_array makes an array of strings"),
+                direct: r.get(23)?,
             })
         })?
         .collect::<Result<_, _>>()?)

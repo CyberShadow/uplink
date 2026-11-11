@@ -130,3 +130,48 @@ async fn refuses_ranges_that_are_none_or_too_long() {
         );
     }
 }
+
+#[tokio::test]
+async fn queries_match_events_coming_first() {
+    let db = Db::new();
+    let now = 100 * HOUR;
+    let mut standup = event("1", "Standup", now - 50 * HOUR, now - 49 * HOUR);
+    standup.location = "Room 4".into();
+    db.observe(
+        true,
+        vec![
+            standup,
+            event("2", "Standup again", now - 2 * HOUR, now - HOUR),
+            event("3", "Standup", now + 2 * HOUR, now + 3 * HOUR),
+            event("4", "Lunch", now + HOUR, now + 2 * HOUR),
+            event("5", "Ongoing standup", now - HOUR, now + HOUR),
+        ],
+        &[],
+    )
+    .await;
+    let matching = |query: &str| -> Vec<String> {
+        let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
+        let tx = conn.transaction().unwrap();
+        let query = uplink_query::parse(query, now).unwrap();
+        crate::matching(&tx, &query, now)
+            .unwrap()
+            .into_iter()
+            .map(|e| format!("{} {}", e.subject, e.start / HOUR))
+            .collect()
+    };
+    assert_eq!(
+        matching("standup"),
+        [
+            "Ongoing standup 99",
+            "Standup 102",
+            "Standup again 98",
+            "Standup 50"
+        ]
+    );
+    assert_eq!(matching("room"), ["Standup 50"], "by location");
+    assert_eq!(
+        matching("is:event account:work newer_than:1d -standup"),
+        ["Lunch 101"]
+    );
+    assert!(matching("is:todo OR is:unread").is_empty());
+}

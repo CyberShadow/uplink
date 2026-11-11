@@ -11,7 +11,6 @@ pub mod outbox;
 pub mod parse;
 pub mod query;
 pub mod remote;
-pub mod search;
 pub mod service;
 
 #[cfg(test)]

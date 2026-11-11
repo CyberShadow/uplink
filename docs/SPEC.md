@@ -142,6 +142,7 @@ uplink/
 │   ├── uplink-storage/              # rusqlite + migrations + .eml store
 │   ├── uplink-tx-log/               # op dispatcher, Op trait, undo
 │   ├── uplink-realtime/             # WebSocket protocol + broadcast hub
+│   ├── uplink-query/                # the query language, of every kind
 │   ├── uplink-email/                # Gmail API, M365 Graph mail; send
 │   ├── uplink-matrix/               # matrix-rust-sdk wrapper
 │   ├── uplink-calendar/             # M365 Graph calendar (read-only)
@@ -1478,7 +1479,7 @@ variant.) The same observation settles a send whose outcome was unknown
 See §4.5. mail-parser accepts anything; a message it cannot make sense of
 is still stored and listed, with empty fields.
 
-**The query language** (`uplink_email::search`), after Gmail's and
+**The query language** (`uplink-query`), after Gmail's and
 notmuch's, lists conversations by their entries: every term must match
 one entry. A word matches as a prefix of a word in the subject, sender,
 To, Cc or body; a "quoted phrase" exactly (punctuation splits words, as
@@ -1499,6 +1500,36 @@ Gmail's Trash is, or with `in:anywhere` of everything. Errors fail fast:
 an operator uplink does not know is an error, not text (adding one must
 never change what a query meant), and so is a label no account has.
 The web app explains the language at `/help/search`.
+
+**Of every kind.** The language lists rooms, to-dos and calendar events
+too, by the terms they have: a term a kind lacks is false of it, and so
+its negation true (`from:alice` lists only mail; `-category:promotions`
+leaves every room in). `is:mail`, `is:room`, `is:todo` and `is:event`
+name a kind. Words match, as in mail (by words, ignoring case, the last
+a prefix unless quoted), a room's name, a to-do's title and notes, and
+an event's subject, location and preview. Of rooms: `is:unread` (messages
+unread), `is:mention` (of those, one highlights), `is:notifying` (one
+notifies, by the push rules: a muted room has none), `is:dm` (a direct
+chat, by `m.direct`, as the room was last synced: V0036
+`matrix_room.direct`), `is:invite`, `label:`/`tag:` (its tags, §9.5, by
+name or as they are, ignoring case, spaces, `_` and `-`:
+`tag:lowpriority`, `tag:"Low priority"`, `tag:m.lowpriority`; a user
+tag `u.work` is `tag:work`), `space:` (a space it is in, however deeply,
+by name), `account:` (id or Matrix id), and dates, of its latest event.
+Spaces are not listed. Of to-dos: `due:` (`today`, `tomorrow` or a
+date), `is:overdue` (open, and due before today), `has:due`, `is:done`,
+and dates, of its creation; done ones are left out unless the query
+names `is:done` outside a negation, as Trash is. Of events: `account:`
+and dates, of their start. A label or account no kind has is an error.
+`ListItems { query, today, after, limit }` lists them all in one read: a
+page of conversations (as `ListEntries`, a later page of them alone),
+and every room (most recently active first), to-do (as listed) and
+event (those yet to end, soonest first, then those past, latest first)
+matched. `today` is the user's date, as the browser has it (§12.10),
+which `due:` counts from. Rooms, to-dos and events are few, so they are
+matched as listed, in Rust (`uplink_query::matches`); mail's terms of
+other kinds fold to constants in its SQL, and a query of other kinds
+reads no mail.
 
 The parsed query becomes one SQL condition on an entry. Its text terms,
 those it must lack too, become one FTS5 expression where they can,

@@ -1432,9 +1432,9 @@ pub(crate) mod service {
         use crate::parse::tests::WITH_PARTS;
         let db = Db::new();
         let store = db.store();
-        let day = |date: &str| crate::search::parse(&format!("after:{date}"), 0).unwrap();
+        let day = |date: &str| uplink_query::parse(&format!("after:{date}"), 0).unwrap();
         let at = |date: &str| match day(date) {
-            crate::search::Query::Term(crate::search::Term::After(at)) => at,
+            uplink_query::Query::Term(uplink_query::Term::After(at)) => at,
             q => panic!("{q:?}"),
         };
         let entry = |id: &str, labels: &[&str], date: &str, raw: &[u8]| {
@@ -1882,8 +1882,10 @@ fn list(
         address: format!("{id}@x"),
         provider: uplink_protocol::mail::MailProvider::Gmail,
     });
-    let query = crate::search::parse(query, 0).unwrap();
-    crate::query::conversations(conn, &accounts, &query, after, limit).unwrap()
+    let query = uplink_query::parse(query, 0).unwrap();
+    let tx = conn.transaction().unwrap();
+    let unknown = crate::query::Unknown::Refuse;
+    crate::query::conversations(&tx, &accounts, &query, unknown, after, limit).unwrap()
 }
 
 /// Fills an empty database with `messages` messages over accounts `a` and
@@ -2024,6 +2026,17 @@ fn large_lists_and_searches_page_in_order() {
             format!(
                 "SELECT e.id FROM mail_entry e WHERE e.account_id = 'b' AND {unhidden} {order}"
             ),
+        ),
+        // Terms of other kinds are false of mail, their negations true.
+        (
+            "(is:room OR account:b) -is:mention -due:today",
+            format!(
+                "SELECT e.id FROM mail_entry e WHERE e.account_id = 'b' AND {unhidden} {order}"
+            ),
+        ),
+        (
+            "account:a is:todo",
+            "SELECT e.id FROM mail_entry e WHERE 0".to_owned(),
         ),
     ] {
         let mut listed = vec![];

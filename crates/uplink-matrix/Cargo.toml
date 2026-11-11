@@ -8,6 +8,7 @@ license.workspace = true
 ammonia = "4.2.4"
 uplink-config = { path = "../uplink-config" }
 uplink-protocol = { path = "../uplink-protocol" }
+uplink-query = { path = "../uplink-query" }
 uplink-storage = { path = "../uplink-storage" }
 uplink-tx-log = { path = "../uplink-tx-log" }
 anyhow = "1"

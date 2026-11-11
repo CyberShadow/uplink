@@ -9,6 +9,7 @@ pub mod media;
 pub mod membership;
 pub mod outbox;
 pub mod preview;
+pub mod query;
 pub mod room_tags;
 pub mod rooms;
 pub mod security;

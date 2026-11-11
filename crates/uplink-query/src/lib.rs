@@ -1,11 +1,14 @@
-//! The mail query language (SPEC §8.7): what lists and searches are
-//! written in. Parsing only; `query` resolves names and runs it.
+//! The query language (SPEC §8.7): what lists, searches and the home
+//! view's buckets are written in, of mail, rooms, to-dos and events.
+//! Parsing only; each kind's crate resolves names and runs it.
 //!
-//! Terms are words (each a prefix of a word in the message), "exact
-//! phrases" and `operator:value`s; terms side by side must all match, and
-//! `OR`, `NOT` (or `-`) and parentheses combine them. An operator uplink
-//! does not know is an error rather than text, so that adding one never
-//! changes what a query already meant.
+//! Terms are words (each a prefix of a word in the item), "exact phrases"
+//! and `operator:value`s; terms side by side must all match, and `OR`,
+//! `NOT` (or `-`) and parentheses combine them. An operator uplink does
+//! not know is an error rather than text, so that adding one never
+//! changes what a query already meant. A term a kind of item does not
+//! have (`from:` of a room, `due:` of mail) is false of it, and so its
+//! negation true.
 
 use std::fmt;
 
@@ -43,6 +46,70 @@ pub enum Term {
     Smaller(u64),
     /// The message's Message-ID, without angle brackets.
     MessageId(String),
+    /// Of a kind: `is:mail`, `is:room`, `is:todo`, `is:event`.
+    Kind(Kind),
+    /// Unread: mail with `UNREAD`, a room with messages unread.
+    Unread,
+    /// A room whose unread messages mention the account (or a keyword).
+    Mention,
+    /// A room with unread messages that notify, by the push rules.
+    Notifying,
+    /// A direct chat.
+    Direct,
+    /// A room the account is invited to.
+    Invited,
+    /// A room in a space by this name, however deeply.
+    Space(String),
+    /// A to-do due on the day.
+    Due(Day),
+    /// A to-do due before today.
+    Overdue,
+    /// A to-do with a due date.
+    HasDue,
+    /// A to-do done.
+    Done,
+}
+
+/// The kinds of item a query lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Mail,
+    Room,
+    Todo,
+    Event,
+}
+
+/// A day, as to-dos are due: of the user's calendar, not UTC, so that
+/// `today` is the user's (the request says which day that is).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Day {
+    Today,
+    Tomorrow,
+    /// Days since 1970-01-01.
+    Date(i64),
+}
+
+impl Day {
+    /// Days since 1970-01-01, `today` being that.
+    pub fn days(self, today: i64) -> i64 {
+        match self {
+            Day::Today => today,
+            Day::Tomorrow => today + 1,
+            Day::Date(days) => days,
+        }
+    }
+}
+
+/// A date, `YYYY-MM-DD`, as days since 1970-01-01.
+pub fn days(date: &str) -> Option<i64> {
+    let (year, rest) = date.split_once('-')?;
+    let (month, day) = rest.split_once('-')?;
+    let number = |s: &str, len: usize| {
+        (s.len() == len && s.bytes().all(|b| b.is_ascii_digit())).then(|| s.parse::<i64>().unwrap())
+    };
+    let (year, month, day) = (number(year, 4)?, number(month, 2)?, number(day, 2)?);
+    ((1..=12).contains(&month) && (1..=days_in_month(year, month)).contains(&day))
+        .then(|| days_from_civil(year, month, day))
 }
 
 /// Fields of the message that `from:`, `to:` and the like search.
@@ -87,6 +154,8 @@ pub const OPERATORS: &[&str] = &[
     "smaller",
     "id",
     "rfc822msgid",
+    "space",
+    "due",
 ];
 
 /// Parses `query`; `now` (unix ms) is what `newer_than:` and
@@ -358,18 +427,38 @@ fn operator(name: &str, value: &str, quoted: bool, now: i64) -> Result<Query, In
             _ => label(value),
         },
         "is" => match value.to_ascii_lowercase().as_str() {
-            "unread" => label("UNREAD"),
-            "read" => Ok(Query::Not(Box::new(label("UNREAD")?))),
+            "unread" => term(Term::Unread),
+            "read" => Ok(Query::Not(Box::new(Query::Term(Term::Unread)))),
             "starred" => label("STARRED"),
             "important" => label("IMPORTANT"),
+            "mail" => term(Term::Kind(Kind::Mail)),
+            "room" => term(Term::Kind(Kind::Room)),
+            "todo" => term(Term::Kind(Kind::Todo)),
+            "event" => term(Term::Kind(Kind::Event)),
+            "mention" => term(Term::Mention),
+            "notifying" => term(Term::Notifying),
+            "dm" => term(Term::Direct),
+            "invite" => term(Term::Invited),
+            "overdue" => term(Term::Overdue),
+            "done" => term(Term::Done),
             _ => Err(invalid(format!(
-                "is:{value}: is: takes unread, read, starred or important"
+                "is:{value}: is: takes unread, read, starred, important, mail, room, todo, \
+                 event, mention, notifying, dm, invite, overdue or done"
             ))),
         },
+        "space" => term(Term::Space(value.to_owned())),
+        "due" => term(Term::Due(match value.to_ascii_lowercase().as_str() {
+            "today" => Day::Today,
+            "tomorrow" => Day::Tomorrow,
+            _ => Day::Date(date(name, value)? / DAY_MS),
+        })),
         "category" => label(&format!("CATEGORY_{}", value.to_ascii_uppercase())),
         "has" => match value.to_ascii_lowercase().as_str() {
             "attachment" => term(Term::HasAttachment),
-            _ => Err(invalid(format!("has:{value}: has: takes attachment"))),
+            "due" => term(Term::HasDue),
+            _ => Err(invalid(format!(
+                "has:{value}: has: takes attachment or due"
+            ))),
         },
         "account" => term(Term::Account(value.to_owned())),
         "after" => term(Term::After(date(name, value)?)),
@@ -389,6 +478,69 @@ fn operator(name: &str, value: &str, quoted: bool, now: i64) -> Result<Query, In
             OPERATORS.join(", ")
         ))),
     }
+}
+
+/// Whether `query` matches an item, each term by `term`: for kinds
+/// matched outside SQL, as rooms, to-dos and events are.
+pub fn matches(query: &Query, term: &impl Fn(&Term) -> bool) -> bool {
+    match query {
+        Query::And(all) => all.iter().all(|q| matches(q, term)),
+        Query::Or(any) => any.iter().any(|q| matches(q, term)),
+        Query::Not(q) => !matches(q, term),
+        Query::Term(t) => term(t),
+    }
+}
+
+/// The terms of `query`, negated or not.
+pub fn terms(query: &Query) -> Vec<&Term> {
+    match query {
+        Query::And(all) | Query::Or(all) => all.iter().flat_map(terms).collect(),
+        Query::Not(q) => terms(q),
+        Query::Term(t) => vec![t],
+    }
+}
+
+/// Whether `query` names a term `term` holds of, outside a negation: as
+/// `in:trash` lists Trash, which is otherwise left out, and `is:done`
+/// to-dos done.
+pub fn names(query: &Query, term: &impl Fn(&Term) -> bool) -> bool {
+    fn within(query: &Query, term: &impl Fn(&Term) -> bool, positive: bool) -> bool {
+        match query {
+            Query::And(all) | Query::Or(all) => all.iter().any(|q| within(q, term, positive)),
+            Query::Not(q) => within(q, term, !positive),
+            Query::Term(t) => positive && term(t),
+        }
+    }
+    within(query, term, true)
+}
+
+/// Whether `text`, a term's, is in `haystack`, as FTS5 matches it in mail:
+/// by words, ignoring case; the last word as a prefix unless `exact`.
+pub fn text_matches(haystack: &str, text: &str, exact: bool) -> bool {
+    let needle = words(text);
+    let Some((last, before)) = needle.split_last() else {
+        // Of no words, as punctuation: FTS5 matches nothing.
+        return false;
+    };
+    let words = words(haystack);
+    words.windows(needle.len()).any(|window| {
+        let (end, start) = window.split_last().expect("windows are not empty");
+        start == before
+            && if exact {
+                end == last
+            } else {
+                end.starts_with(last.as_str())
+            }
+    })
+}
+
+/// Words, as FTS5's unicode61 splits them: runs of letters and digits,
+/// lowercased.
+fn words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect()
 }
 
 const DAY_MS: i64 = 86_400_000;
@@ -435,6 +587,23 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let day_of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     era * 146_097 + day_of_era - 719_468
+}
+
+/// The date, `YYYY-MM-DD`, `days` after 1970-01-01: as to-dos are due,
+/// so that dates compare as strings.
+pub fn date_of(days: i64) -> String {
+    // Howard Hinnant's civil_from_days.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let mp = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 /// An age, `3d`, `2w`, `6m` (of 30 days) or `1y` (of 365): in ms.
@@ -615,8 +784,8 @@ mod tests {
         assert_eq!(ok("in:Inbox"), label("Inbox"));
         assert_eq!(ok("in:drafts"), label("DRAFT"));
         assert_eq!(ok("in:anywhere"), Query::Term(Term::Anywhere));
-        assert_eq!(ok("is:unread"), label("UNREAD"));
-        assert_eq!(ok("is:read"), not(label("UNREAD")));
+        assert_eq!(ok("is:unread"), Query::Term(Term::Unread));
+        assert_eq!(ok("is:read"), not(Query::Term(Term::Unread)));
         assert_eq!(ok("category:social"), label("CATEGORY_SOCIAL"));
         assert_eq!(ok("has:attachment"), Query::Term(Term::HasAttachment));
         assert_eq!(
@@ -634,11 +803,76 @@ mod tests {
         assert!(err("re:hello").starts_with("unknown operator re: (quote \"re:hello\""));
         assert_eq!(err("from:"), "from: needs a value");
         assert_eq!(err("from: alice"), "from: needs a value");
+        assert!(err("is:muted").starts_with("is:muted: is: takes unread, read,"));
+        assert_eq!(err("has:drive"), "has:drive: has: takes attachment or due");
+    }
+
+    #[test]
+    fn operators_of_rooms_todos_and_events() {
+        let term = |t| Query::Term(t);
+        assert_eq!(ok("is:room"), term(Term::Kind(Kind::Room)));
+        assert_eq!(ok("is:TODO"), term(Term::Kind(Kind::Todo)));
+        assert_eq!(ok("is:event"), term(Term::Kind(Kind::Event)));
+        assert_eq!(ok("is:mail"), term(Term::Kind(Kind::Mail)));
+        assert_eq!(ok("is:mention"), term(Term::Mention));
+        assert_eq!(ok("is:notifying"), term(Term::Notifying));
+        assert_eq!(ok("is:dm"), term(Term::Direct));
+        assert_eq!(ok("is:invite"), term(Term::Invited));
+        assert_eq!(ok("is:overdue"), term(Term::Overdue));
+        assert_eq!(ok("is:done"), term(Term::Done));
+        assert_eq!(ok("has:due"), term(Term::HasDue));
         assert_eq!(
-            err("is:muted"),
-            "is:muted: is: takes unread, read, starred or important"
+            ok(r#"space:"Work stuff""#),
+            term(Term::Space("Work stuff".into()))
         );
-        assert_eq!(err("has:drive"), "has:drive: has: takes attachment");
+        assert_eq!(ok("due:today"), term(Term::Due(Day::Today)));
+        assert_eq!(ok("due:Tomorrow"), term(Term::Due(Day::Tomorrow)));
+        assert_eq!(ok("due:1970-01-03"), term(Term::Due(Day::Date(2))));
+        assert!(err("due:soon").starts_with("due:soon: dates are written"));
+        assert_eq!(Day::Tomorrow.days(10), 11);
+        assert_eq!(days("1970-01-02"), Some(1));
+        assert_eq!(days("2026-02-30"), None);
+        assert_eq!(days("2026-2-3"), None);
+        for date in [
+            "1970-01-01",
+            "2026-11-11",
+            "2024-02-29",
+            "2000-03-01",
+            "1969-12-31",
+        ] {
+            assert_eq!(date_of(days(date).unwrap()), date);
+        }
+    }
+
+    #[test]
+    fn text_matches_words_as_fts5_does() {
+        assert!(text_matches("Lunch on Friday", "fri", false));
+        assert!(!text_matches("Lunch on Friday", "fri", true));
+        assert!(text_matches("Lunch on Friday", "LUNCH ON", false));
+        assert!(text_matches("Lunch on Friday", "\"lunch on\"", true));
+        assert!(!text_matches("Lunch on Friday", "on lunch", false));
+        assert!(text_matches("mail alice@x.org now", "alice@x.org", true));
+        assert!(!text_matches("anything", "...", false));
+    }
+
+    #[test]
+    fn queries_match_items_by_their_terms() {
+        let unread = |query: &str, unread: bool| {
+            matches(&ok(query), &|t| match t {
+                Term::Unread => unread,
+                _ => false,
+            })
+        };
+        assert!(unread("is:unread", true));
+        assert!(!unread("is:unread", false));
+        // A term the item lacks is false, its negation true.
+        assert!(!unread("is:unread from:alice", true));
+        assert!(unread("is:unread -from:alice", true));
+        assert!(unread("from:alice OR is:unread", true));
+        let done = |query: &str| names(&ok(query), &|t| *t == Term::Done);
+        assert!(done("is:todo (is:done OR x)"));
+        assert!(!done("-is:done"));
+        assert!(done("-(-is:done)"));
     }
 
     #[test]

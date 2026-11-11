@@ -8,8 +8,7 @@ use crate::{
     mailbox::{LabelChange, SetLabels},
     outbox,
     parse::{self, html_body, parse},
-    query::{self, ConfiguredAccount, ListError},
-    search,
+    query::{self, ConfiguredAccount, ListError, Unknown},
 };
 use std::{
     path::Path,
@@ -25,7 +24,7 @@ use uplink_storage::rusqlite::{Connection, OptionalExtension};
 use uplink_storage::store::{Store, VariantHash};
 use uplink_tx_log::{
     answer::{error, internal, Reader, Response},
-    Dispatcher,
+    as_of, Dispatcher,
 };
 
 /// The most entries a list or search request may ask for.
@@ -89,18 +88,20 @@ impl Mail {
             .duration_since(UNIX_EPOCH)
             .expect("the clock is after 1970")
             .as_millis() as i64;
-        let query = search::parse(&query, now).map_err(|e| error(ErrorCode::Invalid, e.0))?;
+        let query = uplink_query::parse(&query, now).map_err(|e| error(ErrorCode::Invalid, e.0))?;
         let accounts = self.accounts.clone();
         self.reader
             .read(move |conn| {
-                let page = query::conversations(conn, &accounts, &query, after, limit).map_err(
-                    |e| match e {
-                        ListError::Invalid(e) => error(ErrorCode::Invalid, e.0),
-                        ListError::Internal(e) => internal(e),
-                    },
-                )?;
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                let as_of = as_of(&tx).map_err(internal)?;
+                let page =
+                    query::conversations(&tx, &accounts, &query, Unknown::Refuse, after, limit)
+                        .map_err(|e| match e {
+                            ListError::Invalid(e) => error(ErrorCode::Invalid, e.0),
+                            ListError::Internal(e) => internal(e),
+                        })?;
                 Ok(ServerResponse::Conversations {
-                    as_of: page.as_of,
+                    as_of,
                     conversations: page.conversations,
                     next: page.next,
                     scope: page.scope,

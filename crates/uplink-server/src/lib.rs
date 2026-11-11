@@ -41,6 +41,7 @@ use uplink_storage::seal::MasterKey;
 use uplink_todos::service::Todos;
 use uplink_tx_log::{Dispatcher, LogReader, Registry, UndoError};
 
+mod items;
 mod outbox;
 mod remote_image;
 use remote_image::RemoteImages;
@@ -197,6 +198,7 @@ pub struct Services {
     pub mail: Mail,
     pub matrix: Matrix,
     pub outbox: Outbox,
+    pub items: items::Items,
     pub todos: Todos,
     pub calendar: Calendar,
 }
@@ -215,7 +217,7 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
         &uplink_storage::store::Store::mail(root),
     )?;
     let dispatcher = Dispatcher::new(writer, registry, Arc::new(Hub::new(HUB_CAPACITY)));
-    let mail_accounts = config
+    let mail_accounts: Vec<ConfiguredAccount> = config
         .accounts
         .iter()
         .filter_map(|account| match account {
@@ -232,7 +234,7 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
             AccountConfig::Matrix(_) => None,
         })
         .collect();
-    let matrix_accounts = config
+    let matrix_accounts: Vec<uplink_matrix::service::ConfiguredAccount> = config
         .accounts
         .iter()
         .filter_map(|account| match account {
@@ -245,6 +247,11 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
         .collect();
     Ok(Services {
         outbox: Outbox::new(uplink_storage::open_reader(root)?),
+        items: items::Items::new(
+            uplink_storage::open_reader(root)?,
+            mail_accounts.clone(),
+            matrix_accounts.clone(),
+        ),
         todos: Todos::new(dispatcher.clone(), uplink_storage::open_reader(root)?),
         calendar: Calendar::new(uplink_storage::open_reader(root)?),
         matrix: Matrix::new(
@@ -889,6 +896,12 @@ impl Backend for Services {
                 })
             }
             ClientRequest::ListAccounts => self.mail.list_accounts().await,
+            ClientRequest::ListItems {
+                query,
+                today,
+                after,
+                limit,
+            } => self.items.list(query, today, after, limit).await,
             ClientRequest::ListEntries {
                 query,
                 after,
@@ -1168,6 +1181,7 @@ mod tests {
                     uplink_storage::store::Store::blobs(dir.path()),
                 ),
                 outbox: Outbox::new(reader()),
+                items: items::Items::new(reader(), vec![], vec![]),
                 todos: Todos::new(dispatcher.clone(), reader()),
                 calendar: Calendar::new(reader()),
                 reader: Arc::new(LogReader::new(reader(), 16)),

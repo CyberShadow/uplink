@@ -118,6 +118,17 @@ pub enum ClientRequest {
         after: Option<ListPosition>,
         limit: u32,
     },
+    /// What `query` matches of every kind (SPEC §8.7): a page of mail's
+    /// conversations, as `ListEntries` lists them, and the rooms, to-dos
+    /// and events; `today` (`YYYY-MM-DD`) is the user's, which `due:`
+    /// and `is:overdue` count from. A page after `after` is of mail
+    /// alone, the rest being on the first.
+    ListItems {
+        query: String,
+        today: String,
+        after: Option<ListPosition>,
+        limit: u32,
+    },
     /// The entries of the entry's conversation, in Trash and Spam too,
     /// oldest first.
     ListConversation {
@@ -415,6 +426,18 @@ pub enum ServerResponse {
         as_of: TxLogId,
         entries: Vec<mail::Entry>,
     },
+    Items {
+        as_of: TxLogId,
+        conversations: Vec<mail::Conversation>,
+        next: Option<ListPosition>,
+        scope: mail::ListScope,
+        /// Most recently active first.
+        rooms: Vec<matrix::Room>,
+        /// Open ones first, by due date.
+        todos: Vec<todos::Todo>,
+        /// Those yet to end, soonest first, then those past, latest first.
+        events: Vec<calendar::CalendarEvent>,
+    },
     Message {
         message: mail::MessageContent,
     },
@@ -524,6 +547,7 @@ impl ServerResponse {
             Self::Accounts { as_of, .. }
             | Self::Conversations { as_of, .. }
             | Self::Entries { as_of, .. }
+            | Self::Items { as_of, .. }
             | Self::Drafts { as_of, .. }
             | Self::Outbox { as_of, .. }
             | Self::Rooms { as_of, .. }

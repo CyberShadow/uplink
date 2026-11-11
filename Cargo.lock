@@ -4658,6 +4658,7 @@ dependencies = [
  "uplink-config",
  "uplink-email",
  "uplink-protocol",
+ "uplink-query",
  "uplink-realtime",
  "uplink-storage",
  "uplink-tx-log",
@@ -4722,6 +4723,7 @@ dependencies = [
  "tracing",
  "uplink-config",
  "uplink-protocol",
+ "uplink-query",
  "uplink-realtime",
  "uplink-storage",
  "uplink-tx-log",
@@ -4744,6 +4746,7 @@ dependencies = [
  "tracing",
  "uplink-config",
  "uplink-protocol",
+ "uplink-query",
  "uplink-realtime",
  "uplink-storage",
  "uplink-tx-log",
@@ -4757,6 +4760,10 @@ dependencies = [
  "serde_json",
  "ts-rs",
 ]
+
+[[package]]
+name = "uplink-query"
+version = "0.1.0"
 
 [[package]]
 name = "uplink-realtime"
@@ -4805,6 +4812,7 @@ dependencies = [
  "uplink-email",
  "uplink-matrix",
  "uplink-protocol",
+ "uplink-query",
  "uplink-realtime",
  "uplink-storage",
  "uplink-todos",
@@ -4837,6 +4845,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "uplink-protocol",
+ "uplink-query",
  "uplink-realtime",
  "uplink-storage",
  "uplink-tx-log",

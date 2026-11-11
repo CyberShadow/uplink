@@ -6,6 +6,7 @@ members = [
     "crates/uplink-storage",
     "crates/uplink-tx-log",
     "crates/uplink-realtime",
+    "crates/uplink-query",
     "crates/uplink-email",
     "crates/uplink-matrix",
     "crates/uplink-calendar",

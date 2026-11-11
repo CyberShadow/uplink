@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 uplink-protocol = { path = "../uplink-protocol" }
+uplink-query = { path = "../uplink-query" }
 uplink-storage = { path = "../uplink-storage" }
 uplink-tx-log = { path = "../uplink-tx-log" }
 anyhow = "1"

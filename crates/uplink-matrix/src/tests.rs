@@ -107,6 +107,7 @@ impl Db {
                 limited: false,
                 own_receipts: own_receipts.iter().map(|r| r.to_string()).collect(),
                 space: false,
+                direct: false,
                 avatar: None,
                 children: vec![],
                 space_order: None,
@@ -498,6 +499,7 @@ mod membership {
                     limited: false,
                     own_receipts: vec![],
                     space: false,
+                    direct: false,
                     avatar: None,
                     children: vec![],
                     space_order: None,
@@ -697,6 +699,7 @@ mod room_tags {
                     limited: false,
                     own_receipts: vec![],
                     space: false,
+                    direct: false,
                     avatar: None,
                     children: vec![],
                     space_order: None,
@@ -903,6 +906,7 @@ mod space_order {
                     limited: false,
                     own_receipts: vec![],
                     space: true,
+                    direct: false,
                     avatar: None,
                     children: vec![],
                     space_order: order.map(Into::into),
@@ -1601,4 +1605,93 @@ fn messages_mention_the_users_they_link_and_whom_they_reply_to() {
         reply["m.mentions"],
         json!({ "user_ids": ["@carol:example.org"] })
     );
+}
+
+mod query {
+    use super::*;
+    use crate::service::ConfiguredAccount;
+
+    fn room(id: &str, name: &str) -> ObservedRoom {
+        ObservedRoom {
+            room_id: id.into(),
+            name: name.into(),
+            encrypted: false,
+            membership: Membership::Joined,
+            events: vec![],
+            limited: false,
+            own_receipts: vec![],
+            space: false,
+            direct: false,
+            avatar: None,
+            children: vec![],
+            space_order: None,
+            tags: vec![],
+            topic: None,
+            pinned: vec![],
+            may_pin: false,
+            joined_members: 2,
+            version: "11".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn queries_match_rooms_by_name_tags_spaces_and_what_is_unread() {
+        let db = Db::new();
+        let mut work = room("!work:x", "Work");
+        work.space = true;
+        work.children = vec![crate::rooms::SpaceChild {
+            room_id: "!team:x".into(),
+            order: None,
+        }];
+        let mut team = room("!team:x", "Team chat");
+        team.tags = vec!["u.Projects".into()];
+        team.events = vec![message("$1", "@bob:x")];
+        let mut bob = room("!bob:x", "Bob");
+        bob.direct = true;
+        let mut news = room("!news:x", "News");
+        news.tags = vec!["m.lowpriority".into()];
+        news.events = vec![message("$2", "@feed:x")];
+        let mut party = room("!party:x", "Party");
+        party.membership = Membership::Invited;
+        db.observe(Synced {
+            next_batch: "next".into(),
+            rooms: vec![work, team, bob, news, party],
+        })
+        .await
+        .unwrap();
+        let matching = |query: &str| -> Vec<String> {
+            let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
+            let tx = conn.transaction().unwrap();
+            let accounts = [ConfiguredAccount {
+                id: "mx".into(),
+                mxid: ME.into(),
+            }];
+            let query = uplink_query::parse(query, 0).unwrap();
+            let mut names: Vec<String> = crate::query::rooms(&tx, &accounts, &query)
+                .unwrap()
+                .into_iter()
+                .map(|r| r.name)
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(matching("is:unread"), ["News", "Team chat"]);
+        assert_eq!(matching("is:unread -tag:lowpriority"), ["Team chat"]);
+        assert_eq!(matching(r#"tag:"Low priority""#), ["News"]);
+        assert_eq!(matching("tag:projects"), ["Team chat"]);
+        assert_eq!(matching("space:work"), ["Team chat"]);
+        assert_eq!(matching("is:dm"), ["Bob"]);
+        assert_eq!(matching("is:invite"), ["Party"]);
+        assert_eq!(matching("tea"), ["Team chat"], "by name, not spaces");
+        assert_eq!(matching("account:@me:example.org is:read").len(), 2);
+        // Terms of other kinds are false of rooms.
+        assert!(matching("from:bob OR is:todo OR in:inbox").is_empty());
+        assert_eq!(matching("-in:inbox").len(), 4);
+
+        let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
+        let tx = conn.transaction().unwrap();
+        let known = |name| crate::query::tag_known(&tx, name).unwrap();
+        assert!(known("favourite") && known("low_priority") && known("Projects"));
+        assert!(!known("inbox"));
+    }
 }

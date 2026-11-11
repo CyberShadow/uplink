@@ -63,6 +63,7 @@ describe('roomTree', () => {
     pending: null,
     membership_error: null,
     space: false,
+    direct: false,
     avatar: null,
     children: [],
     topic: null,

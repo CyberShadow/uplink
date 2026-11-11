@@ -25,6 +25,7 @@ tokio = { version = "1.54.1", features = ["io-std", "io-util", "macros", "net", 
 tracing = "0.1.44"
 uplink-config = { version = "0.1.0", path = "../uplink-config" }
 uplink-protocol = { version = "0.1.0", path = "../uplink-protocol" }
+uplink-query = { version = "0.1.0", path = "../uplink-query" }
 uplink-storage = { version = "0.1.0", path = "../uplink-storage" }
 uplink-tx-log = { version = "0.1.0", path = "../uplink-tx-log" }
 url = "2.5.8"

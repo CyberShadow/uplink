@@ -430,6 +430,7 @@ impl Syncer {
             encrypted: room.encryption_state().is_encrypted(),
             membership,
             space: room.is_space(),
+            direct: room.is_direct().await?,
             avatar: avatar(&room).await?,
             children: space_children(&room).await?,
             space_order: order(&room).await?,

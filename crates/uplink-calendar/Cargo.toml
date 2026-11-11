@@ -14,6 +14,7 @@ tracing = "0.1.44"
 uplink-config = { path = "../uplink-config" }
 uplink-email = { path = "../uplink-email" }
 uplink-protocol = { path = "../uplink-protocol" }
+uplink-query = { path = "../uplink-query" }
 uplink-storage = { path = "../uplink-storage" }
 uplink-tx-log = { path = "../uplink-tx-log" }
 

@@ -305,6 +305,7 @@ export class FakeServer implements Requester, Blobs {
       pending: null,
       membership_error: null,
       space: false,
+      direct: false,
       avatar: null,
       children: [],
       topic: null,
@@ -552,6 +553,8 @@ export class FakeServer implements Requester, Blobs {
     switch (body.type) {
       case 'list_accounts':
         return { type: 'accounts', as_of: this.head(), accounts: this.listAccounts() }
+      case 'list_items':
+        throw new Error('the test server lists no items of every kind')
       case 'list_entries': {
         // The query language as the client writes it: terms that must all
         // match, of account:, label: and in:, and words of the subject or
