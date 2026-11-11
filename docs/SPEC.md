@@ -2550,7 +2550,11 @@ message, as Slack's do on the one it focuses: `r` replies, `e` edits
 one's own, `t` opens its thread or replies in one, `+` opens its
 reactions (at the first: `←`/`→` move along them, `Enter` takes one,
 other keys type one into their box; the focus leaving closes them, and
-closed, the line has it back), `p` pins or unpins it and `#` deletes one's own; what its
+closed, the line has it back), `p` pins or unpins it and `Delete`/`Backspace` (as Discord's;
+macOS's Delete is Backspace) or `#` delete one's own, once asked, as
+deleting (by the menu too) cannot be undone once the homeserver has it:
+the dialog's Delete has the focus, so `Enter` deletes and `Esc` keeps
+it; what its
 buttons do, but by keys. `o`/`Enter` (of the main timeline) open its
 details beside the timeline: who sent it and when, its type, event id
 and encryption, who has read up to it, its reactions, its edits and its

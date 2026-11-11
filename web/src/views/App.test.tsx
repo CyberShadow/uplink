@@ -1372,7 +1372,16 @@ describe('matrix', () => {
     await user.keyboard('+{Escape}')
     expect(document.activeElement).toBe(lineOf(theirs))
     await user.keyboard('p')
-    await user.keyboard('j#')
+    // Delete asks first: Esc keeps it, and Enter deletes; the line has the
+    // focus back.
+    await user.keyboard('j{Delete}')
+    const ask = screen.getByRole('alertdialog', { name: 'Delete message' })
+    expect(document.activeElement).toBe(within(ask).getByRole('button', { name: 'Delete' }))
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(document.activeElement).toBe(lineOf(mine))
+    await user.keyboard('{Backspace}{Enter}')
+    expect(document.activeElement).toBe(lineOf(mine))
     expect(sent()).toEqual([
       { type: 'reaction', event: theirs.event_id, key: '👎' },
       { type: 'reaction', event: theirs.event_id, key: '🎉' },
@@ -1742,6 +1751,9 @@ describe('room timeline', () => {
 
     await user.click(within(line(/^Sure/)).getByRole('button', { name: 'Options' }))
     await user.click(screen.getByRole('menuitem', { name: 'Delete' }))
+    // Asked first; the box has the focus back.
+    await user.click(within(screen.getByRole('alertdialog', { name: 'Delete message' })).getByRole('button', { name: 'Delete' }))
+    expect(document.activeElement).toBe(box)
     expect(server.requests).toContainEqual({ type: 'send_matrix_message', room: room.id, content: { type: 'redaction', event: mine.event_id } })
     await within(timeline()).findByText('Deleting…')
   })

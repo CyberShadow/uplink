@@ -325,6 +325,8 @@ export function Events(props: {
   const { room, me, overlay, act, openThread, details, openMember } = props
   const { matrix } = useServices()
   const [reacting, setReacting] = useState<{ event: RoomEventId; how: Reacting } | null>(null)
+  // The line whose deleting is being asked about.
+  const [confirming, setConfirming] = useState<RoomEventId | null>(null)
   const line = (event: RoomEvent): Line => ({
     room,
     event,
@@ -360,7 +362,10 @@ export function Events(props: {
         const can = focused()
         if (can.react) setReacting({ event: can.id, how: 'key' })
       },
-      delete: () => focused().delete?.(),
+      delete: () => {
+        const can = focused()
+        if (can.delete) setConfirming(can.id)
+      },
       pin: () => focused().pin?.toggle(),
       ...(details && {
         open: () => {
@@ -399,6 +404,8 @@ export function Events(props: {
                 readers={props.readers.get(row.event.id) ?? NO_READERS}
                 reacting={reacting?.event === row.event.id ? reacting.how : null}
                 setReacting={(how) => setReacting(how && { event: row.event.id, how })}
+                confirming={confirming === row.event.id}
+                setConfirming={(asking) => setConfirming(asking ? row.event.id : null)}
               />
             )
         }

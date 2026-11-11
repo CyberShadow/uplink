@@ -162,3 +162,11 @@
   font-size: 13px;
   font-weight: 600;
 }
+
+/* A dialog's buttons, at its foot's end; the last, what it is for. */
+.buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}

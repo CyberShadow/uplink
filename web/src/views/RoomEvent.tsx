@@ -16,7 +16,7 @@ import type {
 } from '../generated/protocol'
 import { useServices } from '../context'
 import type { MatrixStore } from '../stores/matrix'
-import { keepFocus, useEscape } from '../keymap'
+import { keepFocus, useEscape, useTakeFocus } from '../keymap'
 import { dateTime, time } from '../format'
 import {
   displayName,
@@ -126,6 +126,9 @@ export function EventRow(
      * it the focus; and to open or close it. */
     reacting: Reacting
     setReacting: (reacting: Reacting) => void
+    /** Whether deleting it is being asked about; and to ask, or stop. */
+    confirming: boolean
+    setConfirming: (confirming: boolean) => void
   },
 ) {
   const { room, event, me } = props
@@ -144,7 +147,7 @@ export function EventRow(
   const { matrix } = useServices()
   const can = lineActions(props, matrix)
   const menu: MenuItem[] = []
-  if (can.delete) menu.push({ label: 'Delete', icon: 'trash', action: can.delete })
+  if (can.delete) menu.push({ label: 'Delete', icon: 'trash', action: () => props.setConfirming(true) })
   if (can.pin) menu.push({ label: can.pin.pinned ? 'Unpin' : 'Pin', icon: 'pin', action: can.pin.toggle })
   menu.push({ label: source ? 'Hide source' : 'View source', icon: 'code', action: () => setSource(!source) })
   const joined = room.membership === 'joined'
@@ -220,6 +223,7 @@ export function EventRow(
         )}
         <MenuButton label="Options" icon="ellipsis-vertical" groups={[menu]} />
       </div>
+      {props.confirming && can.delete && <ConfirmDelete delete={can.delete} close={() => props.setConfirming(false)} />}
     </li>
   )
 }
@@ -637,6 +641,38 @@ function Reactions(props: {
         )
       })}
     </ul>
+  )
+}
+
+/** Asks before deleting a message, which, once the homeserver has it,
+ * cannot be undone: Enter (on Delete, which has the focus) deletes, Esc
+ * does not. */
+function ConfirmDelete(props: { delete: () => void; close: () => void }) {
+  const button = useRef<HTMLButtonElement>(null)
+  useTakeFocus(button)
+  useEscape(props.close)
+  return (
+    <div class={overlay.backdrop} onClick={props.close}>
+      <div class={overlay.dialog} role="alertdialog" aria-label="Delete message" onClick={(e) => e.stopPropagation()}>
+        <h2>Delete message?</h2>
+        <p>It is deleted for everyone in the room; once the homeserver has it, that cannot be undone.</p>
+        <div class={overlay.buttons}>
+          <button type="button" onClick={props.close}>
+            Cancel
+          </button>
+          <button
+            ref={button}
+            type="button"
+            onClick={() => {
+              props.close()
+              props.delete()
+            }}
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 

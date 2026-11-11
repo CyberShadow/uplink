@@ -143,7 +143,13 @@ export const KEYMAP: Binding[] = [
   { action: 'notImportant', keys: ['-'], label: '-', help: 'Mark as not important' },
   { action: 'flag', keys: ['Shift+t'], label: 'Shift+t', help: 'Flag for follow-up (adds a to-do), or unflag' },
   { action: 'done', keys: ['e'], label: 'e', help: 'Mark done, or not done (in to-dos); at home: archive, read the room, or finish the to-do' },
-  { action: 'delete', keys: ['[Shift]+#'], label: '#', help: 'Delete (mail: move to Trash; in a room, the message on show, if your own)' },
+  {
+    action: 'delete',
+    keys: ['[Shift]+#', 'Delete', 'Backspace'],
+    // macOS's Delete key is Backspace.
+    label: MAC ? '#, Delete' : '#, Delete, Backspace',
+    help: 'Delete (mail: move to Trash; in a room, the message, if your own, once asked)',
+  },
   { action: 'edit', keys: ['e'], label: 'e', help: 'Edit the message (in a room, your own)' },
   { action: 'thread', keys: ['t'], label: 't', help: 'Open the message\'s thread, or reply in one (in a room)' },
   { action: 'react', keys: ['[Shift]++'], label: '+', help: 'React to the message (in a room)' },
@@ -239,6 +245,19 @@ export function useEscape(close: (() => void) | null) {
  * scrolls, as in an open conversation). */
 export function lines(next: () => void, previous: () => void): Actions {
   return { next, previous, lineDown: next, lineUp: previous }
+}
+
+/** Gives `element` the focus once shown, as a dialog's field or button,
+ * and once it is gone, back to where it was: to the line acted on, or the
+ * box being written in. */
+export function useTakeFocus(element: RefObject<HTMLElement>) {
+  // At once, not after paint: keys typed right after what showed it are
+  // its.
+  useLayoutEffect(() => {
+    const previous = document.activeElement as HTMLElement
+    element.current!.focus()
+    return () => previous.focus()
+  }, [element])
 }
 
 /** Scrolls `scroller` by a page, as the browser's page keys do: by what

@@ -1,5 +1,6 @@
 import type { ComponentChildren } from 'preact'
 import { useLayoutEffect, useRef, useState } from 'preact/hooks'
+import { useTakeFocus } from '../keymap'
 import styles from './Overlay.module.css'
 
 /** Whether `text` has every word of `filter`, ignoring case. */
@@ -39,15 +40,9 @@ export function Picker<T>(props: {
   const [highlight, setHighlight] = useState(0)
   const input = useRef<HTMLInputElement>(null)
   const list = useRef<HTMLUListElement>(null)
-  // At once, not after paint: keys typed right after the shortcut are the
-  // filter's. Closed, it gives the focus back: to the box being written
-  // in, say. Where a choice leads elsewhere, the view shown has its own
-  // say (`Shell`).
-  useLayoutEffect(() => {
-    const previous = document.activeElement as HTMLElement
-    input.current!.focus()
-    return () => previous.focus()
-  }, [])
+  // Where a choice leads elsewhere, the view shown has its own say about
+  // the focus given back (`Shell`).
+  useTakeFocus(input)
   useLayoutEffect(() => list.current!.children[highlight]?.scrollIntoView({ block: 'nearest' }), [highlight])
 
   const created = props.create?.(filter) ?? null
