@@ -151,8 +151,9 @@
   font-size: 13px;
 }
 
+/* As wide as what follows (the tables), which it does not widen. */
 .about {
-  max-width: 60ch;
+  contain: inline-size;
   margin: 0 0 8px;
   color: var(--muted);
 }
