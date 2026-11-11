@@ -124,6 +124,11 @@
   background: var(--hover);
 }
 
+/* The line replied to or edited. */
+.target {
+  background: var(--focus);
+}
+
 /* The line the keys act on (`j`/`k`), or one of its links, Tabbed to. */
 .row:focus {
   outline: none;

@@ -86,6 +86,7 @@ function Timeline(props: { room: Room; words: string | null }) {
   const listed = useRef<HTMLOListElement>(null)
   // From no line (those of a list have its own), to the latest.
   const toLatest = () => moveLine(listed.current!, -1)
+  const focusLine = (event: RoomEventId) => lineOf(listed.current!, event)?.focus()
   useKeymap({
     reply: write,
     write,
@@ -197,9 +198,11 @@ function Timeline(props: { room: Room; words: string | null }) {
               outgoing={outgoing}
               readers={readers}
               act={act}
-              openThread={(root) => setPanel({ type: 'thread', root })}
+              openThread={(root, back) => setPanel({ type: 'thread', root, back })}
               details={(event) => setPanel({ type: 'message', event })}
               openMember={openMember}
+              target={mode.type === 'new' ? null : mode.event.id}
+              closePanel={panel && (() => setPanel(null))}
             />
           </ol>
         </div>
@@ -214,6 +217,8 @@ function Timeline(props: { room: Room; words: string | null }) {
             thread={null}
             attachments={{ files, setFiles }}
             scrolling={scrolling}
+            focusLine={focusLine}
+            back={null}
           />
         )}
       </section>
@@ -248,7 +253,7 @@ function Timeline(props: { room: Room; words: string | null }) {
           close={() => route(roomPath(room.id))}
           open={async (event) => {
             if (event.thread_root !== null) {
-              setPanel({ type: 'thread', root: event.thread_root })
+              setPanel({ type: 'thread', root: event.thread_root, back: false })
               return
             }
             await timeline.loadUntil(event.pos)
@@ -263,6 +268,7 @@ function Timeline(props: { room: Room; words: string | null }) {
           room={room}
           root={panel.root}
           me={me}
+          back={panel.back ? () => focusLine(panel.root) : null}
           close={() => {
             setPanel(null)
             // From the thread's box, back to the room's.
@@ -298,7 +304,9 @@ type Panel =
   | { type: 'info' }
   // `back`: opened from the room's info, to return to.
   | { type: 'member'; user: string; back: boolean }
-  | { type: 'thread'; root: RoomEventId }
+  // `back`: opened by a key on its root's line, which Esc from its box
+  // goes back to.
+  | { type: 'thread'; root: RoomEventId; back: boolean }
   | { type: 'search'; words: string }
   | { type: 'message'; event: RoomEventId }
 
@@ -315,36 +323,44 @@ export function Events(props: {
   outgoing: readonly MatrixSend[]
   readers: ReadonlyMap<RoomEventId, readonly MemberReceipt[]>
   act: (mode: Mode) => void
-  /** Of the main timeline, opens a thread by its root. */
-  openThread: ((root: RoomEventId) => void) | null
+  /** Of the main timeline, opens a thread by its root, and whether by a
+   * key on its line. */
+  openThread: ((root: RoomEventId, back: boolean) => void) | null
   /** Of the main timeline, shows a message's details. */
   details: ((event: RoomEventId) => void) | null
   /** Opens a member's profile, by their user id. */
   openMember: (user: string) => void
+  /** The event replied to or edited, if any, which its line shows. */
+  target: RoomEventId | null
+  /** Of the main timeline, closes the panel beside it, if one: what Esc
+   * does first, from a line, keeping it. */
+  closePanel: (() => void) | null
 }) {
-  const { room, me, overlay, act, openThread, details, openMember } = props
+  const { room, me, overlay, act, openThread, details, openMember, closePanel } = props
   const { matrix } = useServices()
   const [reacting, setReacting] = useState<{ event: RoomEventId; how: Reacting } | null>(null)
   // The line whose deleting is being asked about.
   const [confirming, setConfirming] = useState<RoomEventId | null>(null)
-  const line = (event: RoomEvent): Line => ({
+  /** A line's event, and what it does: by a key on it, which Esc goes
+   * back to (`back`), or by its buttons. */
+  const line = (event: RoomEvent, back: boolean): Line => ({
     room,
     event,
     me,
     overlay: overlay.get(event.event_id),
     pendingRedactions: overlay.redacted,
-    reply: () => act({ type: 'reply', event }),
-    edit: () => act({ type: 'edit', event }),
-    openThread: openThread && (() => openThread(event.id)),
+    reply: () => act({ type: 'reply', event, back }),
+    edit: () => act({ type: 'edit', event, back }),
+    openThread: openThread && (() => openThread(event.id, back)),
     openMember: () => openMember(event.sender),
   })
-  /** What can be done to the event of the line that has the focus. */
+  /** What keys can do to the event of the line that has the focus. */
   const focused = (): LineActions & { id: RoomEventId } => {
     const id = Number((document.activeElement as Element).closest<HTMLElement>('[data-event]')?.dataset.event)
     const row = props.rows.find((r) => r.type === 'event' && r.event.id === id)
     // The focus may be in the list, but on none of its lines: on a
     // button loading more, say.
-    return row?.type === 'event' ? { id, ...lineActions(line(row.event), matrix) } : { id }
+    return row?.type === 'event' ? { id, ...lineActions(line(row.event, true), matrix) } : { id }
   }
   useKeymap(
     {
@@ -367,6 +383,7 @@ export function Events(props: {
         if (can.delete) setConfirming(can.id)
       },
       pin: () => focused().pin?.toggle(),
+      ...(closePanel && { up: closePanel }),
       ...(details && {
         open: () => {
           const { id } = focused()
@@ -400,7 +417,8 @@ export function Events(props: {
             return (
               <EventRow
                 key={row.key}
-                {...line(row.event)}
+                {...line(row.event, false)}
+                target={props.target === row.event.id}
                 readers={props.readers.get(row.event.id) ?? NO_READERS}
                 reacting={reacting?.event === row.event.id ? reacting.how : null}
                 setReacting={(how) => setReacting(how && { event: row.event.id, how })}
@@ -415,6 +433,11 @@ export function Events(props: {
       ))}
     </>
   )
+}
+
+/** The line of `event` in `list`, if shown. */
+function lineOf(list: HTMLElement, event: RoomEventId): HTMLElement | null {
+  return list.querySelector<HTMLElement>(`[data-event="${event}"]`)
 }
 
 /** Moves the focus to the line `by` after the one that has it in `list`,

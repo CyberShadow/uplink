@@ -126,6 +126,8 @@ export function EventRow(
      * it the focus; and to open or close it. */
     reacting: Reacting
     setReacting: (reacting: Reacting) => void
+    /** Whether it is the event replied to or edited, which it shows. */
+    target: boolean
     /** Whether deleting it is being asked about; and to ask, or stop. */
     confirming: boolean
     setConfirming: (confirming: boolean) => void
@@ -143,9 +145,15 @@ export function EventRow(
     summary !== null && styles.state,
     message && !own && !event.redacted && mentions(content.content, me) && styles.mention,
     deleting && styles.pending,
+    props.target && styles.target,
   ]
   const { matrix } = useServices()
   const can = lineActions(props, matrix)
+  const row = useRef<HTMLLIElement>(null)
+  // Replied to or edited (by Up too), it shows, and is in view.
+  useEffect(() => {
+    if (props.target) row.current!.scrollIntoView({ block: 'nearest' })
+  }, [props.target])
   const menu: MenuItem[] = []
   if (can.delete) menu.push({ label: 'Delete', icon: 'trash', action: () => props.setConfirming(true) })
   if (can.pin) menu.push({ label: can.pin.pinned ? 'Unpin' : 'Pin', icon: 'pin', action: can.pin.toggle })
@@ -154,7 +162,7 @@ export function EventRow(
 
   return (
     // Focusable, as the line the keys act on (`Events`).
-    <li class={classes.filter(Boolean).join(' ')} id={`event-${event.id}`} tabIndex={-1} data-event={event.id}>
+    <li ref={row} class={classes.filter(Boolean).join(' ')} id={`event-${event.id}`} tabIndex={-1} data-event={event.id}>
       <time class={styles.time} dateTime={new Date(event.ts).toISOString()} title={dateTime(event.ts)}>
         {time(event.ts)}
       </time>

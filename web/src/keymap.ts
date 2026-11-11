@@ -315,6 +315,7 @@ export function useKeymap(actions: Actions, where?: Where) {
     const handler = sequences(
       () => [bindings],
       null,
+      null,
       (event) => event.isComposing,
     )
     const element = within.current!
@@ -354,6 +355,15 @@ const typed = (event: KeyboardEvent) =>
 const windowKeys = sequences(
   () => windowBindings,
   (pending) => (pendingSequence.value = pending),
+  // Escape leaves what has the focus (a line, a link), as fields leave
+  // themselves, before it goes `up` from nothing; but after what is
+  // bound where the focus is (a panel opened from a line closes first).
+  (event) => {
+    const focused = document.activeElement as HTMLElement
+    if (event.key !== 'Escape' || focused === document.body) return false
+    focused.blur()
+    return true
+  },
   (event) =>
     event.isComposing ||
     typed(event) ||
@@ -361,17 +371,7 @@ const windowKeys = sequences(
     // in a message, Tabbed to.
     (ACTIVATE.includes(event.key) && (event.target as Element).matches('a[href],button,summary')),
 )
-window.addEventListener('keydown', (event) => {
-  // Escape first leaves what has the focus (a line, a link), as fields
-  // leave themselves; only from nothing does it go `up`.
-  const focused = document.activeElement as HTMLElement
-  if (event.key === 'Escape' && focused !== document.body && !typed(event) && !event.isComposing) {
-    focused.blur()
-    event.preventDefault()
-    return
-  }
-  windowKeys(event)
-})
+window.addEventListener('keydown', windowKeys)
 
 const ACTIVATE = ['Enter', ' ']
 
@@ -401,6 +401,8 @@ function sequences(
   components: () => Bound[][],
   /** Shows a sequence begun, or none. */
   show: ((pending: Pending | null) => void) | null,
+  /** Takes a press before an unscoped binding of it fires, if it does. */
+  leave: ((event: KeyboardEvent) => boolean) | null,
   ignore: (event: KeyboardEvent) => boolean,
 ): (event: KeyboardEvent) => void {
   let typed: KeyboardEvent[] = []
@@ -449,7 +451,8 @@ function sequences(
       if (candidates.length === 0) continue
       const complete = nearest(candidates.filter((b) => b.presses.length === events.length))
       if (complete) {
-        complete.fire(event)
+        if (complete.scope === null && leave?.(event)) event.preventDefault()
+        else complete.fire(event)
         return
       }
       typed = events

@@ -5,7 +5,7 @@
 // attached, pasted or dropped, sent with it.
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
-import type { Room, RoomEvent } from '../generated/protocol'
+import type { Room, RoomEvent, RoomEventId } from '../generated/protocol'
 import { parse } from '../commands'
 import { useServices } from '../context'
 import { byShortcode } from '../emoji'
@@ -18,7 +18,12 @@ import styles from './Room.module.css'
 
 /** What the composer writes: a message, a reply to one, or an edit of
  * one of the account's own. */
-export type Mode = { type: 'new' } | { type: 'reply'; event: RoomEvent } | { type: 'edit'; event: RoomEvent }
+export type Mode =
+  | { type: 'new' }
+  // `back`: begun by a key on its line, which Esc, cancelling it, goes
+  // back to.
+  | { type: 'reply'; event: RoomEvent; back: boolean }
+  | { type: 'edit'; event: RoomEvent; back: boolean }
 
 /** How often a typing notice is renewed while typing: the homeserver
  * forgets it after 4 s, as the SDK sends it. */
@@ -37,6 +42,11 @@ export function Composer(props: {
   attachments: { files: readonly File[]; setFiles: (files: File[]) => void } | null
   /** Scrolls what the box writes to, by the page keys, from the box. */
   scrolling: Actions
+  /** Gives the focus to an event's line, if shown. */
+  focusLine: (event: RoomEventId) => void
+  /** Where Esc goes from the box, as it was opened from there by a key:
+   * else, nowhere. */
+  back: (() => void) | null
 }) {
   const { room, mode, setMode, thread } = props
   const files = props.attachments?.files ?? NO_FILES
@@ -284,9 +294,12 @@ export function Composer(props: {
               send()
             } else if (event.key === 'ArrowUp' && value === '' && !editing && props.lastOwn) {
               event.preventDefault()
-              setMode({ type: 'edit', event: props.lastOwn })
+              setMode({ type: 'edit', event: props.lastOwn, back: false })
             } else if (event.key === 'Escape') {
-              if (mode.type !== 'new') leave()
+              if (mode.type !== 'new') {
+                leave()
+                if (mode.back) props.focusLine(mode.event.id)
+              } else if (props.back) props.back()
               else event.currentTarget.blur()
             }
           }}

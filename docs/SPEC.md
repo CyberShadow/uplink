@@ -2642,10 +2642,15 @@ as a native list does), `Enter` chooses and `Esc` closes.
   (what a fold hides is passed over), or from its end if none is;
   `Alt+Shift+↑`/`↓` to the nearest with unread (a count, or a bold
   name). They repeat while held.
-- **`Esc` goes up**, pressed again and again, to a known place: a field
-  leaves itself (once it has cancelled what it was doing: a reply, a
-  completion), and so does anything else that has the focus (a room's
-  line, a link); from nothing, it closes a room's panel (a thread, the
+- **`Esc` goes up**, pressed again and again, to a known place, first
+  undoing what was done last: a field leaves itself (once it has
+  cancelled what it was doing: a reply, a completion); a reply, an edit
+  or a thread begun by a key on a line goes back to the line (begun by
+  the pointer, the box keeps the focus), and the line replied to or
+  edited (by `Up` too) shows, in view, while the box is at it; from a
+  line, it closes a room's panel first (the details `Enter` opened, a
+  thread), keeping one's place, then leaves the line, as anything else
+  that has the focus (a link); from nothing, it closes a room's panel (a thread, the
   info, a search, a message's details), takes an open conversation back
   to its list, selects none, and else goes home. Dialogs, menus and
   pickers close by it first.

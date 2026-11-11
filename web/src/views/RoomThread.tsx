@@ -17,6 +17,8 @@ export function ThreadPanel(props: {
   room: Room
   root: RoomEventId
   me: string
+  /** Where Esc goes from its box, as it was opened from there by a key. */
+  back: (() => void) | null
   close: () => void
   openMember: (user: string) => void
 }) {
@@ -72,6 +74,8 @@ export function ThreadPanel(props: {
             openThread={null}
             details={null}
             openMember={props.openMember}
+            target={mode.type === 'new' ? null : mode.event.id}
+            closePanel={null}
           />
         </ol>
       </div>
@@ -85,6 +89,8 @@ export function ThreadPanel(props: {
           thread={rootId}
           attachments={null}
           scrolling={pages(scroller)}
+          focusLine={(event) => listed.current!.querySelector<HTMLElement>(`[data-event="${event}"]`)?.focus()}
+          back={props.back}
         />
       )}
     </aside>

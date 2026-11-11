@@ -1343,16 +1343,22 @@ describe('matrix', () => {
     await user.keyboard('{ArrowDown}')
     expect(document.activeElement).toBe(lineOf(mine))
 
-    // e edits one's own; r replies, both in the box.
+    // e edits one's own; r replies, both in the box, the line shown; Esc
+    // cancels either, back on the line.
     await user.keyboard('e')
     expect(document.activeElement).toBe(box)
     expect(screen.getByText('Editing your message')).toBeTruthy()
-    await user.keyboard('{Escape}{Escape}kkr')
+    expect(lineOf(mine)!.className).toMatch(/target/)
+    await user.keyboard('{Escape}')
+    expect(document.activeElement).toBe(lineOf(mine))
+    expect(lineOf(mine)!.className).not.toMatch(/target/)
+    await user.keyboard('kr')
     expect(document.activeElement).toBe(box)
     expect(screen.getByText(/Replying to/).textContent).toContain('Plans')
-    await user.keyboard('{Escape}{Escape}')
+    await user.keyboard('{Escape}')
+    expect(document.activeElement).toBe(lineOf(theirs))
     // Not theirs to edit, nor to delete.
-    await user.keyboard('kke#')
+    await user.keyboard('e#')
     expect(document.activeElement).toBe(lineOf(theirs))
     expect(sent()).toEqual([])
 
@@ -1396,7 +1402,9 @@ describe('matrix', () => {
     expect(document.activeElement).toBe(lineOf(theirs))
     await user.keyboard('j')
     expect(within(details()).getByText(mine.event_id)).toBeTruthy()
-    await user.click(within(details()).getByRole('button', { name: 'Close message details' }))
+    // Esc closes them, keeping the line.
+    await user.keyboard('{Escape}')
+    expect(document.activeElement).toBe(lineOf(mine))
     expect(screen.queryByRole('complementary', { name: 'Message details' })).toBeNull()
 
     // Tab goes on to a line's sender, whose profile Enter would open, and
@@ -1412,9 +1420,15 @@ describe('matrix', () => {
     await user.keyboard('{Enter}')
     expect(followed).toHaveBeenCalled()
     expect(document.activeElement).toBe(link)
-    // Other keys act on its line still.
+    // Other keys act on its line still. t opens its thread, whose box Esc
+    // leaves for the line; then Esc closes the thread, keeping the line.
     await user.keyboard('t')
     expect(document.activeElement).toBe(await screen.findByRole('textbox', { name: 'Reply in thread' }))
+    await user.keyboard('{Escape}')
+    expect(document.activeElement).toBe(lineOf(theirs))
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('complementary', { name: 'Thread' })).toBeNull()
+    expect(document.activeElement).toBe(lineOf(theirs))
   })
 
   it('moves through the nav by Alt and the arrows, from the box too, and to unread with Shift', async () => {
@@ -1467,10 +1481,12 @@ describe('matrix', () => {
     // From no line, j/k go to the timeline's.
     await user.keyboard('k')
     expect(document.activeElement).toBe(document.getElementById(`event-${root.id}`))
-    await user.keyboard('{Escape}')
-    expect(document.activeElement).toBe(document.body)
+    // From a line, the panel closes first, keeping it.
     await user.keyboard('{Escape}')
     expect(screen.queryByRole('complementary', { name: 'Thread' })).toBeNull()
+    expect(document.activeElement).toBe(document.getElementById(`event-${root.id}`))
+    await user.keyboard('{Escape}')
+    expect(document.activeElement).toBe(document.body)
     expect(location.pathname).toBe(`/rooms/${room.id}`)
     await user.keyboard('{Escape}')
     expect(location.pathname).toBe('/')
