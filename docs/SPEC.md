@@ -2370,7 +2370,21 @@ thread focuses the room's again; but not where the pointer is a finger
 keyboard over what one came to read, and chat apps leave it to a tap. In the box `Enter` sends,
 `Shift+Enter` breaks the line and `Esc` leaves it (once a reply or edit
 is cancelled), for the shortcuts, as vim's normal mode; `i`, `Enter`
-and `r` go back to it. `PageUp`/`PageDown` scroll the timeline a page
+and `r` go back to it. Out of the box, `j`/`k` move to a line (from none, to the latest; in a
+thread's list, within it), as the mail list's, and keys act on its
+message, as Slack's do on the one it focuses: `r` replies, `e` edits
+one's own, `t` opens its thread or replies in one, `+` opens its
+reactions (with the focus in the box to type one, and back on the line
+once closed), `p` pins or unpins it and `#` deletes one's own; what its
+buttons do, but by keys. The line is the one that has the focus (its
+outline shows only when keys put it there), so Tab goes on to its links
+and buttons, where the keys still act on it; but Enter and Space, on a
+link or button that has the focus, are its own: no window binding takes
+them (so `Enter` writes only from no line). Its bindings count only
+while the focus is in its list: a component's window bindings may be
+scoped so, and of those of the same keys, one scoped where the focus is
+fires, as nearer, before the latest component's.
+`PageUp`/`PageDown` scroll the timeline a page
 (less an eighth), from the box too, as Element's; from a thread's box,
 the thread. The room's box unfocused is then the exception
 (`Esc`, a click elsewhere on the page). Dialogs opened from the box

@@ -1194,6 +1194,69 @@ describe('matrix', () => {
     expect(document.activeElement).toBe(document.body)
   })
 
+  it('acts by keys on the message that j and k move to, out of the box', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const theirs = server.receive(room.id, { body: 'Plans: https://example.org/plan' })
+    const mine = server.receive(room.id, { sender: ME, sender_name: 'Me', body: 'Count me in' })
+    const user = await start(`/rooms/${room.id}`)
+    const timeline = screen.getByRole('list', { name: 'Timeline' })
+    const lineOf = (event: { id: number }) => document.getElementById(`event-${event.id}`)
+    await within(timeline).findByText('Count me in')
+    const box = screen.getByRole('textbox', { name: 'Message Lounge' })
+    const sent = () => server.requests.filter((r) => r.type === 'send_matrix_message').map((r) => r.content)
+
+    // From no line, j or k goes to the latest; then they move.
+    await user.keyboard('{Escape}k')
+    expect(document.activeElement).toBe(lineOf(mine))
+    await user.keyboard('kk')
+    expect(document.activeElement).toBe(lineOf(theirs))
+    await user.keyboard('jj')
+    expect(document.activeElement).toBe(lineOf(mine))
+
+    // e edits one's own; r replies, both in the box.
+    await user.keyboard('e')
+    expect(document.activeElement).toBe(box)
+    expect(screen.getByText('Editing your message')).toBeTruthy()
+    await user.keyboard('{Escape}{Escape}kkr')
+    expect(document.activeElement).toBe(box)
+    expect(screen.getByText(/Replying to/).textContent).toContain('Plans')
+    await user.keyboard('{Escape}{Escape}')
+    // Not theirs to edit, nor to delete.
+    await user.keyboard('kke#')
+    expect(document.activeElement).toBe(lineOf(theirs))
+    expect(sent()).toEqual([])
+
+    // + opens the reactions, to type one; then the line has the focus back.
+    await user.keyboard('+')
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Reaction' }))
+    await user.keyboard('🎉{Enter}')
+    expect(document.activeElement).toBe(lineOf(theirs))
+    await user.keyboard('+{Escape}')
+    expect(document.activeElement).toBe(lineOf(theirs))
+    await user.keyboard('p')
+    await user.keyboard('j#')
+    expect(sent()).toEqual([
+      { type: 'reaction', event: theirs.event_id, key: '🎉' },
+      { type: 'pin', event: theirs.event_id, pinned: true },
+      { type: 'redaction', event: mine.event_id },
+    ])
+
+    // Tab goes on to a line's links, where Enter is the link's.
+    await user.keyboard('k')
+    const link = within(lineOf(theirs)!).getByRole('link', { name: 'https://example.org/plan' })
+    await user.tab()
+    expect(document.activeElement).toBe(link)
+    const followed = vi.fn((event: Event) => event.preventDefault())
+    link.addEventListener('click', followed)
+    await user.keyboard('{Enter}')
+    expect(followed).toHaveBeenCalled()
+    expect(document.activeElement).toBe(link)
+    // Other keys act on its line still.
+    await user.keyboard('t')
+    expect(document.activeElement).toBe(await screen.findByRole('textbox', { name: 'Reply in thread' }))
+  })
+
   it('moves the focus to a thread\'s box, and back to the room\'s once it closes', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')

@@ -15,6 +15,7 @@ import type {
   UrlPreview,
 } from '../generated/protocol'
 import { useServices } from '../context'
+import type { MatrixStore } from '../stores/matrix'
 import { keepFocus, useEscape } from '../keymap'
 import { dateTime, time } from '../format'
 import {
@@ -47,13 +48,12 @@ const QUICK = ['👍', '👎', '😄', '🎉', '😕', '❤️', '🚀', '👀']
 const IMAGE_BOX = { width: 320, height: 240 }
 const STICKER_BOX = { width: 128, height: 128 }
 
-export function EventRow(props: {
+/** What a line's event is, and the account's to do to it. */
+export interface Line {
   room: Room
   event: RoomEvent
   me: string
   overlay: Overlay
-  /** Members who have read up to this event. */
-  readers: readonly MemberReceipt[]
   /** Events, and reactions, being deleted. */
   pendingRedactions: ReadonlySet<string>
   reply: () => void
@@ -61,7 +61,71 @@ export function EventRow(props: {
   /** Opens the thread the event is the root of, or would be; `null` in
    * a thread. */
   openThread: (() => void) | null
-}) {
+}
+
+/** What can be done to a line's event, by its buttons, or by keys while
+ * it has the focus: each, but those that cannot. */
+export interface LineActions {
+  reply?: () => void
+  edit?: () => void
+  /** Opens its thread, if any. */
+  thread?: () => void
+  /** Opens the thread it would be the root of. */
+  replyInThread?: () => void
+  /** Reacts with the key, unless the account has: then takes it back. */
+  react?: (key: string) => void
+  delete?: () => void
+  pin?: { pinned: boolean; toggle: () => void }
+}
+
+export function lineActions(line: Line, matrix: MatrixStore): LineActions {
+  const { room, event, me } = line
+  const summary = stateSummary(event)
+  const message = event.kind === 'm.room.message' || event.kind === 'm.sticker'
+  const content = shown(event)
+  const deleting = line.pendingRedactions.has(event.event_id)
+  const own = event.sender === me
+  const joined = room.membership === 'joined'
+  const replyable = joined && message && !event.redacted
+  // A message of a thread is no thread's root, even if its root is not
+  // stored.
+  const threadable = replyable && line.openThread !== null && content.content['m.relates_to']?.rel_type !== 'm.thread'
+  const pinned = room.pinned.includes(event.event_id)
+  const actions: LineActions = {}
+  if (replyable) {
+    actions.reply = line.reply
+    actions.react = (key) => {
+      const mine = event.reactions
+        .find((r) => r.key === key)
+        ?.senders.find((s) => s.sender === me && !line.pendingRedactions.has(s.event_id))
+      const pending = line.overlay.find((s) => s.content.type === 'reaction' && s.content.key === key)
+      if (mine) matrix.send(room.id, { type: 'redaction', event: mine.event_id })
+      else if (pending) matrix.cancelSend(pending.id)
+      else matrix.send(room.id, { type: 'reaction', event: event.event_id, key })
+    }
+  }
+  if (replyable && own && TEXT.has(content.msgtype ?? '')) actions.edit = line.edit
+  if (event.thread !== null && line.openThread !== null) actions.thread = line.openThread
+  if (threadable) actions.replyInThread = line.openThread!
+  if (own && !event.redacted && !deleting && event.encryption !== 'undecryptable' && summary === null) {
+    actions.delete = () => matrix.send(room.id, { type: 'redaction', event: event.event_id })
+  }
+  if (joined && room.may_pin && message && !event.redacted && !deleting) {
+    actions.pin = { pinned, toggle: () => matrix.send(room.id, { type: 'pin', event: event.event_id, pinned: !pinned }) }
+  }
+  return actions
+}
+
+export function EventRow(
+  props: Line & {
+    /** Members who have read up to this event. */
+    readers: readonly MemberReceipt[]
+    /** Whether its reaction picker is open, and if by a key, which gives
+     * it the focus; and to open or close it. */
+    reacting: Reacting
+    setReacting: (reacting: Reacting) => void
+  },
+) {
   const { room, event, me } = props
   const [source, setSource] = useState(false)
   const summary = stateSummary(event)
@@ -76,42 +140,16 @@ export function EventRow(props: {
     deleting && styles.pending,
   ]
   const { matrix } = useServices()
-  const actions: MenuItem[] = []
-  if (own && !event.redacted && !deleting && event.encryption !== 'undecryptable' && summary === null) {
-    actions.push({
-      label: 'Delete',
-      icon: 'trash',
-      action: () => matrix.send(room.id, { type: 'redaction', event: event.event_id }),
-    })
-  }
-  if (room.membership === 'joined' && room.may_pin && message && !event.redacted && !deleting) {
-    const pinned = room.pinned.includes(event.event_id)
-    actions.push({
-      label: pinned ? 'Unpin' : 'Pin',
-      icon: 'pin',
-      action: () => matrix.send(room.id, { type: 'pin', event: event.event_id, pinned: !pinned }),
-    })
-  }
-  actions.push({ label: source ? 'Hide source' : 'View source', icon: 'code', action: () => setSource(!source) })
-  // Reacts with `key`, unless the account has already: then takes it back.
-  const toggle = (key: string) => {
-    const mine = event.reactions
-      .find((r) => r.key === key)
-      ?.senders.find((s) => s.sender === me && !props.pendingRedactions.has(s.event_id))
-    const pending = props.overlay.find((s) => s.content.type === 'reaction' && s.content.key === key)
-    if (mine) matrix.send(room.id, { type: 'redaction', event: mine.event_id })
-    else if (pending) matrix.cancelSend(pending.id)
-    else matrix.send(room.id, { type: 'reaction', event: event.event_id, key })
-  }
+  const can = lineActions(props, matrix)
+  const menu: MenuItem[] = []
+  if (can.delete) menu.push({ label: 'Delete', icon: 'trash', action: can.delete })
+  if (can.pin) menu.push({ label: can.pin.pinned ? 'Unpin' : 'Pin', icon: 'pin', action: can.pin.toggle })
+  menu.push({ label: source ? 'Hide source' : 'View source', icon: 'code', action: () => setSource(!source) })
   const joined = room.membership === 'joined'
-  const editable = own && message && !event.redacted && TEXT.has(content.msgtype ?? '')
-  const replyable = message && !event.redacted
-  // A message of a thread is no thread's root, even if its root is not
-  // stored.
-  const threadable = replyable && props.openThread !== null && content.content['m.relates_to']?.rel_type !== 'm.thread'
 
   return (
-    <li class={classes.filter(Boolean).join(' ')} id={`event-${event.id}`}>
+    // Focusable, as the line the keys act on (`Events`).
+    <li class={classes.filter(Boolean).join(' ')} id={`event-${event.id}`} tabIndex={-1} data-event={event.id}>
       <time class={styles.time} dateTime={new Date(event.ts).toISOString()} title={dateTime(event.ts)}>
         {time(event.ts)}
       </time>
@@ -140,7 +178,7 @@ export function EventRow(props: {
             overlay={props.overlay}
             pendingRedactions={props.pendingRedactions}
             joined={joined}
-            toggle={toggle}
+            toggle={(key) => can.react?.(key)}
           />
         )}
         {event.thread !== null && props.openThread !== null && (
@@ -150,29 +188,29 @@ export function EventRow(props: {
       </div>
       <Readers room={room} readers={props.readers} />
       <div class={styles.actions}>
-        {joined && replyable && <ReactButton react={toggle} />}
-        {joined && replyable && (
-          <button type="button" aria-label="Reply" title="Reply" onMouseDown={keepFocus} onClick={props.reply}>
+        {can.react && <ReactButton react={can.react} open={props.reacting} setOpen={props.setReacting} />}
+        {can.reply && (
+          <button type="button" aria-label="Reply" title="Reply (r)" onMouseDown={keepFocus} onClick={can.reply}>
             <Icon name="reply" />
           </button>
         )}
-        {joined && threadable && (
+        {can.replyInThread && (
           <button
             type="button"
             aria-label="Reply in thread"
-            title="Reply in thread"
+            title="Reply in thread (t)"
             onMouseDown={keepFocus}
-            onClick={props.openThread!}
+            onClick={can.replyInThread}
           >
             <Icon name="messages-square" />
           </button>
         )}
-        {joined && editable && (
-          <button type="button" aria-label="Edit" title="Edit" onMouseDown={keepFocus} onClick={props.edit}>
+        {can.edit && (
+          <button type="button" aria-label="Edit" title="Edit (e)" onMouseDown={keepFocus} onClick={can.edit}>
             <Icon name="pencil" />
           </button>
         )}
-        <MenuButton label="Options" icon="ellipsis-vertical" groups={[actions]} />
+        <MenuButton label="Options" icon="ellipsis-vertical" groups={[menu]} />
       </div>
     </li>
   )
@@ -593,22 +631,38 @@ function Reactions(props: {
   )
 }
 
+/** Whether a line's reaction picker is open: by the pointer, or by a
+ * key (`+`), which gives it the focus, and has it back once closed. */
+export type Reacting = null | 'pointer' | 'key'
+
 /** The button offering reactions: the quick ones, or any typed. */
-function ReactButton(props: { react: (key: string) => void }) {
-  const [open, setOpen] = useState(false)
+function ReactButton(props: {
+  react: (key: string) => void
+  open: Reacting
+  setOpen: (open: Reacting) => void
+}) {
+  const { open, setOpen } = props
   const [typed, setTyped] = useState('')
   const root = useRef<HTMLSpanElement>(null)
+  const input = useRef<HTMLInputElement>(null)
+  const close = () => {
+    setOpen(null)
+    setTyped('')
+    if (open === 'key') root.current!.closest<HTMLElement>('[data-event]')!.focus()
+  }
+  useLayoutEffect(() => {
+    if (open === 'key') input.current!.focus()
+  }, [open])
   useEffect(() => {
-    if (!open) return
+    if (open === null) return
     const outside = (event: PointerEvent) => {
-      if (!root.current!.contains(event.target as Node)) setOpen(false)
+      if (!root.current!.contains(event.target as Node)) setOpen(null)
     }
     document.addEventListener('pointerdown', outside)
     return () => document.removeEventListener('pointerdown', outside)
-  }, [open])
+  }, [open, setOpen])
   const choose = (key: string) => {
-    setOpen(false)
-    setTyped('')
+    close()
     props.react(key)
   }
   return (
@@ -616,14 +670,14 @@ function ReactButton(props: { react: (key: string) => void }) {
       <button
         type="button"
         aria-label="React"
-        title="React"
-        aria-expanded={open}
+        title="React (+)"
+        aria-expanded={open !== null}
         onMouseDown={keepFocus}
-        onClick={() => setOpen(!open)}
+        onClick={() => setOpen(open === null ? 'pointer' : null)}
       >
         <Icon name="smile-plus" />
       </button>
-      {open && (
+      {open !== null && (
         <div class={styles.picker} role="dialog" aria-label="React">
           {QUICK.map((key) => (
             <button key={key} type="button" aria-label={`React with ${key}`} onMouseDown={keepFocus} onClick={() => choose(key)}>
@@ -637,6 +691,7 @@ function ReactButton(props: { react: (key: string) => void }) {
             }}
           >
             <input
+              ref={input}
               aria-label="Reaction"
               placeholder="Other…"
               value={typed}
@@ -644,7 +699,7 @@ function ReactButton(props: { react: (key: string) => void }) {
               onKeyDown={(event) => {
                 if (event.key !== 'Escape') return
                 event.stopPropagation()
-                setOpen(false)
+                close()
               }}
             />
           </form>

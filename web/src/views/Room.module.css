@@ -124,6 +124,17 @@
   background: var(--hover);
 }
 
+/* The line the keys act on (`j`/`k`), or one of its links, Tabbed to. */
+.row:focus {
+  outline: none;
+}
+
+.row:focus-visible,
+.row:has(:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .mention {
   background: var(--selected);
   box-shadow: inset 3px 0 var(--accent);

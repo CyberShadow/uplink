@@ -70,7 +70,7 @@ export function Composer(props: {
   // A room's box, or a thread's, has the focus once it shows: typing is
   // what one does there. Esc leaves it, to the shortcuts.
   useLayoutEffect(() => focusShown(props.textarea.current!), [props.textarea])
-  useKeymap(props.scrolling, props.textarea)
+  useKeymap(props.scrolling, { within: props.textarea })
   useLayoutEffect(() => {
     if (placeCaret.current === null) return
     props.textarea.current!.setSelectionRange(placeCaret.current, placeCaret.current)

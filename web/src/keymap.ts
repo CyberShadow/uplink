@@ -37,6 +37,10 @@ export type Action =
   | 'flag'
   | 'done'
   | 'delete'
+  | 'edit'
+  | 'thread'
+  | 'react'
+  | 'pin'
   | 'spam'
   | 'add'
   | 'undo'
@@ -97,8 +101,8 @@ function go(key: string): Pick<Binding, 'keys' | 'label'> {
 }
 
 export const KEYMAP: Binding[] = [
-  { action: 'next', keys: ['j'], label: 'j', help: 'Next conversation (in the calendar: the next week or agenda)', repeats: true },
-  { action: 'previous', keys: ['k'], label: 'k', help: 'Previous conversation (in the calendar: the previous week or agenda)', repeats: true },
+  { action: 'next', keys: ['j'], label: 'j', help: 'Next conversation (in a room: the newer message; in the calendar: the next week or agenda)', repeats: true },
+  { action: 'previous', keys: ['k'], label: 'k', help: 'Previous conversation (in a room: the older message; in the calendar: the previous week or agenda)', repeats: true },
   { action: 'pageUp', keys: ['PageUp'], label: 'PgUp', help: "Scroll up a page (in a room, its box's too)", repeats: true },
   { action: 'pageDown', keys: ['PageDown'], label: 'PgDn', help: "Scroll down a page (in a room, its box's too)", repeats: true },
   { action: 'open', keys: ['o', 'Enter'], label: 'o, Enter', help: 'Open conversation' },
@@ -122,12 +126,16 @@ export const KEYMAP: Binding[] = [
   { action: 'notImportant', keys: ['-'], label: '-', help: 'Mark as not important' },
   { action: 'flag', keys: ['Shift+t'], label: 'Shift+t', help: 'Flag for follow-up (adds a to-do), or unflag' },
   { action: 'done', keys: ['e'], label: 'e', help: 'Mark done, or not done (in to-dos); at home: archive, read the room, or finish the to-do' },
-  { action: 'delete', keys: ['[Shift]+#'], label: '#', help: 'Delete (mail: move to Trash)' },
+  { action: 'delete', keys: ['[Shift]+#'], label: '#', help: 'Delete (mail: move to Trash; in a room, the message on show, if your own)' },
+  { action: 'edit', keys: ['e'], label: 'e', help: 'Edit the message (in a room, your own)' },
+  { action: 'thread', keys: ['t'], label: 't', help: 'Open the message\'s thread, or reply in one (in a room)' },
+  { action: 'react', keys: ['[Shift]++'], label: '+', help: 'React to the message (in a room)' },
+  { action: 'pin', keys: ['p'], label: 'p', help: 'Pin or unpin the message (in a room)' },
   { action: 'spam', keys: ['[Shift]+!'], label: '!', help: 'Report spam, or not spam' },
   { action: 'add', keys: ['a'], label: 'a', help: 'Add a to-do (in to-dos)' },
   { action: 'undo', keys: ['z'], label: 'z', help: 'Undo the last action; again, the one before it (in history: undo or redo the one focused)' },
   { action: 'compose', keys: ['c'], label: 'c', help: 'Compose' },
-  { action: 'reply', keys: ['r'], label: 'r', help: 'Reply (in a room: write a message)' },
+  { action: 'reply', keys: ['r'], label: 'r', help: 'Reply (in a room: to the message, or else write one)' },
   { action: 'write', keys: ['i', 'Enter'], label: 'i, Enter', help: 'Write a message (in a room, whose box Esc leaves)' },
   { action: 'replyAll', keys: ['a'], label: 'a', help: 'Reply all' },
   { action: 'forward', keys: ['f'], label: 'f', help: 'Forward' },
@@ -210,20 +218,25 @@ export function pages(scroller: RefObject<HTMLElement>): Actions {
 /** What a page's scroll moves of what is shown. */
 const PAGE = 0.875
 
-/** Binds `actions` to their keys while the component is mounted: on the
- * window, where typing in a field does not trigger them (but for presses
- * with Ctrl, Cmd or Alt held), or on `within`,
- * where it does. The window's bindings, from every component, make up
- * one keymap, so that a sequence's first press (`g`) keeps a shorter
- * binding of its second (`s`) from firing too. */
-export function useKeymap(
-  actions: Actions,
-  within?: RefObject<HTMLElement>,
-) {
+/** Where a component's bindings count, but for the window, and not in
+ * fields (but for presses with Ctrl, Cmd or Alt held): `focus`, on the
+ * window too, while the focus is within it, as a list's keys for its
+ * row that has the focus; or `within`, on its own keydowns, where fields
+ * count too. */
+export type Where = { focus: RefObject<HTMLElement> } | { within: RefObject<HTMLElement> }
+
+/** Binds `actions` to their keys while the component is mounted, as
+ * `where` says, or else on the window. The window's bindings, from every
+ * component (those with `focus` too), make up one keymap, so that a
+ * sequence's first press (`g`) keeps a shorter binding of its second
+ * (`s`) from firing too. */
+export function useKeymap(actions: Actions, where?: Where) {
   // The handlers change with every render; the bindings need not.
   const current = useRef(actions)
   current.current = actions
   const bound = Object.keys(actions).sort().join()
+  const scope = where && 'focus' in where ? where.focus : null
+  const within = where && 'within' in where ? where.within : null
   // At once, not after paint, so that keys pressed right after a view
   // change reach its bindings.
   useLayoutEffect(() => {
@@ -231,6 +244,7 @@ export function useKeymap(
       b.keys.map((keys) => ({
         presses: parseKeybinding(keys),
         repeats: b.repeats === true && !keys.includes(' '),
+        scope,
         fire: (event: KeyboardEvent) => {
           event.preventDefault()
           current.current[b.action]!()
@@ -247,10 +261,10 @@ export function useKeymap(
       () => [bindings],
       (event) => event.isComposing,
     )
-    const target = within.current!
-    target.addEventListener('keydown', handler)
-    return () => target.removeEventListener('keydown', handler)
-  }, [bound, within])
+    const element = within.current!
+    element.addEventListener('keydown', handler)
+    return () => element.removeEventListener('keydown', handler)
+  }, [bound, scope, within])
 }
 
 /** A binding's keys, parsed, as bound by a component. */
@@ -258,6 +272,8 @@ interface Bound {
   presses: KeybindingPress[]
   /** Fires on a held key's repeats; a single press. */
   repeats: boolean
+  /** Counts only while the focus is within it. */
+  scope: RefObject<HTMLElement> | null
   fire: (event: KeyboardEvent) => void
 }
 
@@ -269,7 +285,7 @@ window.addEventListener(
   sequences(
     () => windowBindings,
     (event) => {
-      const target = event.target as Element
+      const pressed = event.target as Element
       return (
         event.isComposing ||
         // What is typed into a field is its own; but not Ctrl, Cmd or Alt
@@ -277,12 +293,16 @@ window.addEventListener(
         (!event.ctrlKey &&
           !event.metaKey &&
           !event.altKey &&
-          target !== event.currentTarget &&
-          target.matches('[contenteditable],input,select,textarea'))
+          pressed.matches('[contenteditable],input,select,textarea')) ||
+        // As are the keys that activate a control that has the focus: a
+        // link in a message, Tabbed to.
+        (ACTIVATE.includes(event.key) && pressed.matches('a[href],button,summary'))
       )
     },
   ),
 )
+
+const ACTIVATE = ['Enter', ' ']
 
 /** How long a sequence waits for its next press. */
 const SEQUENCE_MS = 1000
@@ -293,28 +313,30 @@ const MODIFIERS = ['Shift', 'Control', 'Alt', 'Meta', 'AltGraph']
  * own, which leaves other bindings half-matched once one fires (so `* r`
  * then `* u` typed at once misses the second), it tracks one sequence:
  * the presses since the last that matched nothing, or fired. Of bindings
- * of the same keys, the latest component's fires. */
+ * of the same keys, one of a scope that has the focus fires, as nearer;
+ * else, the latest component's. */
 function sequences(
   components: () => Bound[][],
   ignore: (event: KeyboardEvent) => boolean,
 ): (event: KeyboardEvent) => void {
   let typed: KeyboardEvent[] = []
   let timer: ReturnType<typeof setTimeout> | undefined
-  const matching = (events: KeyboardEvent[]) =>
+  /** The bindings that count where the focus is. */
+  const live = () =>
     components()
       .flat()
-      .filter(
-        (b) =>
-          b.presses.length >= events.length && events.every((event, i) => matchKeybindingPress(event, b.presses[i])),
-      )
+      .filter((b) => b.scope === null || b.scope.current!.contains(document.activeElement))
+  const matching = (events: KeyboardEvent[]) =>
+    live().filter(
+      (b) =>
+        b.presses.length >= events.length && events.every((event, i) => matchKeybindingPress(event, b.presses[i])),
+    )
+  const nearest = (bindings: Bound[]) => bindings.findLast((b) => b.scope !== null) ?? bindings.at(-1)
   return (event) => {
     // Choosing an autocompletion sends a keydown that is a plain Event.
     if (!(event instanceof KeyboardEvent) || ignore(event) || MODIFIERS.includes(event.key)) return
     if (event.repeat) {
-      components()
-        .flat()
-        .findLast((b) => b.repeats && matchKeybindingPress(event, b.presses[0]))
-        ?.fire(event)
+      nearest(live().filter((b) => b.repeats && matchKeybindingPress(event, b.presses[0])))?.fire(event)
       return
     }
     clearTimeout(timer)
@@ -322,7 +344,7 @@ function sequences(
     for (const events of [[...typed, event], [event]]) {
       const candidates = matching(events)
       if (candidates.length === 0) continue
-      const complete = candidates.findLast((b) => b.presses.length === events.length)
+      const complete = nearest(candidates.filter((b) => b.presses.length === events.length))
       if (complete) {
         typed = []
         complete.fire(event)

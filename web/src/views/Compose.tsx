@@ -65,7 +65,7 @@ function ComposeForm(props: { session: ComposeSession; draft: Draft }) {
   const discard = async () => {
     if (await drafts.discard(session.id)) close()
   }
-  useKeymap({ send, close }, form)
+  useKeymap({ send, close }, { within: form })
 
   // Before paint, so that keys typed at once go where writing starts.
   useLayoutEffect(() => {

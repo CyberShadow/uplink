@@ -25,7 +25,7 @@ import styles from './Room.module.css'
 import { RoomAvatar } from './RoomAvatar'
 import { date } from '../format'
 import { TEXT, displayName, sendSummary, senderColor, shown } from '../matrix'
-import { EventRow, MembershipRun, reveal, type Overlay } from './RoomEvent'
+import { EventRow, type Line, type LineActions, lineActions, MembershipRun, type Reacting, reveal, type Overlay } from './RoomEvent'
 import { Icon } from './Icon'
 import { RoomSearch } from './RoomSearch'
 import { Composer, type Mode } from './RoomComposer'
@@ -80,7 +80,10 @@ function Timeline(props: { room: Room; words: string | null }) {
   const write = () => composer.current?.focus()
   const scroller = useRef<HTMLDivElement>(null)
   const scrolling = pages(scroller)
-  useKeymap({ reply: write, write, label: () => setTagging(true), ...scrolling })
+  const lines = useRef<HTMLOListElement>(null)
+  // From no line (those of a list have its own), to the latest.
+  const toLatest = () => moveLine(lines.current!, -1)
+  useKeymap({ reply: write, write, label: () => setTagging(true), next: toLatest, previous: toLatest, ...scrolling })
   useMarkRead(room, events)
 
   const [overlay, outgoing] = useMemo(() => overlaid(events ?? [], sends ?? [], null), [events, sends])
@@ -162,10 +165,11 @@ function Timeline(props: { room: Room; words: string | null }) {
         {room.pinned.length > 0 && <PinnedBar room={room} />}
         {/* Reversed, so that it stays scrolled to the latest event. */}
         <div ref={scroller} class={styles.scroller}>
-          <ol class={styles.events} aria-label="Timeline">
+          <ol ref={lines} class={styles.events} aria-label="Timeline">
             {timeline.moreBefore.value && <Earlier room={room} />}
             {events === null && <li class={styles.muted}>Loading…</li>}
             <Events
+              list={lines}
               room={room}
               me={me}
               rows={list}
@@ -230,10 +234,14 @@ function Timeline(props: { room: Room; words: string | null }) {
 /** What shows beside the timeline, if anything. */
 type Panel = null | { type: 'info' } | { type: 'thread'; root: RoomEventId } | { type: 'search'; words: string }
 
-/** The rows of a timeline, or a thread, and the sends that follow. */
+/** The rows of a timeline, or a thread, and the sends that follow; and,
+ * while one of its lines has the focus, the keys that act on its event
+ * (`lineActions`), and `j`/`k`, which move the focus to the next line. */
 export function Events(props: {
   room: Room
   me: string
+  /** The list the rows are of. */
+  list: RefObject<HTMLOListElement>
   rows: readonly Row[]
   overlay: Overlays
   outgoing: readonly MatrixSend[]
@@ -243,6 +251,45 @@ export function Events(props: {
   openThread: ((root: RoomEventId) => void) | null
 }) {
   const { room, me, overlay, act, openThread } = props
+  const { matrix } = useServices()
+  const [reacting, setReacting] = useState<{ event: RoomEventId; how: Reacting } | null>(null)
+  const line = (event: RoomEvent): Line => ({
+    room,
+    event,
+    me,
+    overlay: overlay.get(event.event_id),
+    pendingRedactions: overlay.redacted,
+    reply: () => act({ type: 'reply', event }),
+    edit: () => act({ type: 'edit', event }),
+    openThread: openThread && (() => openThread(event.id)),
+  })
+  /** What can be done to the event of the line that has the focus. */
+  const focused = (): LineActions & { id: RoomEventId } => {
+    const id = Number((document.activeElement as Element).closest<HTMLElement>('[data-event]')?.dataset.event)
+    const row = props.rows.find((r) => r.type === 'event' && r.event.id === id)
+    // The focus may be in the list, but on none of its lines: on a
+    // button loading more, say.
+    return row?.type === 'event' ? { id, ...lineActions(line(row.event), matrix) } : { id }
+  }
+  useKeymap(
+    {
+      next: () => moveLine(props.list.current!, 1),
+      previous: () => moveLine(props.list.current!, -1),
+      reply: () => focused().reply?.(),
+      edit: () => focused().edit?.(),
+      thread: () => {
+        const can = focused()
+        ;(can.thread ?? can.replyInThread)?.()
+      },
+      react: () => {
+        const can = focused()
+        if (can.react) setReacting({ event: can.id, how: 'key' })
+      },
+      delete: () => focused().delete?.(),
+      pin: () => focused().pin?.toggle(),
+    },
+    { focus: props.list },
+  )
   return (
     <>
       {props.rows.map((row) => {
@@ -267,15 +314,10 @@ export function Events(props: {
             return (
               <EventRow
                 key={row.key}
-                room={room}
-                event={row.event}
-                me={me}
-                overlay={overlay.get(row.event.event_id)}
+                {...line(row.event)}
                 readers={props.readers.get(row.event.id) ?? NO_READERS}
-                pendingRedactions={overlay.redacted}
-                reply={() => act({ type: 'reply', event: row.event })}
-                edit={() => act({ type: 'edit', event: row.event })}
-                openThread={openThread && (() => openThread(row.event.id))}
+                reacting={reacting?.event === row.event.id ? reacting.how : null}
+                setReacting={(how) => setReacting(how && { event: row.event.id, how })}
               />
             )
         }
@@ -285,6 +327,15 @@ export function Events(props: {
       ))}
     </>
   )
+}
+
+/** Moves the focus to the line `by` after the one that has it in `list`,
+ * or else to its last, the latest. */
+export function moveLine(list: HTMLElement, by: 1 | -1) {
+  const lines = [...list.querySelectorAll<HTMLElement>('[data-event]')]
+  const at = lines.findIndex((l) => l.contains(document.activeElement))
+  const to = at === -1 ? lines.length - 1 : Math.max(0, Math.min(at + by, lines.length - 1))
+  lines[to]?.focus()
 }
 
 /** Calls `load` once the element comes into view (in the window, and
