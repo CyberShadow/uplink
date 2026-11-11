@@ -1693,5 +1693,10 @@ mod query {
         let known = |name| crate::query::tag_known(&tx, name).unwrap();
         assert!(known("favourite") && known("low_priority") && known("Projects"));
         assert!(!known("inbox"));
+        // Reading a room marks it read up to its latest event.
+        let rooms = crate::rooms::rooms(&tx, "mx", ME).unwrap();
+        let latest = |name: &str| rooms.iter().find(|r| r.name == name).unwrap().latest;
+        assert!(latest("Team chat").is_some());
+        assert_eq!(latest("Bob"), None);
     }
 }

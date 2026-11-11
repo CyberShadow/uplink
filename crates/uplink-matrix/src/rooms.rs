@@ -971,7 +971,9 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
                     -- Of threads too, as Element counts them.
                     (SELECT count(*) FROM matrix_event e WHERE {unread} AND e.notify),
                     (SELECT count(*) FROM matrix_event e WHERE {unread} AND e.highlight),
-                    {shown_order}, {shown_tags}, r.direct
+                    {shown_order}, {shown_tags}, r.direct,
+                    (SELECT e.id FROM matrix_event e WHERE e.room = r.id AND {MAIN} AND {LISTED}
+                     ORDER BY e.pos DESC LIMIT 1)
              FROM matrix_room r
              WHERE r.account_id = ?1 AND (r.membership != 'left' OR r.desired = 'joined')
              ORDER BY 8 DESC NULLS LAST, r.id",
@@ -1021,6 +1023,7 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
                 tags: serde_json::from_str(&r.get::<_, String>(22)?)
                     .expect("json_group_array makes an array of strings"),
                 direct: r.get(23)?,
+                latest: r.get::<_, Option<i64>>(24)?.map(RoomEventId),
             })
         })?
         .collect::<Result<_, _>>()?)

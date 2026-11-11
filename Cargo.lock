@@ -4695,6 +4695,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "uplink-query",
 ]
 
 [[package]]

@@ -11,6 +11,7 @@ import { Calendar, calendarPath, today } from './Calendar'
 import { Help } from './Help'
 import { Icon } from './Icon'
 import { History } from './History'
+import { Home } from './Home'
 import { GoToLabel } from './LabelPicker'
 import { Mail } from './Mail'
 import { Nav } from './Nav'
@@ -28,9 +29,9 @@ import styles from './App.module.css'
 const Compose = lazy(() => import('./Compose'))
 
 export function App(props: { client: Client; status: ReadonlySignal<Status> }) {
-  const { ops, mail, drafts, matrix, todos, history, calendar } = props.client
+  const { ops, mail, drafts, matrix, todos, history, calendar, home } = props.client
   return (
-    <ServicesContext.Provider value={{ ops, mail, drafts, matrix, todos, history, calendar, status: props.status }}>
+    <ServicesContext.Provider value={{ ops, mail, drafts, matrix, todos, history, calendar, home, status: props.status }}>
       <LocationProvider>
         <Shell />
       </LocationProvider>
@@ -39,7 +40,7 @@ export function App(props: { client: Client; status: ReadonlySignal<Status> }) {
 }
 
 function Shell() {
-  const { mail, drafts, matrix, todos, history, calendar, status } = useServices()
+  const { mail, drafts, matrix, todos, history, calendar, home, status } = useServices()
   const { route, path } = useLocation()
   const [help, setHelp] = useState(false)
   const [goingToLabel, setGoingToLabel] = useState(false)
@@ -87,7 +88,7 @@ function Shell() {
     help: () => setHelp((shown) => !shown),
   })
 
-  const error = mail.error.value ?? drafts.error.value ?? matrix.error.value ?? todos.error.value ?? history.error.value ?? calendar.error.value
+  const error = mail.error.value ?? drafts.error.value ?? matrix.error.value ?? todos.error.value ?? history.error.value ?? calendar.error.value ?? home.error.value
   return (
     <div class={styles.shell}>
       <header class={styles.header}>
@@ -117,6 +118,7 @@ function Shell() {
           </div>
         )}
         <Router>
+          <Route path="/" component={Home} />
           <Route path="/inbox/:entry?" component={Inbox} />
           <Route path="/mail/:account/:label/:entry?" component={Mail} />
           <Route path="/all/:account/:entry?" component={Mail} />
@@ -133,7 +135,7 @@ function Shell() {
           <Route path="/rooms/:room" component={RoomView} />
           <Route path="/rooms/:room/search/:words" component={RoomView} />
           <Route path="/matrix/:account/security" component={SecurityView} />
-          <Route default component={Home} />
+          <Route default component={NotFound} />
         </Router>
       </main>
       <NoticeBar />
@@ -155,17 +157,12 @@ function Inbox(props: { entry?: string }) {
   return <Mail inbox entry={props.entry} />
 }
 
-/** Shows every account's Inbox, or the one account's. */
-function Home() {
-  const { mail, matrix } = useServices()
-  const { route } = useLocation()
-  const inbox = mail.accounts.value && homeInbox(mail.accounts.value)
-  useEffect(() => {
-    if (inbox) route(inbox, true)
-  }, [inbox, route])
-  const loaded = mail.accounts.value && matrix.accounts.value
-  const message = !loaded ? 'Loading…' : matrix.accounts.value!.length > 0 ? 'Pick a room.' : 'No accounts configured.'
-  return <p class={styles.placeholder}>{message}</p>
+function NotFound() {
+  return (
+    <p class={styles.placeholder}>
+      Nothing is here. <a href="/">Home</a>
+    </p>
+  )
 }
 
 /** With more than one mail account, their Inboxes are one. */

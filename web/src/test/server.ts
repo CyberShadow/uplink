@@ -306,6 +306,7 @@ export class FakeServer implements Requester, Blobs {
       membership_error: null,
       space: false,
       direct: false,
+      latest: null,
       avatar: null,
       children: [],
       topic: null,
@@ -497,6 +498,7 @@ export class FakeServer implements Requester, Blobs {
         notifying: this.quiet.has(room.id) ? highlighted : unread.length,
         highlighted,
         last_event_ts: events.at(-1)?.ts ?? null,
+        latest: events.filter((e) => e.thread_root === null).at(-1)?.id ?? null,
       }
     })
   }
@@ -555,6 +557,38 @@ export class FakeServer implements Requester, Blobs {
         return { type: 'accounts', as_of: this.head(), accounts: this.listAccounts() }
       case 'list_items':
         throw new Error('the test server lists no items of every kind')
+      case 'list_home': {
+        // Its own buckets, not the language: rooms with unread messages
+        // and open to-dos first, then the Inboxes' mail.
+        const empty = { conversations: [], more: false, rooms: [], todos: [], events: [] }
+        const inboxes = this.accounts.map((a) => this.labelId(a.id, 'INBOX'))
+        const hiding = this.accounts.flatMap((a) => a.labels).filter((l) => HIDING.includes(l.external_id))
+        const conversations = this.conversations(
+          (e) => !e.labels.some((l) => hiding.some((h) => h.id === l)),
+          (e) => e.labels.some((l) => inboxes.includes(l)),
+        )
+        return {
+          type: 'home',
+          as_of: this.head(),
+          buckets: [
+            {
+              ...empty,
+              name: 'Now',
+              query: 'is:unread is:room OR is:todo',
+              rooms: this.matrixRooms().filter((r) => !r.space && r.unread > 0),
+              todos: this.sortedTodos().filter((t) => t.done_at === null),
+            },
+            {
+              ...empty,
+              name: 'Inbox',
+              query: 'in:inbox -(is:unread is:room OR is:todo)',
+              conversations: conversations.slice(0, body.limit),
+              more: conversations.length > body.limit,
+            },
+            { ...empty, name: 'Later', query: 'is:starred' },
+          ],
+        }
+      }
       case 'list_entries': {
         // The query language as the client writes it: terms that must all
         // match, of account:, label: and in:, and words of the subject or

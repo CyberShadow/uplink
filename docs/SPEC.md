@@ -238,6 +238,20 @@ data_dir: /var/lib/uplink
 # takes it back for sure (§6.7). Default 10.
 send_delay_secs: 10
 
+# The home view's buckets (§12.13), top to bottom, each a query (§8.7):
+# an item is in the first that matches it. Without `home`, these.
+home:
+  - name: Immediate
+    query: is:mention OR is:invite OR (is:dm is:unread) OR is:overdue
+      OR due:today OR (in:inbox is:unread is:important)
+  - name: Upkeep
+    query: (is:unread is:notifying -tag:lowpriority)
+      OR (in:inbox -category:promotions -category:social)
+  - name: Backlog
+    query: is:starred OR is:todo
+  - name: Leisure
+    query: is:unread
+
 accounts:
   # — Gmail — with the user's own Google Cloud project (Desktop app OAuth
   # client); scope gmail.modify (read, label, send; no permanent delete).
@@ -268,7 +282,9 @@ accounts:
 ```
 
 An empty or missing file is refused with a pointer to `uplink init`;
-unknown fields are refused, so a field that went away (`data.root`,
+buckets without a name or a query, of a name another has, or whose query
+is not of the language are refused too. Unknown fields are refused, so a
+field that went away (`data.root`,
 `master_key_file`, `token_file`, `state_dir`, in configurations written
 before these were derived) is reported rather than ignored.
 
@@ -286,6 +302,7 @@ Account changes currently require a restart (logged and ignored, like
 re-reads its token file on every refresh, so re-running `uplink oauth
 init` needs no restart.
 | `server.bind` | **Restart required.** Logged as warning, ignored at runtime. |
+| `home` | The buckets are swapped; the notice `HomeChanged` (§5.5) has clients list home again. |
 
 ### 3.4 Why not env vars / multiple files
 
@@ -874,7 +891,8 @@ session only ever waits for entries already committed.)
 ### 5.5 Notices
 
 What is only of the moment — who is typing, that members sent read
-receipts, that the account's devices or keys changed — is not logged:
+receipts, that the account's devices or keys changed, that the home
+view's buckets were configured anew — is not logged:
 the server pushes it to the sessions connected as `Notice { notice }`,
 live only, never replayed. A session that falls behind the notices skips
 those it missed. A client that reconnects forgets what notices told it
@@ -2232,6 +2250,7 @@ Vitest runs from the same config (jsdom).
 src/views/
 ├── App.tsx                # shell: header, nav, routes, notice bar
 ├── Nav.tsx                # drafts/outbox, mail labels, Matrix rooms
+├── Home.tsx               # the agenda and the buckets (§12.13)
 ├── Mail.tsx               # conversation list and conversation view
 ├── HtmlBody.tsx           # sandboxed HTML mail (§8.9)
 ├── Icon.tsx               # the Lucide icons used, vendored (ISC)
@@ -2571,6 +2590,34 @@ then that it is done, or why it was cancelled. The nav counts, by the
 account's Security item, verifications waiting for the user, so that a
 request from another device is seen from any view: every Matrix
 account's security is loaded for it.
+
+### 12.13 Home
+
+`/` is home: everything at a glance, of every kind. `g i` still goes to
+the Inbox. Above, the agenda: the events of now through tomorrow, from
+`ListEvents`, each a link to its day. Below, a row of the buckets'
+names and counts, which scroll to them, and the buckets, configured in
+`home` (§3.2), in order. `ListHome { today, limit }` lists them, in one
+read: each bucket's query, less every earlier bucket's
+(`(q₃) -(q₁) -(q₂)`), as `ListItems` lists it (§8.7), with up to `limit`
+conversations and whether there are more; so an item is in the first
+bucket that matches it. Unlike a search, a label or tag no kind has is
+false rather than an error, since the default buckets name Gmail's
+labels and Element's tags, which some accounts lack. A bucket's rows are
+its to-dos (by due date), its events, then its mail and rooms, the most
+recently active first; it shows 20 at most (the client's `limit`), its
+count saying `20+` when there may be more mail, with a link "Show all"
+to the bucket's query as a search. Mail opens within that search, so `j`
+and `k` go through the bucket's mail; a room opens itself, a to-do its
+message or the to-dos, an event its day. The keys act on any row: `j`/`k`
+move, `o`/Enter open, `e` is done with it (archives mail, marks a room
+read up to its latest event, `Room.latest`, or finishes a to-do), `s`
+stars mail or favourites a room, and `l` labels mail or tags a room.
+Rooms show what is unread, mentions, or an invitation; to-dos past due
+show it. Home is listed while on show, again when a log entry may move
+an item (mail's entries and labels, rooms, timelines, to-dos and
+calendars changed), and when `HomeChanged` says the buckets were
+configured anew; hidden, it is not kept current.
 
 ## 13. Authentication & secrets
 

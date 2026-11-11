@@ -18,10 +18,45 @@ pub struct Config {
     /// undone (SPEC §6.7).
     #[serde(default = "default_send_delay_secs")]
     pub send_delay_secs: u32,
+    /// The home view's buckets (SPEC §12.13), top to bottom: an item is in
+    /// the first whose query matches it.
+    #[serde(default = "default_home")]
+    pub home: Vec<HomeBucket>,
 }
 
 fn default_send_delay_secs() -> u32 {
     10
+}
+
+/// A bucket of the home view: what `query` matches of every kind.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HomeBucket {
+    pub name: String,
+    pub query: String,
+}
+
+/// What needs doing now, what keeps things in order, what is to be done
+/// some day, and what is to be read at leisure.
+fn default_home() -> Vec<HomeBucket> {
+    let bucket = |name: &str, query: &str| HomeBucket {
+        name: name.into(),
+        query: query.into(),
+    };
+    vec![
+        bucket(
+            "Immediate",
+            "is:mention OR is:invite OR (is:dm is:unread) OR is:overdue OR due:today \
+             OR (in:inbox is:unread is:important)",
+        ),
+        bucket(
+            "Upkeep",
+            "(is:unread is:notifying -tag:lowpriority) \
+             OR (in:inbox -category:promotions -category:social)",
+        ),
+        bucket("Backlog", "is:starred OR is:todo"),
+        bucket("Leisure", "is:unread"),
+    ]
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -205,7 +240,30 @@ impl Config {
         for account in &mut config.accounts {
             account.place(&config.data_dir);
         }
+        config.check_home().context("in home")?;
         Ok(config)
+    }
+
+    /// Fails on a bucket without a name, or of a name another has, or
+    /// whose query is not of the language.
+    fn check_home(&self) -> Result<()> {
+        let mut names = std::collections::HashSet::new();
+        for bucket in &self.home {
+            anyhow::ensure!(!bucket.name.trim().is_empty(), "a bucket has no name");
+            anyhow::ensure!(
+                names.insert(&bucket.name),
+                "two buckets are named {:?}",
+                bucket.name
+            );
+            anyhow::ensure!(
+                !bucket.query.trim().is_empty(),
+                "bucket {:?} has no query",
+                bucket.name
+            );
+            uplink_query::parse(&bucket.query, 0)
+                .map_err(|e| anyhow::anyhow!("bucket {:?}: {}", bucket.name, e.0))?;
+        }
+        Ok(())
     }
 
     /// Seals accounts' secrets; made on first use.
@@ -227,6 +285,7 @@ pub enum ConfigSection {
     Data,
     /// Restart required.
     SendDelay,
+    Home,
 }
 
 #[derive(Debug, Clone)]
@@ -251,6 +310,9 @@ pub fn diff_config_sections(old: &Config, new: &Config) -> Vec<ConfigSection> {
     }
     if old.server.basic_auth != new.server.basic_auth {
         changed.push(ConfigSection::BasicAuth);
+    }
+    if old.home != new.home {
+        changed.push(ConfigSection::Home);
     }
     // M3+: per-account add/remove/modify diffing
     if old.accounts != new.accounts {
@@ -427,6 +489,7 @@ mod tests {
         let config = Config::load(&example).unwrap();
         assert!(config.accounts.is_empty());
         assert_eq!(config.data_dir, example.parent().unwrap().join("./data"));
+        assert_eq!(config.home, default_home());
         // Its commented accounts, and TLS, are right once uncommented.
         let uncommented = std::fs::read_to_string(&example)
             .unwrap()
@@ -646,6 +709,38 @@ accounts:
         assert!(Config::load(f.path()).is_err());
     }
 
+    /// Buckets are named, each its own name, and of the query language;
+    /// without any, the defaults.
+    #[test]
+    fn home_buckets_are_checked() {
+        let load = |home: &str| {
+            let yaml = format!(
+                "server:\n  basic_auth:\n    user: a\n    password_bcrypt: x\ndata_dir: /tmp/uplink\n{home}"
+            );
+            let mut f = tempfile::NamedTempFile::new().unwrap();
+            f.write_all(yaml.as_bytes()).unwrap();
+            Config::load(f.path())
+        };
+        let defaults = load("").unwrap().home;
+        assert_eq!(defaults, default_home());
+        for bucket in &defaults {
+            uplink_query::parse(&bucket.query, 0).unwrap();
+        }
+        let home = load("home:\n  - name: Now\n    query: is:mention\n")
+            .unwrap()
+            .home;
+        assert_eq!(home.len(), 1);
+        assert!(load("home: []\n").unwrap().home.is_empty());
+        let refused = |home: &str| format!("{:#}", load(home).unwrap_err());
+        assert!(
+            refused("home:\n  - name: A\n    query: x\n  - name: A\n    query: y\n")
+                .contains("two buckets are named \"A\"")
+        );
+        assert!(refused("home:\n  - name: ' '\n    query: x\n").contains("no name"));
+        assert!(refused("home:\n  - name: A\n    query: ''\n").contains("no query"));
+        assert!(refused("home:\n  - name: A\n    query: 'is:nonsense'\n").contains("bucket \"A\""));
+    }
+
     #[test]
     fn unknown_field_fails() {
         let yaml = r#"
@@ -682,7 +777,16 @@ data_dir: /tmp/uplink
             data_dir: PathBuf::from("/tmp/uplink"),
             send_delay_secs: 10,
             accounts: vec![],
+            home: default_home(),
         }
+    }
+
+    #[test]
+    fn diff_detects_home_change() {
+        let old = base_config();
+        let mut new = old.clone();
+        new.home.pop();
+        assert_eq!(diff_config_sections(&old, &new), vec![ConfigSection::Home]);
     }
 
     #[test]

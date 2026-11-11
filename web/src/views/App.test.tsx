@@ -24,7 +24,7 @@ beforeEach(() => {
   server.attach(client)
 })
 
-async function start(path = '/') {
+async function start(path = '/mail/work/INBOX') {
   history.replaceState(null, '', path)
   render(<App client={client} status={signal('open')} />)
   client.reset()
@@ -33,6 +33,7 @@ async function start(path = '/') {
   else if (path === '/history') await screen.findByRole('list', { name: 'History' })
   else if (path === '/outbox') await screen.findByText(/^The outbox is empty/)
   else if (path.startsWith('/matrix/')) await screen.findByRole('heading', { name: /^Security of/ })
+  else if (path === '/') await screen.findByRole('region', { name: 'Home' })
   else await screen.findByRole('list', { name: 'Messages' })
   return userEvent.setup()
 }
@@ -620,8 +621,7 @@ describe('Microsoft 365', () => {
   })
 
   it('opens every account’s Inbox as one, saying whose each message is', async () => {
-    const user = await start('/')
-    expect(location.pathname).toBe('/inbox')
+    const user = await start('/inbox')
     expect(subjects()).toEqual(['Memo', 'First', 'Second', 'Third'])
     expect(rows().map((row) => row.querySelector('[class*=account]')!.textContent)).toEqual([
       'office@example.com',
@@ -1555,7 +1555,7 @@ describe('room timeline', () => {
   it('creates rooms, starts direct chats and joins rooms, opening them', async () => {
     server.addMatrixAccount()
     server.addRoom('Lobby', false, 'left')
-    const user = await start('/')
+    const user = await start()
     const starter = async () => {
       await user.click(await screen.findByRole('button', { name: 'Start a conversation' }))
       return screen.getByRole('dialog', { name: 'Start a conversation' })
@@ -1803,6 +1803,59 @@ describe('switcher', () => {
     const current = nav.querySelector('[aria-current=page]')!
     expect(current.textContent).toBe('Projects')
     expect(current.closest('section')!.textContent).toContain('home@example.com')
+  })
+})
+
+describe('home', () => {
+  const bucketRows = (name: string) =>
+    within(screen.getByRole('region', { name })).queryAllByRole('listitem').map((row) => row.querySelector('[class*=title]')!.textContent)
+
+  it('lists the buckets, and e is done with any row, s stars it', async () => {
+    server.addMatrixAccount()
+    const lobby = server.addRoom('Lobby')
+    server.receive(lobby.id, { body: 'Hello there' })
+    server.addRoom('Quiet')
+    const user = await start('/')
+    expect(screen.getByRole('link', { name: /^Home/ }).getAttribute('aria-current')).toBe('page')
+    await waitFor(() => expect(bucketRows('Now')).toEqual(['Lobby']))
+    expect(bucketRows('Inbox')).toHaveLength(3)
+    expect(within(screen.getByRole('region', { name: 'Later' })).getByText('Nothing.')).toBeTruthy()
+    expect(within(screen.getByRole('navigation', { name: 'Buckets' })).getAllByRole('button').map((b) => b.textContent)).toEqual([
+      'Now 1',
+      'Inbox 3',
+      'Later 0',
+    ])
+
+    await client.todos.create('Pay rent')
+    // To-dos come first.
+    await waitFor(() => expect(bucketRows('Now')).toEqual(['Pay rent', 'Lobby']))
+    const focused = () => screen.getByRole('region', { name: 'Home' }).querySelector('[aria-current=true] [class*=title]')!.textContent
+    expect(focused()).toBe('Pay rent')
+    await user.keyboard('e')
+    await waitFor(() => expect(bucketRows('Now')).toEqual(['Lobby']))
+    // The room: s favourites it, e reads it.
+    await user.keyboard('s')
+    await waitFor(() => expect(server.rooms.find((r) => r.id === lobby.id)!.tags).toEqual(['m.favourite']))
+    await user.keyboard('e')
+    await waitFor(() => expect(bucketRows('Now')).toEqual([]))
+    // Mail: e archives it.
+    expect(focused()).toBe(bucketRows('Inbox')[0])
+    await user.keyboard('e')
+    await waitFor(() => expect(bucketRows('Inbox')).toHaveLength(2))
+    // Opening mail opens it in a list of the bucket's.
+    await user.keyboard('{Enter}')
+    expect(decodeURIComponent(location.pathname)).toMatch(/^\/search\/in:inbox -\(is:unread is:room OR is:todo\)\/\d+$/)
+  })
+
+  it('shows the agenda of today and tomorrow', async () => {
+    const now = new Date()
+    const at = (days: number, hour: number) =>
+      new Date(now.getFullYear(), now.getMonth(), now.getDate() + days, hour).toISOString()
+    server.addEvent('work', 'Standup', at(1, 9), at(1, 10))
+    server.addEvent('work', 'Far off', at(5, 9), at(5, 10))
+    await start('/')
+    const agenda = await screen.findByRole('list', { name: 'Agenda' })
+    expect(agenda.textContent).toBe('Tomorrow 09:00 Standup')
   })
 })
 

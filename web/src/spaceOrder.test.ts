@@ -17,6 +17,7 @@ const space = (name: string, space_order: string | null = null): Room => ({
   membership_error: null,
   space: true,
   direct: false,
+  latest: null,
   avatar: null,
   children: [],
   topic: null,

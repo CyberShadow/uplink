@@ -23,7 +23,7 @@ def subjects(page):
 
 
 def inbox(page):
-    page.goto(os.environ["UPLINK_URL"] + "/")
+    page.goto(os.environ["UPLINK_URL"] + "/inbox")
     expect(page.get_by_role("list", name="Messages").get_by_role("listitem")).not_to_have_count(0, timeout=30000)
 
 
@@ -260,7 +260,20 @@ def tabs(page):
     return {"draft": page.url.rsplit("/", 1)[1]}
 
 
-STEPS = {f.__name__: f for f in [read, archive, undo, label, search, reply, matrix, todos, history, trash, attachment, tabs]}
+def home(page):
+    """Goes home: the rows of each bucket."""
+    page.get_by_role("link", name="Home").click()
+    region = page.get_by_role("region", name="Home")
+    expect(region.get_by_role("region", name="Backlog").get_by_role("listitem")).not_to_have_count(0)
+    page.screenshot(path=f"{SHOTS}/home.png")
+    buckets = region.get_by_role("region")
+    return {
+        b.get_attribute("aria-label"): [row.inner_text() for row in b.get_by_role("listitem").all()]
+        for b in buckets.all()
+    }
+
+
+STEPS = {f.__name__: f for f in [read, archive, undo, label, search, reply, matrix, todos, home, history, trash, attachment, tabs]}
 
 step = STEPS[sys.argv[1]]
 with sync_playwright() as p:

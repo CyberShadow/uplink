@@ -25,6 +25,22 @@ data_dir: ./data
 # undone.
 send_delay_secs: 10
 
+# The home page's buckets, top to bottom, each a search (see the app's
+# search help): mail, rooms, to-dos or events land in the first bucket
+# that matches them. Without `home`, these. Changes apply without a
+# restart.
+home:
+  - name: Immediate
+    query: is:mention OR is:invite OR (is:dm is:unread) OR is:overdue
+      OR due:today OR (in:inbox is:unread is:important)
+  - name: Upkeep
+    query: (is:unread is:notifying -tag:lowpriority)
+      OR (in:inbox -category:promotions -category:social)
+  - name: Backlog
+    query: is:starred OR is:todo
+  - name: Leisure
+    query: is:unread
+
 # Add accounts below (and drop the `[]`), then restart `uplink serve`.
 accounts: []
 

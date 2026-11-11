@@ -34,7 +34,7 @@ use uplink_config::{
 use uplink_email::{gmail, m365, query::ConfiguredAccount, service::Mail};
 use uplink_matrix::service::Matrix;
 use uplink_protocol::{
-    mail::MailProvider, ClientRequest, ErrorCode, ServerError, ServerResponse, TxLogId,
+    mail::MailProvider, ClientRequest, ErrorCode, Notice, ServerError, ServerResponse, TxLogId,
 };
 use uplink_realtime::{Backend, Hub, Replay};
 use uplink_storage::seal::MasterKey;
@@ -251,6 +251,7 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
             uplink_storage::open_reader(root)?,
             mail_accounts.clone(),
             matrix_accounts.clone(),
+            config.home.clone(),
         ),
         todos: Todos::new(dispatcher.clone(), uplink_storage::open_reader(root)?),
         calendar: Calendar::new(uplink_storage::open_reader(root)?),
@@ -311,6 +312,7 @@ pub async fn serve_with_listener(
         config_path,
         tls_holder.clone(),
         basic_auth.clone(),
+        state.services.clone(),
     ));
 
     let app = build_app(state);
@@ -355,11 +357,19 @@ async fn config_reload_task(
     config_path: PathBuf,
     tls_holder: Option<Arc<ArcSwap<ServerConfig>>>,
     basic_auth: Arc<ArcSwap<BasicAuthConfig>>,
+    services: Services,
 ) {
     loop {
         match rx.recv().await {
             Ok(event) => {
-                handle_config_changed(event, &config_path, tls_holder.as_ref(), &basic_auth).await;
+                handle_config_changed(
+                    event,
+                    &config_path,
+                    tls_holder.as_ref(),
+                    &basic_auth,
+                    &services,
+                )
+                .await;
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                 tracing::warn!("config: dropped {n} reload events (lagged)");
@@ -374,6 +384,7 @@ async fn handle_config_changed(
     config_path: &Path,
     tls_holder: Option<&Arc<ArcSwap<ServerConfig>>>,
     basic_auth: &Arc<ArcSwap<BasicAuthConfig>>,
+    services: &Services,
 ) {
     match event.section {
         ConfigSection::Tls => match Config::load(config_path) {
@@ -420,6 +431,16 @@ async fn handle_config_changed(
             }
             Err(e) => {
                 tracing::error!("config: basic_auth reload failed, keeping old config: {e:#}");
+            }
+        },
+        ConfigSection::Home => match Config::load(config_path) {
+            Ok(cfg) => {
+                services.items.configure_home(cfg.home);
+                services.dispatcher.hub().notify(Notice::HomeChanged);
+                info!("config: home reloaded");
+            }
+            Err(e) => {
+                tracing::error!("config: home reload failed, keeping old config: {e:#}");
             }
         },
         ConfigSection::Accounts => {
@@ -896,6 +917,7 @@ impl Backend for Services {
                 })
             }
             ClientRequest::ListAccounts => self.mail.list_accounts().await,
+            ClientRequest::ListHome { today, limit } => self.items.home(today, limit).await,
             ClientRequest::ListItems {
                 query,
                 today,
@@ -1181,7 +1203,7 @@ mod tests {
                     uplink_storage::store::Store::blobs(dir.path()),
                 ),
                 outbox: Outbox::new(reader()),
-                items: items::Items::new(reader(), vec![], vec![]),
+                items: items::Items::new(reader(), vec![], vec![], vec![]),
                 todos: Todos::new(dispatcher.clone(), reader()),
                 calendar: Calendar::new(reader()),
                 reader: Arc::new(LogReader::new(reader(), 16)),

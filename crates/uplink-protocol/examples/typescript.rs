@@ -54,6 +54,7 @@ fn main() {
         ClientRequest,
         ServerResponse,
         ServerError,
+        HomeBucket,
         ErrorCode,
         LogEntry,
         ListScope,

@@ -67,6 +67,9 @@ pub struct Room {
     pub may_pin: bool,
     /// The latest event's time, ms since the Unix epoch.
     pub last_event_ts: Option<i64>,
+    /// The latest event the room's main timeline lists: reading the room
+    /// marks it read up to that.
+    pub latest: Option<RoomEventId>,
     pub read_up_to: Option<ReadMarker>,
     /// A change the user asked for that has yet to take effect.
     pub pending: Option<MembershipChange>,

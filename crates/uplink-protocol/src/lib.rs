@@ -87,6 +87,8 @@ pub enum WsServerMsg {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Notice {
+    /// The home view's buckets were configured anew: list it again.
+    HomeChanged,
     Typing(matrix::Typing),
     ReceiptsChanged(matrix::ReceiptsChanged),
     /// The account's devices, their trust or its key backup changed.
@@ -127,6 +129,13 @@ pub enum ClientRequest {
         query: String,
         today: String,
         after: Option<ListPosition>,
+        limit: u32,
+    },
+    /// The home view (SPEC §12.13): each configured bucket's items, as
+    /// `ListItems` lists them, of up to `limit` conversations; an item is
+    /// in the first bucket that matches it.
+    ListHome {
+        today: String,
         limit: u32,
     },
     /// The entries of the entry's conversation, in Trash and Spam too,
@@ -426,6 +435,10 @@ pub enum ServerResponse {
         as_of: TxLogId,
         entries: Vec<mail::Entry>,
     },
+    Home {
+        as_of: TxLogId,
+        buckets: Vec<HomeBucket>,
+    },
     Items {
         as_of: TxLogId,
         conversations: Vec<mail::Conversation>,
@@ -548,6 +561,7 @@ impl ServerResponse {
             | Self::Conversations { as_of, .. }
             | Self::Entries { as_of, .. }
             | Self::Items { as_of, .. }
+            | Self::Home { as_of, .. }
             | Self::Drafts { as_of, .. }
             | Self::Outbox { as_of, .. }
             | Self::Rooms { as_of, .. }
@@ -572,6 +586,21 @@ impl ServerResponse {
             | Self::RoomKeysImported { .. } => None,
         }
     }
+}
+
+/// A bucket of the home view, as configured, and what is in it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct HomeBucket {
+    pub name: String,
+    /// What it lists: its query, less what earlier buckets list.
+    pub query: String,
+    pub conversations: Vec<mail::Conversation>,
+    /// Whether it lists more conversations than these.
+    pub more: bool,
+    pub rooms: Vec<matrix::Room>,
+    pub todos: Vec<todos::Todo>,
+    pub events: Vec<calendar::CalendarEvent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]

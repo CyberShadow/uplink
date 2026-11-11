@@ -70,6 +70,7 @@ export interface View {
  * Inboxes as one first. */
 export function views(accounts: readonly Account[]): View[] {
   return [
+    { href: '/', icon: 'house', name: 'Home' },
     ...(accounts.length > 1 ? [{ href: inboxPath(), icon: 'inbox' as const, name: 'All inboxes' }] : []),
     { href: '/drafts', icon: 'file', name: 'Drafts' },
     { href: '/outbox', icon: 'clock-arrow-up', name: 'Outbox' },
@@ -477,6 +478,7 @@ export function Nav(props: { open: boolean }) {
   const outbox = drafts.outbox.value ?? []
   const counts: Record<string, [number, boolean]> = {
     [inboxPath()]: [mail.accounts.value?.reduce((unread, account) => unread + inboxUnread(account), 0) ?? 0, false],
+    '/': [0, false],
     '/drafts': [drafts.drafts.value?.size ?? 0, false],
     '/outbox': [outboxCount(outbox), outboxNeedsAttention(outbox)],
     '/history': [0, false],

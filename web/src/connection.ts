@@ -63,6 +63,7 @@ function isResendable(body: ClientRequest): boolean {
     case 'list_accounts':
     case 'list_entries':
     case 'list_items':
+    case 'list_home':
     case 'load_message':
     case 'list_drafts':
     case 'list_outbox':
