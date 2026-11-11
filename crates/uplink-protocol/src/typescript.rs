@@ -26,9 +26,11 @@ pub fn version() -> &'static str {
 /// FNV-1a, 64 bits: stable across builds and platforms, as `std`'s
 /// hashers are not promised to be.
 fn version_of(declarations: &str) -> String {
-    let hash = declarations.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
-    });
+    let hash = declarations
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        });
     format!("{hash:016x}")
 }
 

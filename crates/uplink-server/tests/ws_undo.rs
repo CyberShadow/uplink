@@ -294,7 +294,14 @@ async fn another_protocol_version_closes_connection() {
     let server = server().await;
     let mut ws = connect(server.addr).await;
     let version = "0123456789abcdef".to_owned();
-    send(&mut ws, &WsClientMsg::Hello { version, since: None }).await;
+    send(
+        &mut ws,
+        &WsClientMsg::Hello {
+            version,
+            since: None,
+        },
+    )
+    .await;
     match next_frame(&mut ws).await {
         Message::Close(Some(frame)) => assert_eq!(frame.code, CloseCode::Library(4002)),
         other => panic!("expected close, got {other:?}"),

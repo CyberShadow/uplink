@@ -92,7 +92,11 @@ async fn session(
     let mut deadline = Instant::now() + SILENCE_TIMEOUT;
 
     let since = match recv(socket, &mut deadline).await? {
-        WsClientMsg::Hello { version, since } if version == uplink_protocol::typescript::version() => since,
+        WsClientMsg::Hello { version, since }
+            if version == uplink_protocol::typescript::version() =>
+        {
+            since
+        }
         WsClientMsg::Hello { version, .. } => {
             return Err(End::Close {
                 code: CLOSE_PROTOCOL_VERSION,
