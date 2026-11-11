@@ -133,8 +133,8 @@
         # relative to the configuration's directory).
         #
         # The out-link also carries bin/uplink, the CLI on the service's
-        # configuration (`uplink oauth init --account …`), which the dotfiles
-        # put on the PATH the same way.
+        # configuration (`uplink oauth init --account …`), to put on the PATH
+        # the same way (e.g. a link to it in ~/.local/bin).
         service = pkgs.symlinkJoin { name = "uplink-service"; paths = [ serviceUnit serviceCli ]; };
 
         serviceCli = pkgs.writeShellScriptBin "uplink" ''
