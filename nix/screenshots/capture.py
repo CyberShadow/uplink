@@ -114,6 +114,12 @@ def views(page, theme):
     expect(page.get_by_role("list", name="Timeline")).to_contain_text("You're the best", timeout=15000)
     shoot(page, "room", theme)
 
+    page.goto(URL + "/history")
+    expect(page.get_by_role("list", name="History").get_by_role("listitem")).not_to_have_count(0)
+    shoot(page, "history", theme)
+
+
+def calendar(page, theme):
     page.goto(URL + "/calendar")
     expect(page.get_by_text("Roadmap review")).to_be_visible(timeout=10000)
     # The working day, rather than the small hours.
@@ -121,10 +127,6 @@ def views(page, theme):
     page.mouse.move(700, 400)
     page.mouse.wheel(0, -80)
     shoot(page, "calendar", theme)
-
-    page.goto(URL + "/history")
-    expect(page.get_by_role("list", name="History").get_by_role("listitem")).not_to_have_count(0)
-    shoot(page, "history", theme)
 
 
 def phone(page, theme):
@@ -148,9 +150,15 @@ with sync_playwright() as p:
             **viewport,
         )
 
-    act(context("light", viewport={"width": 1280, "height": 800}).new_page())
+    # Desktop shots are of a small window, so that what they show is large
+    # on the page, at twice its resolution, so that it is sharp. The
+    # calendar's week needs a wider one, for its seven days; it is taken at
+    # the same size.
+    desktop = {"viewport": {"width": 1024, "height": 640}, "device_scale_factor": 2}
+    act(context("light", **desktop).new_page())
     for theme in THEMES:
-        views(context(theme, viewport={"width": 1280, "height": 800}).new_page(), theme)
+        views(context(theme, **desktop).new_page(), theme)
+        calendar(context(theme, viewport={"width": 1280, "height": 800}, device_scale_factor=1.6).new_page(), theme)
         phone(context(theme, viewport={"width": 390, "height": 844}, device_scale_factor=2, is_mobile=True,
                       has_touch=True).new_page(), theme)
     browser.close()

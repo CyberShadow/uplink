@@ -296,6 +296,13 @@ say("daniel", platform, "If anything looks off, roll back with: deploy rollback 
 say("sofia", design, "New onboarding prototype is up, three steps instead of seven. Feedback welcome!")
 
 for user, body in [
+    ("whatsapp_dad", "The tomatoes finally came in 🍅"),
+    ("whatsapp_lena", "Finally! After all that complaining about the rain"),
+    ("whatsapp_mom", "He's been out there every morning talking to them"),
+    ("whatsapp_dad", "It works, doesn't it?"),
+    ("alice", "Save some for me, I'll make that salsa again"),
+    ("whatsapp_lena", "The one from the summer? Yes please"),
+    ("whatsapp_mom", "Speaking of food, your aunt is visiting this weekend"),
     ("whatsapp_mom", "Is everyone coming on Sunday?"),
     ("whatsapp_lena", "Yes! I'm bringing dessert 🍰"),
     ("whatsapp_dad", "I'll pick your aunt up from the station at 4"),
