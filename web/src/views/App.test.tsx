@@ -824,9 +824,12 @@ describe('matrix', () => {
     expect(within(space).queryByRole('link', { name: 'Elsewhere' })).toBeNull()
     within(rooms).getByRole('link', { name: 'Elsewhere' })
 
-    await user.click(within(space).getByRole('button', { name: 'Collapse Team' }))
+    // The whole row folds it.
+    const row = within(space).getByRole('button', { name: 'Team' })
+    expect(row.getAttribute('aria-expanded')).toBe('true')
+    await user.click(within(row).getByText('Team'))
     expect(within(space).queryByRole('link', { name: /General/ })).toBeNull()
-    expect(space.textContent).toContain('Team1')
+    expect(within(space).getByRole('button', { name: 'Team1' }).getAttribute('aria-expanded')).toBe('false')
   })
 
   it('joins an invitation, and leaves the room, with undo in between', async () => {

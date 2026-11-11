@@ -306,26 +306,35 @@ export function Nav(props: { open: boolean }) {
     const key = `matrix:${room.account}:${room.room_id}`
     const folded = collapsed.value.has(key)
     const unread = folded ? unreadIn(node) : 0
+    const row = (
+      <>
+        <RoomAvatar room={room} />
+        <span class={styles.name}>{room.name}</span>
+        {unread > 0 && <span class={styles.count}>{unread}</span>}
+      </>
+    )
     return (
       <li key={room.id} class={styles.node}>
-        {node.children.length > 0 && (
+        {node.children.length > 0 ? (
+          // The whole row folds the space, which is not a link.
           <button
             type="button"
-            class={styles.fold}
+            class={`${styles.parent} ${styles.toggle}`}
             style={{ '--depth': depth }}
-            aria-label={folded ? `Expand ${room.name}` : `Collapse ${room.name}`}
             aria-expanded={!folded}
             onMouseDown={keepFocus}
             onClick={() => toggleCollapsed(key)}
           >
-            <Icon name={folded ? 'chevron-right' : 'chevron-down'} />
+            <span class={styles.fold} aria-hidden="true">
+              <Icon name={folded ? 'chevron-right' : 'chevron-down'} />
+            </span>
+            {row}
           </button>
+        ) : (
+          <span class={styles.parent} style={{ '--depth': depth }}>
+            {row}
+          </span>
         )}
-        <span class={styles.parent} style={{ '--depth': depth }}>
-          <RoomAvatar room={room} />
-          <span class={styles.name}>{room.name}</span>
-          {unread > 0 && <span class={styles.count}>{unread}</span>}
-        </span>
         {node.children.length > 0 && !folded && (
           <ul>{node.children.map((child) => roomNode(child, depth + 1))}</ul>
         )}

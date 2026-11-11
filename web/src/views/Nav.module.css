@@ -112,6 +112,21 @@
   flex: none;
 }
 
+/* A space's row, which folds it. */
+.toggle {
+  box-sizing: border-box;
+  width: calc(100% - 8px);
+  border: none;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.toggle:hover {
+  background: var(--hover);
+}
+
 .syncing {
   flex: none;
   font-weight: normal;
