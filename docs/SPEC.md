@@ -1745,11 +1745,11 @@ them, the client lets the frame load images from uplink's origin
 frame's `'self'` to the origin it inherits); a sender then learns the server's address, a
 fixed user agent (`Mozilla/5.0 (compatible; uplink)`) and when the mail
 was shown, but nothing of the browser: no client headers, cookies or
-referrer. Remote fonts and stylesheets still don't load. In Firefox,
-images of `<style>` elements don't either: it reuses a sheet it parsed
-for an earlier document of the same text and principal (the frame's,
-shown without them), with its images as that document's CSP refused
-them. The endpoint
+referrer. Remote fonts and stylesheets still don't load. Shown, the mail's
+`<style>` elements end in a comment: Firefox reuses a sheet it parsed
+for an earlier document of the same text and principal, with its images
+as that document's CSP refused them, and would otherwise not show those
+of the frame shown without them. The endpoint
 (behind basic auth) fetches only from public addresses (not loopback,
 private, link-local, shared, benchmarking, multicast or reserved ones,
 nor IPv6 ones carrying such an IPv4 one: mapped, compatible, NAT64's or

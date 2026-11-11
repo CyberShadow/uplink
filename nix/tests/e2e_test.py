@@ -230,12 +230,9 @@ b { font-family: f; background: url(http://t.example/style.gif) }</style><b>bold
         # Remote images only once shown, and only uplink's fetches of them;
         # never fonts, stylesheets or uplink's own URLs.
         assert result["before"] == [], (browser, result)
-        images = {"http://t.example/div.gif", "http://t.example/img.gif"}
-        # Of <style> elements: Firefox reuses a sheet parsed for a document
-        # before, of the same text, with its images as that document's CSP
-        # refused them; shown, they are not fetched again.
-        styled = {"http://t.example/fontless.gif", "http://t.example/plain.gif", "http://t.example/style.gif"}
-        expected = sorted(images | (styled if browser == "chromium" else set()))
+        expected = sorted(
+            f"http://t.example/{name}.gif" for name in ["div", "img", "style", "plain", "fontless"]
+        )
         assert sorted(result["shown"]) == expected, (browser, result)
         # Nothing beyond uplink but the link followed, in a tab of its own,
         # without the page as opener or referrer.

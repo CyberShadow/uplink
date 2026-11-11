@@ -43,7 +43,19 @@ function useDark(): boolean {
   return dark
 }
 
-function document(html: string, remote: boolean, classes: string): string {
+/** `html` with its `<style>` elements marked as shown with remote images.
+ * Firefox reuses a sheet it parsed for a document before, of the same
+ * text, with its images as that document's CSP refused them: the frame's,
+ * shown without them. */
+function remoteShown(html: string): string {
+  // Inert: nothing in it loads.
+  const template = document.createElement('template')
+  template.innerHTML = html
+  for (const style of template.content.querySelectorAll('style')) style.append('/* remote images shown */')
+  return template.innerHTML
+}
+
+function frameDocument(html: string, remote: boolean, classes: string): string {
   // The server's fetches of remote images, at uplink's origin; by name, as
   // Firefox does not take a srcdoc frame's 'self' for its (inherited)
   // origin.
@@ -53,7 +65,7 @@ function document(html: string, remote: boolean, classes: string): string {
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${images}; style-src 'unsafe-inline'">
 <base target="_blank">
 <style>${STYLE}</style>
-</head><body>${html}</body></html>`
+</head><body>${remote ? remoteShown(html) : html}</body></html>`
 }
 
 /** `fold`: whether to fold away the quote of the mail it answers, if it
@@ -93,7 +105,7 @@ export function HtmlBody(props: { html: string; fold: boolean }) {
         // (with scripts too, the mail could lift its own sandbox); popups,
         // so that links open.
         sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
-        srcdoc={document(html, remote, classes)}
+        srcdoc={frameDocument(html, remote, classes)}
         onLoad={fit}
       />
       {folded && <QuoteToggle shown={quoteShown} toggle={() => setQuoteShown(!quoteShown)} />}
