@@ -3045,6 +3045,19 @@ with every request: it is checked by bcrypt once (on a blocking thread),
 then by its SHA-256 digest, remembered with the configured hash it was
 checked against, so that changing the password voids it.
 
+The browser sends the credentials with other sites' requests to uplink
+too (Chromium unasked, Firefox once challenged), WebSocket handshakes
+included, so those are refused (403) before auth: whatever `Sec-Fetch-Site`
+says is not `same-origin` or `none` (the user's own), unless a top-level
+`GET` navigation (a link to the app or a download); and a WebSocket whose
+`Origin` is not at the `Host` asked for, as Chromium sends no
+`Sec-Fetch-*` with one (a proxy in front must keep `Host`). Without
+those headers, a request is no browser's, or one too old to send them.
+The app's page has a CSP: only its own scripts, styles and images (and
+`data:` images and inline styles, for mail, whose frame inherits it),
+no `<object>`, `<base>` or form submissions, and no framing by other pages
+(`frame-ancestors 'none'`).
+
 This is intentionally minimal. The MVP doesn't need session cookies,
 account selection, password reset, or rate limiting — the user is the
 operator and `fail2ban` on the system handles brute-force concerns.

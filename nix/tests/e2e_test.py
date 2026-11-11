@@ -235,9 +235,15 @@ b { font-family: f; background: url(http://t.example/style.gif) }</style><b>bold
         )
         assert sorted(result["shown"]) == expected, (browser, result)
         # Nothing beyond uplink but the link followed, in a tab of its own,
-        # without the page as opener or referrer.
+        # without the page as opener or referrer, and reaching nothing of
+        # uplink's from there.
         assert result["beyond"] == ["http://t.example/link"], (browser, result)
-        assert result["followed"] == {"url": "http://t.example/link", "opener": False, "referer": ""}, (browser, result)
+        assert result["followed"] == {
+            "url": "http://t.example/link",
+            "opener": False,
+            "referer": "",
+            "reached": [None, None],
+        }, (browser, result)
         assert result["dialogs"] == [] and result["title"] and result["pages"] == 2, (browser, result)
 
 machine.copy_from_vm("/tmp/screenshots", "")

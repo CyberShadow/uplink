@@ -328,6 +328,24 @@ def hostile(page):
         "url": popup.value.url,
         "opener": popup.value.evaluate("window.opener !== null"),
         "referer": popup.value.evaluate("document.referrer"),
+        # The sender's page, of another site, with the browser's
+        # credentials for uplink: neither its WebSocket nor its images.
+        "reached": popup.value.evaluate(
+            """async (origin) => await Promise.all([
+                new Promise((done) => {
+                    const ws = new WebSocket(origin.replace(/^http/, 'ws') + '/ws', 'uplink.v1')
+                    ws.onopen = () => done('websocket')
+                    ws.onerror = () => done(null)
+                }),
+                new Promise((done) => {
+                    const img = new Image()
+                    img.onload = () => done('image')
+                    img.onerror = () => done(null)
+                    img.src = origin + '/logo.svg'
+                }),
+            ])""",
+            origin,
+        ),
     }
     page.screenshot(path=f"{SHOTS}/hostile-{page.context.browser.browser_type.name}.png")
 

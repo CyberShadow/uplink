@@ -3,7 +3,7 @@ use arc_swap::ArcSwap;
 use axum::{
     body::Bytes,
     extract::{self, ws::WebSocketUpgrade, DefaultBodyLimit, Request, State},
-    http::{header, HeaderMap, StatusCode, Uri},
+    http::{header, HeaderMap, Method, StatusCode, Uri},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -547,8 +547,55 @@ fn build_app(state: AppState) -> Router {
             state.clone(),
             basic_auth_middleware,
         ))
+        .layer(middleware::from_fn(cross_site_middleware))
         .with_state(state)
 }
+
+/// Requests of other sites' pages, refused, before basic auth: the
+/// browser would send the credentials it has for uplink's origin, so a
+/// page elsewhere could otherwise open the WebSocket and act as the user,
+/// post to the API, or probe it with `<img>` (SPEC §13.1). Going to
+/// uplink, by a link to the app or a download, stays. As the browser
+/// tells (`Sec-Fetch-*`, and a WebSocket's `Origin`); a request without
+/// it is no browser's, or a browser's that predates it (Safari before
+/// 16.4).
+async fn cross_site_middleware(req: Request, next: Next) -> Response {
+    if admitted(&req) {
+        next.run(req).await
+    } else {
+        (StatusCode::FORBIDDEN, "Cross-site request refused\n").into_response()
+    }
+}
+
+fn admitted(req: &Request) -> bool {
+    let get = |name: &str| req.headers().get(name).and_then(|v| v.to_str().ok());
+    if get("upgrade").is_some_and(|u| u.eq_ignore_ascii_case("websocket")) {
+        // Chromium sends no `Sec-Fetch-*` with a WebSocket's handshake,
+        // but every browser its `Origin`: the page's, which must be at
+        // the authority asked for (as a proxy in front is to keep it).
+        return match get("origin") {
+            None => true,
+            Some(origin) => origin.split_once("://").map(|(_, authority)| authority) == get("host"),
+        };
+    }
+    match get("sec-fetch-site") {
+        None | Some("same-origin" | "none") => true,
+        Some(_) => {
+            req.method() == Method::GET
+                && get("sec-fetch-mode") == Some("navigate")
+                && get("sec-fetch-dest") == Some("document")
+        }
+    }
+}
+
+/// The app's: its own scripts, styles and images only (and `data:` ones,
+/// and inline styles, which mail has, its frame inheriting this), and
+/// never framed by another page. Matrix HTML is in the app's own
+/// document: were its sanitizing to miss, this would still refuse its
+/// scripts.
+const APP_CSP: &str = "default-src 'self'; img-src 'self' data:; \
+    style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; \
+    form-action 'none'; frame-ancestors 'none'";
 
 /// A message's attachment, as a download: never shown by the browser in
 /// uplink's origin, where an HTML one could act as the page.
@@ -872,7 +919,10 @@ fn percent_encode(s: &str) -> String {
 async fn index_handler() -> impl IntoResponse {
     if let Some(file) = StaticFiles::get("index.html") {
         (
-            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            [
+                (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                (header::CONTENT_SECURITY_POLICY, APP_CSP),
+            ],
             file.data.into_owned(),
         )
             .into_response()
@@ -1304,6 +1354,106 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn other_sites_requests_are_refused() {
+        let app = build_app(test_state());
+        let refused = |request: &str, headers: &str| {
+            let (method, uri) = request.split_once(' ').unwrap();
+            let mut request = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::HOST, "uplink.example")
+                .header(
+                    header::AUTHORIZATION,
+                    basic_auth_header(TEST_USER, TEST_PASS),
+                );
+            for header in headers.split_whitespace() {
+                let (name, value) = header.split_once('=').unwrap();
+                request = request.header(name, value);
+            }
+            let app = app.clone();
+            async move {
+                let response = app.oneshot(request.body(Body::empty()).unwrap()).await;
+                response.unwrap().status() == StatusCode::FORBIDDEN
+            }
+        };
+        let navigate = "sec-fetch-mode=navigate sec-fetch-dest=document";
+        let ws = "upgrade=websocket connection=upgrade sec-websocket-version=13";
+        for (request, headers, expected) in [
+            // The app's own, typed in, or of no browser.
+            (
+                "GET /",
+                "sec-fetch-site=same-origin sec-fetch-mode=cors",
+                false,
+            ),
+            ("GET /", &format!("sec-fetch-site=none {navigate}"), false),
+            ("GET /", "", false),
+            // A link from elsewhere.
+            (
+                "GET /",
+                &format!("sec-fetch-site=cross-site {navigate}"),
+                false,
+            ),
+            // But no fetch, image, frame or form of another site's, even a
+            // sibling's.
+            (
+                "POST /api/blobs",
+                "sec-fetch-site=cross-site sec-fetch-mode=no-cors",
+                true,
+            ),
+            (
+                "POST /api/blobs",
+                "sec-fetch-site=same-site sec-fetch-mode=cors",
+                true,
+            ),
+            (
+                "GET /api/remote-image?url=x",
+                "sec-fetch-site=cross-site sec-fetch-mode=no-cors sec-fetch-dest=image",
+                true,
+            ),
+            (
+                "GET /",
+                "sec-fetch-site=cross-site sec-fetch-mode=navigate sec-fetch-dest=iframe",
+                true,
+            ),
+            (
+                "POST /",
+                &format!("sec-fetch-site=cross-site {navigate}"),
+                true,
+            ),
+            // Nor WebSocket, told by its origin (Chromium's, which has no
+            // `Sec-Fetch-*`), whatever else it says.
+            (
+                "GET /ws",
+                &format!("{ws} origin=https://uplink.example"),
+                false,
+            ),
+            ("GET /ws", ws, false),
+            (
+                "GET /ws",
+                &format!("{ws} origin=https://evil.example"),
+                true,
+            ),
+            (
+                "GET /ws",
+                &format!("{ws} origin=https://uplink.example.evil.example"),
+                true,
+            ),
+            ("GET /ws", &format!("{ws} origin=null"), true),
+            (
+                "GET /ws",
+                &format!("{ws} origin=https://evil.example sec-fetch-site=same-origin"),
+                true,
+            ),
+        ] {
+            assert_eq!(
+                refused(request, headers).await,
+                expected,
+                "{request} {headers}"
+            );
+        }
     }
 
     #[tokio::test]

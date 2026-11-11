@@ -19,10 +19,11 @@ export default defineConfig({
         changeOrigin: true,
         headers: proxyHeaders,
       },
+      // Its host kept: uplink takes a WebSocket only from a page at the
+      // host it is asked at.
       '/ws': {
         target: 'ws://127.0.0.1:8443',
         ws: true,
-        changeOrigin: true,
         headers: proxyHeaders,
       },
     },

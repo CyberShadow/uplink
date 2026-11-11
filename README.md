@@ -188,8 +188,9 @@ with the master key that seals accounts' tokens. Add your accounts to it
 Open <http://localhost:8443/> and sign in. The server listens on
 loopback only, without TLS, as `init` configures it; to reach it from
 elsewhere, put a reverse proxy that terminates TLS in front of it (e.g.
-Caddy: `reverse_proxy 127.0.0.1:8443`), or give it a certificate of its
-own (`server.tls`). To change the password, put the output of
+Caddy: `reverse_proxy 127.0.0.1:8443`; it must pass on the `Host` asked
+for, which Caddy does and nginx does with `proxy_set_header Host $host`),
+or give it a certificate of its own (`server.tls`). To change the password, put the output of
 `echo 'new password' | ./result/bin/uplink hash-password` in
 `server.basic_auth.password_bcrypt`.
 
