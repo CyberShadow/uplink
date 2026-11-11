@@ -155,4 +155,20 @@ describe('MailStore', () => {
     server.relabel(kept.id, server.labelId('work', 'TRASH'), true)
     await vi.waitFor(() => expect(subjects()).toEqual(['Kept report']))
   })
+
+  it('keeps the open conversation in a search it leaves, until it closes', async () => {
+    const read = server.deliver('work', 'Read on open')
+    server.deliver('work', 'Still unread')
+    mail.reset()
+    mail.show({ kind: 'search', query: 'label:unread' })
+    await vi.waitFor(() => expect(subjects()).toEqual(['Still unread', 'Read on open']))
+    mail.showConversation(read.id)
+    const opened = mail.list.value!.conversations.find((c) => c.latest.id === read.id)!
+    mail.markRead([threadOf(opened)], true)
+    // Reloaded, the server lists it no more; open, it stays where it was.
+    server.deliver('work', 'Newest')
+    await vi.waitFor(() => expect(subjects()).toEqual(['Newest', 'Still unread', 'Read on open']))
+    mail.showConversation(null)
+    await vi.waitFor(() => expect(subjects()).toEqual(['Newest', 'Still unread']))
+  })
 })

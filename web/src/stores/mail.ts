@@ -144,6 +144,11 @@ export class MailStore {
   readonly selected = signal<ReadonlySet<string>>(new Set())
   readonly open = signal<Open | null>(null)
   readonly error = signal<string | null>(null)
+  /** Whether the list keeps the conversation open though it may no
+   * longer be listed: reading it may take it out of an unread search,
+   * which it stays in while open, as in Gmail. Closing it reloads the
+   * list, which only the server knows. */
+  private kept = false
 
   readonly labels = computed(() => {
     const byId = new Map<LabelId, Label>()
@@ -285,7 +290,10 @@ export class MailStore {
         const latestIn = inScope(scope, latest.labels)
         if (!latestIn && earlier.length === 0) return []
         const entries = latestIn ? [...earlier, latest] : earlier
-        if (listing && !entries.some((e) => e.labels.some(listing))) return []
+        if (listing && !entries.some((e) => e.labels.some(listing))) {
+          if (!this.isOpen(c)) return []
+          this.kept = true
+        }
         // Which is its latest now, only the server knows.
         if (!latestIn) stale = true
         return [{ ...c, latest, earlier }]
@@ -379,6 +387,7 @@ export class MailStore {
     })
     this.listLoad = null
     this.listStale = true
+    this.kept = false
     this.pumpList()
   }
 
@@ -435,7 +444,9 @@ export class MailStore {
     if (page) {
       const current = this.list.value!
       const conversations =
-        load === 'reload' ? page.conversations : [...current.conversations, ...page.conversations]
+        load === 'reload'
+          ? this.keepOpen(current.conversations, page.conversations)
+          : [...current.conversations, ...page.conversations]
       const { next, scope } = page
       const found = page.found ?? current.found
       batch(() => {
@@ -444,6 +455,24 @@ export class MailStore {
       })
     }
     this.pumpList()
+  }
+
+  private isOpen(conversation: Conversation): boolean {
+    const open = this.open.value
+    return open !== null && hasEntry(conversation, open.entry)
+  }
+
+  /** A reload's conversations, and the one open, where it would be by
+   * its latest entry, if they leave it out. */
+  private keepOpen(before: Conversation[], after: Conversation[]): Conversation[] {
+    const open = before.find((c) => this.isOpen(c))
+    if (!open || after.some((c) => conversationKey(c) === conversationKey(open))) return after
+    this.kept = true
+    const newer = (c: Conversation) =>
+      c.latest.received_at > open.latest.received_at ||
+      (c.latest.received_at === open.latest.received_at && c.latest.id > open.latest.id)
+    const at = after.findIndex((c) => !newer(c))
+    return at === -1 ? [...after, open] : [...after.slice(0, at), open, ...after.slice(at)]
   }
 
   /** `null` if the view's label does not exist. */
@@ -477,6 +506,10 @@ export class MailStore {
     if ((this.open.value?.entry ?? null) === entry) return
     this.openGeneration++
     this.open.value = entry === null ? null : { entry, entries: null }
+    if (this.kept) {
+      this.kept = false
+      this.invalidateList()
+    }
     this.loadOpen()
   }
 
