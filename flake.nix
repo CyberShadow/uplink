@@ -49,9 +49,24 @@
           dontInstall = true;
         };
 
+        # The app icons, which the manifest and index.html name: the logo,
+        # and, for devices which mask app icons into shapes of their own,
+        # the logo without its frame.
+        uplinkIcons = pkgs.runCommand "uplink-icons" {
+          nativeBuildInputs = [ pkgs.resvg pkgs.oxipng ];
+        } ''
+          mkdir $out
+          resvg -w 192 ${./web/public/logo.svg} $out/logo-192.png
+          resvg -w 512 ${./web/public/logo.svg} $out/logo-512.png
+          resvg -w 512 ${./web/icons/logo-maskable.svg} $out/logo-maskable-512.png
+          resvg -w 180 ${./web/icons/logo-maskable.svg} $out/apple-touch-icon.png
+          oxipng -o max -q $out/*.png
+        '';
+
         uplinkWeb = webDerivation "uplink-web" ''
           pnpm exec tsc
           pnpm exec vite build --outDir $out
+          cp ${uplinkIcons}/* $out/
         '';
 
         # ── Rust ───────────────────────────────────────────────────────────
