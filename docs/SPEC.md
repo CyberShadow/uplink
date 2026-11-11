@@ -1605,11 +1605,16 @@ Speed (M10): `message_fts` has prefix indexes (`prefix = '1 2 3'`), so a
 short prefix is one index lookup rather than a merge of every term it
 starts. Results, like lists, are newest first, and a page is found one of
 two ways, by how many candidates there are (counted first, cheaply, of
-each term of the query an index finds: its text, or a label): up to
-2000 of the fewest are all sorted; more, and entries are walked newest
-first by an index (`mail_entry(received_at)`, or `(account_id,
-received_at)` for a query of one account) until the page is full, which
-many candidates make quick. A page so costs about 2000 rows at most, however
+each term of the query an index finds: its text, or a label, each by its
+index alone and only as far as it may be the fewest): up to 2000 of the
+fewest are all sorted; more, and those of them that meet the whole
+query are counted, up to 2001, since terms of many entries each may have
+few in common (`in:inbox is:unread is:important`, which walking would
+look through the whole mailbox for): up to 2000, and they are sorted;
+more, and entries are walked newest first by an index
+(`mail_entry(received_at)`, or `(account_id, received_at)` for a query
+of one account) until the page is full, which many candidates make
+quick. A page so costs about 2000 rows at most, or the fewest's, however
 large the mailbox. Label counts are kept by the schema as entries change
 (§4.3), so reading them costs nothing like the mailbox's size; a change
 of labels costs about 0.25 ms more for it. The ignored test

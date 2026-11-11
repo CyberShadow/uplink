@@ -17,24 +17,47 @@ use crate::{
     service::ConfiguredAccount,
 };
 
-/// The rooms of `accounts` that `query` matches, most recently active
-/// first: those listed, but spaces, which are no views of their own.
-pub fn rooms(tx: &Transaction, accounts: &[ConfiguredAccount], query: &Query) -> Result<Vec<Room>> {
-    let mut all = vec![];
-    for account in accounts {
-        all.extend(rooms::rooms(tx, &account.id, &account.mxid)?);
-    }
-    let spaces = Spaces::of(&all);
-    let mut matched: Vec<Room> = all
-        .iter()
-        .filter(|room| !room.space)
-        .filter(|room| {
-            uplink_query::matches(query, &|term| term_matches(room, term, &spaces, accounts))
+/// The rooms of some accounts, as listed, to match queries against: read
+/// once for as many queries, as the home view's buckets are.
+pub struct Rooms<'a> {
+    accounts: &'a [ConfiguredAccount],
+    all: Vec<Room>,
+    spaces: Spaces,
+}
+
+impl<'a> Rooms<'a> {
+    pub fn load(tx: &Transaction, accounts: &'a [ConfiguredAccount]) -> Result<Self> {
+        let mut all = vec![];
+        for account in accounts {
+            all.extend(rooms::rooms(tx, &account.id, &account.mxid)?);
+        }
+        let spaces = Spaces::of(&all);
+        Ok(Self {
+            accounts,
+            all,
+            spaces,
         })
-        .cloned()
-        .collect();
-    matched.sort_by(|a, b| b.last_event_ts.cmp(&a.last_event_ts).then(a.id.cmp(&b.id)));
-    Ok(matched)
+    }
+
+    /// Those but spaces, which are no views of their own.
+    fn listed(&self) -> impl Iterator<Item = &Room> {
+        self.all.iter().filter(|room| !room.space)
+    }
+
+    /// Those `query` matches, most recently active first.
+    pub fn matching(&self, query: &Query) -> Vec<Room> {
+        let mut matched: Vec<Room> = self
+            .listed()
+            .filter(|room| uplink_query::matches(query, &|term| self.term_matches(room, term)))
+            .cloned()
+            .collect();
+        matched.sort_by(|a, b| b.last_event_ts.cmp(&a.last_event_ts).then(a.id.cmp(&b.id)));
+        matched
+    }
+
+    fn term_matches(&self, room: &Room, term: &Term) -> bool {
+        term_matches(room, term, &self.spaces, self.accounts)
+    }
 }
 
 /// A tag as a query names it: its name as the user knows it, or as it
@@ -144,74 +167,71 @@ fn term_matches(room: &Room, term: &Term, spaces: &Spaces, accounts: &[Configure
     }
 }
 
-/// The messages of `accounts`' rooms (spaces' and rooms left aside) that
-/// `query` matches, the latest first, up to `limit`.
-pub fn messages(
-    tx: &Transaction,
-    accounts: &[ConfiguredAccount],
-    query: &Query,
-    limit: u32,
-) -> Result<Vec<FoundMessage>> {
-    let mut all = vec![];
-    for account in accounts {
-        all.extend(rooms::rooms(tx, &account.id, &account.mxid)?);
-    }
-    let spaces = Spaces::of(&all);
-    let rooms: Vec<&Room> = all.iter().filter(|room| !room.space).collect();
-    let mut sql = Sql {
-        params: vec![],
-        mine: accounts.iter().map(|a| a.mxid.clone()).collect(),
-    };
-    let condition = Cond::of(query, &|term| {
-        Cond::term(term, &|term| {
-            rooms
-                .iter()
-                .filter(|room| term_matches(room, term, &spaces, accounts))
-                .map(|room| room.id.0)
-                .collect()
-        })
-    });
-    if condition == Cond::Const(false) || rooms.is_empty() {
-        return Ok(vec![]);
-    }
-    let within = rooms
-        .iter()
-        .map(|room| room.id.0.to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let matches = sql.render(&condition);
-    sql.params.push(Value::Integer(limit.into()));
-    let found: Vec<(i64, i64)> = tx
-        .prepare(&format!(
-            "SELECT e.room, e.id FROM matrix_event e JOIN matrix_room r ON r.id = e.room
+impl Rooms<'_> {
+    /// The messages of the rooms (spaces' and rooms left aside) that
+    /// `query` matches, the latest first, up to `limit`.
+    pub fn messages(
+        &self,
+        tx: &Transaction,
+        query: &Query,
+        limit: u32,
+    ) -> Result<Vec<FoundMessage>> {
+        let rooms: Vec<&Room> = self.listed().collect();
+        let mut sql = Sql {
+            params: vec![],
+            mine: self.accounts.iter().map(|a| a.mxid.clone()).collect(),
+        };
+        let condition = Cond::of(query, &|term| {
+            Cond::term(term, &|term| {
+                rooms
+                    .iter()
+                    .filter(|room| self.term_matches(room, term))
+                    .map(|room| room.id.0)
+                    .collect()
+            })
+        });
+        if condition == Cond::Const(false) || rooms.is_empty() {
+            return Ok(vec![]);
+        }
+        let within = rooms
+            .iter()
+            .map(|room| room.id.0.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let matches = sql.render(&condition);
+        sql.params.push(Value::Integer(limit.into()));
+        let found: Vec<(i64, i64)> = tx
+            .prepare(&format!(
+                "SELECT e.room, e.id FROM matrix_event e JOIN matrix_room r ON r.id = e.room
              WHERE e.room IN ({within}) AND e.type = 'm.room.message' AND NOT e.redacted
                AND {LISTED} AND {matches}
              ORDER BY e.ts DESC, e.id DESC LIMIT ?{n}",
-            n = sql.params.len(),
-        ))?
-        .query_map(params_from_iter(sql.params.iter()), |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })?
-        .collect::<Result<_, _>>()?;
-    let mut by_room: HashMap<i64, Vec<RoomEventId>> = HashMap::new();
-    for (room, event) in &found {
-        by_room.entry(*room).or_default().push(RoomEventId(*event));
-    }
-    let mut events = HashMap::new();
-    for (room, ids) in by_room {
-        for event in rooms::listed_events(tx, RoomId(room), &ids)? {
-            events.insert(event.id, (RoomId(room), event));
+                n = sql.params.len(),
+            ))?
+            .query_map(params_from_iter(sql.params.iter()), |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?
+            .collect::<Result<_, _>>()?;
+        let mut by_room: HashMap<i64, Vec<RoomEventId>> = HashMap::new();
+        for (room, event) in &found {
+            by_room.entry(*room).or_default().push(RoomEventId(*event));
         }
+        let mut events = HashMap::new();
+        for (room, ids) in by_room {
+            for event in rooms::listed_events(tx, RoomId(room), &ids)? {
+                events.insert(event.id, (RoomId(room), event));
+            }
+        }
+        Ok(found
+            .into_iter()
+            .map(|(_, event)| {
+                let (room, event) = events
+                    .remove(&RoomEventId(event))
+                    .expect("a listed event found is listed");
+                FoundMessage { room, event }
+            })
+            .collect())
     }
-    Ok(found
-        .into_iter()
-        .map(|(_, event)| {
-            let (room, event) = events
-                .remove(&RoomEventId(event))
-                .expect("a listed event found is listed");
-            FoundMessage { room, event }
-        })
-        .collect())
 }
 
 /// What a message must be, folded as built: a term of other kinds is

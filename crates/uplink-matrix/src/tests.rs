@@ -1667,8 +1667,9 @@ mod query {
                 mxid: ME.into(),
             }];
             let query = uplink_query::parse(query, 0).unwrap();
-            let mut names: Vec<String> = crate::query::rooms(&tx, &accounts, &query)
+            let mut names: Vec<String> = crate::query::Rooms::load(&tx, &accounts)
                 .unwrap()
+                .matching(&query)
                 .into_iter()
                 .map(|r| r.name)
                 .collect();
@@ -1764,7 +1765,9 @@ mod query {
                 mxid: ME.into(),
             }];
             let query = uplink_query::parse(query, 0).unwrap();
-            crate::query::messages(&tx, &accounts, &query, 10)
+            crate::query::Rooms::load(&tx, &accounts)
+                .unwrap()
+                .messages(&tx, &query, 10)
                 .unwrap()
                 .into_iter()
                 .map(|m| m.event.event_id)

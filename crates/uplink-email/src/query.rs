@@ -113,8 +113,12 @@ impl From<uplink_storage::rusqlite::Error> for ListError {
 
 /// Below this many candidates, a page is found by sorting them all; above,
 /// by walking entries newest first (by an index) until the page is full,
-/// which many candidates make quick. Either way a page costs about this
-/// many rows at most, however large the mailbox.
+/// which many candidates make quick. Candidates are the entries that meet
+/// the whole condition, found by the conjunct of an index met by fewest:
+/// two labels of many entries each may have few in common, which walking
+/// would look through the whole mailbox for. Either way a page costs
+/// about this many rows at most, or the fewest's, however large the
+/// mailbox.
 const SORT_AT_MOST: i64 = 2000;
 
 /// A query as SQL is made of: a condition on an entry, with the parts
@@ -552,32 +556,69 @@ fn page(
         c => vec![c],
     };
     // The fewest candidates a conjunct is met by, if it is of an index:
-    // `FROM … WHERE …`, naming the entries `c`.
+    // `FROM … WHERE …`, naming the entries `c`. Each is counted by its
+    // index alone (a label's rows are of entries), and only as far as it
+    // may be the fewest.
     let mut fewest: Option<(i64, usize, String, String)> = None;
     for (at, conjunct) in conjuncts.iter().enumerate() {
-        let (from, condition) = match conjunct {
+        let (counted, from, condition) = match conjunct {
             Condition::Fts(fts) => (
+                "message_fts f JOIN mail_entry c ON c.message = f.rowid",
                 "message_fts f JOIN mail_entry c ON c.message = f.rowid",
                 format!("message_fts MATCH {}", literal(fts)),
             ),
             Condition::Label(labels) => (
+                "entry_label el",
                 "entry_label el JOIN mail_entry c ON c.id = el.entry",
                 format!("el.label IN ({}) AND el.desired", ids(labels)),
             ),
             _ => continue,
         };
+        let limit = fewest.as_ref().map_or(i64::MAX, |(least, ..)| *least);
         let count: i64 = tx.query_row(
-            &format!("SELECT count(*) FROM {from} WHERE {condition}"),
+            &format!(
+                "SELECT count(*) FROM (SELECT 1 FROM {counted} WHERE {condition} LIMIT {limit})"
+            ),
             [],
             |r| r.get(0),
         )?;
-        if fewest.as_ref().is_none_or(|(least, ..)| count < *least) {
+        if count < limit {
             fewest = Some((count, at, from.to_owned(), condition));
         }
     }
-    let (from, condition) = match fewest {
+    // Of the fewest, those that meet the other conjuncts too, up to one
+    // too many.
+    let candidates = |at: usize, from: &str, condition: &str| -> Result<i64> {
+        let rest: Vec<String> = conjuncts
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != at)
+            .map(|(_, c)| format!("({})", c.sql("c")))
+            .collect();
+        Ok(tx.query_row(
+            &format!(
+                "SELECT count(*) FROM (SELECT 1 FROM {from} WHERE {condition} AND {rest} AND {scope}
+                                       LIMIT {limit})",
+                rest = rest.join(" AND "),
+                scope = scope_sql("c"),
+                limit = SORT_AT_MOST + 1,
+            ),
+            [],
+            |r| r.get(0),
+        )?)
+    };
+    let sorted = match &fewest {
+        Some((count, ..)) if *count <= SORT_AT_MOST => fewest,
+        Some((_, at, from, condition))
+            if conjuncts.len() > 1 && candidates(*at, from, condition)? <= SORT_AT_MOST =>
+        {
+            fewest
+        }
+        _ => None,
+    };
+    let (from, condition) = match sorted {
         // The conversations of the candidates, by their newest entries.
-        Some((count, at, from, condition)) if count <= SORT_AT_MOST => {
+        Some((_, at, from, condition)) => {
             conjuncts.remove(at);
             let rest = Condition::And(conjuncts);
             (

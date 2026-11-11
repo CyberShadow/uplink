@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uplink_config::HomeBucket;
 use uplink_email::query::{self as mail, ListError, Unknown};
+use uplink_matrix::query::Rooms;
 use uplink_protocol::{
     calendar::CalendarEvent, mail::ListPosition, matrix::Room, todos::Todo, ErrorCode, ServerError,
     ServerResponse,
@@ -32,9 +33,8 @@ pub struct Items {
     home: Arc<ArcSwap<Vec<HomeBucket>>>,
 }
 
-/// What a query matches: a page of mail, and the rest.
-struct Matches {
-    page: mail::Page,
+/// What a query matches of kinds other than mail.
+struct Others {
     rooms: Vec<Room>,
     todos: Vec<Todo>,
     events: Vec<CalendarEvent>,
@@ -75,23 +75,32 @@ impl Items {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
                 this.check_names(&tx, &query)?;
                 let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
-                let matches = this.matches(&tx, &query, today, now, after, limit)?;
-                let messages = match after {
+                let page = this.mail(&tx, &query, after, limit)?;
+                // A page after `after` is of mail alone.
+                let (others, messages) = match after {
                     None => {
-                        uplink_matrix::query::messages(&tx, &this.matrix_accounts, &query, MESSAGES)
-                            .map_err(internal)?
+                        let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
+                        let messages = rooms.messages(&tx, &query, MESSAGES).map_err(internal)?;
+                        (others(&tx, &rooms, &query, today, now)?, messages)
                     }
-                    Some(_) => vec![],
+                    Some(_) => (
+                        Others {
+                            rooms: vec![],
+                            todos: vec![],
+                            events: vec![],
+                        },
+                        vec![],
+                    ),
                 };
                 Ok(ServerResponse::Items {
                     as_of,
-                    conversations: matches.page.conversations,
-                    next: matches.page.next,
-                    scope: matches.page.scope,
-                    rooms: matches.rooms,
+                    conversations: page.conversations,
+                    next: page.next,
+                    scope: page.scope,
+                    rooms: others.rooms,
                     messages,
-                    todos: matches.todos,
-                    events: matches.events,
+                    todos: others.todos,
+                    events: others.events,
                 })
             })
             .await
@@ -121,18 +130,21 @@ impl Items {
             .read(move |conn| {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
                 let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
+                // Read once, for every bucket.
+                let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
                 let buckets = buckets
                     .into_iter()
                     .map(|(name, text, query)| {
-                        let matches = this.matches(&tx, &query, today, now, None, limit)?;
+                        let page = this.mail(&tx, &query, None, limit)?;
+                        let others = others(&tx, &rooms, &query, today, now)?;
                         Ok(uplink_protocol::HomeBucket {
                             name,
                             query: text,
-                            conversations: matches.page.conversations,
-                            more: matches.page.next.is_some(),
-                            rooms: matches.rooms,
-                            todos: matches.todos,
-                            events: matches.events,
+                            conversations: page.conversations,
+                            more: page.next.is_some(),
+                            rooms: others.rooms,
+                            todos: others.todos,
+                            events: others.events,
                         })
                     })
                     .collect::<Result<_, ServerError>>()?;
@@ -141,37 +153,19 @@ impl Items {
             .await
     }
 
-    /// A page after `after` is of mail alone.
-    fn matches(
+    fn mail(
         &self,
         tx: &Transaction,
         query: &Query,
-        today: i64,
-        now: i64,
         after: Option<ListPosition>,
         limit: u32,
-    ) -> Result<Matches, ServerError> {
-        let page =
-            mail::conversations(tx, &self.mail_accounts, query, Unknown::False, after, limit)
-                .map_err(|e| match e {
-                    ListError::Invalid(e) => invalid(e.0),
-                    ListError::Internal(e) => internal(e),
-                })?;
-        if after.is_some() {
-            return Ok(Matches {
-                page,
-                rooms: vec![],
-                todos: vec![],
-                events: vec![],
-            });
-        }
-        Ok(Matches {
-            page,
-            rooms: uplink_matrix::query::rooms(tx, &self.matrix_accounts, query)
-                .map_err(internal)?,
-            todos: uplink_todos::matching(tx, query, today).map_err(internal)?,
-            events: uplink_calendar::matching(tx, query, now).map_err(internal)?,
-        })
+    ) -> Result<mail::Page, ServerError> {
+        mail::conversations(tx, &self.mail_accounts, query, Unknown::False, after, limit).map_err(
+            |e| match e {
+                ListError::Invalid(e) => invalid(e.0),
+                ListError::Internal(e) => internal(e),
+            },
+        )
     }
 
     /// Fails on a label or account no kind has: a misspelt name lists
@@ -204,6 +198,20 @@ impl Items {
         }
         Ok(())
     }
+}
+
+fn others(
+    tx: &Transaction,
+    rooms: &Rooms,
+    query: &Query,
+    today: i64,
+    now: i64,
+) -> Result<Others, ServerError> {
+    Ok(Others {
+        rooms: rooms.matching(query),
+        todos: uplink_todos::matching(tx, query, today).map_err(internal)?,
+        events: uplink_calendar::matching(tx, query, now).map_err(internal)?,
+    })
 }
 
 fn invalid(why: String) -> ServerError {
