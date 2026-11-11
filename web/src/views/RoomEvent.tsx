@@ -5,7 +5,15 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
 import { tinykeys } from 'tinykeys'
-import type { MatrixSend, MemberReceipt, Room, RoomEvent, RepliedEvent, ThreadSummary } from '../generated/protocol'
+import type {
+  MatrixSend,
+  MemberReceipt,
+  Room,
+  RoomEvent,
+  RepliedEvent,
+  ThreadSummary,
+  UrlPreview,
+} from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus } from '../keymap'
 import { dateTime, time } from '../format'
@@ -280,11 +288,71 @@ function Body(props: { room: Room; event: RoomEvent; content: Shown; overlay: Ov
   const notice = content.msgtype === 'm.notice'
   const emote = content.msgtype === 'm.emote'
   return (
-    <div class={[styles.body, notice && styles.notice].filter(Boolean).join(' ')}>
-      {tag}
-      {emote && <span style={{ color: senderColor(event.sender) }}>{displayName(event.sender, event.sender_name)} </span>}
-      {content.html !== null ? <Html html={content.html} /> : <Text text={content.body} />} {edited}
-    </div>
+    <>
+      <div class={[styles.body, notice && styles.notice].filter(Boolean).join(' ')}>
+        {tag}
+        {emote && <span style={{ color: senderColor(event.sender) }}>{displayName(event.sender, event.sender_name)} </span>}
+        {content.html !== null ? <Html html={content.html} /> : <Text text={content.body} />} {edited}
+      </div>
+      {!notice && !room.encrypted && <LinkPreviews room={room} event={event} body={content.body} />}
+    </>
+  )
+}
+
+/** Links previewed under a message, at most. */
+const PREVIEWS = 2
+
+/** Previews of the pages the message's text links, as Element shows them:
+ * not of links to Matrix users or rooms, nor in encrypted rooms (the
+ * homeserver would learn of the links), nor of notices, which bots send. */
+function LinkPreviews(props: { room: Room; event: RoomEvent; body: string }) {
+  const urls = [
+    ...new Set(
+      linkify(props.body)
+        .flatMap((part) => (part.href === null ? [] : [part.href]))
+        .filter((url) => !url.startsWith('https://matrix.to/')),
+    ),
+  ].slice(0, PREVIEWS)
+  return (
+    <>
+      {urls.map((url) => (
+        <LinkPreview key={url} room={props.room} event={props.event} url={url} />
+      ))}
+    </>
+  )
+}
+
+function LinkPreview(props: { room: Room; event: RoomEvent; url: string }) {
+  const { room, event, url } = props
+  const { matrix } = useServices()
+  const [preview, setPreview] = useState<UrlPreview | null>(null)
+  useEffect(() => {
+    let current = true
+    matrix.preview(room.id, event.id, url).then((p) => current && setPreview(p))
+    return () => {
+      current = false
+    }
+  }, [matrix, room.id, event.id, url])
+  if (preview === null) return null
+  const image = preview.image?.match(/^mxc:\/\/([^/]+)\/([^/?#]+)$/)
+  return (
+    <a class={styles.preview} href={url} target="_blank" rel="noopener noreferrer">
+      {image && (
+        <img
+          class={styles.previewImage}
+          src={`/api/rooms/${room.id}/events/${event.id}/preview/${image[1]}/${image[2]}?url=${encodeURIComponent(url)}`}
+          alt=""
+          loading="lazy"
+        />
+      )}
+      <span class={styles.previewText}>
+        {preview.site_name !== null && preview.site_name !== preview.title && (
+          <span class={styles.muted}>{preview.site_name}</span>
+        )}
+        {preview.title !== null && <strong>{preview.title}</strong>}
+        {preview.description !== null && <span class={styles.previewDescription}>{preview.description}</span>}
+      </span>
+    </a>
   )
 }
 

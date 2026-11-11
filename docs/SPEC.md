@@ -819,6 +819,7 @@ than it buffers is closed; the client reconnects and resumes.
   timeline lists, as it lists them (for `TimelineChanged`);
   `ListEdits { room, event }` — a message's edits, oldest first, for its
   edit history; `ListThread { room, root }` — a thread (§9.2);
+  `PreviewUrl { room, event, url }` — a link's preview (§9.8);
   `ListMatrixSends { room }`: its sends not yet synced back, for the end
   of the timeline.
 - `Undo { tx_log_id }`; `ListHistory { before, limit }` — the user's
@@ -1948,6 +1949,22 @@ decrypted, of encrypted rooms):
 - `/api/rooms/:room/members/:user/avatar` — a 64 px thumbnail of a
   member's avatar, as the SDK's store has it; cached for an hour, as
   members change their avatars.
+
+**Link previews.** `PreviewUrl { room, event, url }` (not logged) asks
+the account's homeserver for its preview of a web page (authenticated
+`/preview_url`, which fetches the page and caches it): what the page
+says of itself (OpenGraph's title, description and site name, `None` if
+neither of the first two), and its image, which the homeserver uploads.
+Only of an `http(s)` URL that the message (or one of its edits) has in
+its `body` or `formatted_body`, so that the web client cannot have the
+homeserver fetch whatever it names; and not in encrypted rooms, as
+Element by default, since it would tell the homeserver of the links.
+`/api/rooms/:room/events/:event/preview/:server/:media?url=` serves the
+homeserver's 800×600 thumbnail of the preview's image, if it is that
+URL's preview's (asked anew: the homeserver caches it). The web client
+previews, under a message (not a notice, which bots send), up to two of
+the links in its text, but those to `matrix.to`; a page that cannot be
+previewed shows none.
 
 ---
 

@@ -891,6 +891,33 @@ mod relations {
         assert_eq!(latest.body.as_deref(), Some("edited"));
     }
 
+    #[tokio::test]
+    async fn only_the_links_of_messages_are_previewed_and_not_in_encrypted_rooms() {
+        let db = Db::new();
+        db.sync_json(&[text("$1", "@bob:x", "see https://example.org/a")])
+            .await;
+        let room = db.room().await.id;
+        let event = db.timeline().await[0].id;
+        let refused = |url: &str| {
+            let db = &db;
+            let url = url.to_owned();
+            async move { db.matrix.preview_url(room, event, url).await.unwrap_err() }
+        };
+        let unlinked = refused("https://example.org/b").await;
+        assert_eq!(unlinked.code, uplink_protocol::ErrorCode::NotFound);
+        assert!(unlinked.message.contains("links no"), "{unlinked:?}");
+        // Linked: it goes as far as the homeserver, which tests have none of.
+        let linked = refused("https://example.org/a").await;
+        assert!(linked.message.contains("not connected"), "{linked:?}");
+
+        uplink_storage::open(db._dir.path())
+            .unwrap()
+            .execute("UPDATE matrix_room SET encrypted = 1", [])
+            .unwrap();
+        let encrypted = refused("https://example.org/a").await;
+        assert_eq!(encrypted.code, uplink_protocol::ErrorCode::Invalid);
+    }
+
     #[test]
     fn redacting_follows_the_room_version_and_survives_non_canonical_json() {
         use matrix_sdk::ruma::RoomVersionId;

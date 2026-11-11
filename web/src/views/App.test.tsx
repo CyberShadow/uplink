@@ -1180,6 +1180,39 @@ describe('room timeline', () => {
     await within(timeline()).findByText('Deleting…')
   })
 
+  it('previews the pages messages link, but in encrypted rooms', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const secret = server.addRoom('Secret', true)
+    const url = 'https://example.org/post'
+    server.previews.set(url, {
+      title: 'A post',
+      description: 'About things',
+      site_name: 'Example',
+      image: 'mxc://example.org/img',
+      image_width: 1200,
+      image_height: 630,
+    })
+    const message = server.receive(room.id, { body: `Read ${url}, and https://matrix.to/#/@bob:example.org` })
+    server.receive(secret.id, { body: `Read ${url}` })
+    const user = await start(`/rooms/${room.id}`)
+    const preview = await within(timeline()).findByRole('link', { name: /A post/ })
+    expect(preview.getAttribute('href')).toBe(url)
+    expect(preview.textContent).toContain('About things')
+    expect(preview.querySelector('img')!.getAttribute('src')).toBe(
+      `/api/rooms/${room.id}/events/${message.id}/preview/example.org/img?url=${encodeURIComponent(url)}`,
+    )
+    // Only the page's: not the user's.
+    expect(server.requests.filter((r) => r.type === 'preview_url')).toEqual([
+      { type: 'preview_url', room: room.id, event: message.id, url },
+    ])
+
+    await user.click(await screen.findByRole('link', { name: /^Secret/ }))
+    await screen.findByRole('heading', { name: 'Secret' })
+    await within(timeline()).findByRole('link', { name: url })
+    expect(server.requests.filter((r) => r.type === 'preview_url')).toHaveLength(1)
+  })
+
   it('opens threads beside the timeline, which sum them up, and replies in them', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')

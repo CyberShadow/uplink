@@ -114,6 +114,7 @@ fn main() {
         Reactor,
         RepliedEvent,
         ThreadSummary,
+        UrlPreview,
         TimelinePage,
         MatrixSendState,
         MatrixContent,

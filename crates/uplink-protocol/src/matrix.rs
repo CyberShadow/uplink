@@ -129,6 +129,21 @@ pub struct RoomEvent {
     pub thread_root: Option<RoomEventId>,
 }
 
+/// What a linked page says of itself (OpenGraph), as the homeserver
+/// previews it (SPEC §9.8).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct UrlPreview {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub site_name: Option<String>,
+    /// The page's image, as the homeserver uploaded it: shown by
+    /// `/api/rooms/{room}/events/{event}/preview/{server}/{media}?url=`.
+    pub image: Option<String>,
+    pub image_width: Option<u32>,
+    pub image_height: Option<u32>,
+}
+
 /// A thread, as its root shows it (SPEC §9.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]

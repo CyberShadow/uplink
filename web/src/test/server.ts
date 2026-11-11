@@ -49,6 +49,7 @@ import type {
   ServerResponse,
   UploadedBlob,
   MessageId,
+  UrlPreview,
 } from '../generated/protocol'
 import type { Client } from '../stores/client'
 import { apply } from '../compose/splice'
@@ -501,6 +502,10 @@ export class FakeServer implements Requester, Blobs {
   /** Accounts whose first sync is under way, with its progress if known. */
   readonly syncing = new Map<string, ListingProgress | null>()
 
+  /** What pages say of themselves, by URL, as the homeserver previews
+   * them. */
+  readonly previews = new Map<string, UrlPreview>()
+
   /** Runs before the next request is handled, as if it happened while
    * the request was on its way. */
   meanwhile: (() => void) | null = null
@@ -731,6 +736,11 @@ export class FakeServer implements Requester, Blobs {
         }
       case 'list_edits':
         return { type: 'edits', as_of: this.head(), room: body.room, event: body.event, edits: this.edits.get(body.event) ?? [] }
+      case 'preview_url': {
+        const event = this.events.get(body.room)!.find((e) => e.id === body.event)!
+        if (!event.body?.includes(body.url)) throw new RequestError({ code: 'not_found', message: `no ${body.url}` })
+        return { type: 'url_preview', preview: this.previews.get(body.url) ?? null }
+      }
       case 'list_thread': {
         const events = this.events.get(body.room)!
         const root = events.find((e) => e.id === body.root && e.thread_root === null)

@@ -472,6 +472,10 @@ fn build_app(state: AppState) -> Router {
             "/api/rooms/:room/members/:user/avatar",
             get(member_avatar_handler),
         )
+        .route(
+            "/api/rooms/:room/events/:event/preview/:server/:media",
+            get(preview_image_handler),
+        )
         .route("/api/matrix/:account/room-keys", post(room_keys_handler))
         .route(
             uplink_email::remote::REMOTE_IMAGE_PATH,
@@ -638,6 +642,53 @@ async fn member_avatar_handler(
             .into_response(),
         Err(e) if e.code == ErrorCode::NotFound => {
             (StatusCode::NOT_FOUND, e.message).into_response()
+        }
+        Err(e) => (StatusCode::BAD_GATEWAY, e.message).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct PreviewedUrl {
+    /// As the message has it: it is looked for there.
+    url: String,
+}
+
+/// A thumbnail of the image `mxc://server/media` of the preview of the
+/// page `url` that a room's message links (SPEC §9.8).
+async fn preview_image_handler(
+    State(state): State<AppState>,
+    extract::Path((room, event, server, media)): extract::Path<(i64, i64, String, String)>,
+    extract::Query(PreviewedUrl { url }): extract::Query<PreviewedUrl>,
+) -> Response {
+    match state
+        .services
+        .matrix
+        .preview_image(
+            uplink_protocol::matrix::RoomId(room),
+            uplink_protocol::matrix::RoomEventId(event),
+            url,
+            format!("mxc://{server}/{media}"),
+        )
+        .await
+    {
+        Ok((mime, image)) => (
+            [
+                (header::CONTENT_TYPE, mime),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+                (header::CONTENT_SECURITY_POLICY, "sandbox"),
+                (
+                    header::CACHE_CONTROL,
+                    "private, max-age=31536000, immutable",
+                ),
+            ],
+            image,
+        )
+            .into_response(),
+        Err(e) if e.code == ErrorCode::NotFound => {
+            (StatusCode::NOT_FOUND, e.message).into_response()
+        }
+        Err(e) if e.code == ErrorCode::Invalid => {
+            (StatusCode::BAD_REQUEST, e.message).into_response()
         }
         Err(e) => (StatusCode::BAD_GATEWAY, e.message).into_response(),
     }
@@ -888,6 +939,9 @@ impl Backend for Services {
             }
             ClientRequest::ListEdits { room, event } => self.matrix.list_edits(room, event).await,
             ClientRequest::ListThread { room, root } => self.matrix.list_thread(room, root).await,
+            ClientRequest::PreviewUrl { room, event, url } => {
+                self.matrix.preview_url(room, event, url).await
+            }
             ClientRequest::ListMatrixSends { room } => self.matrix.list_sends(room).await,
             ClientRequest::SendMatrixMessage { room, content } => {
                 self.matrix.send_message(room, content).await

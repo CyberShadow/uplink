@@ -7,6 +7,7 @@ pub mod html;
 pub mod media;
 pub mod membership;
 pub mod outbox;
+pub mod preview;
 pub mod rooms;
 pub mod security;
 pub mod send;

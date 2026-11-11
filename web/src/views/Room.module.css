@@ -310,6 +310,47 @@
   color: var(--muted);
 }
 
+/* A linked page, previewed under the message, as Element's: its image
+   beside what it says of itself. */
+.preview {
+  display: flex;
+  gap: 10px;
+  max-width: 560px;
+  margin: 4px 0;
+  padding: 6px 10px;
+  border-left: 3px solid var(--line);
+  color: inherit;
+  font-size: 13px;
+  line-height: 18px;
+  text-decoration: none;
+}
+
+.preview:hover strong {
+  text-decoration: underline;
+}
+
+.previewImage {
+  flex: none;
+  max-width: 100px;
+  max-height: 100px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+
+.previewText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.previewDescription {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--muted);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
 /* Under a thread's root: its replies, and the latest. */
 .threadSummary {
   display: flex;

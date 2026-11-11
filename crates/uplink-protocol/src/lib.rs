@@ -268,6 +268,13 @@ pub enum ClientRequest {
         room: RoomId,
         root: RoomEventId,
     },
+    /// A preview of the page `url` that the room's message `event` links,
+    /// but in encrypted rooms (SPEC §9.8). Not logged.
+    PreviewUrl {
+        room: RoomId,
+        event: RoomEventId,
+        url: String,
+    },
     /// Creates a room, which the account joins. Answered once the
     /// homeserver has; sync then brings it.
     CreateMatrixRoom {
@@ -423,6 +430,10 @@ pub enum ServerResponse {
         event: RoomEventId,
         edits: Vec<matrix::RoomEvent>,
     },
+    /// Of `PreviewUrl`: `None` if the page says nothing of itself.
+    UrlPreview {
+        preview: Option<matrix::UrlPreview>,
+    },
     /// Of `ListThread`: its messages, oldest first.
     Thread {
         as_of: TxLogId,
@@ -495,6 +506,7 @@ impl ServerResponse {
             | Self::Members { .. }
             | Self::MatrixRoomJoined { .. }
             | Self::MatrixSecurity { .. }
+            | Self::UrlPreview { .. }
             | Self::RoomKeysImported { .. } => None,
         }
     }

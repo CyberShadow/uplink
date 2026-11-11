@@ -5,6 +5,7 @@ use crate::{
     client::{self, Clients},
     media,
     membership::ChangeMembership,
+    preview,
     rooms::{self, Filled, MarkRead},
     security,
     send::{self, CancelMessage, KeepSent, SendMessage},
@@ -178,6 +179,85 @@ impl Matrix {
             name: named.name,
             data,
         })
+    }
+
+    /// The account of the room whose message `event` links `url`, a web
+    /// page, but in encrypted rooms: there, as in Element by default,
+    /// links are not previewed, which would tell the homeserver of them.
+    async fn previewed(
+        &self,
+        room: RoomId,
+        event: RoomEventId,
+        url: String,
+    ) -> Result<matrix_sdk::Client, ServerError> {
+        let account = self
+            .reader
+            .read(move |conn| {
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                let (account, contents) = rooms::event_contents(&tx, room, event)
+                    .map_err(internal)?
+                    .ok_or_else(|| no_event(room, event))?;
+                let encrypted: bool = tx
+                    .query_row(
+                        "SELECT encrypted FROM matrix_room WHERE id = ?1",
+                        [room.0],
+                        |r| r.get(0),
+                    )
+                    .map_err(|e| internal(e.into()))?;
+                if encrypted {
+                    return Err(error(
+                        ErrorCode::Invalid,
+                        "links in encrypted rooms are not previewed".into(),
+                    ));
+                }
+                if !preview::linked(&contents, &url) {
+                    return Err(error(
+                        ErrorCode::NotFound,
+                        format!("event {} links no {url}", event.0),
+                    ));
+                }
+                Ok(account)
+            })
+            .await?;
+        self.client(&account)
+    }
+
+    /// A preview of the page `url` that the room's message `event` links.
+    pub async fn preview_url(&self, room: RoomId, event: RoomEventId, url: String) -> Response {
+        let client = self.previewed(room, event, url.clone()).await?;
+        let og = preview::fetch(&client, &url).await.map_err(internal)?;
+        Ok(ServerResponse::UrlPreview {
+            preview: preview::preview(&og),
+        })
+    }
+
+    /// A thumbnail of the image `mxc` of the preview of `url`, which the
+    /// room's message `event` links, and its media type.
+    pub async fn preview_image(
+        &self,
+        room: RoomId,
+        event: RoomEventId,
+        url: String,
+        mxc: String,
+    ) -> Result<(&'static str, Vec<u8>), ServerError> {
+        let client = self.previewed(room, event, url.clone()).await?;
+        // The homeserver caches its previews.
+        let og = preview::fetch(&client, &url).await.map_err(internal)?;
+        if preview::preview(&og).and_then(|p| p.image).as_ref() != Some(&mxc) {
+            return Err(error(
+                ErrorCode::NotFound,
+                format!("{mxc} is not the image of {url}"),
+            ));
+        }
+        let image = client::media(&client, MatrixMediaSource::Plain(mxc.as_str().into()), true)
+            .await
+            .map_err(internal)?;
+        let mime = media::image_type(&image).ok_or_else(|| {
+            internal(anyhow::anyhow!(
+                "the thumbnail of {mxc} is not an image shown"
+            ))
+        })?;
+        Ok((mime, image))
     }
 
     /// A thumbnail of `user`'s avatar in the room, and its media type.

@@ -23,6 +23,7 @@ import type {
   GapId,
   TimelineFilled,
   TimelineGap,
+  UrlPreview,
   VerificationAnswer,
 } from '../generated/protocol'
 import type { Blobs } from '../blobs'
@@ -44,6 +45,8 @@ export class MatrixStore {
   private memberLists = new Map<RoomId, Members>()
   /** By room, then by root. */
   private threads = new Map<RoomId, Map<RoomEventId, Thread>>()
+  /** By event and URL: pages change little, and previews are not logged. */
+  private previews = new Map<string, Promise<UrlPreview | null>>()
   private roomLoader = new Loader(async () => {
     const response = await this.query({ type: 'list_rooms' }, 'rooms')
     if (!response) return
@@ -206,6 +209,22 @@ export class MatrixStore {
       // Only the first answers what it replies to.
       reply_to = null
     }
+  }
+
+  /** A preview of the page `url` that the room's message `event` links:
+   * `null` if the page says nothing of itself, or could not be previewed,
+   * which is shown as no preview. */
+  preview(room: RoomId, event: RoomEventId, url: string): Promise<UrlPreview | null> {
+    const key = `${event} ${url}`
+    let preview = this.previews.get(key)
+    if (!preview) {
+      preview = query(this.server, { type: 'preview_url', room, event, url }, 'url_preview').then(
+        (response) => response.preview,
+        () => null,
+      )
+      this.previews.set(key, preview)
+    }
+    return preview
   }
 
   /** The edits of the room's message `event`, oldest first. */
