@@ -233,7 +233,7 @@ def tabs(page):
     expect(subject).to_be_visible()
     other = page.context.new_page()
     errors = []
-    other.on("console", lambda m: m.type in ("error", "warning") and errors.append(m.text))
+    other.on("console", lambda m: m.type in ("error", "warning") and errors.append(f"{m.text} at {m.location['url']}"))
     other.on("pageerror", lambda e: errors.append(str(e)))
     other.goto(page.url)
     other_subject = other.get_by_role("textbox", name="Subject")
@@ -272,7 +272,7 @@ with sync_playwright() as p:
     )
     page = context.new_page()
     errors = []
-    page.on("console", lambda m: m.type in ("error", "warning") and errors.append(m.text))
+    page.on("console", lambda m: m.type in ("error", "warning") and errors.append(f"{m.text} at {m.location['url']}"))
     page.on("pageerror", lambda e: errors.append(str(e)))
     inbox(page)
     result = step(page)
