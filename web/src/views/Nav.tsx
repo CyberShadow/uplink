@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import type { ComponentChildren, RefObject } from 'preact'
 import { useLocation } from 'preact-iso'
 import { duration } from '../format'
-import { keepFocus } from '../keymap'
+import { keepFocus, returnFocus } from '../keymap'
 import type { Account, Label, ListingProgress, MailProvider, MatrixAccount, Room, RoomId } from '../generated/protocol'
 import { bySpaceOrder, moveSpace } from '../spaceOrder'
 import { useServices } from '../context'
@@ -448,7 +448,8 @@ export function Nav(props: { open: boolean }) {
             class={`${styles.parent} ${styles.toggle}`}
             style={{ '--depth': depth }}
             aria-expanded={!folded}
-            onMouseDown={keepFocus}
+            // Those at the top are dragged too.
+            onMouseDown={spaces ? returnFocus : keepFocus}
             onClick={() => toggleCollapsed(key)}
           >
             <span class={styles.fold} aria-hidden="true">

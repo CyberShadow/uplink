@@ -129,6 +129,22 @@ export function keepFocus(event: MouseEvent) {
   event.preventDefault()
 }
 
+/** `keepFocus` for controls that are also dragged: as preventing the
+ * mousedown's default would keep a drag from starting, the control takes
+ * the focus, and gives it back once the press ends, clicked or dragged. */
+export function returnFocus(event: MouseEvent) {
+  const previous = document.activeElement!
+  const pressed = event.currentTarget as HTMLElement
+  const back = () => {
+    window.removeEventListener('mouseup', back)
+    window.removeEventListener('dragend', back)
+    if (previous === document.body) pressed.blur()
+    else (previous as HTMLElement).focus({ preventScroll: true })
+  }
+  window.addEventListener('mouseup', back)
+  window.addEventListener('dragend', back)
+}
+
 /** Binds `actions` to their keys while the component is mounted: on the
  * window, where typing in a field does not trigger them (but for presses
  * with Ctrl or Cmd held), or on `within`,

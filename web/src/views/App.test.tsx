@@ -936,12 +936,24 @@ describe('matrix', () => {
   it('moves top-level spaces by dragging them, with undo', async () => {
     server.addMatrixAccount()
     for (const name of ['Alpha', 'Beta', 'Gamma']) server.addRoom(name).space = true
+    // With a room in it, its row is a button, which folds it.
+    server.rooms.find((r) => r.name === 'Gamma')!.children = [server.addRoom('Inner').room_id]
     const user = await start()
     const rooms = within(screen.getByRole('navigation')).getByRole('region', { name: `Rooms of ${ME}` })
     const order = () => [...rooms.querySelectorAll('[class*=parent] [class*=name]')].map((n) => n.textContent)
     const item = (name: string) => within(rooms).getByText(name).closest('li')!
     // None ordered yet: by room id.
     await waitFor(() => expect(order()).toEqual(['Alpha', 'Beta', 'Gamma']))
+
+    // A press on the row lets the browser start a drag (preventing it
+    // would not), and gives the focus back once it ends.
+    const search = screen.getByRole('searchbox')
+    search.focus()
+    const gamma = within(rooms).getByRole('button', { name: 'Gamma' })
+    expect(fireEvent.mouseDown(gamma)).toBe(true)
+    gamma.focus()
+    fireEvent.dragEnd(item('Gamma'))
+    expect(document.activeElement).toBe(search)
 
     // Onto the top of Alpha's row: before it. Only Gamma needs an order.
     const dataTransfer = { setData: vi.fn(), effectAllowed: 'none' }
