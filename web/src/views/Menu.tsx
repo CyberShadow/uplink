@@ -7,12 +7,14 @@ import styles from './Menu.module.css'
 
 export interface MenuItem {
   label: string
-  icon: IconName
+  icon?: IconName
   action: () => void
 }
 
-/** `groups`: the items, separated between groups. */
-export function MenuButton(props: { label: string; icon: IconName; groups: MenuItem[][] }) {
+/** `groups`: the items, separated between groups. The menu opens below
+ * the button, aligned with its end, or with `start`, its start, as a
+ * button at the start of a bar needs. */
+export function MenuButton(props: { label: string; icon: IconName; groups: MenuItem[][]; start?: true }) {
   const [open, setOpen] = useState(false)
   const root = useRef<HTMLSpanElement>(null)
   useEffect(() => {
@@ -49,7 +51,7 @@ export function MenuButton(props: { label: string; icon: IconName; groups: MenuI
         <Icon name={props.icon} />
       </button>
       {open && (
-        <ul class={styles.menu} role="menu" aria-label={props.label}>
+        <ul class={[styles.menu, props.start && styles.start].filter(Boolean).join(' ')} role="menu" aria-label={props.label}>
           {props.groups.flatMap((group, i) => [
             ...(i > 0 ? [<li key={`separator-${i}`} role="separator" class={styles.separator} />] : []),
             ...group.map((item) => (
@@ -63,7 +65,7 @@ export function MenuButton(props: { label: string; icon: IconName; groups: MenuI
                     item.action()
                   }}
                 >
-                  <Icon name={item.icon} />
+                  {item.icon && <Icon name={item.icon} />}
                   {item.label}
                 </button>
               </li>

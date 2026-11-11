@@ -16,7 +16,7 @@ import { messagePath } from './Todos'
 import styles from './Mail.module.css'
 import { fileSize } from './size'
 import { brief, dateTime } from '../format'
-import { Icon } from './Icon'
+import { Icon, type IconName } from './Icon'
 
 // Route params; preact-iso's own `query` prop is the URL's query string.
 interface Props {
@@ -116,7 +116,7 @@ export function Mail(props: Props) {
   // A message by itself has no list: back is where it was opened from.
   const backToList = view.kind === 'message' ? () => history.back() : () => route(pathFor())
 
-  const common = {
+  const common: Actions = {
     archive: ifTargets((t) => {
       mail.archive(t)
       if (openId !== null) backToList()
@@ -183,6 +183,7 @@ export function Mail(props: Props) {
       {openId === null ? (
         <>
           {list?.found && <Found found={list.found} />}
+          {conversations.length > 0 && <Toolbar mail={mail} actions={common} />}
           <MessageList mail={mail} open={open} />
         </>
       ) : openThread ? (
@@ -209,6 +210,99 @@ export function Mail(props: Props) {
         />
       )}
     </>
+  )
+}
+
+/** What the keys, and the toolbar, do to the targets. */
+type Actions = Record<
+  | 'archive'
+  | 'markRead'
+  | 'markUnread'
+  | 'delete'
+  | 'spam'
+  | 'star'
+  | 'important'
+  | 'notImportant'
+  | 'label'
+  | 'move'
+  | 'flag',
+  () => void
+>
+
+/** Gmail's bar above the list: a box selecting all or none, with a menu
+ * of which to select, and, while some are, what to do to them. */
+function Toolbar(props: { mail: MailStore; actions: Actions }) {
+  const { mail, actions } = props
+  const { todos } = useServices()
+  const conversations = mail.list.value!.conversations
+  const chosen = conversations.filter((c) => mail.selected.value.has(conversationKey(c))).map(threadOf)
+  const button = (label: string, icon: IconName, action: () => void) => (
+    <button type="button" class={styles.tool} aria-label={label} title={label} onMouseDown={keepFocus} onClick={action}>
+      <Icon name={icon} />
+    </button>
+  )
+  const unread = chosen.some((t) => mail.having(t, 'UNREAD'))
+  const flagged = chosen.every((t) => t.entries.some((e) => todos.flagged.value.has(e.message)))
+  const starred = chosen.every((t) => mail.having(t, 'STARRED'))
+  return (
+    <div class={styles.toolbar} role="toolbar" aria-label="Selection">
+      <span class={styles.select}>
+        <input
+          type="checkbox"
+          aria-label="Select all"
+          checked={chosen.length === conversations.length}
+          indeterminate={chosen.length > 0 && chosen.length < conversations.length}
+          onMouseDown={keepFocus}
+          onClick={() => (chosen.length > 0 ? mail.selectNone() : mail.selectAll())}
+        />
+        <MenuButton
+          label="Select"
+          icon="chevron-down"
+          start
+          groups={[
+            [
+              { label: 'All', action: () => mail.selectAll() },
+              { label: 'None', action: () => mail.selectNone() },
+              { label: 'Read', action: () => mail.selectHaving('UNREAD', false) },
+              { label: 'Unread', action: () => mail.selectHaving('UNREAD', true) },
+              { label: 'Starred', action: () => mail.selectHaving('STARRED', true) },
+              { label: 'Unstarred', action: () => mail.selectHaving('STARRED', false) },
+            ],
+          ]}
+        />
+      </span>
+      {chosen.length > 0 && (
+        <>
+          <span class={styles.group}>
+            {button('Archive', 'archive', actions.archive)}
+            {button(mail.spam(chosen) ? 'Not spam' : 'Report spam', 'octagon-x', actions.spam)}
+            {button('Delete', 'trash', actions.delete)}
+          </span>
+          <span class={styles.group}>
+            {unread
+              ? button('Mark as read', 'mail-open', actions.markRead)
+              : button('Mark as unread', 'mail', actions.markUnread)}
+            {button(flagged ? 'Unflag' : 'Flag for follow-up', 'flag', actions.flag)}
+          </span>
+          <span class={styles.group}>
+            {button('Move to', 'folder', actions.move)}
+            {button('Label', 'tag', actions.label)}
+            <MenuButton
+              label="More"
+              icon="ellipsis-vertical"
+              groups={[
+                [{ label: starred ? 'Remove star' : 'Add star', action: actions.star }],
+                [
+                  { label: 'Mark as important', action: actions.important },
+                  { label: 'Mark as not important', action: actions.notImportant },
+                ],
+              ]}
+            />
+          </span>
+          <span class={styles.chosen}>{chosen.length} selected</span>
+        </>
+      )}
+    </div>
   )
 }
 

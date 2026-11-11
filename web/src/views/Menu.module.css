@@ -35,6 +35,11 @@
   white-space: nowrap;
 }
 
+.start {
+  right: auto;
+  left: 0;
+}
+
 .menu button {
   display: flex;
   align-items: center;

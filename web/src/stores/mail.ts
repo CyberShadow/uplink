@@ -554,12 +554,17 @@ export class MailStore {
   /** Reports the threads as spam, or, if all are spam already, moves them
    * back to the Inbox, as Gmail's "Not spam" does. */
   toggleSpam(threads: Thread[]) {
-    const items = all(threads)
-    const spam = items.every((e) => e.labels.includes(this.systemLabel(e.account, 'SPAM').id))
-    return this.modify(items, (account) => {
+    const spam = this.spam(threads)
+    return this.modify(all(threads), (account) => {
       const label = this.systemLabel(account, 'SPAM').id
       return spam ? { add: [this.systemLabel(account, 'INBOX').id], remove: [label] } : { add: [label], remove: [] }
     })
+  }
+
+  /** Whether every entry of the threads is spam, so that `toggleSpam`
+   * moves them back. */
+  spam(threads: Thread[]): boolean {
+    return all(threads).every((e) => e.labels.includes(this.systemLabel(e.account, 'SPAM').id))
   }
 
   /** Read marks every entry; unread, the latest. `quiet` leaves the notice

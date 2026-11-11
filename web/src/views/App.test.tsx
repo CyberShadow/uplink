@@ -449,6 +449,78 @@ describe('mail', () => {
     expect(selected()).toEqual(['Second', 'Third'])
   })
 
+  describe('toolbar', () => {
+    const toolbar = () => within(screen.getByRole('toolbar', { name: 'Selection' }))
+    const selectAll = () => toolbar().getByRole('checkbox', { name: 'Select all' }) as HTMLInputElement
+
+    it('selects all or none by its box, which shows whether some are', async () => {
+      const user = await start('/mail/work/INBOX')
+      expect(selectAll().checked).toBe(false)
+      expect(toolbar().queryByRole('button', { name: 'Archive' })).toBeNull()
+      await user.keyboard('x')
+      expect(selectAll().indeterminate).toBe(true)
+      expect(toolbar().getByText('1 selected')).toBeTruthy()
+      // Some selected, the box selects none, as Gmail's does.
+      await user.click(selectAll())
+      expect(client.mail.selected.value.size).toBe(0)
+      await user.click(selectAll())
+      expect(selectAll().checked).toBe(true)
+      expect(selectAll().indeterminate).toBe(false)
+      expect(client.mail.selected.value.size).toBe(3)
+      // The click left the focus alone: keys still drive the list.
+      expect(document.activeElement).toBe(document.body)
+    })
+
+    it('selects from its menu', async () => {
+      const user = await start('/mail/work/INBOX')
+      await user.keyboard('{Shift>}i{/Shift}')
+      await user.click(toolbar().getByRole('button', { name: 'Select' }))
+      await user.click(screen.getByRole('menuitem', { name: 'Unread' }))
+      expect(screen.queryByRole('menu')).toBeNull()
+      await waitFor(() => expect(rows().map((row) => row.getAttribute('aria-selected'))).toEqual(['false', 'true', 'true']))
+    })
+
+    it('acts on the selection, not the focused conversation', async () => {
+      const user = await start('/mail/work/INBOX')
+      await user.keyboard('jxjxkk')
+      expect(focusedSubject()).toBe('First')
+      await user.click(toolbar().getByRole('button', { name: 'Mark as read' }))
+      await waitFor(() => expect(toolbar().getByRole('button', { name: 'Mark as unread' })).toBeTruthy())
+      expect(rows().map((row) => /unread/.test(row.className))).toEqual([true, false, false])
+      await user.click(toolbar().getByRole('button', { name: 'More' }))
+      await user.click(screen.getByRole('menuitem', { name: 'Add star' }))
+      await waitFor(() => expect(rows().map((row) => within(row).getByRole('button', { name: 'Star' }).getAttribute('aria-pressed'))).toEqual(['false', 'true', 'true']))
+      await user.click(toolbar().getByRole('button', { name: 'Archive' }))
+      await waitFor(() => expect(subjects()).toEqual(['First']))
+      expect(rows()[0].className).toMatch(/unread/)
+      // Nothing is selected now: the actions are gone.
+      expect(toolbar().queryByRole('button', { name: 'Archive' })).toBeNull()
+    })
+
+    it('reports spam, and in Spam, says not spam', async () => {
+      const user = await start('/mail/work/INBOX')
+      await user.keyboard('x')
+      await user.click(toolbar().getByRole('button', { name: 'Report spam' }))
+      await waitFor(() => expect(subjects()).toEqual(['Second', 'Third']))
+      await user.click(screen.getByRole('link', { name: /^Spam/ }))
+      await waitFor(() => expect(subjects()).toEqual(['First']))
+      await user.click(selectAll())
+      await user.click(toolbar().getByRole('button', { name: 'Not spam' }))
+      await screen.findByText('No messages.')
+    })
+
+    it('labels the selection from its picker', async () => {
+      const user = await start('/mail/work/INBOX')
+      await user.keyboard('xjx')
+      await user.click(toolbar().getByRole('button', { name: 'Label' }))
+      await user.keyboard('proj{Enter}')
+      const projects = server.labelId('work', 'Projects')
+      const [first, second] = client.mail.list.value!.conversations
+      await waitFor(() => expect(server.labelsOf(second.latest.id)).toContain(projects))
+      expect(server.labelsOf(first.latest.id)).toContain(projects)
+    })
+  })
+
   it('archives the open message with ] or [, opening the older or newer one', async () => {
     const user = await start('/mail/work/INBOX')
     await user.keyboard('j{Enter}')

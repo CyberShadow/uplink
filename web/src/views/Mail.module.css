@@ -1,3 +1,41 @@
+/* Gmail's, above the list: icons in groups apart. */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+  min-height: 40px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.select,
+.group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tool {
+  display: inline-flex;
+  padding: 6px;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.tool:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+
+.chosen {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 /* One grid, its rows sharing its columns: the paperclip's and the date's
    are as wide as the widest shown, and the summary has the rest. */
 .list {
@@ -160,6 +198,18 @@
 
 .row .snippet::before {
   content: ' — ';
+}
+
+/* Narrow, as a phone's: the toolbar's box over the rows', and the icons
+   on one line, without the count, which the rows show. */
+@media (max-width: 720px) {
+  .toolbar {
+    padding-left: 12px;
+  }
+
+  .chosen {
+    display: none;
+  }
 }
 
 /* Narrow, as a phone's: fat rows, the sender and date above the subject

@@ -2360,6 +2360,11 @@ others, toggling one; a name typed that no tag has is offered as a new
 tag of the user's. In a Matrix room (M7), `r` goes to the message box, where
 `Enter` sends, `Shift+Enter` breaks the line and `Esc` leaves.
 M10 added `*r *u *s *t [ ] v + = - gl`.
+Above the list, Gmail's toolbar does the same by pointer: a box selecting
+all or none (some selected, it selects none), with a menu of which to
+select (`*` and a letter's), and, while some are selected, buttons to
+archive, report spam (or not spam), delete, mark read or unread, flag,
+move and label them, and a menu to star and mark important or not.
 `Shift+t` flags the targets for follow-up, or unflags them (M9; ⚑ marks
 flagged messages); `gk` goes to the to-dos, where `j`/`k` move, `a`
 focuses the box that adds one, `e` marks done or not, `#` deletes, and
