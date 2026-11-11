@@ -845,6 +845,18 @@ session only ever waits for entries already committed.)
 
 ---
 
+### 5.5 Notices
+
+What is only of the moment — who is typing, that members sent read
+receipts — is not logged: the server pushes it to the sessions connected
+as `Notice { notice }`, live only, never replayed. A session that falls
+behind the notices skips those it missed. A client that reconnects
+forgets what notices told it (no one is typing) and loads again what
+they invalidate. Requests of the moment (`SetTyping`) are not ops either:
+they answer `Done` and log nothing, and queries of state not logged
+(`ListReceipts`) are not positioned in the log, so a client loads again
+after one in flight when told of a change meanwhile.
+
 ## 6. Transaction log & undo
 
 ### 6.1 The dispatcher
@@ -1573,7 +1585,9 @@ client:
   starts from their token all the same. After a restart, sync resumes
   from the recorded token, and events already stored are skipped. The
   SDK decrypts as it syncs. The filter lazy-loads members, drops
-  presence, and keeps only receipts of the ephemeral events.
+  presence, and keeps receipts and typing of the ephemeral events.
+  Who is typing (but the account), and that others sent read receipts,
+  are pushed as notices (§5.5) once the response is recorded.
 - **Sending.** On every user op (the hub), or every 30 s: sends queued
   messages (§9.3) and pushes the read marker (§9.5).
 
@@ -1748,6 +1762,14 @@ done once per device, ever; device verification UI is out of scope.
   PNG, JPEG, GIF and WebP, by their signatures. A room without one, or
   whose thumbnail fails, shows its name's first letter on one of six
   colours, by its id, as Element does.
+- Others' read receipts are the SDK's, as its store keeps them:
+  `ListReceipts` gives each joined member's (but the account's; those
+  the client knows, as members are lazily loaded) latest `m.read`
+  receipt, unthreaded or else of the main timeline, for stored events.
+  Clients show a member on the last listed event at or before it, as
+  Element does. `SetTyping` sends the account's typing notice, which
+  the SDK makes last 4 s: the web client renews it every 3 s while text
+  is typed, and stops it when the box is emptied or sent.
 - A room is recorded when a sync brings state changes too, not only
   timeline events, so that a name, avatar or space's children changed in
   a gappy sync are seen.
@@ -2189,6 +2211,8 @@ the membership's buttons.
   others, and those needing a decision (refused, sent though
   cancelled), are listed after the timeline with their state and
   buttons (§9.3).
+- **Who is typing** shows above the composer; who has read how far, as
+  up to three avatars (and how many more) at the end of a line.
 - **The composer** sends Markdown with Enter (Shift+Enter for a new
   line); `/me` sends an emote. Replying shows what it answers above the
   box; editing fills the box with the message, the draft kept apart.

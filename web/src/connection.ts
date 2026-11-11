@@ -5,6 +5,7 @@ import { signal } from '@preact/signals'
 import type {
   ClientRequest,
   LogEntry,
+  Notice,
   ServerError,
   ServerResponse,
   TxLogId,
@@ -39,6 +40,8 @@ export interface Handlers {
   reset(): void
   /** A log entry, replayed or live, in log order. */
   entry(entry: LogEntry): void
+  /** A notice of the moment, live only (SPEC §5.5). */
+  notice(notice: Notice): void
 }
 
 export interface Requester {
@@ -67,6 +70,8 @@ function isResendable(body: ClientRequest): boolean {
     case 'list_timeline':
     case 'list_room_events':
     case 'list_edits':
+    case 'list_receipts':
+    case 'set_typing':
     case 'list_matrix_sends':
     case 'list_message_entries':
     case 'list_conversation':
@@ -172,6 +177,9 @@ export class Connection implements Requester {
       case 'entry':
         this.cursor = msg.entry.id
         this.handlers.entry(msg.entry)
+        break
+      case 'notice':
+        this.handlers.notice(msg.notice)
         break
       case 'response':
         this.settle(msg.request_id).resolve(msg.body)

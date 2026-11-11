@@ -75,6 +75,20 @@ pub enum WsServerMsg {
     Entry {
         entry: LogEntry,
     },
+    /// What is only of the moment, as it happens: not logged, so not
+    /// replayed. A client that reconnects forgets what notices told it
+    /// (SPEC §5.5).
+    Notice {
+        notice: Notice,
+    },
+}
+
+/// A notice of the moment (SPEC §5.5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Notice {
+    Typing(matrix::Typing),
+    ReceiptsChanged(matrix::ReceiptsChanged),
 }
 
 // ── requests ──────────────────────────────────────────────────────────────
@@ -226,6 +240,16 @@ pub enum ClientRequest {
         room: RoomId,
         event: RoomEventId,
     },
+    /// Tell the room the account is typing, or has stopped. Not an op:
+    /// typing is of the moment.
+    SetTyping {
+        room: RoomId,
+        typing: bool,
+    },
+    /// How far the room's members have read, as their receipts say.
+    ListReceipts {
+        room: RoomId,
+    },
     /// Join a room one is invited to, or leave or decline one (SPEC §9.7).
     ChangeMembership {
         room: RoomId,
@@ -266,6 +290,8 @@ pub enum ServerResponse {
     Dispatched {
         tx_log_id: TxLogId,
     },
+    /// Done, and nothing logged: of what is of the moment.
+    Done,
     /// Query results reflect the log up to and including entry `as_of`;
     /// events of later entries apply on top.
     Accounts {
@@ -322,6 +348,11 @@ pub enum ServerResponse {
         room: RoomId,
         sends: Vec<matrix::MatrixSend>,
     },
+    /// Of `ListReceipts`: as the homeserver last said, not logged.
+    Receipts {
+        room: RoomId,
+        receipts: Vec<matrix::MemberReceipt>,
+    },
     Todos {
         as_of: TxLogId,
         todos: Vec<todos::Todo>,
@@ -358,8 +389,8 @@ impl ServerResponse {
             | Self::Todos { as_of, .. }
             | Self::Events { as_of, .. }
             | Self::History { as_of, .. } => Some(*as_of),
-            // Message content does not change.
-            Self::Message { .. } => None,
+            // Message content does not change; the rest is not logged.
+            Self::Message { .. } | Self::Done | Self::Receipts { .. } => None,
         }
     }
 }

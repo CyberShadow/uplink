@@ -911,3 +911,90 @@ async fn replies_edits_reactions_redactions_and_files() {
     assert!(deleted.redacted);
     assert_eq!(deleted.edit, None, "a redacted message shows no edit");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn typing_and_receipts_are_noticed() {
+    use uplink_protocol::Notice;
+    let dir = tempfile::tempdir().unwrap();
+    let homeserver = Homeserver::start(dir.path()).await;
+    let bob = homeserver.register(dir.path(), "bob").await;
+    let alice_phone = homeserver.register(dir.path(), "alice").await;
+    let _bob_received = sync_messages(&bob);
+    let uplink = Uplink::new(&homeserver);
+    let mut notices = uplink.dispatcher.hub().notices();
+    let _sync = uplink.pair_and_sync().await;
+    let room_id = shared_room(&bob, &alice_phone).await;
+    let room = eventually("uplink to see the room", || async {
+        uplink
+            .room(&room_id)
+            .await
+            .filter(|r| r.membership == Membership::Joined)
+    })
+    .await;
+    let bob_room = bob.get_room(&room_id).unwrap();
+
+    // Others typing; uplink's own typing is not listed.
+    uplink.matrix.set_typing(room.id, true).await.unwrap();
+    bob_room.typing_notice(true).await.unwrap();
+    let typing = loop {
+        match &*tokio::time::timeout(Duration::from_secs(30), notices.recv())
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            Notice::Typing(typing) if !typing.users.is_empty() => break typing.clone(),
+            _ => {}
+        }
+    };
+    assert_eq!(typing.room, room.id);
+    assert_eq!(
+        typing
+            .users
+            .iter()
+            .map(|u| u.user.as_str())
+            .collect::<Vec<_>>(),
+        ["@bob:localhost"]
+    );
+
+    // Bob reads uplink's message.
+    uplink
+        .matrix
+        .send_message(room.id, text("read me"))
+        .await
+        .unwrap();
+    let sent = eventually("the message to sync back", || async {
+        uplink
+            .timeline(&room)
+            .await
+            .into_iter()
+            .find(|e| e.body.as_deref() == Some("read me"))
+    })
+    .await;
+    bob_room
+        .send_single_receipt(
+            matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType::Read,
+            matrix_sdk::ruma::events::receipt::ReceiptThread::Unthreaded,
+            sent.event_id.parse().unwrap(),
+        )
+        .await
+        .unwrap();
+    loop {
+        let notice = tokio::time::timeout(Duration::from_secs(30), notices.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        if matches!(&*notice, Notice::ReceiptsChanged(r) if r.room == room.id) {
+            break;
+        }
+    }
+    let receipts = match uplink.matrix.list_receipts(room.id).await.unwrap() {
+        ServerResponse::Receipts { receipts, .. } => receipts,
+        other => panic!("unexpected {other:?}"),
+    };
+    let bob_read = receipts
+        .iter()
+        .find(|r| r.member.user == "@bob:localhost")
+        .unwrap();
+    assert_eq!(bob_read.event, sent.id);
+    assert!(receipts.iter().all(|r| r.member.user != "@alice:localhost"));
+}

@@ -1,14 +1,19 @@
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use uplink_protocol::LogEntry;
+use uplink_protocol::{LogEntry, Notice};
 
-/// Fans newly committed log entries out to all connected sessions.
+/// Fans newly committed log entries out to all connected sessions, and
+/// notices of the moment, which are not logged.
 ///
 /// Entries must be published in commit order. Sessions catch up on
 /// anything older from the log itself (see [`crate::Backend::replay`]).
 pub struct Hub {
     live: broadcast::Sender<Arc<LogEntry>>,
+    notices: broadcast::Sender<Arc<Notice>>,
 }
+
+/// How many notices a session may fall behind by; it misses those older.
+const NOTICES: usize = 256;
 
 impl Hub {
     /// `capacity` bounds how far a session may fall behind before it is
@@ -16,7 +21,18 @@ impl Hub {
     pub fn new(capacity: usize) -> Self {
         Self {
             live: broadcast::channel(capacity).0,
+            notices: broadcast::channel(NOTICES).0,
         }
+    }
+
+    pub fn notify(&self, notice: Notice) {
+        // An error only means there are no sessions to deliver to.
+        let _ = self.notices.send(Arc::new(notice));
+    }
+
+    /// Every notice from now on.
+    pub fn notices(&self) -> broadcast::Receiver<Arc<Notice>> {
+        self.notices.subscribe()
     }
 
     pub fn publish(&self, entry: LogEntry) {

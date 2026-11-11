@@ -45,8 +45,11 @@ use std::{
 use tokio::sync::broadcast::{self, error::RecvError};
 use uplink_config::MatrixAccountConfig;
 use uplink_protocol::{
-    matrix::{Encryption, MatrixContent, Membership, MembershipChange},
-    LogEntry, Source,
+    matrix::{
+        Encryption, MatrixContent, Membership, MembershipChange, ReceiptsChanged, RoomMember,
+        Typing,
+    },
+    LogEntry, Notice, Source,
 };
 use uplink_storage::{
     rusqlite::Connection,
@@ -195,6 +198,7 @@ impl Syncer {
             .timeout(if first { FIRST_SYNC } else { LONG_POLL });
         let response = self.client.sync_once(settings).await?;
         let next_batch = response.next_batch.clone();
+        let moment = self.moment(&response).await?;
         let rooms = self.observe(response, first).await?;
         if first || !rooms.is_empty() {
             self.dispatcher
@@ -207,7 +211,87 @@ impl Syncer {
                 )
                 .await?;
         }
+        self.notify(moment).await?;
         Ok(next_batch)
+    }
+
+    /// What the response says of the moment, by joined room: who is
+    /// typing, if that changed, and whether others sent read receipts.
+    async fn moment(&self, response: &SyncResponse) -> Result<Vec<Moment>> {
+        let own = self.client.user_id().context("the client has no user")?;
+        let mut moments = vec![];
+        for (room_id, update) in &response.rooms.joined {
+            let mut moment = Moment {
+                room_id: room_id.to_string(),
+                typing: None,
+                receipts: false,
+            };
+            for raw in &update.ephemeral {
+                let event: serde_json::Value = serde_json::from_str(raw.json().get())?;
+                match event["type"].as_str() {
+                    Some("m.typing") => {
+                        let room = self.client.get_room(room_id).with_context(|| {
+                            format!("synced room {room_id} is not in the client")
+                        })?;
+                        let mut users = vec![];
+                        for user in event["content"]["user_ids"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                        {
+                            let user = <&UserId>::try_from(
+                                user.as_str()
+                                    .context("m.typing with a user id not a string")?,
+                            )?;
+                            if user == own {
+                                continue;
+                            }
+                            let name = room
+                                .get_member_no_sync(user)
+                                .await?
+                                .and_then(|member| member.display_name().map(str::to_owned));
+                            users.push(RoomMember {
+                                user: user.to_string(),
+                                name,
+                            });
+                        }
+                        moment.typing = Some(users);
+                    }
+                    Some("m.receipt") => {
+                        moment.receipts |= receipts_of_others(own, &event);
+                    }
+                    _ => {}
+                }
+            }
+            if moment.typing.is_some() || moment.receipts {
+                moments.push(moment);
+            }
+        }
+        Ok(moments)
+    }
+
+    /// Tells connected clients of the moment, in rooms recorded.
+    async fn notify(&self, moments: Vec<Moment>) -> Result<()> {
+        if moments.is_empty() {
+            return Ok(());
+        }
+        let account = self.account.clone();
+        let ids: Vec<String> = moments.iter().map(|m| m.room_id.clone()).collect();
+        let rooms = read(&self.reader, move |conn| {
+            rooms::room_ids(conn, &account, &ids)
+        })
+        .await?;
+        let hub = self.dispatcher.hub();
+        for (moment, room) in moments.into_iter().zip(rooms) {
+            let Some(room) = room else { continue };
+            if let Some(users) = moment.typing {
+                hub.notify(Notice::Typing(Typing { room, users }));
+            }
+            if moment.receipts {
+                hub.notify(Notice::ReceiptsChanged(ReceiptsChanged { room }));
+            }
+        }
+        Ok(())
     }
 
     /// The rooms in `response` with changes uplink may store: events, the
@@ -322,12 +406,13 @@ async fn space_children(room: &Room) -> Result<Vec<SpaceChild>> {
     Ok(children)
 }
 
-/// The sync filter: no presence, and of ephemeral events only receipts.
+/// The sync filter: no presence, and of ephemeral events receipts and
+/// typing.
 fn filter() -> Filter {
     let mut filter = FilterDefinition::with_lazy_loading();
     filter.presence = matrix_sdk::ruma::api::client::filter::Filter::ignore_all();
     filter.room.ephemeral = RoomEventFilter::default();
-    filter.room.ephemeral.types = Some(vec!["m.receipt".to_owned()]);
+    filter.room.ephemeral.types = Some(vec!["m.receipt".to_owned(), "m.typing".to_owned()]);
     Filter::FilterDefinition(filter)
 }
 
@@ -353,6 +438,34 @@ async fn timeline_event(
     }
     parsed.sender_name = names[&parsed.sender].clone();
     Ok(parsed)
+}
+
+/// What a sync says of a joined room's moment.
+struct Moment {
+    room_id: String,
+    /// Who is typing now, if the sync says.
+    typing: Option<Vec<RoomMember>>,
+    /// Whether others sent read receipts.
+    receipts: bool,
+}
+
+/// Whether the `m.receipt` event has receipts of others than `own`.
+fn receipts_of_others(own: &UserId, event: &serde_json::Value) -> bool {
+    event["content"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .any(|(_, receipts)| {
+            receipts
+                .as_object()
+                .into_iter()
+                .flatten()
+                .any(|(_, users)| {
+                    users
+                        .as_object()
+                        .is_some_and(|users| users.keys().any(|user| user != own.as_str()))
+                })
+        })
 }
 
 /// The events `own`'s read receipts among `ephemeral` are for.

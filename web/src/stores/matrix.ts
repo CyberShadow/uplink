@@ -6,6 +6,9 @@ import type {
   ClientRequest,
   LogEntry,
   MatrixAccount,
+  MemberReceipt,
+  Notice,
+  RoomMember,
   MatrixContent,
   MatrixSend,
   MatrixSendId,
@@ -77,6 +80,28 @@ export class MatrixStore {
     }
   }
 
+  notice(notice: Extract<Notice, { type: 'typing' | 'receipts_changed' }>) {
+    const timeline = this.timelines.get(notice.room)
+    if (!timeline) return
+    switch (notice.type) {
+      case 'typing':
+        timeline.typing.value = notice.users
+        break
+      case 'receipts_changed':
+        timeline.receiptsChanged()
+        break
+    }
+  }
+
+  /** Tells the room the account is typing, or has stopped. */
+  async setTyping(room: RoomId, typing: boolean) {
+    try {
+      await this.server.request({ type: 'set_typing', room, typing })
+    } catch (error) {
+      this.error.value = (error as Error).message
+    }
+  }
+
   /** The room's timeline, loaded from its latest events on first use. */
   timeline(room: RoomId): Timeline {
     let timeline = this.timelines.get(room)
@@ -86,6 +111,7 @@ export class MatrixStore {
         (request) => this.query(request, 'timeline'),
         (events) => this.query({ type: 'list_room_events', room, events }, 'room_events'),
         () => this.query({ type: 'list_matrix_sends', room }, 'matrix_sends'),
+        () => this.query({ type: 'list_receipts', room }, 'receipts'),
       )
       this.timelines.set(room, timeline)
     }
@@ -138,7 +164,7 @@ export class MatrixStore {
     return this.ops.dispatch({ type: 'mark_room_read', room, event }, true)
   }
 
-  private async query<T extends Response<'rooms' | 'timeline' | 'room_events' | 'edits' | 'matrix_sends'>['type']>(
+  private async query<T extends Response<'rooms' | 'timeline' | 'room_events' | 'edits' | 'matrix_sends' | 'receipts'>['type']>(
     request: ClientRequest,
     type: T,
   ): Promise<Response<T> | null> {
@@ -161,6 +187,10 @@ export class Timeline {
   /** Being sent, sent and not yet synced back, or sent though cancelled;
    * `null` until loaded. */
   readonly sends = signal<readonly MatrixSend[] | null>(null)
+  /** Who is typing, as the last notice said. */
+  readonly typing = signal<readonly RoomMember[]>([])
+  /** How far the room's members have read. */
+  readonly receipts = signal<readonly MemberReceipt[]>([])
 
   private newer = this.loader()
   /** Of events loaded again as they changed, the log entry their load
@@ -171,15 +201,25 @@ export class Timeline {
     const response = await this.loadSends()
     if (response) this.sends.value = response.sends
   })
+  private receiptLoader = new Loader(async () => {
+    const response = await this.loadReceipts()
+    if (response) this.receipts.value = response.receipts
+  }, false)
 
   constructor(
     readonly room: RoomId,
     private readonly load: (request: ClientRequest) => Promise<Response<'timeline'> | null>,
     private readonly loadEvents: (events: RoomEventId[]) => Promise<Response<'room_events'> | null>,
     private readonly loadSends: () => Promise<Response<'matrix_sends'> | null>,
+    private readonly loadReceipts: () => Promise<Response<'receipts'> | null>,
   ) {
     this.newer.invalidate()
     this.sendLoader.invalidate()
+    this.receiptLoader.invalidate()
+  }
+
+  receiptsChanged() {
+    this.receiptLoader.invalidate()
   }
 
   /** Events were added to the end. */
@@ -218,6 +258,9 @@ export class Timeline {
     this.newer = this.loader()
     this.newer.invalidate()
     this.sendLoader.invalidate()
+    // What notices said is void too.
+    this.typing.value = []
+    this.receiptLoader.invalidate()
   }
 
   /** Loads the events after those loaded, or the latest. */

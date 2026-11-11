@@ -2,7 +2,7 @@
 // a reply to a message, or an edit of one's own (Up edits the last);
 // and files, attached, pasted or dropped, sent with it.
 
-import { useRef, useState } from 'preact/hooks'
+import { useEffect, useRef, useState } from 'preact/hooks'
 import type { Room, RoomEvent } from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus } from '../keymap'
@@ -15,6 +15,10 @@ import styles from './Room.module.css'
 export type Mode = { type: 'new' } | { type: 'reply'; event: RoomEvent } | { type: 'edit'; event: RoomEvent }
 
 const EMOTE = '/me '
+
+/** How often a typing notice is renewed while typing: the homeserver
+ * forgets it after 4 s, as the SDK sends it. */
+const TYPING_RENEW = 3000
 
 export function Composer(props: {
   room: Room
@@ -36,6 +40,7 @@ export function Composer(props: {
   const editing = mode.type === 'edit' ? mode.event : null
   const value = editing ? (edit?.event === editing.id ? edit.text : (shown(editing).body ?? '')) : draft
   const sendable = value.trim() !== '' || (editing === null && files.length > 0)
+  const typing = useTyping(room)
 
   const leave = () => {
     setEdit(null)
@@ -43,6 +48,7 @@ export function Composer(props: {
   }
   const send = async () => {
     if (!sendable) return
+    typing.stop()
     if (editing) {
       const original = shown(editing)
       if (value !== original.body) {
@@ -147,6 +153,8 @@ export function Composer(props: {
             const text = event.currentTarget.value
             if (editing) setEdit({ event: editing.id, text })
             else setDraft(text)
+            if (text.trim() === '') typing.stop()
+            else typing.typed()
           }}
           onPaste={(event) => {
             const pasted = [...(event.clipboardData?.files ?? [])]
@@ -175,4 +183,32 @@ export function Composer(props: {
       </div>
     </form>
   )
+}
+
+/** Tells the room while the account types: renewed as it goes on, and
+ * stopped once the box is emptied or sent, or the room left. */
+function useTyping(room: Room) {
+  const { matrix } = useServices()
+  // When the last notice went, while typing.
+  const since = useRef<number | null>(null)
+  const stop = () => {
+    if (since.current === null) return
+    since.current = null
+    matrix.setTyping(room.id, false)
+  }
+  useEffect(
+    () => () => {
+      if (since.current !== null) matrix.setTyping(room.id, false)
+    },
+    [matrix, room.id],
+  )
+  return {
+    typed: () => {
+      const now = Date.now()
+      if (since.current !== null && now - since.current < TYPING_RENEW) return
+      since.current = now
+      matrix.setTyping(room.id, true)
+    },
+    stop,
+  }
 }

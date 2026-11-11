@@ -10,6 +10,7 @@ const client = new Client({ request: (body) => connection.request(body), ...http
 const connection = new Connection(url, {
   reset: () => client.reset(),
   entry: (entry) => client.apply(entry),
+  notice: (notice) => client.notice(notice),
 })
 
 render(<App client={client} status={connection.status} />, document.getElementById('app')!)

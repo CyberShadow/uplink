@@ -1116,6 +1116,40 @@ describe('room timeline', () => {
     await within(timeline()).findByText('Deleting…')
   })
 
+  it('shows who is typing and how far members have read, and says when the account types', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const first = server.receive(room.id, { body: 'First' })
+    const second = server.receive(room.id, { body: 'Second' })
+    const user = await start(`/rooms/${room.id}`)
+    await within(timeline()).findByText('Second')
+
+    server.typing(room.id, [{ user: '@bob:example.org', name: 'Bob' }])
+    await screen.findByText('Bob is typing…')
+    server.typing(room.id, [
+      { user: '@bob:example.org', name: 'Bob' },
+      { user: '@carol:example.org', name: null },
+    ])
+    await screen.findByText('Bob and carol are typing…')
+    server.typing(room.id, [])
+    await waitFor(() => expect(screen.queryByText(/typing/)).toBeNull())
+
+    // On the last listed event at or before the one read.
+    server.read(room.id, [
+      { member: { user: '@bob:example.org', name: 'Bob' }, event: first.id, ts: null },
+      // An event not listed, as a reaction.
+      { member: { user: '@carol:example.org', name: 'Carol' }, event: second.id + 10, ts: null },
+    ])
+    await within(line('First')).findByLabelText('Read by Bob')
+    within(line('Second')).getByLabelText('Read by Carol')
+
+    await user.keyboard('r')
+    await user.keyboard('h')
+    expect(server.requests).toContainEqual({ type: 'set_typing', room: room.id, typing: true })
+    await user.keyboard('{Backspace}')
+    expect(server.requests).toContainEqual({ type: 'set_typing', room: room.id, typing: false })
+  })
+
   it('sends files attached, with the message', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')

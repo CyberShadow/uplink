@@ -18,11 +18,45 @@ export type WsServerMsg = { "type": "pong", seq: number, } | { "type": "welcome"
 /**
  * The most recent entry at the time of `Hello`.
  */
-cursor: TxLogId, resumed: boolean, } | { "type": "response", request_id: number, body: ServerResponse, } | { "type": "request_failed", request_id: number, error: ServerError, } | { "type": "entry", entry: LogEntry, };
+cursor: TxLogId, resumed: boolean, } | { "type": "response", request_id: number, body: ServerResponse, } | { "type": "request_failed", request_id: number, error: ServerError, } | { "type": "entry", entry: LogEntry, } | { "type": "notice", notice: Notice, };
 
-export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": "list_history", before: TxLogId | null, limit: number, } | { "type": "list_accounts" } | { "type": "list_entries", list: EntryList, after: ListPosition | null, limit: number, } | { "type": "search", query: string, limit: number, } | { "type": "list_conversation", entry: EntryId, } | { "type": "list_message_entries", message: MessageId, } | { "type": "load_message", message: MessageId, } | { "type": "modify_labels", entries: Array<EntryId>, add: Array<LabelId>, remove: Array<LabelId>, } | { "type": "list_drafts" } | { "type": "create_draft", id: DraftId, account: string, content: DraftContent, in_reply_to: MessageId | null, } | { "type": "edit_draft", draft: DraftId, revision: number, splice: Splice, } | { "type": "delete_draft", draft: DraftId, } | { "type": "attach_to_draft", draft: DraftId, blob: BlobId, name: string, mime: string, } | { "type": "detach_from_draft", draft: DraftId, attachment: DraftAttachmentId, } | { "type": "send_draft", draft: DraftId, } | { "type": "cancel_send", item: OutboxId, } | { "type": "keep_sent", item: OutboxId, } | { "type": "list_outbox" } | { "type": "keep_observed", account: string, op: TxLogId | null, } | { "type": "list_rooms" } | { "type": "list_timeline", room: RoomId, page: TimelinePage, limit: number, } | { "type": "list_room_events", room: RoomId, events: Array<RoomEventId>, } | { "type": "list_edits", room: RoomId, event: RoomEventId, } | { "type": "list_matrix_sends", room: RoomId, } | { "type": "send_matrix_message", room: RoomId, content: MatrixContent, } | { "type": "cancel_matrix_send", item: MatrixSendId, } | { "type": "keep_matrix_sent", item: MatrixSendId, } | { "type": "mark_room_read", room: RoomId, event: RoomEventId, } | { "type": "change_membership", room: RoomId, change: MembershipChange, } | { "type": "list_events", from: number, to: number, } | { "type": "list_todos" } | { "type": "create_todo", title: string, notes: string, due: string | null, message: MessageId | null, } | { "type": "edit_todo", todo: TodoId, edit: TodoEdit, } | { "type": "delete_todo", todo: TodoId, };
+/**
+ * A notice of the moment (SPEC §5.5).
+ */
+export type Notice = { "type": "typing" } & Typing | { "type": "receipts_changed" } & ReceiptsChanged;
 
-export type ServerResponse = { "type": "undone", tx_log_id: TxLogId, } | { "type": "dispatched", tx_log_id: TxLogId, } | { "type": "accounts", as_of: TxLogId, accounts: Array<Account>, } | { "type": "conversations", as_of: TxLogId, conversations: Array<Conversation>, 
+/**
+ * Who is typing in the room, but the account: all of them, each time.
+ */
+export type Typing = { room: RoomId, users: Array<RoomMember>, };
+
+export type RoomMember = { user: string, 
+/**
+ * Their display name in the room, if they have one.
+ */
+name: string | null, };
+
+/**
+ * Members of the room sent read receipts.
+ */
+export type ReceiptsChanged = { room: RoomId, };
+
+/**
+ * How far a member of the room (not the account) has read.
+ */
+export type MemberReceipt = { member: RoomMember, 
+/**
+ * The stored event their receipt is for.
+ */
+event: RoomEventId, 
+/**
+ * When they read it, ms since the Unix epoch, if the receipt says.
+ */
+ts: number | null, };
+
+export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": "list_history", before: TxLogId | null, limit: number, } | { "type": "list_accounts" } | { "type": "list_entries", list: EntryList, after: ListPosition | null, limit: number, } | { "type": "search", query: string, limit: number, } | { "type": "list_conversation", entry: EntryId, } | { "type": "list_message_entries", message: MessageId, } | { "type": "load_message", message: MessageId, } | { "type": "modify_labels", entries: Array<EntryId>, add: Array<LabelId>, remove: Array<LabelId>, } | { "type": "list_drafts" } | { "type": "create_draft", id: DraftId, account: string, content: DraftContent, in_reply_to: MessageId | null, } | { "type": "edit_draft", draft: DraftId, revision: number, splice: Splice, } | { "type": "delete_draft", draft: DraftId, } | { "type": "attach_to_draft", draft: DraftId, blob: BlobId, name: string, mime: string, } | { "type": "detach_from_draft", draft: DraftId, attachment: DraftAttachmentId, } | { "type": "send_draft", draft: DraftId, } | { "type": "cancel_send", item: OutboxId, } | { "type": "keep_sent", item: OutboxId, } | { "type": "list_outbox" } | { "type": "keep_observed", account: string, op: TxLogId | null, } | { "type": "list_rooms" } | { "type": "list_timeline", room: RoomId, page: TimelinePage, limit: number, } | { "type": "list_room_events", room: RoomId, events: Array<RoomEventId>, } | { "type": "list_edits", room: RoomId, event: RoomEventId, } | { "type": "list_matrix_sends", room: RoomId, } | { "type": "send_matrix_message", room: RoomId, content: MatrixContent, } | { "type": "cancel_matrix_send", item: MatrixSendId, } | { "type": "keep_matrix_sent", item: MatrixSendId, } | { "type": "mark_room_read", room: RoomId, event: RoomEventId, } | { "type": "set_typing", room: RoomId, typing: boolean, } | { "type": "list_receipts", room: RoomId, } | { "type": "change_membership", room: RoomId, change: MembershipChange, } | { "type": "list_events", from: number, to: number, } | { "type": "list_todos" } | { "type": "create_todo", title: string, notes: string, due: string | null, message: MessageId | null, } | { "type": "edit_todo", todo: TodoId, edit: TodoEdit, } | { "type": "delete_todo", todo: TodoId, };
+
+export type ServerResponse = { "type": "undone", tx_log_id: TxLogId, } | { "type": "dispatched", tx_log_id: TxLogId, } | { "type": "done" } | { "type": "accounts", as_of: TxLogId, accounts: Array<Account>, } | { "type": "conversations", as_of: TxLogId, conversations: Array<Conversation>, 
 /**
  * Where the next page starts, if there may be one.
  */
@@ -30,7 +64,7 @@ next: ListPosition | null, } | { "type": "entries", as_of: TxLogId, entries: Arr
 /**
  * Whether there are earlier events than those listed.
  */
-more_before: boolean, } | { "type": "room_events", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, } | { "type": "edits", as_of: TxLogId, room: RoomId, event: RoomEventId, edits: Array<RoomEvent>, } | { "type": "matrix_sends", as_of: TxLogId, room: RoomId, sends: Array<MatrixSend>, } | { "type": "todos", as_of: TxLogId, todos: Array<Todo>, } | { "type": "events", as_of: TxLogId, events: Array<CalendarEvent>, } | { "type": "history", as_of: TxLogId, entries: Array<HistoryEntry>, 
+more_before: boolean, } | { "type": "room_events", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, } | { "type": "edits", as_of: TxLogId, room: RoomId, event: RoomEventId, edits: Array<RoomEvent>, } | { "type": "matrix_sends", as_of: TxLogId, room: RoomId, sends: Array<MatrixSend>, } | { "type": "receipts", room: RoomId, receipts: Array<MemberReceipt>, } | { "type": "todos", as_of: TxLogId, todos: Array<Todo>, } | { "type": "events", as_of: TxLogId, events: Array<CalendarEvent>, } | { "type": "history", as_of: TxLogId, entries: Array<HistoryEntry>, 
 /**
  * Whether there are earlier ones than those listed.
  */

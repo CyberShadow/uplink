@@ -4,13 +4,21 @@
 // sent follow, and the box to write one.
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
-import type { MatrixSend, MembershipChange, Room, RoomEvent, RoomEventId } from '../generated/protocol'
+import type {
+  MatrixSend,
+  MemberReceipt,
+  MembershipChange,
+  Room,
+  RoomEvent,
+  RoomEventId,
+  RoomMember,
+} from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus, useKeymap } from '../keymap'
 import styles from './Room.module.css'
 import { RoomAvatar } from './RoomAvatar'
 import { date } from '../format'
-import { TEXT, sendSummary, shown } from '../matrix'
+import { TEXT, displayName, sendSummary, shown } from '../matrix'
 import { EventRow, MembershipRun, type Overlay } from './RoomEvent'
 import { Composer, type Mode } from './RoomComposer'
 
@@ -44,6 +52,8 @@ function Timeline(props: { room: Room }) {
   useMarkRead(room, events)
 
   const [overlay, outgoing] = useMemo(() => overlaid(events ?? [], sends ?? []), [events, sends])
+  const receipts = timeline.receipts.value
+  const readers = useMemo(() => readersByEvent(events ?? [], receipts), [events, receipts])
   const list = useMemo(() => rows(events ?? [], readUpTo, me), [events, readUpTo, me])
   const lastOwn = useMemo(
     () =>
@@ -127,6 +137,7 @@ function Timeline(props: { room: Room }) {
                     event={row.event}
                     me={me}
                     overlay={overlay.get(row.event.event_id)}
+                    readers={readers.get(row.event.id) ?? NO_READERS}
                     pendingRedactions={overlay.redacted}
                     reply={() => act({ type: 'reply', event: row.event })}
                     edit={() => act({ type: 'edit', event: row.event })}
@@ -139,6 +150,7 @@ function Timeline(props: { room: Room }) {
           ))}
         </ol>
       </div>
+      <Typing users={timeline.typing.value} />
       {room.membership === 'joined' && (
         <Composer
           room={room}
@@ -152,6 +164,42 @@ function Timeline(props: { room: Room }) {
       )}
     </section>
   )
+}
+
+/** Who is typing, in a line above the composer. */
+function Typing(props: { users: readonly RoomMember[] }) {
+  const names = props.users.map((u) => displayName(u.user, u.name))
+  return (
+    <p class={styles.typing} aria-live="polite">
+      {names.length === 0
+        ? ''
+        : names.length === 1
+          ? `${names[0]} is typing…`
+          : names.length <= 3
+            ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)} are typing…`
+            : `${names.slice(0, 2).join(', ')} and ${names.length - 2} others are typing…`}
+    </p>
+  )
+}
+
+const NO_READERS: readonly MemberReceipt[] = []
+
+/** Members' receipts by the loaded event each shows on: the last listed
+ * at or before the event it is for (which may not be listed itself, as a
+ * reaction is not), as Element shows them. */
+export function readersByEvent(
+  events: readonly RoomEvent[],
+  receipts: readonly MemberReceipt[],
+): Map<RoomEventId, MemberReceipt[]> {
+  const byEvent = new Map<RoomEventId, MemberReceipt[]>()
+  for (const receipt of receipts) {
+    const at = events.findLast((e) => e.id <= receipt.event)
+    if (!at) continue
+    const readers = byEvent.get(at.id) ?? []
+    readers.push(receipt)
+    byEvent.set(at.id, readers)
+  }
+  return byEvent
 }
 
 type Row =

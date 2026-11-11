@@ -30,6 +30,8 @@ import type {
   Membership,
   Room,
   RoomEvent,
+  MemberReceipt,
+  RoomMember,
   RoomId,
   Sender,
   ServerEvent,
@@ -88,6 +90,8 @@ export class FakeServer implements Requester, Blobs {
   /** The op that asked for each room's pending membership. */
   private readonly membershipBy = new Map<RoomId, number>()
   readonly events = new Map<RoomId, RoomEvent[]>()
+  /** Of rooms, how far their members have read. */
+  readonly receipts = new Map<RoomId, MemberReceipt[]>()
   /** Of events edited, their edits, oldest first. */
   readonly edits = new Map<number, RoomEvent[]>()
   /** Messages being sent, sent and not yet synced back, or sent though
@@ -280,6 +284,17 @@ export class FakeServer implements Requester, Blobs {
     const [sent] = this.matrixSends.splice(index, 1)
     this.receive(sent.room, { sender: ME, sender_name: 'Me', body: sendSummary(sent.content) })
     this.observe('mx', this.matrixSendsChanged(sent.room))
+  }
+
+  /** Members are typing in the room, as sync says. */
+  typing(room: RoomId, users: RoomMember[]) {
+    this.client.notice({ type: 'typing', room, users })
+  }
+
+  /** Members read the room, as their receipts say. */
+  read(room: RoomId, receipts: MemberReceipt[]) {
+    this.receipts.set(room, receipts)
+    this.client.notice({ type: 'receipts_changed', room })
   }
 
   /** The room's sends went out, and sync brought back what they did. */
@@ -579,6 +594,10 @@ export class FakeServer implements Requester, Blobs {
         }
       case 'list_edits':
         return { type: 'edits', as_of: this.head(), room: body.room, event: body.event, edits: this.edits.get(body.event) ?? [] }
+      case 'list_receipts':
+        return { type: 'receipts', room: body.room, receipts: this.receipts.get(body.room) ?? [] }
+      case 'set_typing':
+        return { type: 'done' }
       case 'list_matrix_sends':
         return {
           type: 'matrix_sends',

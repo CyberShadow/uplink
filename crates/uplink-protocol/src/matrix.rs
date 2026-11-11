@@ -282,6 +282,40 @@ pub struct TimelineChanged {
     pub events: Vec<RoomEventId>,
 }
 
+/// Who is typing in the room, but the account: all of them, each time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Typing {
+    pub room: RoomId,
+    pub users: Vec<RoomMember>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RoomMember {
+    pub user: String,
+    /// Their display name in the room, if they have one.
+    pub name: Option<String>,
+}
+
+/// Members of the room sent read receipts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ReceiptsChanged {
+    pub room: RoomId,
+}
+
+/// How far a member of the room (not the account) has read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MemberReceipt {
+    pub member: RoomMember,
+    /// The stored event their receipt is for.
+    pub event: RoomEventId,
+    /// When they read it, ms since the Unix epoch, if the receipt says.
+    pub ts: Option<i64>,
+}
+
 /// Messages being sent to these rooms were added, changed state or went.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]

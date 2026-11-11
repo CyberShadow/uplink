@@ -97,6 +97,7 @@ async fn session(
     // then seen by both, and the live copy is skipped below, rather than by
     // neither.
     let mut live = hub.subscribe();
+    let mut notices = hub.notices();
     let replay = backend.replay(since).await.map_err(|e| End::Close {
         code: CLOSE_INTERNAL_ERROR,
         reason: format!("reading log: {e:#}"),
@@ -138,6 +139,12 @@ async fn session(
                 }
             },
             published = live.recv() => forward(socket, published, &mut cursor).await?,
+            notice = notices.recv() => match notice {
+                Ok(notice) => send(socket, &WsServerMsg::Notice { notice: (*notice).clone() }).await?,
+                // Of the moment: those missed are past.
+                Err(RecvError::Lagged(_)) => {}
+                Err(RecvError::Closed) => unreachable!("hub outlives its sessions"),
+            },
         }
     }
 }

@@ -25,11 +25,17 @@ export class Loader {
   private loading = false
   private stale = false
 
-  constructor(private readonly load: () => Promise<void>) {}
+  /** `logged`: whether the state is the log's, its responses positioned
+   * in it; else (as receipts) a query in flight may not reflect a change,
+   * and one follows it. */
+  constructor(
+    private readonly load: () => Promise<void>,
+    private readonly logged = true,
+  ) {}
 
   invalidate() {
     // A query in flight reflects every entry received before its response.
-    if (this.loading) return
+    if (this.loading && this.logged) return
     this.stale = true
     this.pump()
   }

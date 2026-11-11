@@ -11,8 +11,8 @@ use matrix_sdk::ruma::events::room::MediaSource as MatrixMediaSource;
 use std::sync::Arc;
 use uplink_protocol::{
     matrix::{
-        MatrixAccount, MatrixContent, MatrixSendId, Membership, MembershipChange, RoomEventId,
-        RoomId, TimelinePage,
+        MatrixAccount, MatrixContent, MatrixSendId, MemberReceipt, Membership, MembershipChange,
+        RoomEventId, RoomId, RoomMember, TimelinePage,
     },
     ErrorCode, ServerError, ServerResponse,
 };
@@ -203,6 +203,89 @@ impl Matrix {
             ))
         })?;
         Ok((mime, image))
+    }
+
+    /// The room's client-side room, of a joined room the client has.
+    async fn sdk_room(&self, room: RoomId) -> Result<(String, matrix_sdk::Room), ServerError> {
+        let (account, room_id) = self
+            .reader
+            .read(move |conn| {
+                rooms::room_of(conn, room)
+                    .map_err(internal)?
+                    .ok_or_else(|| no_room(room))
+            })
+            .await?;
+        let client = self.client(&account)?;
+        let sdk_room = <&matrix_sdk::ruma::RoomId>::try_from(room_id.as_str())
+            .ok()
+            .and_then(|id| client.get_room(id))
+            .ok_or_else(|| {
+                error(
+                    ErrorCode::NotFound,
+                    format!("{account}'s client does not have room {room_id}"),
+                )
+            })?;
+        Ok((account, sdk_room))
+    }
+
+    /// Tells the room the account is typing, or has stopped.
+    pub async fn set_typing(&self, room: RoomId, typing: bool) -> Response {
+        let (_, sdk_room) = self.sdk_room(room).await?;
+        sdk_room
+            .typing_notice(typing)
+            .await
+            .map_err(|e| internal(e.into()))?;
+        Ok(ServerResponse::Done)
+    }
+
+    /// How far the room's joined members (but the account) have read, of
+    /// those the client knows, by their receipts for stored events.
+    pub async fn list_receipts(&self, room: RoomId) -> Response {
+        use matrix_sdk::ruma::events::receipt::{ReceiptThread, ReceiptType};
+        let (_, sdk_room) = self.sdk_room(room).await?;
+        let own = sdk_room.own_user_id().to_owned();
+        let members = sdk_room
+            .members_no_sync(matrix_sdk::RoomMemberships::JOIN)
+            .await
+            .map_err(|e| internal(e.into()))?;
+        let mut read = vec![];
+        for member in members.iter().filter(|m| m.user_id() != own) {
+            // Unthreaded receipts, else those of the main timeline.
+            let mut receipt = None;
+            for thread in [ReceiptThread::Unthreaded, ReceiptThread::Main] {
+                receipt = sdk_room
+                    .load_user_receipt(ReceiptType::Read, &thread, member.user_id())
+                    .await
+                    .map_err(|e| internal(e.into()))?;
+                if receipt.is_some() {
+                    break;
+                }
+            }
+            if let Some((event_id, receipt)) = receipt {
+                read.push((
+                    RoomMember {
+                        user: member.user_id().to_string(),
+                        name: member.display_name().map(str::to_owned),
+                    },
+                    event_id.to_string(),
+                    receipt.ts.map(|ts| i64::from(ts.0)),
+                ));
+            }
+        }
+        self.reader
+            .read(move |conn| {
+                let ids: Vec<String> = read.iter().map(|(_, event, _)| event.clone()).collect();
+                let events = rooms::event_ids(conn, room, &ids).map_err(internal)?;
+                let receipts = read
+                    .into_iter()
+                    .zip(events)
+                    .filter_map(|((member, _, ts), event)| {
+                        event.map(|event| MemberReceipt { member, event, ts })
+                    })
+                    .collect();
+                Ok(ServerResponse::Receipts { room, receipts })
+            })
+            .await
     }
 
     pub async fn list_rooms(&self) -> Response {

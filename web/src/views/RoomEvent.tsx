@@ -5,7 +5,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
 import { tinykeys } from 'tinykeys'
-import type { MatrixSend, Room, RoomEvent, RepliedEvent } from '../generated/protocol'
+import type { MatrixSend, MemberReceipt, Room, RoomEvent, RepliedEvent } from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus } from '../keymap'
 import { dateTime, time } from '../format'
@@ -43,6 +43,8 @@ export function EventRow(props: {
   event: RoomEvent
   me: string
   overlay: Overlay
+  /** Members who have read up to this event. */
+  readers: readonly MemberReceipt[]
   /** Events, and reactions, being deleted. */
   pendingRedactions: ReadonlySet<string>
   reply: () => void
@@ -120,6 +122,7 @@ export function EventRow(props: {
         )}
         {source && <pre class={styles.raw}>{pretty(event.raw)}</pre>}
       </div>
+      <Readers room={room} readers={props.readers} />
       <div class={styles.actions}>
         {joined && replyable && <ReactButton react={toggle} />}
         {joined && replyable && (
@@ -135,6 +138,24 @@ export function EventRow(props: {
         <MenuButton label="Options" icon="ellipsis-vertical" groups={[actions]} />
       </div>
     </li>
+  )
+}
+
+/** Members' read receipts, at the line's end: a few avatars, and how
+ * many more. */
+const READERS_SHOWN = 3
+
+function Readers(props: { room: Room; readers: readonly MemberReceipt[] }) {
+  const { readers } = props
+  if (readers.length === 0) return <span />
+  const names = readers.map((r) => displayName(r.member.user, r.member.name))
+  return (
+    <span class={styles.readers} title={`Read by ${names.join(', ')}`} aria-label={`Read by ${names.join(', ')}`}>
+      {readers.slice(0, READERS_SHOWN).map((r) => (
+        <MemberAvatar key={r.member.user} room={props.room} user={r.member.user} name={displayName(r.member.user, r.member.name)} />
+      ))}
+      {readers.length > READERS_SHOWN && <span class={styles.muted}>+{readers.length - READERS_SHOWN}</span>}
+    </span>
   )
 }
 

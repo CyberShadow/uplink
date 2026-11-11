@@ -76,7 +76,7 @@ afterEach(() => {
 })
 
 function connect() {
-  const handlers = { reset: vi.fn(), entry: vi.fn() }
+  const handlers = { reset: vi.fn(), entry: vi.fn(), notice: vi.fn() }
   connection = new Connection(URL, handlers)
   return { connection, handlers }
 }

@@ -65,7 +65,7 @@
 .row {
   position: relative;
   display: grid;
-  grid-template-columns: 5ch var(--name-width) minmax(0, 1fr);
+  grid-template-columns: 5ch var(--name-width) minmax(0, 1fr) auto;
   column-gap: 8px;
   /* A line's columns align on its first line, whatever follows: media
      too. */
@@ -322,6 +322,22 @@
 .reaction.own {
   border-color: var(--accent);
   background: var(--selected);
+}
+
+/* Read receipts, at the line's end. */
+.readers {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  height: var(--line-height);
+}
+
+.typing {
+  min-height: 1.5em;
+  margin: 0;
+  padding: 0 16px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 /* On hover, at the line's end, as Element's. */

@@ -2,7 +2,7 @@
 
 import type { Blobs } from '../blobs'
 import type { Requester } from '../connection'
-import type { LogEntry } from '../generated/protocol'
+import type { LogEntry, Notice } from '../generated/protocol'
 import { CalendarStore } from './calendar'
 import { DraftStore } from './drafts'
 import { HistoryStore } from './history'
@@ -48,5 +48,14 @@ export class Client {
     this.todos.apply(entry)
     this.history.apply(entry)
     this.calendar.apply(entry)
+  }
+
+  notice(notice: Notice) {
+    switch (notice.type) {
+      case 'typing':
+      case 'receipts_changed':
+        this.matrix.notice(notice)
+        break
+    }
   }
 }

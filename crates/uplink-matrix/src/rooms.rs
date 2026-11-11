@@ -809,6 +809,44 @@ pub fn event_contents(
     Ok(Some((account, contents)))
 }
 
+/// The ids of the account's rooms `room_ids` (Matrix ids), of those
+/// recorded.
+pub fn room_ids(
+    conn: &Connection,
+    account: &str,
+    room_ids: &[String],
+) -> Result<Vec<Option<RoomId>>> {
+    let mut query =
+        conn.prepare("SELECT id FROM matrix_room WHERE account_id = ?1 AND room_id = ?2")?;
+    room_ids
+        .iter()
+        .map(|room_id| {
+            Ok(query
+                .query_row([account, room_id], |r| Ok(RoomId(r.get(0)?)))
+                .optional()?)
+        })
+        .collect()
+}
+
+/// The stored ids of the room's events `event_ids` (Matrix ids), of
+/// those stored.
+pub fn event_ids(
+    conn: &Connection,
+    room: RoomId,
+    event_ids: &[String],
+) -> Result<Vec<Option<RoomEventId>>> {
+    let mut query =
+        conn.prepare("SELECT id FROM matrix_event WHERE room = ?1 AND event_id = ?2")?;
+    event_ids
+        .iter()
+        .map(|event_id| {
+            Ok(query
+                .query_row(params![room.0, event_id], |r| Ok(RoomEventId(r.get(0)?)))
+                .optional()?)
+        })
+        .collect()
+}
+
 /// The account a room is of and its Matrix id, if the room exists.
 pub fn room_of(conn: &Connection, room: RoomId) -> Result<Option<(String, String)>> {
     Ok(conn
