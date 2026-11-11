@@ -2396,8 +2396,11 @@ the membership's buttons.
   thread's messages and those being sent to it, and a box to write to
   it (text, with replies within the thread, edits and commands, as the
   room's). Any message not of a thread starts one, by its "Reply in
-  thread" button. The header's search button opens a search of the
-  room's messages (`SearchRoom`): the messages found, newest first, by
+  thread" button. While a room shows, the search box at the top (which
+  `/` focuses) searches it, not mail ("Search Lounge", without the
+  query language's help link): its route (`/rooms/:room/search/:words`)
+  shows a search of the room's messages (`SearchRoom`) in the panel,
+  over any other, which closing it shows again: the messages found, newest first, by
   sender and time, the words marked, more on request; a click shows one
   in the timeline (loading earlier pages until it is, then scrolling to
   it and highlighting it), or one of a thread in its thread. One panel
@@ -3188,6 +3191,7 @@ visible. Routes (handled by `preact-iso`):
 | `/compose/:draft`                      | Compose (new or continued draft)       |
 | `/drafts`, `/outbox`                   | Drafts; what is not yet at the providers (§6.6) |
 | `/rooms/:room`                         | Room timeline (uplink's room id)       |
+| `/rooms/:room/search/:words`           | The timeline, and its messages searched (§12.11) |
 | `/matrix/:account/space/:space`        | Space overview (deferred)              |
 | `/calendar/:view/:date`                | Calendar, `week` or `agenda` (§10.2)   |
 | `/todos`                               | Todo list                              |

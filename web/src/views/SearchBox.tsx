@@ -1,10 +1,17 @@
 import { useLocation } from 'preact-iso'
+import { useServices } from '../context'
 import { searchPath } from './App'
+import { roomSearchPath } from './Room'
 import styles from './App.module.css'
 
+/** The box at the top: it searches the room on show, or else mail. */
 export function SearchBox() {
   const { route, path } = useLocation()
-  const shown = path.match(/^\/search\/([^/]+)/)?.[1]
+  const { matrix } = useServices()
+  const roomId = path.match(/^\/rooms\/(\d+)/)?.[1]
+  const room = roomId === undefined ? undefined : matrix.rooms.value?.find((r) => String(r.id) === roomId)
+  const shown = path.match(room ? /^\/rooms\/\d+\/search\/([^/]+)/ : /^\/search\/([^/]+)/)?.[1]
+  const label = room ? `Search ${room.name}` : 'Search mail'
   return (
     <form
       class={styles.search}
@@ -13,25 +20,28 @@ export function SearchBox() {
         event.preventDefault()
         const input = event.currentTarget.elements.namedItem('q') as HTMLInputElement
         const query = input.value.trim()
-        if (query) route(searchPath(query))
+        if (query) route(room ? roomSearchPath(room.id, query) : searchPath(query))
         input.blur()
       }}
     >
       <input
         type="search"
         name="q"
-        placeholder="Search mail"
-        aria-label="Search mail"
+        placeholder={label}
+        aria-label={label}
         // Keyed on the route, so the box shows the query on show.
-        key={shown}
+        key={`${roomId}:${shown}`}
         defaultValue={shown ? decodeURIComponent(shown) : ''}
         onKeyDown={(event) => {
           if (event.key === 'Escape') event.currentTarget.blur()
         }}
       />
-      <a href="/help/search" class={styles.searchHelp} title="Search help" aria-label="Search help">
-        ?
-      </a>
+      {/* A room's search has no operators. */}
+      {!room && (
+        <a href="/help/search" class={styles.searchHelp} title="Search help" aria-label="Search help">
+          ?
+        </a>
+      )}
     </form>
   )
 }

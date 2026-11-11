@@ -1,9 +1,9 @@
-// Searching a room's messages (SPEC §12.11), in the panel beside its
-// timeline, as Element's: the messages that have every word, newest
-// first, their words marked; a click shows one in the timeline, or in
-// its thread.
+// A search of a room's messages (SPEC §12.11), from the box at the top,
+// in the panel beside its timeline, as Element's: the messages that have
+// every word, newest first, their words marked; a click shows one in the
+// timeline, or in its thread.
 
-import { useRef, useState } from 'preact/hooks'
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
 import type { Room, RoomEvent } from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus } from '../keymap'
@@ -13,10 +13,10 @@ import styles from './Room.module.css'
 // Its header as the room info's.
 import panel from './RoomInfo.module.css'
 
-export function RoomSearch(props: { room: Room; close: () => void; open: (event: RoomEvent) => void }) {
-  const { room } = props
+/** Keyed on `words`. */
+export function RoomSearch(props: { room: Room; words: string; close: () => void; open: (event: RoomEvent) => void }) {
+  const { room, words } = props
   const { matrix } = useServices()
-  const [words, setWords] = useState('')
   // The search shown: its words, what was found, and whether there is more.
   const [found, setFound] = useState<{ words: string; events: RoomEvent[]; more: boolean } | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -24,20 +24,24 @@ export function RoomSearch(props: { room: Room; close: () => void; open: (event:
   // The latest search, so that an earlier one answered late is dropped.
   const latest = useRef(0)
 
-  const search = async (words: string, after: { events: RoomEvent[] } | null) => {
-    const id = ++latest.current
-    setSearching(true)
-    setError(null)
-    try {
-      const response = await matrix.search(room.id, words, after?.events.at(-1)?.id ?? null)
-      if (id !== latest.current) return
-      setFound({ words, events: [...(after?.events ?? []), ...response.events], more: response.more })
-    } catch (e) {
-      if (id === latest.current) setError((e as Error).message)
-    } finally {
-      if (id === latest.current) setSearching(false)
-    }
-  }
+  const search = useCallback(
+    async (words: string, after: { events: RoomEvent[] } | null) => {
+      const id = ++latest.current
+      setSearching(true)
+      setError(null)
+      try {
+        const response = await matrix.search(room.id, words, after?.events.at(-1)?.id ?? null)
+        if (id !== latest.current) return
+        setFound({ words, events: [...(after?.events ?? []), ...response.events], more: response.more })
+      } catch (e) {
+        if (id === latest.current) setError((e as Error).message)
+      } finally {
+        if (id === latest.current) setSearching(false)
+      }
+    },
+    [matrix, room.id],
+  )
+  useEffect(() => void search(words, null), [search, words])
 
   return (
     <aside class={styles.thread} aria-label="Search">
@@ -47,26 +51,6 @@ export function RoomSearch(props: { room: Room; close: () => void; open: (event:
           ×
         </button>
       </header>
-      <form
-        class={styles.searchForm}
-        role="search"
-        onSubmit={(event) => {
-          event.preventDefault()
-          if (words.trim() !== '') search(words, null)
-        }}
-      >
-        <input
-          type="search"
-          aria-label={`Search ${room.name}`}
-          placeholder={`Search ${room.name}`}
-          value={words}
-          autoFocus
-          onInput={(event) => setWords(event.currentTarget.value)}
-        />
-        <button type="submit" disabled={words.trim() === '' || searching}>
-          Search
-        </button>
-      </form>
       {error !== null && (
         <p class={styles.error} role="alert">
           {error}
@@ -74,7 +58,7 @@ export function RoomSearch(props: { room: Room; close: () => void; open: (event:
       )}
       {found !== null && (
         <ol class={styles.results} aria-label="Results">
-          {found.events.length === 0 && <li class={`${styles.muted} ${styles.searchForm}`}>No messages found.</li>}
+          {found.events.length === 0 && <li class={`${styles.muted} ${styles.searchLine}`}>No messages found.</li>}
           {found.events.map((event) => (
             <li key={event.id}>
               <button type="button" class={styles.result} onMouseDown={keepFocus} onClick={() => props.open(event)}>
@@ -91,7 +75,7 @@ export function RoomSearch(props: { room: Room; close: () => void; open: (event:
             </li>
           ))}
           {found.more && (
-            <li class={styles.searchForm}>
+            <li class={styles.searchLine}>
               <button
                 type="button"
                 disabled={searching}

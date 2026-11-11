@@ -409,22 +409,6 @@
   background: var(--hover);
 }
 
-.iconButton {
-  display: flex;
-  padding: 4px;
-  border: none;
-  border-radius: 4px;
-  background: none;
-  color: var(--muted);
-  cursor: pointer;
-}
-
-.iconButton:hover,
-.iconButton[aria-expanded='true'] {
-  background: var(--hover);
-  color: inherit;
-}
-
 /* Search results: a line of who and when, and what they said. */
 .results {
   list-style: none;
@@ -458,15 +442,9 @@
   color: inherit;
 }
 
-.searchForm {
-  display: flex;
-  gap: 8px;
+/* A line of the results: none found, or more. */
+.searchLine {
   padding: 8px 16px;
-}
-
-.searchForm input {
-  flex: 1;
-  min-width: 0;
 }
 
 /* The thread panel: its lines as the timeline's, the sender's column

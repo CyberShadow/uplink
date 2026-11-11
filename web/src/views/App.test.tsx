@@ -1282,9 +1282,13 @@ describe('room timeline', () => {
     await within(timeline()).findByText('Plans')
     expect(within(timeline()).queryByText('Lunch at noon?')).toBeNull()
 
-    await user.click(screen.getByRole('button', { name: 'Search messages' }))
+    // The box at the top searches the room on show, not mail.
+    await user.keyboard('/')
+    expect(document.activeElement).toBe(screen.getByRole('searchbox', { name: 'Search Lounge' }))
+    expect(screen.queryByRole('link', { name: 'Search help' })).toBeNull()
+    await user.keyboard('LUNCH{Enter}')
+    expect(location.pathname).toBe(`/rooms/${room.id}/search/LUNCH`)
     const search = screen.getByRole('complementary', { name: 'Search' })
-    await user.type(within(search).getByRole('searchbox', { name: 'Search Lounge' }), 'LUNCH{Enter}')
     const results = await within(search).findByRole('list', { name: 'Results' })
     const found = within(results).getAllByRole('button')
     expect(found.map((b) => b.textContent)).toEqual([
@@ -1300,6 +1304,16 @@ describe('room timeline', () => {
     // One of a thread: its thread opens.
     await user.click(found[0])
     await within(screen.getByRole('complementary', { name: 'Thread' })).findByText('lunch then')
+    expect(location.pathname).toBe(`/rooms/${room.id}`)
+    expect(screen.getByRole<HTMLInputElement>('searchbox').value).toBe('')
+
+    // Searching again shows over the thread; closing it shows the thread.
+    await user.type(screen.getByRole('searchbox'), 'plans{Enter}')
+    await within(screen.getByRole('complementary', { name: 'Search' })).findByRole('list', { name: 'Results' })
+    expect(screen.queryByRole('complementary', { name: 'Thread' })).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Close search' }))
+    expect(location.pathname).toBe(`/rooms/${room.id}`)
+    screen.getByRole('complementary', { name: 'Thread' })
   })
 
   it('pins messages, which a bar under the header shows in turn', async () => {

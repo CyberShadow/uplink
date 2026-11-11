@@ -5,6 +5,7 @@
 // info, or a thread.
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
+import { useLocation } from 'preact-iso'
 import type {
   GapId,
   MatrixSend,
@@ -34,17 +35,26 @@ export function roomPath(room: number): string {
   return `/rooms/${room}`
 }
 
-export function RoomView(props: { room?: string }) {
+/** The room, its messages searched for `words`. */
+export function roomSearchPath(room: number, words: string): string {
+  return `${roomPath(room)}/search/${encodeURIComponent(words)}`
+}
+
+export function RoomView(props: { room?: string; words?: string }) {
   const { matrix } = useServices()
   const rooms = matrix.rooms.value
   const room = rooms?.find((r) => String(r.id) === props.room)
   if (!rooms) return <p class={styles.placeholder}>Loading…</p>
   if (!room) return <p class={styles.placeholder}>No such room.</p>
-  return <Timeline key={room.id} room={room} />
+  return (
+    <Timeline key={room.id} room={room} words={props.words === undefined ? null : decodeURIComponent(props.words)} />
+  )
 }
 
-function Timeline(props: { room: Room }) {
-  const { room } = props
+/** `words`: those its messages are searched for, if any. */
+function Timeline(props: { room: Room; words: string | null }) {
+  const { room, words } = props
+  const { route } = useLocation()
   const { matrix } = useServices()
   const timeline = matrix.timeline(room.id)
   const events = timeline.events.value
@@ -56,7 +66,13 @@ function Timeline(props: { room: Room }) {
   // the marker, but not the line, while it is on show.
   const [readUpTo] = useState(room.read_up_to)
   const [files, setFiles] = useState<File[]>([])
-  const [panel, setPanel] = useState<Panel>(null)
+  // A search shows over another panel, which closing it shows again.
+  const [opened, setOpened] = useState<Panel>(null)
+  const panel: Panel = words !== null ? { type: 'search', words } : opened
+  const setPanel = (panel: Panel) => {
+    if (words !== null) route(roomPath(room.id))
+    setOpened(panel)
+  }
   useKeymap({ reply: () => composer.current?.focus() })
   useMarkRead(room, events)
 
@@ -101,17 +117,6 @@ function Timeline(props: { room: Room }) {
               </p>
             )}
           </div>
-          <button
-            type="button"
-            class={styles.iconButton}
-            aria-label="Search messages"
-            title="Search messages"
-            aria-expanded={panel?.type === 'search'}
-            onMouseDown={keepFocus}
-            onClick={() => setPanel(panel?.type === 'search' ? null : { type: 'search' })}
-          >
-            <Icon name="search" />
-          </button>
           <span class={styles.muted}>
             <button
               type="button"
@@ -172,8 +177,10 @@ function Timeline(props: { room: Room }) {
       {panel?.type === 'info' && <RoomInfo room={room} close={() => setPanel(null)} />}
       {panel?.type === 'search' && (
         <RoomSearch
+          key={panel.words}
           room={room}
-          close={() => setPanel(null)}
+          words={panel.words}
+          close={() => route(roomPath(room.id))}
           open={async (event) => {
             if (event.thread_root !== null) {
               setPanel({ type: 'thread', root: event.thread_root })
@@ -193,7 +200,7 @@ function Timeline(props: { room: Room }) {
 }
 
 /** What shows beside the timeline, if anything. */
-type Panel = null | { type: 'info' } | { type: 'thread'; root: RoomEventId } | { type: 'search' }
+type Panel = null | { type: 'info' } | { type: 'thread'; root: RoomEventId } | { type: 'search'; words: string }
 
 /** The rows of a timeline, or a thread, and the sends that follow. */
 export function Events(props: {

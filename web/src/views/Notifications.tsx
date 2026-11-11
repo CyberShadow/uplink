@@ -10,6 +10,7 @@ import { displayName, shown } from '../matrix'
 import type { MatrixStore } from '../stores/matrix'
 import { Icon } from './Icon'
 import { roomPath } from './Room'
+import { shows } from './Nav'
 import styles from './Nav.module.css'
 
 /** Notifies of the rooms' messages while the user is elsewhere. */
@@ -28,7 +29,7 @@ export function useNotifications(path: string, route: (path: string) => void) {
     if (previous === null || !supported() || Notification.permission !== 'granted') return
     for (const room of rooms) {
       if (room.notifying <= (previous.get(room.id) ?? 0)) continue
-      if (!document.hidden && where.current === roomPath(room.id)) continue
+      if (!document.hidden && shows(where.current, roomPath(room.id))) continue
       notify(matrix, room, route)
     }
   }, [rooms, matrix, route])
