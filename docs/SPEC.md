@@ -213,7 +213,7 @@ whether to take effect immediately, lazily, or require restart.
 account kind commented in it) with the user and password it asks for,
 and makes the data directory with the master key. Only what cannot be
 derived is configured: paths under the data directory are fixed (§4.1),
-and Microsoft 365's sign-in is the Outlook client's unless set. Relative
+and Microsoft 365's sign-in is Entra ID's and Graph's unless set. Relative
 paths are relative to the file's directory.
 
 ```yaml
@@ -247,13 +247,16 @@ accounts:
       client_id:     "1234.apps.googleusercontent.com"
       client_secret: "GOCSPX-xxxxxxxxxx"
 
-  # — Microsoft 365 (work) — signed in as the Outlook desktop public
-  # client, v1 AAD endpoint with `resource=` (§13.3). `oauth` (client_id,
-  # authority, resource) defaults to Outlook's and Graph's; tests point it
-  # at a fake.
+  # — Microsoft 365 (work) — with an Entra ID app registration of the
+  # user's (or their organization's), a public client; v1 endpoint with
+  # `resource=` (§13.3). `redirect_uri`, `authority` and `resource`
+  # default to Entra ID's desktop redirect, the multi-tenant authority
+  # and Graph; tests point them at a fake.
   - id: alice-m365
     kind: m365
     address: alice@example.com
+    oauth:
+      client_id: "11111111-2222-3333-4444-555555555555"
 
   # — Matrix — the device is created once by `uplink matrix pair` (§9.4).
   # No password in YAML.
@@ -1345,19 +1348,16 @@ IMAP's per-folder copies, and a REST fake is practical to test against
   per folder on first call, then `@odata.deltaLink` for subsequent calls.
   Library: `reqwest` (no Rust Graph SDK; Graph is JSON+OAuth, easy to call
   directly). Raw MIME for storage via `/messages/{id}/$value`.
-- **IMAP fallback**: none. Outlook desktop's pre-authorised scopes on the
-  `outlook.office365.com` resource do not include `IMAP.AccessAsUser.All`
-  (confirmed by spike `docs/spikes/outlook-impersonation.md`, May 2026 —
-  Outlook itself does not use IMAP, so impersonating it cannot grant
-  IMAP). All M365 mail flows through Graph.
+- **IMAP**: not used. All M365 mail flows through Graph, which also
+  serves the calendar, so one sign-in covers both.
 - **Push — interim**: poll the delta link every 30 s per folder. Cheap
   under Graph throttling for a single user. The user must never see UI
   for "manual refresh"; polling is silent.
 - **Push — future**: real Outlook gets push via MAPI HangingNotification
   (a long-poll over HTTPS, no public endpoint required). The closest
   third-party-accessible equivalent on M365 today is EWS Streaming
-  Notifications (same long-poll pattern; Outlook desktop's token includes
-  `EWS.AccessAsUser.All`). EWS is being retired by Microsoft (last
+  Notifications (same long-poll pattern; it needs `EWS.AccessAsUser.All`
+  on the app registration). EWS is being retired by Microsoft (last
   announced sunset October 2026, slipping). A future milestone will:
   (a) research what current first-party clients (new Outlook for Windows,
   OWA, Outlook Mobile) actually use today — possibly a Graph-native
@@ -1406,9 +1406,8 @@ IMAP's per-folder copies, and a REST fake is practical to test against
   categories are one `PATCH /messages/{id}` with their desired values
   (categories in full). A message gone meanwhile (404) is left to the
   next round to remove.
-- **OAuth**: Outlook desktop client_id impersonation
-  (`d3590ed6-52b3-4102-aeff-aad2292ab01c`). v1 endpoint, `resource=`
-  parameter, no PKCE. See §13.3.
+- **OAuth**: a public client of the user's own Entra ID app
+  registration. v1 endpoint, `resource=` parameter, no PKCE. See §13.3.
 
 ### 8.4 M365 — send
 
@@ -2498,35 +2497,35 @@ operator and `fail2ban` on the system handles brute-force concerns.
   (`endpoints: { auth, token, api }`, defaulting to Google's), so tests
   point them at a fake (§15.10).
 
-### 13.3 OAuth flow (M365 with Outlook impersonation)
+### 13.3 OAuth flow (M365)
 
-Confirmed by the spike `docs/spikes/outlook-impersonation.md` (May 2026)
-against a real corporate tenant. The flow is **not** the same shape as
-Gmail — it uses the v1 (classic) AAD endpoint with a `resource=` parameter
-rather than v2 OIDC with `scope=`, and the Outlook desktop client_id
-requires the URN-form redirect URI:
+uplink signs in as a public client (no `client_secret`) of an Entra ID
+app registration that the user, or their organization's administrator,
+makes (README): as with Gmail (§15.2), uplink ships no client of its
+own. The flow is **not** the same shape as Gmail's: it uses the v1
+(classic) endpoint with a `resource=` parameter rather than v2 OIDC
+with `scope=`, so the permissions are those configured on the
+registration (Graph `Mail.ReadWrite`, `Mail.Send`, `Calendars.Read`)
+rather than requested per sign-in:
 
-- `client_id = d3590ed6-52b3-4102-aeff-aad2292ab01c` (Outlook desktop),
-  no `client_secret`.
-- Authority `https://login.microsoftonline.com/common`.
+- `oauth.client_id`: the registration's application id. Required.
+- `oauth.authority`: default `https://login.microsoftonline.com/common`;
+  a single-tenant registration names its tenant instead.
 - Endpoints **v1**: `/oauth2/authorize`, `/oauth2/token` (NOT
   `/oauth2/v2.0/…`).
-- Redirect URI **`urn:ietf:wg:oauth:2.0:oob`**. The `nativeclient` URL
-  works for DavMail's own client_id but is NOT registered against
-  Outlook desktop's; using it returns `AADSTS50011`. The OOB URN
-  redirect means AAD returns the code via a `Location: urn:...?code=...`
-  header that the browser cannot follow — the user must extract the
-  code from DevTools or from whatever results page AAD renders. The
-  CLI pairing step (`uplink oauth init --account <id>`, which serves
-  both providers) explains this and accepts any of the observed forms
-  (URN, full URL, "Success code=…" string, or bare code), pasted on
-  standard input.
-- Authorize parameters: `response_type=code`, `redirect_uri=<URN>`,
-  `response_mode=query`, `login_hint=<email>`,
-  `resource=https://graph.microsoft.com` (or
+- `oauth.redirect_uri`: one the registration lists; default
+  `https://login.microsoftonline.com/common/oauth2/nativeclient`, which
+  Entra ID offers desktop applications. Nothing of uplink's listens
+  there: the browser lands on a blank page whose URL carries the code.
+  The CLI pairing step (`uplink oauth init --account <id>`, which serves
+  both providers) says so and accepts the URL, a "…code=…" string, or
+  the bare code, pasted on standard input.
+- Authorize parameters: `response_type=code`,
+  `redirect_uri=<redirect_uri>`, `response_mode=query`,
+  `login_hint=<email>`, `resource=https://graph.microsoft.com` (or
   `https://outlook.office365.com` for the EWS resource when we need it).
-  No PKCE — DavMail doesn't use it for this flow and the v1 endpoint
-  accepts the public-client form without.
+  No PKCE: the v1 endpoint accepts the public-client form without.
+  (Open: adding it, as defence in depth.)
 - Token exchange parameters: `grant_type=authorization_code`, `code`,
   `redirect_uri`, `client_id`. No `scope`, no `resource`, no
   `code_verifier`.
@@ -2538,11 +2537,6 @@ requires the URN-form redirect URI:
   `outlook.office365.com` tokens from the same sign-in.
 - Refresh tokens may or may not rotate per call. Persistence atomically
   replaces the sealed token on every successful refresh (§15.4).
-- Granted scopes are determined by Outlook desktop's pre-authorisation,
-  not requested per-call. The Graph token gets the full Outlook scope
-  set: `Mail.ReadWrite Mail.Send Calendars.ReadWrite Contacts.ReadWrite
-  Files.* People.* User.Read.*` and more. No `IMAP.AccessAsUser.All` —
-  Outlook itself does not use IMAP. See §8.3.
 
 ### 13.4 Sealing OAuth secrets at rest
 
@@ -2656,8 +2650,8 @@ server loses no persisted messages and resumes from the stored
 
 ### M5. M365 receive
 
-- OAuth2 v1 auth-code flow with Outlook-client impersonation (no PKCE,
-  `resource=` parameter, URN redirect — per §13.3).
+- OAuth2 v1 auth-code flow as a public client (no PKCE, `resource=`
+  parameter — per §13.3).
 - Graph delta sync for mail, polling every 30 s per folder (no push in
   this milestone — see §8.3).
 - Same .eml persist + FTS pipeline.
@@ -2789,7 +2783,7 @@ hundred rows render without trouble; it comes in if that changes.
   plumbing every downstream op uses. Building Gmail first and retro-fitting
   undo creates rework.
 - Gmail (M4) precedes M365 (M5) because the Gmail API is more straightforward
-  than the OAuth-impersonation dance, so we hit fewer category errors at
+  than Graph's per-folder delta sync, so we hit fewer category errors at
   the start.
 - Send (M6) sits before Matrix (M7) because compose is the most user-
   visible piece of the UI and pulls hard on the draft sync infrastructure,
@@ -2844,18 +2838,17 @@ fully-decentralised path — OAuth requires a registered client. Two patterns ar
 project. Bundled remains an additive future option — the same YAML
 config schema covers both.
 
-### 15.3 M365 Outlook-client impersonation longevity
+### 15.3 M365 app registration
 
-Per stack research §3, Microsoft could in principle clamp down on
-non-Microsoft processes using the Outlook desktop client_id. Risk horizon:
-1–3 years. **Mitigation**: keep the auth layer pluggable so we can swap
-to a tenant-registered Entra app. IMAP+XOAUTH2 is **not** an available
-fallback — Outlook desktop's pre-authorisation does not include
-`IMAP.AccessAsUser.All` (confirmed by the M365 impersonation spike,
-May 2026; Outlook itself does not use IMAP). Do not couple anything
-but the OAuth crate to the client_id.
+The user brings the Entra ID app registration (§13.3), as they bring
+Gmail's OAuth client (§15.2). Many organizations let users consent to
+an application's delegated mail permissions; others reserve consent to
+administrators, and there the user asks one to grant it. **Decision**:
+BYO only; everything about the client (`client_id`, `redirect_uri`,
+`authority`, `resource`) is configuration, and nothing but the OAuth
+module depends on it.
 
-### 15.4 Refresh-token rotation under Outlook impersonation
+### 15.4 Refresh-token rotation
 
 Microsoft sometimes rotates refresh tokens on every refresh; sometimes
 not. Our token-file persistence must atomically replace the token on
@@ -3002,11 +2995,11 @@ request).
   next and delta links, `@removed` entries and 410 for an unknown delta
   token, messages created from MIME, `$value`, `PATCH`, `move` (ids
   immutable), `DELETE`, and `sendMail` (MIME or JSON) delivering to the
-  seeded users; and the v1 `/{tenant}/oauth2/authorize` page, which the
-  Outlook client's flow uses. Without seeded OAuth clients it accepts
-  any client id, as Azure AD does the public Outlook client. The Rust
+  seeded users; and the v1 `/{tenant}/oauth2/authorize` page, which
+  uplink's flow uses (§13.3). Without seeded OAuth clients it accepts
+  any client id and redirect URI. The Rust
   tests (`tests/m365_sync.rs`) and `integration-m365` run against it,
-  arranging the Outlook side through Graph as a real account's tests
+  arranging the Microsoft side through Graph as a real account's tests
   would; there is no real tenant to run them against yet (§15.12).
   Patch `0005` adds the calendar: `events` (create, get, `PATCH`,
   `DELETE`, of a series' occurrences too, which makes them exceptions or
@@ -3043,7 +3036,7 @@ MVP M365 push is polling the Graph delta link every 30 s per folder
 push via MAPI HangingNotification. The eventual replacement for our
 polling is EWS Streaming Notifications, which:
 
-- works today (Outlook desktop's token includes `EWS.AccessAsUser.All`),
+- works today, given `EWS.AccessAsUser.All` on the app registration,
 - is a long-poll over HTTPS, so no public endpoint is required, but
 - is on Microsoft's retirement list (last announced sunset October 2026,
   has slipped before).
@@ -3072,9 +3065,10 @@ reason and is the always-available baseline.
 
 There is no Microsoft 365 account to test with yet, so the M365 side is
 verified against the emulator only (§15.10). Open until it runs against
-a real tenant: the Outlook-client sign-in (§13.3: the authorize URL's
-parameters, what the browser shows for the URN redirect, and whether the
-token endpoint wants anything more), the immutable-id `Prefer` header
+a real tenant: the sign-in (§13.3: the authorize URL's parameters, the
+`nativeclient` redirect's page, whether the token endpoint wants
+anything more, and that the registration's permissions suffice), the
+immutable-id `Prefer` header
 together with `odata.maxpagesize`, `$select` on delta queries, whether
 Graph's real delta pages report a move as a removal from one folder and
 an addition to another (as the emulator does) and flags, importance and

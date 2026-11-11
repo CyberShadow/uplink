@@ -10,8 +10,8 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urljoin, urlparse
 
 STATE = "/var/lib/uplink"
-CLIENT_ID = "d3590ed6-52b3-4102-aeff-aad2292ab01c"
-REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"
+CLIENT_ID = "uplink-test"
+REDIRECT_URI = "http://127.0.0.1/redirect"
 POLL = 30  # uplink's poll interval, seconds
 
 
@@ -28,7 +28,7 @@ def eventually(what, f, timeout=2 * POLL):
 
 def sign_in(authorize_url, user="alice@example.com"):
     """Signs in on the emulator's page, as a browser would; returns the
-    URN Azure AD redirects to, which a browser can't open."""
+    URL Entra ID redirects to, where nothing listens."""
     page = machine.succeed(f"curl -sf -o /dev/null -w '%{{redirect_url}}' {shlex.quote(authorize_url)}").strip()
     params = {k: v[0] for k, v in parse_qs(urlparse(urljoin(MICROSOFT, page)).query).items()}
     form = " ".join(
@@ -65,7 +65,7 @@ def authorize_uplink():
 
 
 def token_of(user):
-    """An access token of the test's own, for acting on the Outlook side."""
+    """An access token of the test's own, for acting on the Microsoft side."""
     url = (
         f"{MICROSOFT}/common/oauth2/authorize?client_id={CLIENT_ID}&response_type=code"
         f"&redirect_uri={REDIRECT_URI}&response_mode=query&resource={MICROSOFT}"

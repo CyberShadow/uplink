@@ -132,33 +132,40 @@ pub struct GmailOAuthConfig {
 pub struct M365AccountConfig {
     pub id: String,
     pub address: String,
-    /// The Outlook desktop client's sign-in unless set; tests point it at
-    /// a fake.
-    #[serde(default)]
     pub oauth: M365OAuthConfig,
 }
 
-/// How uplink signs in to Microsoft 365 (SPEC §13.3).
+/// How uplink signs in to Microsoft 365 (SPEC §13.3): as a public client
+/// registered in Entra ID, which the user names.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields, default)]
+#[serde(deny_unknown_fields)]
 pub struct M365OAuthConfig {
+    /// The registration's application (client) id.
     pub client_id: String,
+    /// One of the registration's redirect URIs.
+    #[serde(default = "M365OAuthConfig::native_client")]
+    pub redirect_uri: String,
+    #[serde(default = "M365OAuthConfig::common_authority")]
     pub authority: String,
+    #[serde(default = "M365OAuthConfig::graph")]
     pub resource: String,
     /// `<data_dir>/accounts/<id>.token`.
     #[serde(skip)]
     pub token_file: PathBuf,
 }
 
-impl Default for M365OAuthConfig {
-    /// As Outlook for Windows signs in.
-    fn default() -> Self {
-        Self {
-            client_id: "d3590ed6-52b3-4102-aeff-aad2292ab01c".into(),
-            authority: "https://login.microsoftonline.com/common".into(),
-            resource: "https://graph.microsoft.com".into(),
-            token_file: PathBuf::new(),
-        }
+impl M365OAuthConfig {
+    /// The redirect URI Entra ID offers desktop applications.
+    fn native_client() -> String {
+        "https://login.microsoftonline.com/common/oauth2/nativeclient".into()
+    }
+
+    fn common_authority() -> String {
+        "https://login.microsoftonline.com/common".into()
+    }
+
+    fn graph() -> String {
+        "https://graph.microsoft.com".into()
     }
 }
 
@@ -472,6 +479,8 @@ accounts:
   - id: alice-m365
     kind: m365
     address: alice@example.com
+    oauth:
+      client_id: "11111111-2222-3333-4444-555555555555"
 
   - id: alice-matrix
     kind: matrix
@@ -507,12 +516,15 @@ accounts:
         let AccountConfig::M365(ref m) = cfg.accounts[1] else {
             panic!("expected m365 account");
         };
-        // Signed in as Outlook, unless said otherwise.
+        // Microsoft's sign-in and Graph, unless said otherwise.
         assert_eq!(
             m.oauth,
             M365OAuthConfig {
+                client_id: "11111111-2222-3333-4444-555555555555".into(),
+                redirect_uri: "https://login.microsoftonline.com/common/oauth2/nativeclient".into(),
+                authority: "https://login.microsoftonline.com/common".into(),
+                resource: "https://graph.microsoft.com".into(),
                 token_file: PathBuf::from("/var/lib/uplink/accounts/alice-m365.token"),
-                ..M365OAuthConfig::default()
             }
         );
 

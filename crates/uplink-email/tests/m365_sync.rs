@@ -49,14 +49,15 @@ impl Microsoft {
             id: "test".into(),
             address: ALICE.into(),
             oauth: M365OAuthConfig {
-                client_id: "d3590ed6-52b3-4102-aeff-aad2292ab01c".into(),
+                client_id: "uplink-test".into(),
+                redirect_uri: "http://127.0.0.1/redirect".into(),
                 authority: format!("{base}/common"),
                 resource: base.clone(),
                 token_file: dir.join("accounts/test.token"),
             },
         };
         let http = reqwest::Client::new();
-        // `uplink oauth init`'s flow, with the URN redirected to pasted.
+        // `uplink oauth init`'s flow, with the URL redirected to pasted.
         let redirected = sign_in(&account, ALICE).await;
         let code = oauth::pasted_code(&redirected).unwrap();
         oauth::redeem(&http, &account, &key, &code).await.unwrap();
@@ -92,7 +93,7 @@ impl Microsoft {
             .form(&[
                 ("grant_type", "authorization_code"),
                 ("code", &code),
-                ("redirect_uri", oauth::REDIRECT_URI),
+                ("redirect_uri", &self.account.oauth.redirect_uri),
                 ("client_id", &self.account.oauth.client_id),
             ])
             .send()
@@ -212,7 +213,10 @@ async fn sign_in(account: &M365AccountConfig, user: &str) -> String {
         .unwrap();
     assert_eq!(signed_in.status(), 302);
     let location = signed_in.headers()["location"].to_str().unwrap().to_owned();
-    assert!(location.starts_with(oauth::REDIRECT_URI), "{location}");
+    assert!(
+        location.starts_with(&account.oauth.redirect_uri),
+        "{location}"
+    );
     location
 }
 

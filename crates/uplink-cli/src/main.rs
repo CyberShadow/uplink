@@ -180,7 +180,9 @@ fn initial_config(user: &str, password_bcrypt: &str) -> String {
     [
         ("    user: alice\n", format!("    user: {}\n", quoted(user))),
         (
-            "    # bcrypt hash of \"uplink\". Make another with: uplink hash-password\n",
+            "    # bcrypt hash of \"uplink\": a well-known password, for trying uplink on\n\
+             \x20   # loopback only. `uplink init` writes your own instead; make one by\n\
+             \x20   # hand with: uplink hash-password\n",
             "    # bcrypt hash of the password. Make another with: uplink hash-password\n".into(),
         ),
         (
@@ -278,8 +280,8 @@ async fn oauth_init(config_path: &std::path::Path, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// The Outlook client's redirect URI is a URN no browser follows, so the
-/// user copies the code out of it (SPEC §13.3).
+/// Nothing listens at a public client's redirect URI, so the user copies
+/// the code out of where the browser was sent (SPEC §13.3).
 async fn m365_init(account: &M365AccountConfig, key: &MasterKey) -> Result<()> {
     println!(
         "Open this URL in a browser and sign in as {}:\n\n{}\n",
@@ -287,11 +289,9 @@ async fn m365_init(account: &M365AccountConfig, key: &MasterKey) -> Result<()> {
         m365_oauth::authorize_url(account)?
     );
     println!(
-        "The browser then fails to open a URL starting {}?code=…, or shows a\n\
-         page with the code. Paste that URL, the page's text with the code, or\n\
-         the code itself here (the browser's developer tools show the URL, in\n\
-         the Network tab, as the last request's Location).",
-        m365_oauth::REDIRECT_URI
+        "The browser is then sent to {}?code=…; paste that URL, or the code\n\
+         itself, here.",
+        account.oauth.redirect_uri
     );
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let code = loop {

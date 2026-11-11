@@ -88,18 +88,32 @@ empties after 30 days.
 
 ## Connecting a Microsoft 365 account
 
-uplink signs in as the Outlook desktop client, so there is nothing to
-register (SPEC §13.3). Uncomment the Microsoft 365 account in
-`uplink.yaml`, set `id` and `address`, and run:
+Microsoft 365 access goes through an app registration in Microsoft Entra
+ID that you (or your organization's administrator) create (SPEC §13.3).
+
+1. In the [Microsoft Entra admin center](https://entra.microsoft.com/),
+   under App registrations, register a new application (any name), for
+   accounts in your organization's directory.
+2. Under Authentication, add the platform *Mobile and desktop
+   applications* with the redirect URI
+   `https://login.microsoftonline.com/common/oauth2/nativeclient`.
+3. Under API permissions, add the Microsoft Graph delegated permissions
+   `Mail.ReadWrite`, `Mail.Send` and `Calendars.Read`. If your
+   organization does not let users consent to applications, an
+   administrator grants them.
+4. In `uplink.yaml`, uncomment the Microsoft 365 account, set `id` and
+   `address`, and copy the registration's application (client) id into
+   its `oauth.client_id`. A single-tenant registration also needs
+   `oauth.authority: "https://login.microsoftonline.com/<tenant id>"`.
+
+Then run:
 
 ```sh
 ./result/bin/uplink oauth init --account alice-m365
 ```
 
-Open the URL it prints and sign in. Azure AD then redirects to
-`urn:ietf:wg:oauth:2.0:oob?code=…`, which the browser cannot open: copy
-that address (from the address bar, the error page, or the developer
-tools' Network tab, as the last request's `Location`), or the code
+Open the URL it prints and sign in. The browser then lands on a blank
+page at `…/oauth2/nativeclient?code=…`: copy that address, or the code
 alone, and paste it into `uplink oauth init`. A running uplink picks
 the account up once restarted; changes made in Outlook arrive within
 30 s. Folders are labels of which a message has one; categories are

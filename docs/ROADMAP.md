@@ -68,8 +68,7 @@ Deferred:
 MVP:
 - Gmail via the Gmail API, polling `history.list` (see SPEC §8.1).
 - M365 via Graph (mail) with delta-link polling every 30 s (no push;
-  see SPEC §8.3 and §15.11 — IMAP is not available via Outlook
-  impersonation, EWS Streaming deferred).
+  see SPEC §8.3 and §15.11 — EWS Streaming deferred).
 - Per-account configuration via single YAML file.
 
 Deferred:
@@ -155,13 +154,14 @@ Deferred (not blocking but a forward design constraint):
 
 MVP:
 - Single Rust binary listening on one TCP port (HTTP or HTTPS with BYO cert+key).
+- NixOS module (`nix/module.nix`), which the NixOS VM tests run uplink with.
 - HTTP basic auth.
 - All configuration in a single YAML file with inotify-driven reload and frontend push of applicable changes.
 - btrfs snapshots for backup (user-managed).
 
 Deferred:
 - ACME / Let's Encrypt integration.
-- Multiple binary distribution targets (Docker, NixOS module, deb/rpm).
+- Further distribution targets (Docker, deb/rpm).
 - Off-host WAL streaming (Litestream).
 - Audit log for admin operations.
 

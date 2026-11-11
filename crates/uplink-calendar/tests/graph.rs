@@ -39,7 +39,8 @@ impl Setup {
             id: "test".into(),
             address: "alice@example.com".into(),
             oauth: M365OAuthConfig {
-                client_id: "d3590ed6-52b3-4102-aeff-aad2292ab01c".into(),
+                client_id: "uplink-test".into(),
+                redirect_uri: "http://127.0.0.1/redirect".into(),
                 authority: format!("{base}/common"),
                 resource: base.clone(),
                 token_file: dir.path().join("accounts/test.token"),
@@ -71,7 +72,7 @@ impl Setup {
         }
     }
 
-    /// Calls Graph as Alice, as Outlook would.
+    /// Calls Graph as Alice.
     async fn call(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Value {
         let mut request = self
             .http

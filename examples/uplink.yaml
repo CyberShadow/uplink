@@ -12,7 +12,9 @@ server:
   #   key: /path/to/key.pem     # PEM, unencrypted
   basic_auth:
     user: alice
-    # bcrypt hash of "uplink". Make another with: uplink hash-password
+    # bcrypt hash of "uplink": a well-known password, for trying uplink on
+    # loopback only. `uplink init` writes your own instead; make one by
+    # hand with: uplink hash-password
     password_bcrypt: "$2b$12$Z5QelJuvdiqVHbPGIlx/d.zNmaHFLs5vXr41y3ucCcBkndL6tErju"
 
 # Everything uplink keeps: the database, mail, the master key sealing
@@ -35,11 +37,13 @@ accounts: []
   #     client_id: "1234.apps.googleusercontent.com"
   #     client_secret: "GOCSPX-xxxxxxxxxx"
 
-  # — Microsoft 365 — signed in as the Outlook desktop client; run
-  # `uplink oauth init --account alice-m365`.
+  # — Microsoft 365 — with an app registration of your own (see
+  # README.md); then run `uplink oauth init --account alice-m365`.
   # - id: alice-m365
   #   kind: m365
   #   address: alice@example.com
+  #   oauth:
+  #     client_id: "11111111-2222-3333-4444-555555555555"
 
   # — Matrix — run `uplink matrix pair --account alice-matrix`.
   # - id: alice-matrix

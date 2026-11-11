@@ -13,8 +13,7 @@ let
       -keyout $out/key.pem -out $out/cert.pem
   '';
 
-  # No OAuth clients: the Outlook client is public, and any client id is
-  # accepted.
+  # No OAuth clients: uplink's is public, and any client id is accepted.
   emulateConfig = (pkgs.formats.yaml { }).generate "emulate.yaml" {
     microsoft.users = [
       { email = "alice@example.com"; name = "Alice"; }
@@ -54,7 +53,8 @@ pkgs.testers.nixosTest {
             kind = "m365";
             address = "alice@example.com";
             oauth = {
-              client_id = "d3590ed6-52b3-4102-aeff-aad2292ab01c";
+              client_id = "uplink-test";
+              redirect_uri = "http://127.0.0.1/redirect";
               authority = "${microsoft}/common";
               resource = microsoft;
             };
