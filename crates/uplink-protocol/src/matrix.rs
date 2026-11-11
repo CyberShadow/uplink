@@ -56,6 +56,11 @@ pub struct Room {
     /// Messages from others after the read marker (counting those that
     /// could not be decrypted).
     pub unread: u32,
+    /// Of those, of the main timeline and threads, how many notify, and
+    /// how many highlight (mention the account, or a keyword), by the
+    /// account's push rules (SPEC §9.2).
+    pub notifying: u32,
+    pub highlighted: u32,
     /// The latest event's time, ms since the Unix epoch.
     pub last_event_ts: Option<i64>,
     pub read_up_to: Option<ReadMarker>,

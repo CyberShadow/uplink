@@ -302,6 +302,8 @@ export class FakeServer implements Requester, Blobs {
       children: [],
       topic: null,
       joined_members: 2,
+      notifying: 0,
+      highlighted: 0,
     }
     this.rooms.push(room)
     this.events.set(room.id, [])
@@ -467,8 +469,17 @@ export class FakeServer implements Requester, Blobs {
       const events = this.events.get(room.id)!
       const unread = events.filter(
         (e) => e.pos > (room.read_up_to?.pos ?? -Infinity) && e.kind === 'm.room.message' && e.sender !== ME,
-      ).length
-      return { ...room, unread, last_event_ts: events.at(-1)?.ts ?? null }
+      )
+      // As push rules would have them: messages that name the account
+      // highlight; in quiet rooms, only those notify.
+      const highlighted = unread.filter((e) => e.body?.includes(ME)).length
+      return {
+        ...room,
+        unread: unread.filter((e) => e.thread_root === null).length,
+        notifying: this.quiet.has(room.id) ? highlighted : unread.length,
+        highlighted,
+        last_event_ts: events.at(-1)?.ts ?? null,
+      }
     })
   }
 
@@ -502,6 +513,10 @@ export class FakeServer implements Requester, Blobs {
 
   /** Accounts whose first sync is under way, with its progress if known. */
   readonly syncing = new Map<string, ListingProgress | null>()
+
+  /** Rooms whose messages notify only if they mention the account, as
+   * push rules may have it. */
+  readonly quiet = new Set<RoomId>()
 
   /** What pages say of themselves, by URL, as the homeserver previews
    * them. */

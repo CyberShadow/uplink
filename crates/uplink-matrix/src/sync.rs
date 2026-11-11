@@ -10,7 +10,7 @@
 use crate::{
     client,
     membership::{self, MembershipChanged},
-    rooms::{self, Decrypted, ObservedEvent, ObservedRoom, ReceiptSent, SpaceChild, Synced},
+    rooms::{self, Decrypted, ObservedEvent, ObservedRoom, Push, ReceiptSent, SpaceChild, Synced},
     send::{self, SendFailed, SendStarted, SendSucceeded},
     verification,
 };
@@ -496,6 +496,7 @@ pub(crate) async fn timeline_event(
         TimelineEventKind::PlainText { .. } => Encryption::None,
     };
     let mut parsed = ObservedEvent::parse(event.raw().json().get(), None, encryption)?;
+    parsed.push = Push::of(event.push_actions());
     if !names.contains_key(&parsed.sender) {
         let user = <&UserId>::try_from(parsed.sender.as_str())
             .with_context(|| format!("event sender {}", parsed.sender))?;
@@ -661,12 +662,15 @@ impl Redecryptor {
                 continue;
             };
             let encrypted: Raw<OriginalSyncRoomEncryptedEvent> = serde_json::from_str(&raw)?;
-            let event = room.decrypt_event(&encrypted, None).await?;
+            let push = room.push_context().await?;
+            let event = room.decrypt_event(&encrypted, push.as_ref()).await?;
             if !matches!(event.kind, TimelineEventKind::Decrypted(_)) {
                 continue;
             }
-            let event =
+            let mut parsed =
                 ObservedEvent::parse(event.raw().json().get(), None, Encryption::Decrypted)?;
+            parsed.push = Push::of(event.push_actions());
+            let event = parsed;
             match decrypted.last_mut() {
                 Some((last, events)) if *last == room_id => events.push(event),
                 _ => decrypted.push((room_id, vec![event])),

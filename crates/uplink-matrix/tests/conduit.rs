@@ -296,6 +296,9 @@ async fn messages_both_ways_in_an_encrypted_room() {
     assert_eq!(received.encryption, Encryption::Decrypted);
     let room = uplink.room(&room_id).await.unwrap();
     assert_eq!(room.unread, 1);
+    // A message in a room of two notifies, by the default push rules,
+    // which the client evaluates once it decrypts it.
+    assert_eq!((room.notifying, room.highlighted), (1, 0));
 
     // From uplink to the other client.
     uplink

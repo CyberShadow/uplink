@@ -232,6 +232,32 @@ async fn events_are_stored_once_and_counted_unread() {
 }
 
 #[tokio::test]
+async fn unread_messages_that_notify_or_highlight_are_counted() {
+    let db = Db::new();
+    let pushed = |id: &str, sender: &str, notify: bool, highlight: bool| ObservedEvent {
+        push: crate::rooms::Push { notify, highlight },
+        ..message(id, sender)
+    };
+    db.sync_events(
+        vec![
+            message("$1", "@bob:x"),
+            pushed("$2", "@bob:x", true, false),
+            pushed("$3", "@bob:x", true, true),
+            // Never one's own.
+            pushed("$4", ME, true, true),
+        ],
+        &[],
+    )
+    .await;
+    let room = db.room().await;
+    assert_eq!((room.unread, room.notifying, room.highlighted), (3, 2, 1));
+    let events = db.timeline().await;
+    db.matrix.mark_read(room.id, events[2].id).await.unwrap();
+    let room = db.room().await;
+    assert_eq!((room.notifying, room.highlighted), (0, 0));
+}
+
+#[tokio::test]
 async fn sending_is_undone_while_queued() {
     let db = Db::new();
     db.sync(&[("$1", "@bob:x")], &[]).await;

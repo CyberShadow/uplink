@@ -676,6 +676,12 @@ room_id: string, name: string, encrypted: boolean, membership: Membership,
  */
 unread: number, 
 /**
+ * Of those, of the main timeline and threads, how many notify, and
+ * how many highlight (mention the account, or a keyword), by the
+ * account's push rules (SPEC §9.2).
+ */
+notifying: number, highlighted: number, 
+/**
  * The latest event's time, ms since the Unix epoch.
  */
 last_event_ts: number | null, read_up_to: ReadMarker | null, 

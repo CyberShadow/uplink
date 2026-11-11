@@ -67,6 +67,8 @@ describe('roomTree', () => {
     children: [],
     topic: null,
     joined_members: 2,
+    notifying: 0,
+    highlighted: 0,
     ...fields,
   })
   const space = (name: string, children: Room[], fields: Partial<Room> = {}) =>

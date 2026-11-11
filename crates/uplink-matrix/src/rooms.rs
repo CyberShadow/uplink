@@ -131,6 +131,27 @@ pub struct ObservedEvent {
     pub encryption: Encryption,
     /// What it relates to (V0025).
     pub relation: Relation,
+    /// What the account's push rules make of it (V0032).
+    pub push: Push,
+}
+
+/// What the account's push rules make of an event, as its client
+/// evaluates them: whether it notifies, and whether it highlights. Not
+/// evaluated, neither.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Push {
+    pub notify: bool,
+    pub highlight: bool,
+}
+
+impl Push {
+    pub fn of(actions: Option<&[matrix_sdk::ruma::push::Action]>) -> Self {
+        let actions = actions.unwrap_or_default();
+        Self {
+            notify: actions.iter().any(|a| a.should_notify()),
+            highlight: actions.iter().any(|a| a.is_highlight()),
+        }
+    }
 }
 
 /// What an event relates to, by its JSON (V0025).
@@ -187,6 +208,7 @@ impl ObservedEvent {
             relation: Relation::of(&event),
             raw: raw.to_owned(),
             encryption,
+            push: Push::default(),
         })
     }
 }
@@ -447,8 +469,8 @@ fn insert_events(
     let mut insert = tx.prepare(
         "INSERT INTO matrix_event
            (room, event_id, sender, sender_name, ts, type, msgtype, body, raw_json, encryption,
-            rel_type, relates_to, reply_to, redacts, redacted, pos)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+            rel_type, relates_to, reply_to, redacts, redacted, pos, notify, highlight)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
          ON CONFLICT (room, event_id) DO NOTHING
          RETURNING id",
     )?;
@@ -474,6 +496,8 @@ fn insert_events(
                     r.redacts,
                     r.redacted,
                     pos,
+                    e.push.notify,
+                    e.push.highlight,
                 ],
                 |r| r.get(0),
             )
@@ -668,7 +692,8 @@ impl Observation for Decrypted {
         let mut update = tx.prepare(
             "UPDATE matrix_event
              SET type = ?3, msgtype = ?4, body = ?5, raw_json = ?6, encryption = 'decrypted',
-                 rel_type = ?7, relates_to = ?8, reply_to = ?9, redacts = ?10
+                 rel_type = ?7, relates_to = ?8, reply_to = ?9, redacts = ?10,
+                 notify = ?11, highlight = ?12
              WHERE room = ?1 AND event_id = ?2 AND encryption = 'undecryptable' AND NOT redacted
              RETURNING id",
         )?;
@@ -688,6 +713,8 @@ impl Observation for Decrypted {
                         r.relates_to,
                         r.reply_to,
                         r.redacts,
+                        e.push.notify,
+                        e.push.highlight,
                     ],
                     |r| r.get(0),
                 )
@@ -876,22 +903,28 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
     Ok(tx
         .prepare(&format!(
             "SELECT r.id, r.account_id, r.room_id, r.name, r.encrypted, r.membership,
-                    (SELECT count(*) FROM matrix_event e
-                     WHERE e.room = r.id
-                       AND (r.read_up_to IS NULL OR e.pos > {read_pos})
-                       AND e.type IN ('m.room.message', 'm.room.encrypted')
-                       AND e.sender != ?2 AND NOT e.redacted AND {LISTED} AND {MAIN}),
+                    (SELECT count(*) FROM matrix_event e WHERE {unread} AND {MAIN}),
                     (SELECT max(ts) FROM matrix_event e WHERE e.room = r.id),
                     r.read_up_to, r.desired, r.membership_error, r.space, r.avatar,
                     -- In the space's order: by `order`, those without last.
                     (SELECT json_group_array(child) FROM
                        (SELECT child FROM matrix_space_child c WHERE c.space = r.id
                         ORDER BY child_order IS NULL, child_order, child)),
-                    r.topic, r.joined_members, {read_pos}
+                    r.topic, r.joined_members, {read_pos},
+                    -- Of threads too, as Element counts them.
+                    (SELECT count(*) FROM matrix_event e WHERE {unread} AND e.notify),
+                    (SELECT count(*) FROM matrix_event e WHERE {unread} AND e.highlight)
              FROM matrix_room r
              WHERE r.account_id = ?1 AND (r.membership != 'left' OR r.desired = 'joined')
              ORDER BY 8 DESC NULLS LAST, r.id",
             read_pos = pos_of("r.read_up_to"),
+            unread = format!(
+                "e.room = r.id
+                 AND (r.read_up_to IS NULL OR e.pos > {read_pos})
+                 AND e.type IN ('m.room.message', 'm.room.encrypted')
+                 AND e.sender != ?2 AND NOT e.redacted AND {LISTED}",
+                read_pos = pos_of("r.read_up_to"),
+            ),
         ))?
         .query_map([account, mxid], |r| {
             Ok(Room {
@@ -919,6 +952,8 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
                     .expect("json_group_array makes an array of strings"),
                 topic: r.get(14)?,
                 joined_members: r.get(15)?,
+                notifying: r.get(17)?,
+                highlighted: r.get(18)?,
             })
         })?
         .collect::<Result<_, _>>()?)

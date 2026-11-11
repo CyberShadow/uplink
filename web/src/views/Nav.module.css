@@ -151,6 +151,18 @@
   color: var(--error-fg);
 }
 
+.mention {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--bg);
+}
+
+/* Unread, though nothing notifies. */
+.bold {
+  font-weight: 600;
+}
+
 .name {
   flex: 1;
   overflow: hidden;

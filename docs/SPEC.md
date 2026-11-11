@@ -1868,7 +1868,22 @@ which a verified device gives.
 - A room's unread count is computed locally: messages (and undecryptable
   events, which nearly always are messages) from others after the read
   marker. The homeserver's notification counts are not used, since they
-  follow push rules uplink does not show and could not follow an undo.
+  could not follow an undo. Of those, of the main timeline and threads,
+  a room counts those that notify (`notifying`) and highlight
+  (`highlighted`: mention the account, or a keyword), by the account's
+  push rules as its client evaluates them on sync (the SDK's push
+  actions, of an encrypted event once decrypted, also late; V0032:
+  `matrix_event.notify`, `highlight`; events stored before, and
+  backfilled ones, are neither). The nav counts, as Element, a room's
+  messages that notify, as a mention if any highlights; a room with
+  unread messages none of which notify is only bold; a folded space or
+  account sums its rooms'.
+- **Browser notifications**: once the browser lets uplink notify (a nav
+  item asks it to), the web client notifies when a room's messages that
+  notify grow while the tab is hidden or another page shows: the room's
+  name and its latest message from others (among its latest 10 events),
+  one per room, a click opening it. Those unread when the rooms are first
+  loaded are not news.
 - The read marker is desired state (§6.6). Showing a room, in a visible
   tab, marks it read up to its latest event (`MarkRoomRead`, quietly:
   no notice). The sending loop pushes an `m.read` receipt for it.

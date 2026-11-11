@@ -9,6 +9,7 @@ import { useServices } from '../context'
 import { outboxCount, outboxNeedsAttention } from '../stores/drafts'
 import { allMailPath, inboxPath, mailPath } from './App'
 import { roomPath } from './Room'
+import { NotificationsItem } from './Notifications'
 import { awaitsUser, securityPath } from './Security'
 import styles from './Nav.module.css'
 import { Icon, type IconName } from './Icon'
@@ -207,11 +208,25 @@ export function roomTree(rooms: readonly Room[]): RoomNode[] {
   return [...top, ...others.map((room) => ({ room, children: [] }))]
 }
 
-/** What is unread in the rooms of a space, each counted once. */
-function unreadIn(node: RoomNode, seen = new Set<string>()): number {
-  if (seen.has(node.room.room_id)) return 0
+/** The rooms of a space, each once. */
+function roomsIn(node: RoomNode, seen = new Set<string>()): Room[] {
+  if (seen.has(node.room.room_id)) return []
   seen.add(node.room.room_id)
-  return node.room.unread + node.children.reduce((unread, child) => unread + unreadIn(child, seen), 0)
+  return [node.room, ...node.children.flatMap((child) => roomsIn(child, seen))]
+}
+
+/** A count's look: as any; red, as what needs the user's attention; or
+ * as a mention of them. */
+type Tone = 'plain' | 'alert' | 'mention'
+
+/** Rooms count, as Element's, their unread messages that notify, as
+ * mentions if any mentions them; other unread make the name bold. */
+function roomBadge(rooms: readonly Room[]): { count: number; tone: Tone; bold: boolean } {
+  return {
+    count: rooms.reduce((n, room) => n + room.notifying, 0),
+    tone: rooms.some((room) => room.highlighted > 0) ? 'mention' : 'plain',
+    bold: rooms.some((room) => room.unread > 0),
+  }
 }
 
 /** `open`: shown as a drawer, where the window is narrow. */
@@ -220,30 +235,31 @@ export function Nav(props: { open: boolean }) {
   const { path } = useLocation()
   // The Matrix account a conversation is being started with.
   const [starting, setStarting] = useState<string | null>(null)
-  const link = (href: string, lead: ComponentChildren, name: string, count: number, depth = 0, alert = false) => {
+  const link = (
+    href: string,
+    lead: ComponentChildren,
+    name: string,
+    count: number,
+    depth = 0,
+    tone: Tone = 'plain',
+    bold = false,
+  ) => {
     const current = shows(path, href)
     return (
       <a
         href={href}
-        class={current ? styles.current : undefined}
+        class={[current && styles.current, bold && styles.bold].filter(Boolean).join(' ') || undefined}
         aria-current={current ? 'page' : undefined}
         style={{ '--depth': depth }}
       >
         {lead}
         <span class={styles.name}>{name}</span>
-        {count > 0 && (
-          <span
-            class={alert ? `${styles.count} ${styles.alert}` : styles.count}
-            title={alert ? 'Something needs your attention' : undefined}
-          >
-            {count}
-          </span>
-        )}
+        <Count count={count} tone={tone} />
       </a>
     )
   }
   const item = (href: string, icon: IconName, name: string, count: number, alert = false) => (
-    <li key={href}>{link(href, <Icon name={icon} />, name, count, 0, alert)}</li>
+    <li key={href}>{link(href, <Icon name={icon} />, name, count, 0, alert ? 'alert' : 'plain')}</li>
   )
   const labelItem = (account: Account, label: Label) => (
     <li key={label.id}>
@@ -296,26 +312,29 @@ export function Nav(props: { open: boolean }) {
   const roomNode = (node: RoomNode, depth: number) => {
     const { room } = node
     if (!(room.space && room.membership === 'joined')) {
+      const badge = roomBadge([room])
       return (
         <li key={room.id}>
           {link(
             roomPath(room.id),
             <RoomAvatar room={room} />,
             room.membership === 'invited' ? `${room.name} (invited)` : room.name,
-            room.unread,
+            badge.count,
             depth,
+            badge.tone,
+            badge.bold,
           )}
         </li>
       )
     }
     const key = `matrix:${room.account}:${room.room_id}`
     const folded = collapsed.value.has(key)
-    const unread = folded ? unreadIn(node) : 0
+    const badge = folded ? roomBadge(roomsIn(node)) : null
     const row = (
       <>
         <RoomAvatar room={room} />
         <span class={styles.name}>{room.name}</span>
-        {unread > 0 && <span class={styles.count}>{unread}</span>}
+        {badge && <Count count={badge.count} tone={badge.tone} />}
       </>
     )
     return (
@@ -393,9 +412,10 @@ export function Nav(props: { open: boolean }) {
             tooltip={account.id}
             label={`Rooms of ${account.mxid}`}
             status={!account.synced && <span class={styles.syncing}> (syncing)</span>}
-            unread={rooms.reduce((unread, room) => unread + room.unread, 0)}
+            unread={roomBadge(rooms).count}
           >
             {securityItem(account.id)}
+            <NotificationsItem />
             <li>
               <button type="button" class={styles.action} onClick={() => setStarting(account.id)}>
                 <Icon name="plus" />
@@ -408,6 +428,21 @@ export function Nav(props: { open: boolean }) {
       })}
       {starting !== null && <RoomStarter account={starting} close={() => setStarting(null)} />}
     </nav>
+  )
+}
+
+function Count(props: { count: number; tone: Tone }) {
+  if (props.count === 0) return null
+  const { tone } = props
+  return (
+    <span
+      class={tone === 'plain' ? styles.count : `${styles.count} ${styles[tone]}`}
+      title={
+        tone === 'alert' ? 'Something needs your attention' : tone === 'mention' ? 'You are mentioned' : undefined
+      }
+    >
+      {props.count}
+    </span>
   )
 }
 

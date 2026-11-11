@@ -858,6 +858,54 @@ describe('matrix', () => {
     expect(screen.queryByRole('status')).toBeNull()
   })
 
+  it('counts messages that notify, and notifies of them while their room is not on show', async () => {
+    const shown: Array<{ title: string; options: NotificationOptions; onclick: (() => void) | null }> = []
+    class FakeNotification {
+      static permission = 'granted'
+      onclick: (() => void) | null = null
+      constructor(
+        readonly title: string,
+        readonly options: NotificationOptions,
+      ) {
+        shown.push(this)
+      }
+      close() {}
+    }
+    vi.stubGlobal('Notification', FakeNotification)
+    try {
+      server.addMatrixAccount()
+      const lounge = server.addRoom('Lounge')
+      const quiet = server.addRoom('Quiet')
+      server.quiet.add(quiet.id)
+      // What was unread before is not news.
+      server.receive(lounge.id, { body: 'Earlier' })
+      await start('/todos')
+      const nav = screen.getByRole('navigation')
+      await within(nav).findByRole('link', { name: 'Lounge1' })
+
+      server.receive(lounge.id, { body: 'Lunch?' })
+      await waitFor(() => expect(shown).toHaveLength(1))
+      expect(shown[0].title).toBe('Lounge')
+      expect(shown[0].options).toEqual({ body: 'Bob: Lunch?', tag: `room-${lounge.id}` })
+
+      // A quiet room notifies only of mentions, which its count shows.
+      server.receive(quiet.id, { body: 'chatter' })
+      server.receive(quiet.id, { body: `hey ${ME}` })
+      await waitFor(() => expect(shown).toHaveLength(2))
+      const count = within(within(nav).getByRole('link', { name: /^Quiet/ })).getByText('1')
+      expect(count.title).toBe('You are mentioned')
+
+      shown[1].onclick!()
+      await within(await screen.findByRole('list', { name: 'Timeline' })).findByText(/^hey/)
+      // Not of the room on show.
+      server.receive(quiet.id, { body: `again ${ME}` })
+      await within(screen.getByRole('list', { name: 'Timeline' })).findByText(/^again/)
+      expect(shown).toHaveLength(2)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('nests rooms in their spaces, which fold, counting what is unread', async () => {
     server.addMatrixAccount()
     const general = server.addRoom('General')
