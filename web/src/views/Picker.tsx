@@ -39,24 +39,20 @@ export function Picker<T>(props: {
   const [highlight, setHighlight] = useState(0)
   const input = useRef<HTMLInputElement>(null)
   const list = useRef<HTMLUListElement>(null)
-  // Whether an item was chosen, which takes the focus where it leads.
-  const chosen = useRef(false)
   // At once, not after paint: keys typed right after the shortcut are the
-  // filter's. Dismissed, it gives the focus back: to the box being
-  // written in, say.
+  // filter's. Closed, it gives the focus back: to the box being written
+  // in, say. Where a choice leads elsewhere, the view shown has its own
+  // say (`Shell`).
   useLayoutEffect(() => {
     const previous = document.activeElement as HTMLElement
     input.current!.focus()
-    return () => {
-      if (!chosen.current) previous.focus()
-    }
+    return () => previous.focus()
   }, [])
   useLayoutEffect(() => list.current!.children[highlight]?.scrollIntoView({ block: 'nearest' }), [highlight])
 
   const created = props.create?.(filter) ?? null
   const items = [...props.items.filter((item) => matches(props.text(item), filter)), ...(created ? [created] : [])]
   const choose = (item: T) => {
-    chosen.current = true
     props.choose(item)
     props.close()
   }

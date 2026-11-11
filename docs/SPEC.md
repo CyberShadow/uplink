@@ -2371,9 +2371,10 @@ is cancelled), for the shortcuts, as vim's normal mode; `i`, `Enter`
 and `r` go back to it. The room's box unfocused is then the exception
 (`Esc`, a click elsewhere on the page). Dialogs opened from the box
 (edit history, a menu) close by `Esc` all the same, and a picker
-dismissed (`Esc`, a click outside, its shortcut again) gives the focus
-back to where it was, so that `Ctrl+K Esc` leaves one writing; one
-chosen leaves it where the choice leads. The `g` sequences also have
+closed gives the focus back to where it was, so that `Ctrl+K Esc` (or
+`Ctrl+K` to the room on show) leaves one writing. A view shown has the
+focus it takes, or none: going to another drops the focus of a field
+outside it, as the search box. The `g` sequences also have
 synonyms, `Alt+Shift` and the sequence's second key (`Alt+Shift+H`
 home, `Alt+Shift+I` Inbox…), which work from within fields, as all
 presses with Ctrl, Cmd or Alt held do. (On macOS, where Option changes

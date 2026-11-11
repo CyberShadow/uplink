@@ -1,5 +1,5 @@
 import type { ReadonlySignal } from '@preact/signals'
-import { useEffect, useState } from 'preact/hooks'
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
 import { lazy, LocationProvider, Route, Router, useLocation } from 'preact-iso'
 import type { Status } from '../connection'
 import type { Account } from '../generated/protocol'
@@ -49,6 +49,14 @@ function Shell() {
   const [navOpen, setNavOpen] = useState(false)
   useEffect(() => setNavOpen(false), [path])
   useNotifications(path, route)
+  // A view shown has the focus it takes (a room's box), or none: not that
+  // of a field outside it, as the search box, left from the view before.
+  // After its own effects, as a parent's run after its children's.
+  const main = useRef<HTMLElement>(null)
+  useLayoutEffect(() => {
+    const focused = document.activeElement as HTMLElement
+    if (!main.current!.contains(focused)) focused.blur()
+  }, [path])
 
   /** The account on show, or else the first. */
   const account = () => {
@@ -113,7 +121,7 @@ function Shell() {
       </header>
       <Nav open={navOpen} />
       {navOpen && <div class={styles.scrim} onClick={() => setNavOpen(false)} />}
-      <main class={styles.content}>
+      <main ref={main} class={styles.content}>
         {error && (
           <div class={styles.error} role="alert">
             {error}

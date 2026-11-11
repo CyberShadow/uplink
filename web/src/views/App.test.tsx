@@ -1166,6 +1166,9 @@ describe('matrix', () => {
     expect(location.pathname).toBe(`/rooms/${hall.id}`)
     expect(document.activeElement).toBe(box())
     expect(box().getAttribute('aria-label')).toBe('Message Hall')
+    // To the room on show, it stays.
+    await user.keyboard('{Control>}k{/Control}hall{Enter}')
+    expect(document.activeElement).toBe(box())
 
     // Alt+Shift and the second key of a g sequence go there, even while
     // typing; out of the box, so does the sequence.
@@ -1175,6 +1178,12 @@ describe('matrix', () => {
     expect(document.activeElement).toBe(box())
     await user.keyboard('{Escape}gk')
     expect(location.pathname).toBe('/todos')
+    // A field outside the view, left behind, loses the focus.
+    await user.keyboard('/{Control>}k{/Control}lounge{Enter}')
+    expect(document.activeElement).toBe(box())
+    await user.keyboard('{Escape}/{Alt>}{Shift>}k{/Shift}{/Alt}')
+    expect(location.pathname).toBe('/todos')
+    expect(document.activeElement).toBe(document.body)
   })
 
   it('moves the focus to a thread\'s box, and back to the room\'s once it closes', async () => {
