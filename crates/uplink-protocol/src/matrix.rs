@@ -122,6 +122,20 @@ pub struct RoomEvent {
     /// Of a message with an HTML `formatted_body`, that, sanitized
     /// (SPEC §9.2).
     pub html: Option<String>,
+    /// Of the root of a thread, the thread summed up.
+    pub thread: Option<ThreadSummary>,
+    /// Of a message of a thread whose root is stored, the root: the
+    /// thread lists it, not the main timeline.
+    pub thread_root: Option<RoomEventId>,
+}
+
+/// A thread, as its root shows it (SPEC §9.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadSummary {
+    /// How many messages it has, but the root.
+    pub replies: u32,
+    pub latest: RepliedEvent,
 }
 
 /// An edit (`m.replace`) of a message.
@@ -216,6 +230,9 @@ pub enum MatrixContent {
         reply_to: Option<String>,
         /// The account's own message it edits (`m.replace`).
         replaces: Option<String>,
+        /// The root of the thread it is of (`m.thread`); then it replies
+        /// to the thread's root or one of its messages, if to any.
+        thread: Option<String>,
     },
     /// Reacts to an event with `key`, usually an emoji.
     Reaction { event: String, key: String },

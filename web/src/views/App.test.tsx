@@ -1180,6 +1180,57 @@ describe('room timeline', () => {
     await within(timeline()).findByText('Deleting…')
   })
 
+  it('opens threads beside the timeline, which sum them up, and replies in them', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const root = server.receive(room.id, { body: 'Plans?' })
+    server.receive(room.id, { body: 'Main line' })
+    server.receiveInThread(room.id, root, { body: 'Saturday', sender: '@carol:example.org', sender_name: 'Carol' })
+    const user = await start(`/rooms/${room.id}`)
+    await within(timeline()).findByText('Main line')
+    // The thread's message is the thread's; its root sums it up.
+    expect(within(timeline()).getAllByText('Saturday')).toHaveLength(1)
+    const summary = within(line('Plans?')).getByRole('button', { name: /1 reply/ })
+    expect(summary.textContent).toContain('Saturday')
+
+    await user.click(summary)
+    const thread = screen.getByRole('complementary', { name: 'Thread' })
+    await within(thread).findByText('Saturday')
+    within(thread).getByText('Plans?')
+    const box = within(thread).getByRole('textbox', { name: 'Reply in thread' })
+    expect(within(thread).queryByRole('button', { name: 'Attach files' })).toBeNull()
+    await user.type(box, 'Works for me{Enter}')
+    expect(server.requests).toContainEqual({
+      type: 'send_matrix_message',
+      room: room.id,
+      content: text('Works for me', { thread: root.event_id }),
+    })
+    // Being sent, in the thread, not the timeline.
+    await within(thread).findByText('Works for me')
+    expect(within(timeline()).queryByText('Works for me')).toBeNull()
+
+    // A reply within the thread.
+    const threadLine = within(thread).getByText('Saturday').closest('li')!
+    await user.click(within(threadLine).getByRole('button', { name: 'Reply' }))
+    await user.keyboard('Which time?{Enter}')
+    expect(server.requests).toContainEqual({
+      type: 'send_matrix_message',
+      room: room.id,
+      content: text('Which time?', { thread: root.event_id, reply_to: '$3' }),
+    })
+
+    // As more come, the thread and its summary follow.
+    server.receiveInThread(room.id, root, { body: 'Noon' })
+    await within(thread).findByText('Noon')
+    await within(line('Plans?')).findByRole('button', { name: /2 replies/ })
+
+    await user.click(within(thread).getByRole('button', { name: 'Close thread' }))
+    expect(screen.queryByRole('complementary', { name: 'Thread' })).toBeNull()
+    // Any other message may start one.
+    await user.click(within(line('Main line')).getByRole('button', { name: 'Reply in thread' }))
+    await within(screen.getByRole('complementary', { name: 'Thread' })).findByText('Main line')
+  })
+
   it('shows who is typing and how far members have read, and says when the account types', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')

@@ -25,7 +25,7 @@ use uplink_protocol::{
     matrix::{
         Encryption, EventEdit, GapId, MatrixSendsChanged, Membership, Reaction, Reactor,
         ReadMarker, RepliedEvent, Room, RoomEvent, RoomEventId, RoomId, RoomsChanged,
-        TimelineAdded, TimelineChanged, TimelineFilled, TimelineGap, TimelinePage,
+        ThreadSummary, TimelineAdded, TimelineChanged, TimelineFilled, TimelineGap, TimelinePage,
     },
     ServerEvent,
 };
@@ -540,9 +540,13 @@ pub(crate) fn redacted_json(raw: &str, redaction: &str, rules: &RedactionRules) 
 }
 
 /// The room's listed events whose display `added` and `redacted` changed
-/// (but those added): the events added or redacted reactions are of; those
-/// whose content changed (redacted, or of edits added or redacted); and
-/// the replies to those, which show what they reply to.
+/// (but those added): the events added or redacted reactions are of; the
+/// roots of threads they are of, which sum their threads up; those whose
+/// content changed (redacted, or of edits added or redacted), the replies
+/// to those, which show what they reply to, and the roots of threads of
+/// which they are, whose latest message may be one; and the messages of
+/// threads whose roots were added, which go from the main timeline to
+/// the thread.
 fn touched(
     tx: &Transaction,
     added: &[RoomEventId],
@@ -551,7 +555,7 @@ fn touched(
     let mut target = tx.prepare(
         "SELECT t.id, e.rel_type FROM matrix_event e JOIN matrix_event t
            ON t.room = e.room AND t.event_id = e.relates_to
-         WHERE e.id = ?1 AND e.rel_type IN ('m.replace', 'm.annotation')",
+         WHERE e.id = ?1 AND e.rel_type IN ('m.replace', 'm.annotation', 'm.thread')",
     )?;
     let mut touched = std::collections::BTreeSet::new();
     let mut content_changed: Vec<RoomEventId> = redacted.to_vec();
@@ -569,12 +573,26 @@ fn touched(
     let mut replies = tx.prepare(
         "SELECT r.id FROM matrix_event e JOIN matrix_event r
            ON r.room = e.room AND r.reply_to = e.event_id
-         WHERE e.id = ?1",
+         WHERE e.id = ?1
+         UNION
+         SELECT t.id FROM matrix_event e JOIN matrix_event t
+           ON t.room = e.room AND t.event_id = e.relates_to
+         WHERE e.id = ?1 AND e.rel_type = 'm.thread'",
+    )?;
+    let mut of_thread = tx.prepare(
+        "SELECT m.id FROM matrix_event t JOIN matrix_event m
+           ON m.room = t.room AND m.relates_to = t.event_id
+         WHERE t.id = ?1 AND m.rel_type = 'm.thread'",
     )?;
     for event in content_changed {
         touched.insert(event);
         for reply in replies.query_map([event.0], |r| r.get(0))? {
             touched.insert(RoomEventId(reply?));
+        }
+    }
+    for event in added {
+        for message in of_thread.query_map([event.0], |r| r.get(0))? {
+            touched.insert(RoomEventId(message?));
         }
     }
     for event in added {
@@ -862,7 +880,7 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
                      WHERE e.room = r.id
                        AND (r.read_up_to IS NULL OR e.pos > {read_pos})
                        AND e.type IN ('m.room.message', 'm.room.encrypted')
-                       AND e.sender != ?2 AND NOT e.redacted AND {LISTED}),
+                       AND e.sender != ?2 AND NOT e.redacted AND {LISTED} AND {MAIN}),
                     (SELECT max(ts) FROM matrix_event e WHERE e.room = r.id),
                     r.read_up_to, r.desired, r.membership_error, r.space, r.avatar,
                     -- In the space's order: by `order`, those without last.
@@ -1019,6 +1037,9 @@ pub struct StoredEvent {
     pub sender: String,
     pub kind: String,
     pub redacted: bool,
+    /// Its relation (`m.relates_to`): its type, and the event it is of.
+    pub rel_type: Option<String>,
+    pub relates_to: Option<String>,
 }
 
 pub fn stored_event(
@@ -1028,13 +1049,16 @@ pub fn stored_event(
 ) -> Result<Option<StoredEvent>> {
     Ok(conn
         .query_row(
-            "SELECT sender, type, redacted FROM matrix_event WHERE room = ?1 AND event_id = ?2",
+            "SELECT sender, type, redacted, rel_type, relates_to FROM matrix_event
+             WHERE room = ?1 AND event_id = ?2",
             params![room.0, event_id],
             |r| {
                 Ok(StoredEvent {
                     sender: r.get(0)?,
                     kind: r.get(1)?,
                     redacted: r.get(2)?,
+                    rel_type: r.get(3)?,
+                    relates_to: r.get(4)?,
                 })
             },
         )
@@ -1062,8 +1086,23 @@ pub(crate) const LISTED: &str = "NOT (
                   WHERE t.room = e.room AND t.event_id = coalesce(e.redacts, e.relates_to)))
     AND NOT (e.type = 'm.reaction' AND e.redacted)";
 
+/// Of an event `e`, whether the room's main timeline lists it: listed,
+/// and not of a thread whose root is stored, which the thread lists
+/// (`RoomEvent::thread_root`).
+pub(crate) const MAIN: &str = "NOT (e.rel_type = 'm.thread'
+      AND EXISTS (SELECT 1 FROM matrix_event t
+                  WHERE t.room = e.room AND t.event_id = e.relates_to))";
+
+/// An event's columns, and the event it replies to: but not the fallback
+/// of a message of a thread (to the thread's latest), which only clients
+/// that do not know threads show.
 const COLUMNS: &str = "e.id, e.event_id, e.sender, e.sender_name, e.ts, e.type, e.msgtype, \
-                       e.body, e.raw_json, e.encryption, e.redacted, e.reply_to, e.pos";
+     e.body, e.raw_json, e.encryption, e.redacted, \
+     CASE WHEN e.rel_type = 'm.thread' \
+       AND json_extract(e.raw_json, '$.content.\"m.relates_to\".is_falling_back') \
+     THEN NULL ELSE e.reply_to END, e.pos, \
+     (SELECT t.id FROM matrix_event t \
+      WHERE e.rel_type = 'm.thread' AND t.room = e.room AND t.event_id = e.relates_to)";
 
 /// An event of [`COLUMNS`], without what relates to it, and the event it
 /// replies to.
@@ -1092,6 +1131,8 @@ fn room_event(r: &Row) -> uplink_storage::rusqlite::Result<(RoomEvent, Option<St
             reactions: vec![],
             replied: None,
             html: None,
+            thread: None,
+            thread_root: r.get::<_, Option<i64>>(13)?.map(RoomEventId),
         },
         r.get(11)?,
     ))
@@ -1109,7 +1150,8 @@ pub fn timeline(
     let select = |condition: &str, order: &str| {
         format!(
             "SELECT {COLUMNS} FROM matrix_event e
-             WHERE e.room = ?1 AND {condition} AND {LISTED} ORDER BY e.pos {order} LIMIT ?3"
+             WHERE e.room = ?1 AND {condition} AND {LISTED} AND {MAIN}
+             ORDER BY e.pos {order} LIMIT ?3"
         )
     };
     let anchor = pos_of("?2");
@@ -1134,7 +1176,8 @@ pub fn timeline(
         Some(first) => tx
             .query_row(
                 &format!(
-                    "SELECT 1 FROM matrix_event e WHERE e.room = ?1 AND e.pos < ?2 AND {LISTED}"
+                    "SELECT 1 FROM matrix_event e
+                     WHERE e.room = ?1 AND e.pos < ?2 AND {LISTED} AND {MAIN}"
                 ),
                 params![room.0, first.pos],
                 |_| Ok(()),
@@ -1148,7 +1191,8 @@ pub fn timeline(
         Some(last) => tx
             .query_row(
                 &format!(
-                    "SELECT 1 FROM matrix_event e WHERE e.room = ?1 AND e.pos > ?2 AND {LISTED}"
+                    "SELECT 1 FROM matrix_event e
+                     WHERE e.room = ?1 AND e.pos > ?2 AND {LISTED} AND {MAIN}"
                 ),
                 params![room.0, last.pos],
                 |_| Ok(()),
@@ -1174,7 +1218,7 @@ pub fn gaps(tx: &Transaction, room: RoomId) -> Result<Vec<TimelineGap>> {
         .prepare(&format!(
             "SELECT g.id,
                     (SELECT e.id FROM matrix_event e
-                     WHERE e.room = g.room AND e.pos >= {before} AND {LISTED}
+                     WHERE e.room = g.room AND e.pos >= {before} AND {LISTED} AND {MAIN}
                      ORDER BY e.pos LIMIT 1)
              FROM matrix_gap g WHERE g.room = ?1 ORDER BY {before}",
             before = pos_of("g.before_event"),
@@ -1348,6 +1392,53 @@ pub fn listed_events(
     )
 }
 
+/// The thread whose root is `root`, if the main timeline lists it: the
+/// root, and the thread's messages, in timeline order.
+pub fn thread(
+    tx: &Transaction,
+    room: RoomId,
+    root: RoomEventId,
+) -> Result<Option<(RoomEvent, Vec<RoomEvent>)>> {
+    let Some(root) = query_events(
+        tx,
+        room,
+        &format!(
+            "SELECT {COLUMNS} FROM matrix_event e
+             WHERE e.room = ?1 AND e.id = ?2 AND {LISTED} AND {MAIN}"
+        ),
+        params![room.0, root.0],
+    )?
+    .pop() else {
+        return Ok(None);
+    };
+    let replies = query_events(
+        tx,
+        room,
+        &format!(
+            "SELECT {COLUMNS} FROM matrix_event e
+             WHERE e.room = ?1 AND e.rel_type = 'm.thread' AND e.relates_to = ?2 AND {LISTED}
+             ORDER BY e.pos"
+        ),
+        params![room.0, root.event_id],
+    )?;
+    Ok(Some((root, replies)))
+}
+
+/// The latest message of the thread whose root is `root` (a Matrix event
+/// id), else the root: what a message sent to it answers by fallback.
+pub fn thread_latest(conn: &Connection, room: RoomId, root: &str) -> Result<String> {
+    Ok(conn
+        .query_row(
+            "SELECT event_id FROM matrix_event
+             WHERE room = ?1 AND rel_type = 'm.thread' AND relates_to = ?2
+             ORDER BY pos DESC LIMIT 1",
+            params![room.0, root],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or_else(|| root.to_owned()))
+}
+
 /// The edits of the room's message `event` by its sender, oldest first.
 pub fn edits(tx: &Transaction, room: RoomId, event: RoomEventId) -> Result<Vec<RoomEvent>> {
     query_events(
@@ -1405,6 +1496,15 @@ fn query_events(
            ORDER BY e.ts DESC, e.event_id DESC LIMIT 1)
          WHERE t.room = ?1 AND t.event_id = ?2"
     ))?;
+    let mut thread = tx.prepare(&format!(
+        "SELECT count(*),
+                (SELECT e.event_id FROM matrix_event e
+                 WHERE e.room = t.room AND e.relates_to = t.event_id AND e.rel_type = 'm.thread'
+                   AND {LISTED}
+                 ORDER BY e.pos DESC LIMIT 1)
+         FROM matrix_event t JOIN matrix_event e ON e.room = t.room AND e.relates_to = t.event_id
+         WHERE t.id = ?1 AND e.rel_type = 'm.thread' AND {LISTED}"
+    ))?;
     let mut events = Vec::with_capacity(rows.len());
     for (mut event, reply_to) in rows {
         event.edit = latest_edit
@@ -1447,9 +1547,9 @@ fn query_events(
                 }),
             }
         }
-        if let Some(reply_to) = reply_to {
-            event.replied = replied
-                .query_row(params![room.0, reply_to], |r| {
+        let mut summed = |event_id: &str| {
+            replied
+                .query_row(params![room.0, event_id], |r| {
                     Ok(RepliedEvent {
                         id: RoomEventId(r.get(0)?),
                         event_id: r.get(1)?,
@@ -1461,7 +1561,18 @@ fn query_events(
                         body: r.get(7)?,
                     })
                 })
-                .optional()?;
+                .optional()
+        };
+        if let Some(reply_to) = reply_to {
+            event.replied = summed(&reply_to)?;
+        }
+        let (replies, latest): (u32, Option<String>) =
+            thread.query_row([event.id.0], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        if let Some(latest) = latest {
+            event.thread = Some(ThreadSummary {
+                replies,
+                latest: summed(&latest)?.expect("the thread's latest is stored"),
+            });
         }
         events.push(event);
     }

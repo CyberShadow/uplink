@@ -887,6 +887,7 @@ impl Backend for Services {
                 self.matrix.list_room_events(room, events).await
             }
             ClientRequest::ListEdits { room, event } => self.matrix.list_edits(room, event).await,
+            ClientRequest::ListThread { room, root } => self.matrix.list_thread(room, root).await,
             ClientRequest::ListMatrixSends { room } => self.matrix.list_sends(room).await,
             ClientRequest::SendMatrixMessage { room, content } => {
                 self.matrix.send_message(room, content).await

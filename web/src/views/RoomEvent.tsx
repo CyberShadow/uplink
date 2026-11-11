@@ -5,7 +5,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
 import { tinykeys } from 'tinykeys'
-import type { MatrixSend, MemberReceipt, Room, RoomEvent, RepliedEvent } from '../generated/protocol'
+import type { MatrixSend, MemberReceipt, Room, RoomEvent, RepliedEvent, ThreadSummary } from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus } from '../keymap'
 import { dateTime, time } from '../format'
@@ -49,6 +49,9 @@ export function EventRow(props: {
   pendingRedactions: ReadonlySet<string>
   reply: () => void
   edit: () => void
+  /** Opens the thread the event is the root of, or would be; `null` in
+   * a thread. */
+  openThread: (() => void) | null
 }) {
   const { room, event, me } = props
   const [source, setSource] = useState(false)
@@ -86,6 +89,9 @@ export function EventRow(props: {
   const joined = room.membership === 'joined'
   const editable = own && message && !event.redacted && TEXT.has(content.msgtype ?? '')
   const replyable = message && !event.redacted
+  // A message of a thread is no thread's root, even if its root is not
+  // stored.
+  const threadable = replyable && props.openThread !== null && content.content['m.relates_to']?.rel_type !== 'm.thread'
 
   return (
     <li class={classes.filter(Boolean).join(' ')} id={`event-${event.id}`}>
@@ -120,6 +126,9 @@ export function EventRow(props: {
             toggle={toggle}
           />
         )}
+        {event.thread !== null && props.openThread !== null && (
+          <ThreadSummaryButton room={room} summary={event.thread} open={props.openThread} />
+        )}
         {source && <pre class={styles.raw}>{pretty(event.raw)}</pre>}
       </div>
       <Readers room={room} readers={props.readers} />
@@ -128,6 +137,17 @@ export function EventRow(props: {
         {joined && replyable && (
           <button type="button" aria-label="Reply" title="Reply" onMouseDown={keepFocus} onClick={props.reply}>
             <Icon name="reply" />
+          </button>
+        )}
+        {joined && threadable && (
+          <button
+            type="button"
+            aria-label="Reply in thread"
+            title="Reply in thread"
+            onMouseDown={keepFocus}
+            onClick={props.openThread!}
+          >
+            <Icon name="messages-square" />
           </button>
         )}
         {joined && editable && (
@@ -228,8 +248,10 @@ function Body(props: { room: Room; event: RoomEvent; content: Shown; overlay: Ov
     )
   }
   const edited = event.edit !== null && <Edited room={room} event={event} />
-  const thread = event.kind === 'm.room.message' && content.content['m.relates_to']?.rel_type === 'm.thread'
-  const tag = thread && <span class={styles.tag}>in a thread</span>
+  // Of a thread whose root is not stored, which shows it.
+  const orphan =
+    event.kind === 'm.room.message' && event.thread_root === null && content.content['m.relates_to']?.rel_type === 'm.thread'
+  const tag = orphan && <span class={styles.tag}>in a thread</span>
   if (event.kind === 'm.sticker') {
     return <Media room={room} event={event} content={content} box={STICKER_BOX} />
   }
@@ -424,6 +446,21 @@ function ReplyPreview(props: { replied: RepliedEvent }) {
       <Icon name="reply" />
       <span style={{ color: senderColor(replied.sender) }}>{displayName(replied.sender, replied.sender_name)}</span>{' '}
       <span class={styles.quoted}>{body}</span>
+    </button>
+  )
+}
+
+/** Under a thread's root, as Element's: how many replies, and the latest. */
+function ThreadSummaryButton(props: { room: Room; summary: ThreadSummary; open: () => void }) {
+  const { latest, replies } = props.summary
+  const name = displayName(latest.sender, latest.sender_name)
+  return (
+    <button type="button" class={styles.threadSummary} onMouseDown={keepFocus} onClick={props.open}>
+      <Icon name="messages-square" />
+      <span class={styles.threadCount}>{replies === 1 ? '1 reply' : `${replies} replies`}</span>
+      <MemberAvatar room={props.room} user={latest.sender} name={name} />
+      <span style={{ color: senderColor(latest.sender) }}>{name}</span>
+      <span class={styles.quoted}>{latest.redacted ? 'Message deleted' : (latest.body ?? latest.kind)}</span>
     </button>
   )
 }

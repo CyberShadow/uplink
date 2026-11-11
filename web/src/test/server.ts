@@ -326,8 +326,29 @@ export class FakeServer implements Requester, Blobs {
       reactions: [],
       replied: null,
       html: null,
+      thread: null,
+      thread_root: null,
       ...event,
     }
+  }
+
+  /** A message of the thread whose root is `root` arrives: the root sums
+   * the thread up anew, as the server does. */
+  receiveInThread(room: RoomId, root: RoomEvent, event: Partial<RoomEvent>): RoomEvent {
+    const id = this.nextRoomEvent++
+    const full = this.event(id, { ...event, thread_root: root.id })
+    const events = this.events.get(room)!
+    events.push(full)
+    const replies = events.filter((e) => e.thread_root === root.id).length
+    const { event_id, sender, sender_name, kind, redacted, msgtype, body } = full
+    const latest = { id, event_id, sender, sender_name, kind, redacted, msgtype, body }
+    const at = events.findIndex((e) => e.id === root.id)
+    events[at] = { ...events[at], thread: { replies, latest } }
+    this.observe('mx', [
+      { type: 'timeline_added', room, events: [id] },
+      { type: 'timeline_changed', room, events: [root.id] },
+    ])
+    return full
   }
 
   receive(room: RoomId, event: Partial<RoomEvent>): RoomEvent {
@@ -710,6 +731,13 @@ export class FakeServer implements Requester, Blobs {
         }
       case 'list_edits':
         return { type: 'edits', as_of: this.head(), room: body.room, event: body.event, edits: this.edits.get(body.event) ?? [] }
+      case 'list_thread': {
+        const events = this.events.get(body.room)!
+        const root = events.find((e) => e.id === body.root && e.thread_root === null)
+        if (!root) throw new RequestError({ code: 'not_found', message: `no event ${body.root}` })
+        const replies = events.filter((e) => e.thread_root === root.id)
+        return { type: 'thread', as_of: this.head(), room: body.room, root, replies }
+      }
       case 'fill_gap': {
         const gaps = this.gaps.get(body.room) ?? []
         const gap = gaps.find((g) => g.id === body.gap)
@@ -950,7 +978,8 @@ export class FakeServer implements Requester, Blobs {
   }
 
   private timeline(room: RoomId, page: TimelinePage, limit: number) {
-    const all = this.events.get(room)!
+    // The main timeline's: those of threads are the threads'.
+    const all = this.events.get(room)!.filter((e) => e.thread_root === null)
     const pos = (id: RoomEventId) => all.find((e) => e.id === id)!.pos
     let events: RoomEvent[]
     switch (page.type) {

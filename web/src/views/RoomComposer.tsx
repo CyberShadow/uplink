@@ -1,7 +1,8 @@
-// The box to write to a room (SPEC §12.11): Markdown, and commands as
-// Element's (`/me`, `/plain`, `/invite`…), with completions of commands,
-// members and emoji; a reply to a message, or an edit of one's own (Up
-// edits the last); and files, attached, pasted or dropped, sent with it.
+// The box to write to a room or one of its threads (SPEC §12.11):
+// Markdown, and commands as Element's (`/me`, `/plain`, `/invite`…), with
+// completions of commands, members and emoji; a reply to a message, or an
+// edit of one's own (Up edits the last); and, but in a thread, files,
+// attached, pasted or dropped, sent with it.
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
 import type { Room, RoomEvent } from '../generated/protocol'
@@ -30,11 +31,13 @@ export function Composer(props: {
   setMode: (mode: Mode) => void
   /** The account's last message of text, which Up edits. */
   lastOwn: RoomEvent | null
-  /** Files to send with the message. */
-  files: readonly File[]
-  setFiles: (files: File[]) => void
+  /** Of a thread's box, the thread's root (a Matrix event id). */
+  thread: string | null
+  /** Files to send with the message, but in a thread. */
+  attachments: { files: readonly File[]; setFiles: (files: File[]) => void } | null
 }) {
-  const { room, mode, setMode, files, setFiles } = props
+  const { room, mode, setMode, thread } = props
+  const files = props.attachments?.files ?? NO_FILES
   const { matrix } = useServices()
   const me = matrix.accounts.value!.find((a) => a.id === room.account)!.mxid
   const [draft, setDraft] = useState('')
@@ -107,7 +110,7 @@ export function Composer(props: {
           return
         case 'message': {
           const { body, markdown, emote } = command
-          if (!(await matrix.send(room.id, message(body, { markdown, emote, reply_to })))) return
+          if (!(await matrix.send(room.id, message(body, { markdown, emote, reply_to, thread })))) return
           reply_to = null
           break
         }
@@ -132,10 +135,10 @@ export function Composer(props: {
       // Files go with a message, not with other commands.
       if (command.type !== 'message') return
     }
-    const sent = files
-    setFiles([])
     setMode({ type: 'new' })
-    await matrix.sendFiles(room.id, sent, reply_to)
+    if (files.length === 0) return
+    props.attachments!.setFiles([])
+    await matrix.sendFiles(room.id, files, reply_to)
   }
 
   return (
@@ -182,7 +185,7 @@ export function Composer(props: {
                 type="button"
                 aria-label={`Remove ${file.name}`}
                 onMouseDown={keepFocus}
-                onClick={() => setFiles(files.filter((_, j) => j !== i))}
+                onClick={() => props.attachments!.setFiles(files.filter((_, j) => j !== i))}
               >
                 ✕
               </button>
@@ -191,7 +194,7 @@ export function Composer(props: {
         </ul>
       )}
       <div class={styles.input}>
-        {editing === null && (
+        {editing === null && props.attachments !== null && (
           <>
             <button
               type="button"
@@ -210,7 +213,7 @@ export function Composer(props: {
               hidden
               aria-label="Files"
               onChange={(event) => {
-                setFiles([...files, ...event.currentTarget.files!])
+                props.attachments!.setFiles([...files, ...event.currentTarget.files!])
                 event.currentTarget.value = ''
                 props.textarea.current!.focus()
               }}
@@ -219,8 +222,8 @@ export function Composer(props: {
         )}
         <textarea
           ref={props.textarea}
-          aria-label={`Message ${room.name}`}
-          placeholder={editing ? 'Edit your message' : `Message ${room.name}`}
+          aria-label={thread !== null ? 'Reply in thread' : `Message ${room.name}`}
+          placeholder={editing ? 'Edit your message' : thread !== null ? 'Reply in thread' : `Message ${room.name}`}
           rows={1}
           value={value}
           onInput={(event) => {
@@ -244,9 +247,9 @@ export function Composer(props: {
           onClick={(event) => setCaret(event.currentTarget.selectionStart)}
           onPaste={(event) => {
             const pasted = [...(event.clipboardData?.files ?? [])]
-            if (pasted.length === 0 || editing) return
+            if (pasted.length === 0 || editing || props.attachments === null) return
             event.preventDefault()
-            setFiles([...files, ...pasted])
+            props.attachments.setFiles([...files, ...pasted])
           }}
           onKeyDown={(event) => {
             if (event.isComposing) return
@@ -291,6 +294,8 @@ export function Composer(props: {
 }
 
 function noop() {}
+
+const NO_FILES: readonly File[] = []
 
 /** Tells the room while the account types: renewed as it goes on, and
  * stopped once the box is emptied or sent, or the room left. */

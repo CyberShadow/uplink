@@ -52,6 +52,23 @@ describe('MatrixStore', () => {
     expect(server.requests.at(-1)).toEqual({ type: 'list_room_events', room: room.id, events: [first.id] })
   })
 
+  it('gives a thread the messages that turn out to be of it, and loads it again as it changes', async () => {
+    const room = server.addRoom('Lounge')
+    const root = server.receive(room.id, { body: 'root' })
+    // Listed in the main timeline while its root was not stored.
+    const early = server.receive(room.id, { body: 'early' })
+    await vi.waitFor(() => expect(bodies(room.id)).toEqual(['root', 'early']))
+    server.change(room.id, early, { thread_root: root.id })
+    await vi.waitFor(() => expect(bodies(room.id)).toEqual(['root']))
+
+    const thread = client.matrix.thread(room.id, root.id)
+    await vi.waitFor(() => expect(thread.state.value?.replies.map((e) => e.body)).toEqual(['early']))
+    server.receiveInThread(room.id, root, { body: 'later' })
+    await vi.waitFor(() => expect(thread.state.value?.replies.map((e) => e.body)).toEqual(['early', 'later']))
+    await vi.waitFor(() => expect(client.matrix.timeline(room.id).events.value?.[0].thread?.replies).toBe(2))
+    expect(bodies(room.id)).toEqual(['root'])
+  })
+
   it('loads every page synced while it was away', async () => {
     const room = server.addRoom('Lounge')
     server.receive(room.id, { body: 'first' })

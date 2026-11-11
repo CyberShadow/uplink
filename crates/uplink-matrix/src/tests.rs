@@ -779,6 +779,118 @@ mod relations {
         assert_eq!(ids(&events), ["$1", "$3"]);
     }
 
+    fn in_thread(
+        id: &str,
+        sender: &str,
+        root: &str,
+        reply_to: &str,
+        falling_back: bool,
+    ) -> serde_json::Value {
+        json!({ "type": "m.room.message", "event_id": id, "sender": sender,
+                "content": { "msgtype": "m.text", "body": id,
+                             "m.relates_to": { "rel_type": "m.thread", "event_id": root,
+                                               "is_falling_back": falling_back,
+                                               "m.in_reply_to": { "event_id": reply_to } } } })
+    }
+
+    #[tokio::test]
+    async fn threads_are_listed_apart_and_summed_up_by_their_roots() {
+        let db = Db::new();
+        // Of a thread whose root is not stored: in the main timeline.
+        db.sync_json(&[
+            in_thread("$2", "@bob:x", "$1", "$1", true),
+            text("$3", "@bob:x", "main"),
+        ])
+        .await;
+        assert_eq!(ids(&db.timeline().await), ["$2", "$3"]);
+        let orphan = db.timeline().await[0].id;
+        assert_eq!(db.timeline().await[0].thread_root, None);
+
+        // Its root arrives: the message goes to the thread.
+        let room = db.room().await.id;
+        let entry = db.sync_json(&[text("$1", "@bob:x", "root")]).await;
+        assert!(db
+            .events_of(entry)
+            .contains(&ServerEvent::TimelineChanged(TimelineChanged {
+                room,
+                events: vec![orphan],
+            })));
+        db.sync_json(&[
+            in_thread("$4", "@eve:x", "$1", "$2", true),
+            // Replying within the thread.
+            in_thread("$5", ME, "$1", "$2", false),
+        ])
+        .await;
+        let timeline = db.timeline().await;
+        assert_eq!(ids(&timeline), ["$3", "$1"]);
+        let root = &timeline[1];
+        let summary = root.thread.as_ref().unwrap();
+        assert_eq!(
+            (summary.replies, summary.latest.event_id.as_str()),
+            (3, "$5")
+        );
+        // Thread messages are not unread in the room.
+        assert_eq!(db.room().await.unread, 2);
+
+        let ServerResponse::Thread {
+            root: listed,
+            replies,
+            ..
+        } = db.matrix.list_thread(room, root.id).await.unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(listed.event_id, "$1");
+        assert_eq!(ids(&replies), ["$2", "$4", "$5"]);
+        assert!(replies.iter().all(|r| r.thread_root == Some(root.id)));
+        // A fallback is no reply; a reply within the thread is.
+        assert_eq!(replies[1].replied, None);
+        assert_eq!(replies[2].replied.as_ref().unwrap().event_id, "$2");
+        // Nor is a message of a thread one's root.
+        let reply = replies[0].id;
+        assert!(db.matrix.list_thread(room, reply).await.is_err());
+
+        // Sends to a thread: to its root, replying within it, or neither.
+        let to_thread = |thread: &str, reply_to: Option<&str>, replaces: Option<&str>| {
+            uplink_protocol::matrix::MatrixContent::Text {
+                body: "hi".into(),
+                markdown: true,
+                emote: false,
+                reply_to: reply_to.map(Into::into),
+                replaces: replaces.map(Into::into),
+                thread: Some(thread.into()),
+            }
+        };
+        for content in [
+            to_thread("$1", None, None),
+            to_thread("$1", Some("$4"), None),
+        ] {
+            db.matrix.send_message(room, content).await.unwrap();
+        }
+        for content in [
+            to_thread("$2", None, None),
+            to_thread("$1", Some("$3"), None),
+            to_thread("$1", None, Some("$5")),
+        ] {
+            let refused = db.matrix.send_message(room, content).await.unwrap_err();
+            assert_eq!(refused.code, uplink_protocol::ErrorCode::Invalid);
+        }
+
+        // Editing the latest changes the root's summary.
+        let entry = db.sync_json(&[edit("$6", ME, "$5", "edited")]).await;
+        let changed = db.events_of(entry);
+        assert!(
+            changed
+                .iter()
+                .any(|e| matches!(e, ServerEvent::TimelineChanged(c)
+                if c.events.contains(&root.id))),
+            "{changed:?}"
+        );
+        let timeline = db.timeline().await;
+        let latest = &timeline[1].thread.as_ref().unwrap().latest;
+        assert_eq!(latest.body.as_deref(), Some("edited"));
+    }
+
     #[test]
     fn redacting_follows_the_room_version_and_survives_non_canonical_json() {
         use matrix_sdk::ruma::RoomVersionId;
@@ -810,6 +922,7 @@ fn text(body: &str) -> uplink_protocol::matrix::MatrixContent {
         emote: false,
         reply_to: None,
         replaces: None,
+        thread: None,
     }
 }
 
@@ -821,6 +934,7 @@ fn messages_mention_the_users_they_link_and_whom_they_reply_to() {
         true,
         false,
         Some(("$q", "@carol:example.org")),
+        None,
         None,
     );
     assert_eq!(
@@ -844,6 +958,7 @@ fn messages_mention_the_users_they_link_and_whom_they_reply_to() {
         false,
         None,
         None,
+        None,
     );
     assert_eq!(
         plain,
@@ -860,6 +975,7 @@ fn messages_mention_the_users_they_link_and_whom_they_reply_to() {
         true,
         true,
         None,
+        None,
         Some("$e"),
     );
     assert_eq!(edit["body"], "* Bob!");
@@ -868,5 +984,40 @@ fn messages_mention_the_users_they_link_and_whom_they_reply_to() {
     assert_eq!(
         edit["m.new_content"]["m.mentions"],
         json!({ "user_ids": ["@bob:example.org"] })
+    );
+
+    // Of a thread: answering its latest by fallback, mentioning no one;
+    // or replying within it.
+    let fallback = text_content("hi", true, false, None, Some(("$root", "$latest")), None);
+    assert_eq!(
+        fallback["m.relates_to"],
+        json!({
+            "rel_type": "m.thread",
+            "event_id": "$root",
+            "is_falling_back": true,
+            "m.in_reply_to": { "event_id": "$latest" },
+        })
+    );
+    assert_eq!(fallback["m.mentions"], json!({}));
+    let reply = text_content(
+        "hi",
+        true,
+        false,
+        Some(("$q", "@carol:example.org")),
+        Some(("$root", "$latest")),
+        None,
+    );
+    assert_eq!(
+        reply["m.relates_to"],
+        json!({
+            "rel_type": "m.thread",
+            "event_id": "$root",
+            "is_falling_back": false,
+            "m.in_reply_to": { "event_id": "$q" },
+        })
+    );
+    assert_eq!(
+        reply["m.mentions"],
+        json!({ "user_ids": ["@carol:example.org"] })
     );
 }

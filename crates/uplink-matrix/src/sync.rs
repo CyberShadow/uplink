@@ -909,6 +909,7 @@ impl Sender {
                 emote,
                 reply_to,
                 replaces,
+                thread,
             } => {
                 // A reply mentions whom it answers, as the SDK's do.
                 let reply = match reply_to {
@@ -923,6 +924,19 @@ impl Sender {
                     }
                     None => None,
                 };
+                // Of a thread, it answers the thread's latest by fallback.
+                let thread = match thread {
+                    Some(root) => {
+                        let root = root.clone();
+                        let latest = read(&self.reader, {
+                            let root = root.clone();
+                            move |conn| rooms::thread_latest(conn, stored_room, &root)
+                        })
+                        .await?;
+                        Some((root, latest))
+                    }
+                    None => None,
+                };
                 let content = text_content(
                     body,
                     *markdown,
@@ -930,6 +944,9 @@ impl Sender {
                     reply
                         .as_ref()
                         .map(|(event, sender)| (*event, sender.as_str())),
+                    thread
+                        .as_ref()
+                        .map(|(root, latest)| (root.as_str(), latest.as_str())),
                     replaces.as_deref(),
                 );
                 room.send_raw("m.room.message", content)
@@ -1053,15 +1070,19 @@ impl Sender {
 
 /// The content of a message of text: Markdown, formatted as HTML if it
 /// formats anything, its links to users mentioning them (the plain body
-/// has their names); or else plain text. It may reply to an event, which
-/// mentions its sender, or edit one: the edit's own body, for clients
-/// that do not know edits, is the new one marked as such, and as the
-/// edited message mentioned whom it did, it mentions none anew.
+/// has their names); or else plain text. It may reply to an event
+/// (`reply_to`: the event and its sender), which mentions its sender; be
+/// of a thread (`thread`: its root, and its latest message, which it
+/// answers by fallback unless it replies to one); or edit a message: the
+/// edit's own body, for clients that do not know edits, is the new one
+/// marked as such, and as the edited message mentioned whom it did, it
+/// mentions none anew.
 pub fn text_content(
     body: &str,
     markdown: bool,
     emote: bool,
     reply_to: Option<(&str, &str)>,
+    thread: Option<(&str, &str)>,
     replaces: Option<&str>,
 ) -> serde_json::Value {
     let message = |body: &str, mentioned: &[&str]| {
@@ -1094,8 +1115,20 @@ pub fn text_content(
         }
         None => {
             let mut content = message(body, &replied);
-            if let Some((event, _)) = reply_to {
-                content["m.relates_to"] = json!({ "m.in_reply_to": { "event_id": event } });
+            let in_reply_to = |event: &str| json!({ "event_id": event });
+            match (thread, reply_to) {
+                (Some((root, latest)), reply_to) => {
+                    content["m.relates_to"] = json!({
+                        "rel_type": "m.thread",
+                        "event_id": root,
+                        "is_falling_back": reply_to.is_none(),
+                        "m.in_reply_to": in_reply_to(reply_to.map_or(latest, |(event, _)| event)),
+                    });
+                }
+                (None, Some((event, _))) => {
+                    content["m.relates_to"] = json!({ "m.in_reply_to": in_reply_to(event) });
+                }
+                (None, None) => {}
             }
             content
         }

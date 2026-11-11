@@ -760,6 +760,7 @@ fn text(body: &str) -> uplink_protocol::matrix::MatrixContent {
         emote: false,
         reply_to: None,
         replaces: None,
+        thread: None,
     }
 }
 
@@ -825,6 +826,7 @@ async fn replies_edits_reactions_redactions_and_files() {
         emote: false,
         reply_to: Some(hello.event_id.clone()),
         replaces: None,
+        thread: None,
     })
     .await;
     let reply = timeline.last().unwrap().clone();
@@ -840,6 +842,7 @@ async fn replies_edits_reactions_redactions_and_files() {
         emote: false,
         reply_to: None,
         replaces: Some(reply.event_id.clone()),
+        thread: None,
     })
     .await;
     let edited = find(&timeline, &reply.event_id);
@@ -847,6 +850,38 @@ async fn replies_edits_reactions_redactions_and_files() {
         serde_json::from_str(&edited.edit.as_ref().unwrap().content).unwrap();
     assert_eq!(content["body"], "hi again");
     assert_eq!(timeline.last().unwrap().event_id, reply.event_id, "folded");
+
+    // Into a thread on the reply, twice: the second answers the first by
+    // fallback.
+    for body in ["threaded", "threaded again"] {
+        send(MatrixContent::Text {
+            body: body.into(),
+            markdown: true,
+            emote: false,
+            reply_to: None,
+            replaces: None,
+            thread: Some(reply.event_id.clone()),
+        })
+        .await;
+    }
+    let timeline = uplink.timeline(&room).await;
+    let root = find(&timeline, &reply.event_id);
+    let summary = root.thread.as_ref().unwrap();
+    assert_eq!(summary.replies, 2);
+    assert_eq!(summary.latest.body.as_deref(), Some("threaded again"));
+    let uplink_protocol::ServerResponse::Thread { replies, .. } =
+        uplink.matrix.list_thread(room.id, root.id).await.unwrap()
+    else {
+        panic!()
+    };
+    let raw: serde_json::Value = serde_json::from_str(&replies[1].raw).unwrap();
+    assert_eq!(
+        raw["content"]["m.relates_to"],
+        serde_json::json!({ "rel_type": "m.thread", "event_id": reply.event_id,
+                            "is_falling_back": true,
+                            "m.in_reply_to": { "event_id": replies[0].event_id } })
+    );
+    assert!(!timeline.iter().any(|e| e.thread_root.is_some()));
 
     // A reaction, and taking it back.
     let timeline = send(MatrixContent::Reaction {

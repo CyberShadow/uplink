@@ -263,6 +263,11 @@ pub enum ClientRequest {
     ListMembers {
         room: RoomId,
     },
+    /// A thread: its root, and its messages.
+    ListThread {
+        room: RoomId,
+        root: RoomEventId,
+    },
     /// Creates a room, which the account joins. Answered once the
     /// homeserver has; sync then brings it.
     CreateMatrixRoom {
@@ -418,6 +423,13 @@ pub enum ServerResponse {
         event: RoomEventId,
         edits: Vec<matrix::RoomEvent>,
     },
+    /// Of `ListThread`: its messages, oldest first.
+    Thread {
+        as_of: TxLogId,
+        room: RoomId,
+        root: Box<matrix::RoomEvent>,
+        replies: Vec<matrix::RoomEvent>,
+    },
     MatrixSends {
         as_of: TxLogId,
         room: RoomId,
@@ -471,6 +483,7 @@ impl ServerResponse {
             | Self::Timeline { as_of, .. }
             | Self::RoomEvents { as_of, .. }
             | Self::Edits { as_of, .. }
+            | Self::Thread { as_of, .. }
             | Self::MatrixSends { as_of, .. }
             | Self::Todos { as_of, .. }
             | Self::Events { as_of, .. }

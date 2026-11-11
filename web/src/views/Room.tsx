@@ -1,7 +1,8 @@
 // A Matrix room (SPEC §9, §12.11), laid out as IRC clients do, and as
 // Element's IRC layout: a line per event, its time, sender and body side
 // by side; days apart; a line where the unread begin. Messages being
-// sent follow, and the box to write one.
+// sent follow, and the box to write one. Beside it, a panel: the room's
+// info, or a thread.
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import type {
@@ -25,6 +26,7 @@ import { TEXT, displayName, sendSummary, shown } from '../matrix'
 import { EventRow, MembershipRun, type Overlay } from './RoomEvent'
 import { Composer, type Mode } from './RoomComposer'
 import { RoomInfo } from './RoomInfo'
+import { ThreadPanel } from './RoomThread'
 
 export function roomPath(room: number): string {
   return `/rooms/${room}`
@@ -52,11 +54,11 @@ function Timeline(props: { room: Room }) {
   // the marker, but not the line, while it is on show.
   const [readUpTo] = useState(room.read_up_to)
   const [files, setFiles] = useState<File[]>([])
-  const [info, setInfo] = useState(false)
+  const [panel, setPanel] = useState<Panel>(null)
   useKeymap({ reply: () => composer.current?.focus() })
   useMarkRead(room, events)
 
-  const [overlay, outgoing] = useMemo(() => overlaid(events ?? [], sends ?? []), [events, sends])
+  const [overlay, outgoing] = useMemo(() => overlaid(events ?? [], sends ?? [], null), [events, sends])
   const receipts = timeline.receipts.value
   const readers = useMemo(() => readersByEvent(events ?? [], receipts), [events, receipts])
   const gaps = timeline.gaps.value
@@ -101,9 +103,9 @@ function Timeline(props: { room: Room }) {
             <button
               type="button"
               class={styles.link}
-              aria-expanded={info}
+              aria-expanded={panel?.type === 'info'}
               onMouseDown={keepFocus}
-              onClick={() => setInfo(!info)}
+              onClick={() => setPanel(panel?.type === 'info' ? null : { type: 'info' })}
             >
               {room.joined_members === 1 ? '1 member' : `${room.joined_members} members`}
             </button>
@@ -128,57 +130,16 @@ function Timeline(props: { room: Room }) {
               </li>
             )}
             {events === null && <li class={styles.muted}>Loading…</li>}
-            {list.map((row) => {
-              switch (row.type) {
-                case 'day':
-                  return (
-                    <li key={row.key} class={styles.day} role="separator">
-                      <span>{row.date}</span>
-                    </li>
-                  )
-                case 'unread':
-                  return (
-                    <li key={row.key} class={styles.unread} role="separator" aria-label="New messages">
-                      <span>New</span>
-                    </li>
-                  )
-                case 'members':
-                  return <MembershipRun key={row.key} room={room} events={row.events} />
-                case 'gap': {
-                  const filling = timeline.filling.value.has(row.gap)
-                  return (
-                    <li key={row.key} class={styles.gap} role="separator" aria-label="Events missing">
-                      <span>Earlier events are missing here.</span>
-                      <button
-                        type="button"
-                        disabled={filling}
-                        onMouseDown={keepFocus}
-                        onClick={() => timeline.fill(row.gap)}
-                      >
-                        {filling ? 'Fetching…' : 'Fetch them'}
-                      </button>
-                    </li>
-                  )
-                }
-                case 'event':
-                  return (
-                    <EventRow
-                      key={row.key}
-                      room={room}
-                      event={row.event}
-                      me={me}
-                      overlay={overlay.get(row.event.event_id)}
-                      readers={readers.get(row.event.id) ?? NO_READERS}
-                      pendingRedactions={overlay.redacted}
-                      reply={() => act({ type: 'reply', event: row.event })}
-                      edit={() => act({ type: 'edit', event: row.event })}
-                    />
-                  )
-              }
-            })}
-            {outgoing.map((item) => (
-              <Pending key={item.id} item={item} />
-            ))}
+            <Events
+              room={room}
+              me={me}
+              rows={list}
+              overlay={overlay}
+              outgoing={outgoing}
+              readers={readers}
+              act={act}
+              openThread={(root) => setPanel({ type: 'thread', root })}
+            />
           </ol>
         </div>
         <Typing users={timeline.typing.value} />
@@ -189,13 +150,87 @@ function Timeline(props: { room: Room }) {
             mode={mode}
             setMode={setMode}
             lastOwn={lastOwn}
-            files={files}
-            setFiles={setFiles}
+            thread={null}
+            attachments={{ files, setFiles }}
           />
         )}
       </section>
-      {info && <RoomInfo room={room} close={() => setInfo(false)} />}
+      {panel?.type === 'info' && <RoomInfo room={room} close={() => setPanel(null)} />}
+      {panel?.type === 'thread' && (
+        <ThreadPanel key={panel.root} room={room} root={panel.root} me={me} close={() => setPanel(null)} />
+      )}
     </div>
+  )
+}
+
+/** What shows beside the timeline, if anything. */
+type Panel = null | { type: 'info' } | { type: 'thread'; root: RoomEventId }
+
+/** The rows of a timeline, or a thread, and the sends that follow. */
+export function Events(props: {
+  room: Room
+  me: string
+  rows: readonly Row[]
+  overlay: Overlays
+  outgoing: readonly MatrixSend[]
+  readers: ReadonlyMap<RoomEventId, readonly MemberReceipt[]>
+  act: (mode: Mode) => void
+  /** Of the main timeline, opens a thread by its root. */
+  openThread: ((root: RoomEventId) => void) | null
+}) {
+  const { room, me, overlay, act, openThread } = props
+  const { matrix } = useServices()
+  const timeline = matrix.timeline(room.id)
+  return (
+    <>
+      {props.rows.map((row) => {
+        switch (row.type) {
+          case 'day':
+            return (
+              <li key={row.key} class={styles.day} role="separator">
+                <span>{row.date}</span>
+              </li>
+            )
+          case 'unread':
+            return (
+              <li key={row.key} class={styles.unread} role="separator" aria-label="New messages">
+                <span>New</span>
+              </li>
+            )
+          case 'members':
+            return <MembershipRun key={row.key} room={room} events={row.events} />
+          case 'gap': {
+            const filling = timeline.filling.value.has(row.gap)
+            return (
+              <li key={row.key} class={styles.gap} role="separator" aria-label="Events missing">
+                <span>Earlier events are missing here.</span>
+                <button type="button" disabled={filling} onMouseDown={keepFocus} onClick={() => timeline.fill(row.gap)}>
+                  {filling ? 'Fetching…' : 'Fetch them'}
+                </button>
+              </li>
+            )
+          }
+          case 'event':
+            return (
+              <EventRow
+                key={row.key}
+                room={room}
+                event={row.event}
+                me={me}
+                overlay={overlay.get(row.event.event_id)}
+                readers={props.readers.get(row.event.id) ?? NO_READERS}
+                pendingRedactions={overlay.redacted}
+                reply={() => act({ type: 'reply', event: row.event })}
+                edit={() => act({ type: 'edit', event: row.event })}
+                openThread={openThread && (() => openThread(row.event.id))}
+              />
+            )
+        }
+      })}
+      {props.outgoing.map((item) => (
+        <Pending key={item.id} item={item} />
+      ))}
+    </>
   )
 }
 
@@ -216,6 +251,7 @@ function Typing(props: { users: readonly RoomMember[] }) {
 }
 
 const NO_READERS: readonly MemberReceipt[] = []
+export const NO_READERS_BY_EVENT: ReadonlyMap<RoomEventId, readonly MemberReceipt[]> = new Map()
 
 /** Members' receipts by the loaded event each shows on: the last listed
  * at or before the event it is for (which may not be listed itself, as a
@@ -235,7 +271,7 @@ export function readersByEvent(
   return byEvent
 }
 
-type Row =
+export type Row =
   | { type: 'day'; key: string; date: string }
   | { type: 'unread'; key: string }
   | { type: 'event'; key: string; event: RoomEvent }
@@ -294,8 +330,13 @@ export function rows(
 /** Sends that change what loaded events show — reactions, edits and
  * deletions — are shown on those, as Element does, while they go out.
  * Those that need a decision (refused, or sent though cancelled) are
- * listed with the room's other sends, at the end, with their buttons. */
-function overlaid(events: readonly RoomEvent[], sends: readonly MatrixSend[]): [Overlays, MatrixSend[]] {
+ * listed with the room's other sends to `thread` (a root's Matrix id, or
+ * `null`: the main timeline), at the end, with their buttons. */
+export function overlaid(
+  events: readonly RoomEvent[],
+  sends: readonly MatrixSend[],
+  thread: string | null,
+): [Overlays, MatrixSend[]] {
   const loaded = new Set<string>()
   for (const event of events) {
     loaded.add(event.event_id)
@@ -313,7 +354,7 @@ function overlaid(events: readonly RoomEvent[], sends: readonly MatrixSend[]): [
           : null
     const decided = item.wanted && item.state !== 'refused'
     if (target === null || !decided || !loaded.has(target)) {
-      outgoing.push(item)
+      if ((content.type === 'text' ? content.thread : null) === thread) outgoing.push(item)
       continue
     }
     if (content.type === 'redaction') overlays.redacted.add(target)
@@ -323,7 +364,7 @@ function overlaid(events: readonly RoomEvent[], sends: readonly MatrixSend[]): [
 }
 
 /** Of each loaded event, the sends going out that change it. */
-class Overlays {
+export class Overlays {
   private byTarget = new Map<string, MatrixSend[]>()
   /** Events, and reactions, being deleted. */
   readonly redacted = new Set<string>()

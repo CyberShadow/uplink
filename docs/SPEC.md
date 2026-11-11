@@ -818,8 +818,9 @@ than it buffers is closed; the client reconnects and resumes.
   (§9.2); `ListRoomEvents { room, events }` — those of the events the
   timeline lists, as it lists them (for `TimelineChanged`);
   `ListEdits { room, event }` — a message's edits, oldest first, for its
-  edit history; `ListMatrixSends { room }`: its sends not yet synced
-  back, for the end of the timeline.
+  edit history; `ListThread { room, root }` — a thread (§9.2);
+  `ListMatrixSends { room }`: its sends not yet synced back, for the end
+  of the timeline.
 - `Undo { tx_log_id }`; `ListHistory { before, limit }` — the user's
   ops, newest first, each with the entry that undid it, if any (§6.3).
 - `ListDrafts` — all drafts. `ListOutbox` — per account, its push
@@ -1653,8 +1654,21 @@ with its latest edit, for the reply to show. A sync that adds or
 redacts relations names the events they change as `TimelineChanged`,
 which clients load again (`ListRoomEvents`). Pages count only the
 events listed; so does the unread count, which skips redacted messages
-too. Threads (`m.thread`) are listed in the room's timeline, as replies
-to their root.
+too.
+
+**Threads.** A message of a thread (`m.thread`) whose root is stored is
+the thread's, not the main timeline's (`thread_root` names the root):
+the thread lists it (`ListThread { room, root }`: the root, and its
+messages in timeline order), and neither pages nor the unread count
+count it. The root sums its thread up (`thread`: how many messages,
+and the latest, as a reply shows what it answers). A thread message's
+fallback reply (`is_falling_back`, to the thread's latest, for clients
+that do not know threads) is no reply; a reply within the thread is.
+Of a thread whose root is not stored (not yet fetched), messages are
+listed in the main timeline, marked as of a thread; once the root is
+stored, `TimelineChanged` names them, and clients find them the
+thread's. A thread's root changes (`TimelineChanged`) as messages are
+added to the thread, and as its latest is edited or redacted.
 
 **HTML.** A message's HTML `formatted_body` (and its latest edit's) is
 listed sanitized, as mail's is (§8.9), by the server: the tags and
@@ -1714,7 +1728,11 @@ JSON since V0026) is one of:
   spec no longer asks for), mentioning its sender, or edit one of the
   account's own messages (`m.replace`, with `m.new_content`, which
   mentions whom it does, and `* ` before the body for clients that do
-  not know edits; the edit itself mentions no one anew);
+  not know edits; the edit itself mentions no one anew). It may be of a
+  thread (`thread`: the root, a stored event of no thread; not an
+  edit): `m.thread`, replying to the root or a message of the thread if
+  it does, else to the thread's latest message as a fallback
+  (`is_falling_back`), as the spec asks;
 - a **reaction** to a stored event (`m.reaction`, `m.annotation`);
 - a **redaction** of a stored event not yet redacted (deleting a
   message, or taking a reaction back), through the redaction endpoint,
@@ -1863,15 +1881,12 @@ which a verified device gives.
 
 ### 9.6 What we deliberately don't do
 
-- No thread view: threads are listed in the room's timeline (§9.2).
-- No room creation, no inviting others, and no joining rooms one is not
-  invited to (by id or alias); invitations are joined or declined, and
-  rooms left (§9.7).
 - No verifying other users, nor by QR code (§9.4). No setting up
   cross-signing, Secret Storage or a key backup, nor renaming or signing
   out devices: another client does.
-- No moderation UI (kick/ban, deleting others' messages): one deletes
-  one's own messages only.
+- No deleting others' messages: one deletes one's own only (members are
+  removed and banned, §12.11).
+- No files sent to a thread: its box sends text.
 
 ### 9.7 Joining and leaving
 
@@ -2294,8 +2309,15 @@ the membership's buttons.
   128×128), by their thumbnail; a click opens the full one. Video and
   audio play inline; other files are links that download them, with
   their size. A location links to OpenStreetMap. A reply shows what it
-  answers above it, a click scrolling to it; a message of a thread is
-  marked so. Deleted messages say so, with the reason; undecryptable
+  answers above it, a click scrolling to it; a message of a thread
+  whose root is not stored is marked so. A thread's root shows, under
+  it, how many replies it has and the latest, a click opening the
+  thread in a panel beside the timeline, as Element's: the root, the
+  thread's messages and those being sent to it, and a box to write to
+  it (text, with replies within the thread, edits and commands, as the
+  room's). Any message not of a thread starts one, by its "Reply in
+  thread" button. One panel shows at a time: the room's info, or a
+  thread. Deleted messages say so, with the reason; undecryptable
   ones too. Any other message type shows its `body`.
 - **State events** are summarized after the sender's name ("Alice
   joined", "changed the topic to …"); three or more membership changes

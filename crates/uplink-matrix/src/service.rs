@@ -720,6 +720,25 @@ impl Matrix {
             .await
     }
 
+    /// The thread whose root is `root`, which the main timeline lists.
+    pub async fn list_thread(&self, room: RoomId, root: RoomEventId) -> Response {
+        self.reader
+            .read(move |conn| {
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
+                let (root, replies) = rooms::thread(&tx, room, root)
+                    .map_err(internal)?
+                    .ok_or_else(|| no_event(room, root))?;
+                Ok(ServerResponse::Thread {
+                    as_of,
+                    room,
+                    root: Box::new(root),
+                    replies,
+                })
+            })
+            .await
+    }
+
     /// The room's sends not yet reconciled, for the end of its timeline.
     pub async fn list_sends(&self, room: RoomId) -> Response {
         self.reader
@@ -816,10 +835,27 @@ impl Matrix {
                 };
                 match &checked {
                     MatrixContent::Text {
-                        reply_to, replaces, ..
+                        reply_to,
+                        replaces,
+                        thread,
+                        ..
                     } => {
-                        if let Some(reply_to) = reply_to {
-                            event(reply_to)?;
+                        let replied = reply_to.as_deref().map(event).transpose()?;
+                        if let Some(root) = thread {
+                            let invalid = |message: String| Err(error(ErrorCode::Invalid, message));
+                            if event(root)?.rel_type.as_deref() == Some("m.thread") {
+                                return invalid(format!("{root} is of a thread, not its root"));
+                            }
+                            if replaces.is_some() {
+                                return invalid("an edit is of no thread".into());
+                            }
+                            if let (Some(reply_to), Some(replied)) = (reply_to, &replied) {
+                                let of_thread = replied.rel_type.as_deref() == Some("m.thread")
+                                    && replied.relates_to.as_ref() == Some(root);
+                                if reply_to != root && !of_thread {
+                                    return invalid(format!("{reply_to} is not of thread {root}"));
+                                }
+                            }
                         }
                         if let Some(replaces) = replaces {
                             let edited = event(replaces)?;

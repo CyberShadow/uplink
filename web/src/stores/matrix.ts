@@ -42,6 +42,8 @@ export class MatrixStore {
   private timelines = new Map<RoomId, Timeline>()
   private securities = new Map<string, Security>()
   private memberLists = new Map<RoomId, Members>()
+  /** By room, then by root. */
+  private threads = new Map<RoomId, Map<RoomEventId, Thread>>()
   private roomLoader = new Loader(async () => {
     const response = await this.query({ type: 'list_rooms' }, 'rooms')
     if (!response) return
@@ -59,10 +61,15 @@ export class MatrixStore {
     for (const timeline of this.timelines.values()) timeline.reset()
     for (const security of this.securities.values()) security.changed()
     for (const members of this.memberLists.values()) members.changed()
+    for (const threads of this.threads.values()) for (const thread of threads.values()) thread.changed()
   }
 
   apply(entry: LogEntry) {
     for (const event of entry.events) {
+      if (event.type === 'timeline_added' || event.type === 'timeline_filled' || event.type === 'timeline_changed') {
+        // Any may be of a thread, or change its root.
+        for (const thread of this.threads.get(event.room)?.values() ?? []) thread.changed()
+      }
       switch (event.type) {
         case 'rooms_changed':
           this.roomLoader.invalidate()
@@ -139,6 +146,21 @@ export class MatrixStore {
       this.memberLists.set(room, members)
     }
     return members
+  }
+
+  /** The thread of the room whose root is `root`, loaded on first use. */
+  thread(room: RoomId, root: RoomEventId): Thread {
+    let threads = this.threads.get(room)
+    if (!threads) {
+      threads = new Map()
+      this.threads.set(room, threads)
+    }
+    let thread = threads.get(root)
+    if (!thread) {
+      thread = new Thread(room, root, this.server)
+      threads.set(root, thread)
+    }
+    return thread
   }
 
   /** The room's timeline, loaded from its latest events on first use. */
@@ -305,7 +327,8 @@ export class Timeline {
     const response = filled.events.length > 0 ? await this.loadEvents(filled.events) : null
     const events = this.events.value
     if (!events) return
-    this.events.value = merged(events, response?.events ?? [])
+    // Those of threads are the threads'.
+    this.events.value = merged(events, response?.events.filter((e) => e.thread_root === null) ?? [])
     this.gaps.value = [...this.gaps.value.filter((g) => g.id !== filled.gap), ...(filled.left ? [filled.left] : [])]
   }
 
@@ -328,9 +351,10 @@ export class Timeline {
     const response = await this.loadEvents(ids)
     if (!response) return
     // Those not answered are no longer listed (one decrypted late may be
-    // a reaction).
+    // a reaction), and those of a thread whose root arrived are the
+    // thread's.
     const fresh = new Map<RoomEventId, RoomEvent | null>(ids.map((id) => [id, null]))
-    for (const event of response.events) fresh.set(event.id, event)
+    for (const event of response.events) if (event.thread_root === null) fresh.set(event.id, event)
     for (const id of fresh.keys()) {
       // Of loads in flight together, the one reflecting more of the log
       // wins, whichever is answered last.
@@ -407,6 +431,39 @@ export class Timeline {
     } finally {
       this.loadingEarlier = false
     }
+  }
+}
+
+/** A thread: its root, and its messages, oldest first, as its client
+ * has them: loaded again whenever the room's timeline changes. */
+export class Thread {
+  /** `null` until loaded. */
+  readonly state = signal<{ root: RoomEvent; replies: readonly RoomEvent[] } | null>(null)
+  readonly error = signal<string | null>(null)
+  private loader = new Loader(async () => {
+    try {
+      const { root, replies } = await query(
+        this.server,
+        { type: 'list_thread', room: this.room, root: this.root },
+        'thread',
+      )
+      this.state.value = { root, replies }
+      this.error.value = null
+    } catch (error) {
+      this.error.value = (error as Error).message
+    }
+  })
+
+  constructor(
+    readonly room: RoomId,
+    readonly root: RoomEventId,
+    private readonly server: Requester,
+  ) {
+    this.loader.invalidate()
+  }
+
+  changed() {
+    this.loader.invalidate()
   }
 }
 

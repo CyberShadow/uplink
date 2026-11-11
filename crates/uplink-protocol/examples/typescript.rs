@@ -113,6 +113,7 @@ fn main() {
         Reaction,
         Reactor,
         RepliedEvent,
+        ThreadSummary,
         TimelinePage,
         MatrixSendState,
         MatrixContent,
