@@ -57,6 +57,7 @@ export type Action =
   | 'weekView'
   | 'agendaView'
   | 'search'
+  | 'switch'
   | 'help'
 
 export interface Binding {
@@ -118,6 +119,7 @@ export const KEYMAP: Binding[] = [
   { action: 'weekView', keys: ['w'], label: 'w', help: 'Week view (in the calendar)' },
   { action: 'agendaView', keys: ['a'], label: 'a', help: 'Agenda view (in the calendar)' },
   { action: 'search', keys: ['/'], label: '/', help: 'Search' },
+  { action: 'switch', keys: ['$mod+k'], label: 'Ctrl+K', help: 'Switch to a view or room, the most recent first (also while typing)' },
   { action: 'help', keys: ['[Shift]+?'], label: '?', help: 'Keyboard shortcuts' },
 ]
 
@@ -128,7 +130,8 @@ export function keepFocus(event: MouseEvent) {
 }
 
 /** Binds `actions` to their keys while the component is mounted: on the
- * window, where typing in a field does not trigger them, or on `within`,
+ * window, where typing in a field does not trigger them (but for presses
+ * with Ctrl or Cmd held), or on `within`,
  * where it does. The window's bindings, from every component, make up
  * one keymap, so that a sequence's first press (`g`) keeps a shorter
  * binding of its second (`s`) from firing too. */
@@ -188,7 +191,11 @@ window.addEventListener(
       const target = event.target as Element
       return (
         event.isComposing ||
-        (target !== event.currentTarget && target.matches('[contenteditable],input,select,textarea'))
+        // What is typed into a field is its own; but not Ctrl or Cmd held.
+        (!event.ctrlKey &&
+          !event.metaKey &&
+          target !== event.currentTarget &&
+          target.matches('[contenteditable],input,select,textarea'))
       )
     },
   ),

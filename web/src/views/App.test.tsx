@@ -889,6 +889,53 @@ describe('matrix', () => {
   })
 })
 
+describe('switcher', () => {
+  beforeEach(() => localStorage.removeItem('uplink.recent'))
+
+  const options = () =>
+    within(screen.getByRole('listbox', { name: 'Views' }))
+      .getAllByRole('option')
+      .map((o) => o.textContent)
+
+  it('switches to the view visited before, with Ctrl+K Enter, even while typing', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const user = await start('/mail/work/INBOX')
+    await user.click(await within(screen.getByRole('navigation')).findByRole('link', { name: 'Lounge' }))
+    await screen.findByRole('list', { name: 'Timeline' })
+    // From the room's composer.
+    await user.click(screen.getByRole('textbox', { name: /message/i }))
+    await user.keyboard('{Control>}k{/Control}')
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Filter views' }))
+    // The most recent first, the one on show last; then the nav's order.
+    expect(options()[0]).toBe('Inboxwork@example.com')
+    expect(options().at(-1)).toBe(`LLounge${ME}`)
+    await user.keyboard('{Enter}')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(location.pathname).toBe('/mail/work/INBOX')
+    expect(localStorage.getItem('uplink.recent')).toBe(JSON.stringify(['/mail/work/INBOX', `/rooms/${room.id}`]))
+
+    await user.keyboard('{Control>}k{/Control}')
+    expect(options()[0]).toBe(`LLounge${ME}`)
+    // Ctrl+K again closes it.
+    await user.keyboard('{Control>}k{/Control}')
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('filters by every word typed, of the name or the account', async () => {
+    server.addAccount('home', ['Projects'])
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('{Control>}k{/Control}')
+    await user.keyboard('proj')
+    expect(options()).toEqual(['Projectswork@example.com', 'Projectshome@example.com'])
+    await user.keyboard(' home{ArrowDown}{ArrowUp}{Enter}')
+    const nav = screen.getByRole('navigation')
+    const current = nav.querySelector('[aria-current=page]')!
+    expect(current.textContent).toBe('Projects')
+    expect(current.closest('section')!.textContent).toContain('home@example.com')
+  })
+})
+
 describe('to-dos', () => {
   const todoTitles = () =>
     within(screen.getByRole('list', { name: 'To-do list' }))

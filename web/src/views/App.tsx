@@ -18,6 +18,7 @@ import { NoticeBar } from './NoticeBar'
 import { RoomView } from './Room'
 import { composePath, Drafts, Outbox } from './Outgoing'
 import { SearchBox } from './SearchBox'
+import { RecordVisits, Switcher } from './Switcher'
 import { Todos } from './Todos'
 import styles from './App.module.css'
 
@@ -39,6 +40,7 @@ function Shell() {
   const { route, path } = useLocation()
   const [help, setHelp] = useState(false)
   const [goingToLabel, setGoingToLabel] = useState(false)
+  const [switching, setSwitching] = useState(false)
   // Narrow, the nav is a drawer; going anywhere closes it.
   const [navOpen, setNavOpen] = useState(false)
   useEffect(() => setNavOpen(false), [path])
@@ -77,6 +79,7 @@ function Shell() {
       if (draft) route(composePath(draft))
     },
     search: () => document.querySelector<HTMLInputElement>('input[type=search]')?.focus(),
+    switch: () => setSwitching((shown) => !shown),
     help: () => setHelp((shown) => !shown),
   })
 
@@ -124,7 +127,9 @@ function Shell() {
         </Router>
       </main>
       <NoticeBar />
+      <RecordVisits />
       {help && <Help close={() => setHelp(false)} />}
+      {switching && <Switcher close={() => setSwitching(false)} />}
       {goingToLabel && (
         <GoToLabel
           account={mail.accounts.value!.find((a) => a.id === account())!}

@@ -1,77 +1,36 @@
-import { useLayoutEffect, useRef, useState } from 'preact/hooks'
 import type { Account, Label } from '../generated/protocol'
 import type { Thread } from '../stores/mail'
 import { useServices } from '../context'
 import { labelName, navLabels } from './Nav'
+import { type Check, Picker } from './Picker'
 import styles from './Overlay.module.css'
 
-type Check = 'all' | 'some' | 'none'
-
 /** A filterable list of an account's labels, one to choose. */
-function Picker(props: {
+function LabelsPicker(props: {
   account: Account
   name: string
   placeholder: string
   labels: Label[]
-  /** Shows a checkbox per label. */
   check?: (label: Label) => Check
   choose: (label: Label) => void
   close: () => void
 }) {
-  const [filter, setFilter] = useState('')
-  const [highlight, setHighlight] = useState(0)
-  const input = useRef<HTMLInputElement>(null)
-  // At once, not after paint: keys typed right after the shortcut are the
-  // filter's.
-  useLayoutEffect(() => input.current?.focus(), [])
-
-  const labels = props.labels.filter((l) => labelName(props.account, l).toLowerCase().includes(filter.toLowerCase()))
-  const choose = (label: Label) => {
-    props.choose(label)
-    props.close()
-  }
-  const { check } = props
-
+  const name = (label: Label) => labelName(props.account, label)
   return (
-    <div class={styles.backdrop} onClick={props.close}>
-      <div class={styles.dialog} role="dialog" aria-label={props.name} onClick={(event) => event.stopPropagation()}>
-        <input
-          ref={input}
-          class={styles.filter}
-          placeholder={props.placeholder}
-          aria-label="Filter labels"
-          value={filter}
-          onInput={(event) => {
-            setFilter(event.currentTarget.value)
-            setHighlight(0)
-          }}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape') props.close()
-            else if (event.key === 'ArrowDown') setHighlight((h) => Math.min(h + 1, labels.length - 1))
-            else if (event.key === 'ArrowUp') setHighlight((h) => Math.max(h - 1, 0))
-            else if (event.key === 'Enter' && labels[highlight]) choose(labels[highlight])
-            else return
-            event.preventDefault()
-          }}
-        />
-        <ul class={styles.options} role="listbox" aria-label="Labels">
-          {labels.map((label, index) => (
-            <li
-              key={label.id}
-              role="option"
-              aria-selected={index === highlight}
-              aria-checked={check && { all: true, some: 'mixed' as const, none: false }[check(label)]}
-              class={index === highlight ? styles.highlighted : undefined}
-              onClick={() => choose(label)}
-            >
-              {check && <span class={styles.check}>{{ all: '☑', some: '⊟', none: '☐' }[check(label)]}</span>}
-              {labelName(props.account, label)}
-            </li>
-          ))}
-          {labels.length === 0 && <li class={styles.empty}>No labels</li>}
-        </ul>
-      </div>
-    </div>
+    <Picker
+      name={props.name}
+      placeholder={props.placeholder}
+      filterName="Filter labels"
+      listName="Labels"
+      empty="No labels"
+      items={props.labels}
+      id={(label) => String(label.id)}
+      text={name}
+      render={name}
+      check={props.check}
+      choose={props.choose}
+      close={props.close}
+    />
   )
 }
 
@@ -104,7 +63,7 @@ export function LabelPicker(props: { targets: Thread[]; close: () => void }) {
     return having === 0 ? 'none' : having === props.targets.length ? 'all' : 'some'
   }
   return (
-    <Picker
+    <LabelsPicker
       account={account}
       name="Label"
       placeholder="Label as…"
@@ -129,7 +88,7 @@ export function MovePicker(props: { targets: Thread[]; from: string | null; clos
   const targets = folders ? [...system, ...user].filter((l) => l.folder) : [inbox, ...user]
   const from = targets.find((l) => l.external_id === props.from) ?? inbox
   return (
-    <Picker
+    <LabelsPicker
       account={account}
       name="Move to"
       placeholder="Move to…"
@@ -144,7 +103,7 @@ export function MovePicker(props: { targets: Thread[]; from: string | null; clos
 export function GoToLabel(props: { account: Account; go: (label: Label) => void; close: () => void }) {
   const { system, user } = navLabels(props.account)
   return (
-    <Picker
+    <LabelsPicker
       account={props.account}
       name="Go to label"
       placeholder="Go to label…"

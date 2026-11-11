@@ -49,6 +49,32 @@
   background: var(--focus);
 }
 
+.destination {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: min(480px, 80vw);
+}
+
+.destination svg {
+  flex: none;
+  color: var(--muted);
+}
+
+.destination .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.destination .account {
+  margin-left: auto;
+  padding-left: 16px;
+  color: var(--muted);
+  font-size: 0.9em;
+  white-space: nowrap;
+}
+
 .check {
   margin-right: 8px;
 }

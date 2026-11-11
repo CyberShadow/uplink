@@ -49,9 +49,34 @@ export function labelName(account: Account, label: Label): string {
 
 /** Gmail's icons for its system labels; one for user labels, and one for
  * Microsoft 365's own folders. */
-function labelIcon(label: Label): IconName {
+export function labelIcon(label: Label): IconName {
   if (label.system) return SYSTEM[label.external_id]!.icon
   return label.folder ? 'folder' : 'tag'
+}
+
+/** A view above the accounts. */
+export interface View {
+  href: string
+  icon: IconName
+  name: string
+}
+
+/** The views above the accounts: with more than one mail account, their
+ * Inboxes as one first. */
+export function views(accounts: readonly Account[]): View[] {
+  return [
+    ...(accounts.length > 1 ? [{ href: inboxPath(), icon: 'inbox' as const, name: 'All inboxes' }] : []),
+    { href: '/drafts', icon: 'file', name: 'Drafts' },
+    { href: '/outbox', icon: 'clock-arrow-up', name: 'Outbox' },
+    { href: '/history', icon: 'undo-2', name: 'History' },
+    { href: '/todos', icon: 'list-todo', name: 'To-dos' },
+    { href: '/calendar', icon: 'calendar', name: 'Calendar' },
+  ]
+}
+
+/** Whether `href`'s view, or something in it, is on show at `path`. */
+export function shows(path: string, href: string): boolean {
+  return path === href || path.startsWith(`${href}/`)
 }
 
 /** A first sync's progress as seen: messages stored, by when. */
@@ -191,7 +216,7 @@ export function Nav(props: { open: boolean }) {
   const { mail, drafts, matrix, todos } = useServices()
   const { path } = useLocation()
   const link = (href: string, lead: ComponentChildren, name: string, count: number, depth = 0, alert = false) => {
-    const current = path === href || path.startsWith(`${href}/`)
+    const current = shows(path, href)
     return (
       <a
         href={href}
@@ -307,27 +332,22 @@ export function Nav(props: { open: boolean }) {
       </li>
     )
   }
+  const outbox = drafts.outbox.value ?? []
+  const counts: Record<string, [number, boolean]> = {
+    [inboxPath()]: [mail.accounts.value?.reduce((unread, account) => unread + inboxUnread(account), 0) ?? 0, false],
+    '/drafts': [drafts.drafts.value?.size ?? 0, false],
+    '/outbox': [outboxCount(outbox), outboxNeedsAttention(outbox)],
+    '/history': [0, false],
+    '/todos': [todos.todos.value?.filter((t) => t.done_at === null).length ?? 0, false],
+    '/calendar': [0, false],
+  }
   return (
     <nav class={props.open ? `${styles.nav} ${styles.open}` : styles.nav}>
       <ul>
-        {(mail.accounts.value?.length ?? 0) > 1 &&
-          item(
-            inboxPath(),
-            'inbox',
-            'All inboxes',
-            mail.accounts.value!.reduce((unread, account) => unread + inboxUnread(account), 0),
-          )}
-        {item('/drafts', 'file', 'Drafts', drafts.drafts.value?.size ?? 0)}
-        {item(
-          '/outbox',
-          'clock-arrow-up',
-          'Outbox',
-          outboxCount(drafts.outbox.value ?? []),
-          outboxNeedsAttention(drafts.outbox.value ?? []),
-        )}
-        {item('/history', 'undo-2', 'History', 0)}
-        {item('/todos', 'list-todo', 'To-dos', todos.todos.value?.filter((t) => t.done_at === null).length ?? 0)}
-        {item('/calendar', 'calendar', 'Calendar', 0)}
+        {views(mail.accounts.value ?? []).map((view) => {
+          const [count, alert] = counts[view.href]!
+          return item(view.href, view.icon, view.name, count, alert)
+        })}
       </ul>
       {mail.accounts.value?.map((account) => (
         <Section

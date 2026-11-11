@@ -1894,6 +1894,16 @@ flagged messages); `gk` goes to the to-dos, where `j`/`k` move, `a`
 focuses the box that adds one, `e` marks done or not, `#` deletes, and
 `o`/`Enter` opens a flagged to-do's message, or renames any other (as
 double-clicking its title does).
+`Ctrl+K` (`Cmd+K` on macOS; not Gmail's) opens the switcher, a
+filterable picker of every view the nav links to: the views above the
+accounts, each account's labels and All Mail, and the Matrix rooms (not
+joined spaces, which show no view). Visiting one by any means records it
+(in the browser's `localStorage`, like the nav's folds); the picker lists
+the most recently visited first, then the rest in the nav's order, and
+the one on show last, so that `Ctrl+K Enter` goes back to the one
+before. The filter matches every word typed, in the name or the
+account's address. It works from within fields too: window bindings
+ignore what is typed into a field, but not presses with Ctrl or Cmd held.
 
 - **No global `z` for undo.** Undo lives in the history view and in the
   notice shown after each op. A global `z` would have to mean "undo the
