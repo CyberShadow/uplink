@@ -221,3 +221,8 @@ above in some `uplink.yaml`, then:
 UPLINK_TEST_GMAIL_CONFIG=path/to/uplink.yaml UPLINK_TEST_GMAIL_ACCOUNT=ID \
   cargo test -p uplink-email --test gmail_sync
 ```
+
+## License
+
+uplink is licensed under the [Apache License 2.0](LICENSE). Its code was
+written by AI (Claude, by Anthropic), directed and reviewed by a human.
