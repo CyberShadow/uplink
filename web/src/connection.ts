@@ -12,8 +12,13 @@ import type {
   WsClientMsg,
   WsServerMsg,
 } from './generated/protocol'
+import { PROTOCOL_VERSION } from './generated/protocol'
 
 export const PROTOCOL = 'uplink.v1'
+
+/** The server closes with it a connection whose hello says another
+ * protocol version than its own. */
+const CLOSE_PROTOCOL_VERSION = 4002
 export const HEARTBEAT_MS = 30_000
 export const BACKOFF_MS = [250, 500, 1_000, 2_000, 4_000, 8_000, 16_000, 30_000]
 
@@ -38,6 +43,10 @@ export interface Handlers {
   /** The client's state is void (the first connection, or the server
    * could not resume from the cursor): reload it. */
   reset(): void
+  /** The server speaks another version of the protocol: the page is of
+   * another build than the server's, and should load anew. The
+   * connection is not tried again. */
+  outdated(): void
   /** A log entry, replayed or live, in log order. */
   entry(entry: LogEntry): void
   /** A notice of the moment, live only (SPEC §5.5). */
@@ -169,9 +178,9 @@ export class Connection implements Requester {
 
   private connect() {
     this.ws = new WebSocket(this.url, PROTOCOL)
-    this.ws.onopen = () => this.post({ type: 'hello', since: this.cursor })
+    this.ws.onopen = () => this.post({ type: 'hello', version: PROTOCOL_VERSION, since: this.cursor })
     this.ws.onmessage = (event) => this.receive(JSON.parse(event.data as string) as WsServerMsg)
-    this.ws.onclose = () => this.onClose()
+    this.ws.onclose = (event) => (event.code === CLOSE_PROTOCOL_VERSION ? this.handlers.outdated() : this.onClose())
   }
 
   private receive(msg: WsServerMsg) {

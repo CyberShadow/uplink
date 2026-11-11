@@ -36,7 +36,7 @@ def session():
 
 
 async def hello(ws):
-    await ws.send(json.dumps({"type": "hello", "since": None}))
+    await ws.send(json.dumps({"type": "hello", "version": os.environ["UPLINK_PROTOCOL"], "since": None}))
     welcome = json.loads(await ws.recv())
     assert welcome["type"] == "welcome", welcome
 

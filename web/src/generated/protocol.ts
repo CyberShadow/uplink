@@ -9,6 +9,12 @@ export type TxLogId = number;
 
 export type WsClientMsg = { "type": "ping", seq: number, } | { "type": "hello", 
 /**
+ * The version of the protocol the client speaks
+ * ([`typescript::version`]); a server speaking another closes the
+ * connection, and the client loads anew.
+ */
+version: string, 
+/**
  * The last entry the client received on a previous connection, if
  * it wants to resume rather than load afresh.
  */
@@ -1111,3 +1117,6 @@ exception: boolean, };
  * An account's calendar changed.
  */
 export type CalendarChanged = { account: string, };
+
+/** Of these types: what `Hello` says the client speaks. */
+export const PROTOCOL_VERSION = "b9da61b3ae5d22b7"

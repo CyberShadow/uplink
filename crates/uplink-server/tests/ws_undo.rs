@@ -144,7 +144,8 @@ fn entry(msg: WsServerMsg) -> LogEntry {
 }
 
 async fn hello(ws: &mut Ws, since: Option<TxLogId>) -> (TxLogId, bool) {
-    send(ws, &WsClientMsg::Hello { since }).await;
+    let version = uplink_protocol::typescript::version().to_owned();
+    send(ws, &WsClientMsg::Hello { version, since }).await;
     match recv(ws).await {
         WsServerMsg::Welcome { cursor, resumed } => (cursor, resumed),
         other => panic!("expected welcome, got {other:?}"),
@@ -286,6 +287,18 @@ async fn ping_is_answered() {
     hello(&mut ws, None).await;
     send(&mut ws, &WsClientMsg::Ping { seq: 17 }).await;
     assert_eq!(recv(&mut ws).await, WsServerMsg::Pong { seq: 17 });
+}
+
+#[tokio::test]
+async fn another_protocol_version_closes_connection() {
+    let server = server().await;
+    let mut ws = connect(server.addr).await;
+    let version = "0123456789abcdef".to_owned();
+    send(&mut ws, &WsClientMsg::Hello { version, since: None }).await;
+    match next_frame(&mut ws).await {
+        Message::Close(Some(frame)) => assert_eq!(frame.code, CloseCode::Library(4002)),
+        other => panic!("expected close, got {other:?}"),
+    }
 }
 
 #[tokio::test]

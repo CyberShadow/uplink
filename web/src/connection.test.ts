@@ -1,7 +1,7 @@
 import { Server, type Client } from 'mock-socket'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BACKOFF_MS, Connection, ConnectionLost, HEARTBEAT_MS } from './connection'
-import type { LogEntry, WsClientMsg, WsServerMsg } from './generated/protocol'
+import { PROTOCOL_VERSION, type LogEntry, type WsClientMsg, type WsServerMsg } from './generated/protocol'
 
 const URL = 'ws://uplink.test/ws'
 
@@ -76,7 +76,7 @@ afterEach(() => {
 })
 
 function connect() {
-  const handlers = { reset: vi.fn(), entry: vi.fn(), notice: vi.fn() }
+  const handlers = { reset: vi.fn(), outdated: vi.fn(), entry: vi.fn(), notice: vi.fn() }
   connection = new Connection(URL, handlers)
   return { connection, handlers }
 }
@@ -95,6 +95,7 @@ describe('Connection', () => {
     const { connection, handlers } = connect()
     const { peer, hello } = await accept({ cursor: 5, resumed: false })
     expect(hello.since).toBeNull()
+    expect(hello.version).toBe(PROTOCOL_VERSION)
 
     const response = connection.request({ type: 'list_accounts' })
     const request = await peer.next('request')
@@ -107,6 +108,19 @@ describe('Connection', () => {
     await expect(response).resolves.toEqual({ type: 'accounts', as_of: 5, accounts: [] })
     expect(handlers.reset).toHaveBeenCalledOnce()
     expect(connection.status.value).toBe('open')
+  })
+
+  it('loads anew, not connecting again, when the server speaks another version', async () => {
+    const { connection, handlers } = connect()
+    const peer = await connected
+    expectConnection()
+    await peer.next('hello')
+    peer.socket.close({ code: 4002, reason: 'protocol version', wasClean: true })
+    await vi.waitFor(() => expect(handlers.outdated).toHaveBeenCalledOnce())
+    expect(handlers.reset).not.toHaveBeenCalled()
+    expect(connection.status.value).toBe('connecting')
+    await new Promise((later) => setTimeout(later, BACKOFF_MS[0] + 50))
+    expect(peers).toHaveLength(1)
   })
 
   it('queues requests until welcomed', async () => {

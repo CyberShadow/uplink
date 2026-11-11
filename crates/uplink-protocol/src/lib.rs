@@ -12,6 +12,7 @@ pub mod compose;
 pub mod mail;
 pub mod matrix;
 pub mod todos;
+pub mod typescript;
 
 use compose::{BlobId, Draft, DraftAttachmentId, DraftContent, DraftId, OutboxId, Splice};
 use mail::{EntryId, LabelId, ListPosition, MessageId};
@@ -35,6 +36,10 @@ pub enum WsClientMsg {
     },
     /// Must be the first message on a connection.
     Hello {
+        /// The version of the protocol the client speaks
+        /// ([`typescript::version`]); a server speaking another closes the
+        /// connection, and the client loads anew.
+        version: String,
         /// The last entry the client received on a previous connection, if
         /// it wants to resume rather than load afresh.
         since: Option<TxLogId>,

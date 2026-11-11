@@ -9,6 +9,7 @@ const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}
 const client = new Client({ request: (body) => connection.request(body), ...httpBlobs })
 const connection = new Connection(url, {
   reset: () => client.reset(),
+  outdated: () => location.reload(),
   entry: (entry) => client.apply(entry),
   notice: (notice) => client.notice(notice),
 })

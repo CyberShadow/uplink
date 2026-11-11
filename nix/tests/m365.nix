@@ -81,6 +81,7 @@ pkgs.testers.nixosTest {
       UPLINK_CA = "${certs}/cert.pem";
       UPLINK_USER = "alice";
       UPLINK_PASSWORD = "testpass";
+      UPLINK_PROTOCOL = import ./protocol-version.nix { inherit (pkgs) lib; };
     };
     virtualisation.memorySize = 2048;
   };

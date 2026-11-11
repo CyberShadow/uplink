@@ -19,6 +19,9 @@ const CLOSE_HEARTBEAT_TIMEOUT: u16 = 4000;
 /// The client should reconnect and resume.
 const CLOSE_LAGGED: u16 = 4001;
 const CLOSE_INTERNAL_ERROR: u16 = 1011;
+/// The client speaks another version of the protocol: it is from another
+/// build, and should load anew.
+const CLOSE_PROTOCOL_VERSION: u16 = 4002;
 
 /// What sessions need from the rest of the server.
 pub trait Backend: Send + Sync {
@@ -89,7 +92,16 @@ async fn session(
     let mut deadline = Instant::now() + SILENCE_TIMEOUT;
 
     let since = match recv(socket, &mut deadline).await? {
-        WsClientMsg::Hello { since } => since,
+        WsClientMsg::Hello { version, since } if version == uplink_protocol::typescript::version() => since,
+        WsClientMsg::Hello { version, .. } => {
+            return Err(End::Close {
+                code: CLOSE_PROTOCOL_VERSION,
+                reason: format!(
+                    "protocol version {version}; the server's is {}",
+                    uplink_protocol::typescript::version()
+                ),
+            })
+        }
         other => return Err(protocol_error(format!("expected hello, got {other:?}"))),
     };
 

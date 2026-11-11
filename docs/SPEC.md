@@ -720,6 +720,14 @@ the `.eml`.
 - App-level heartbeat: client sends `{"type":"ping","seq":N}` every 30 s;
   server responds `{"type":"pong","seq":N}`. Server closes after 60 s of
   silence.
+- Versioned by `Hello`'s `version`: a hash (FNV-1a, 64 bits) of the wire
+  types' TypeScript declarations (`uplink_protocol::typescript`), which
+  `web/src/generated/protocol.ts` ends with as `PROTOCOL_VERSION` (the
+  `protocol-ts` check keeps it current). Any change to the types changes
+  it, with nothing to remember to bump. A server speaking another closes
+  the connection with code 4002; the client, a page of another build,
+  reloads itself rather than reconnecting (it would be refused again,
+  each time, as a tab left open across an upgrade was, every second).
 
 ### 5.2 Message shape
 
@@ -732,9 +740,9 @@ All messages use a tagged enum discriminator. In Rust:
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WsClientMsg {
     Ping { seq: u64 },
-    /// First message after connection: the last entry the client saw,
-    /// if it wants to resume.
-    Hello { since: Option<TxLogId> },
+    /// First message after connection: the protocol version the client
+    /// speaks (§5.1), and the last entry it saw, if it wants to resume.
+    Hello { version: String, since: Option<TxLogId> },
     /// Request/response: the matching reply carries the same request_id.
     Request { request_id: u64, body: ClientRequest },
 }
