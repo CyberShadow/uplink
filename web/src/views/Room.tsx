@@ -20,7 +20,7 @@ import type {
   TimelineGap,
 } from '../generated/protocol'
 import { useServices } from '../context'
-import { keepFocus, pages, useKeymap } from '../keymap'
+import { focusShown, keepFocus, pages, useKeymap } from '../keymap'
 import styles from './Room.module.css'
 import { RoomAvatar } from './RoomAvatar'
 import { date } from '../format'
@@ -218,7 +218,7 @@ function Timeline(props: { room: Room; words: string | null }) {
           close={() => {
             setPanel(null)
             // From the thread's box, back to the room's.
-            write()
+            if (composer.current) focusShown(composer.current)
           }}
         />
       )}

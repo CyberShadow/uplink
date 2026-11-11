@@ -2365,7 +2365,9 @@ others, toggling one; a name typed that no tag has is offered as a new
 tag of the user's. In a Matrix room (M7), the message box has the focus, as a chat
 app's does, so that keys are text: opening the room (by any means, the
 switcher's too) or one of its threads focuses its box, and closing the
-thread focuses the room's again. In the box `Enter` sends,
+thread focuses the room's again; but not where the pointer is a finger
+(`pointer: coarse`, a phone), where that would raise the on-screen
+keyboard over what one came to read, and chat apps leave it to a tap. In the box `Enter` sends,
 `Shift+Enter` breaks the line and `Esc` leaves it (once a reply or edit
 is cancelled), for the shortcuts, as vim's normal mode; `i`, `Enter`
 and `r` go back to it. `PageUp`/`PageDown` scroll the timeline a page

@@ -20,3 +20,21 @@ it('on macOS, by Ctrl+Option and where the key is, and labels Cmd', async () => 
   expect(await binding('goHome')).toMatchObject({ keys: ['g h', 'Control+Alt+KeyH'], label: 'g h, Ctrl+Option+H' })
   expect((await binding('switch')).label).toBe('Cmd+K')
 })
+
+it('leaves a box shown unfocused where the pointer is a finger, as on a phone', async () => {
+  const box = document.body.appendChild(document.createElement('textarea'))
+  const fine = window.matchMedia
+  window.matchMedia = (query) => ({ ...fine(query), matches: query === '(pointer: coarse)' })
+  try {
+    const { focusShown } = await import('./keymap')
+    focusShown(box)
+    expect(document.activeElement).toBe(document.body)
+  } finally {
+    window.matchMedia = fine
+  }
+  vi.resetModules()
+  const { focusShown } = await import('./keymap')
+  focusShown(box)
+  expect(document.activeElement).toBe(box)
+  box.remove()
+})

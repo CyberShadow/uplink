@@ -151,6 +151,16 @@ export const KEYMAP: Binding[] = [
   { action: 'help', keys: ['[Shift]+?'], label: '?', help: 'Keyboard shortcuts' },
 ]
 
+/** Focuses a box that shows, as one writes in it next (a room's): but
+ * not where the pointer is a finger, as on a phone, where that would
+ * raise the on-screen keyboard over what one came to read, and apps
+ * leave it to a tap on the box. */
+export function focusShown(box: HTMLElement) {
+  if (!TOUCH) box.focus()
+}
+
+const TOUCH = matchMedia('(pointer: coarse)').matches
+
 /** A mousedown handler for controls that should not take the focus from
  * the shortcuts when clicked (a focused button would also take Enter). */
 export function keepFocus(event: MouseEvent) {

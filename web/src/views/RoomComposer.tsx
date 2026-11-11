@@ -9,7 +9,7 @@ import type { Room, RoomEvent } from '../generated/protocol'
 import { parse } from '../commands'
 import { useServices } from '../context'
 import { byShortcode } from '../emoji'
-import { type Actions, keepFocus, useKeymap } from '../keymap'
+import { type Actions, focusShown, keepFocus, useKeymap } from '../keymap'
 import { displayName, senderColor, shown, text as message } from '../matrix'
 import { completing, type Suggestion, Suggestions, useEmoji, useSuggestions } from './Autocomplete'
 import { Icon } from './Icon'
@@ -69,7 +69,7 @@ export function Composer(props: {
 
   // A room's box, or a thread's, has the focus once it shows: typing is
   // what one does there. Esc leaves it, to the shortcuts.
-  useLayoutEffect(() => props.textarea.current!.focus(), [props.textarea])
+  useLayoutEffect(() => focusShown(props.textarea.current!), [props.textarea])
   useKeymap(props.scrolling, props.textarea)
   useLayoutEffect(() => {
     if (placeCaret.current === null) return
