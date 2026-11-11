@@ -236,6 +236,10 @@
 
         # ── checks (nix flake check) ───────────────────────────────────────
         checks = {
+          # What the user service deploys, so that a passing check leaves
+          # it built.
+          inherit service;
+
           backend-test = craneLib.cargoTest (commonArgs // testEnv // {
             inherit cargoArtifacts;
             # The sandbox has no system trust store, without which
