@@ -192,6 +192,27 @@ async fn mirrors_the_folders_and_pushes_changes() {
     sync.abort();
 }
 
+/// Polling once an hour, uplink still sees what reaches the Inbox at
+/// once, as the server tells of it by IDLE.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_inbox_is_watched_by_idle() {
+    let uplink = Uplink::new(MailProvider::Imap);
+    let stalwart = Stalwart::start(uplink.dir.path()).await;
+    let sync = uplink.start_polling(provider(&stalwart), ALICE, Duration::from_secs(3600));
+    eventually("the first sync", || async { uplink.synced().then_some(()) }).await;
+
+    let mut other = stalwart.client("alice").await;
+    append(&mut other, "INBOX", &message("pushed", "")).await;
+    let pushed = uplink.arrived("pushed").await;
+    let (uid, _) = find(&mut other, "INBOX", "pushed").await.unwrap();
+    store(&mut other, "INBOX", uid, "+FLAGS (\\Flagged)").await;
+    eventually("the star to be observed", || async {
+        (label_set(&uplink.labels(pushed)) == ["INBOX", "STARRED", "UNREAD"]).then_some(())
+    })
+    .await;
+    sync.abort();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_first_sync_lists_the_mailbox_in_steps() {
     let uplink = Uplink::new(MailProvider::Imap);

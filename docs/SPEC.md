@@ -1790,7 +1790,17 @@ fit uplink better (§8.1, §8.3).
   recorded once all its new mail is (`account.sync_state`:
   `{"listing": …, "folders": {<name>: {uidvalidity, uidnext, messages,
   highestmodseq}}}`); a step that changes nothing records nothing.
-  Polled every 30 s; IDLE is deferred (ROADMAP).
+  Polled every 30 s.
+- **IDLE** (RFC 2177): a server that has it tells of changes in the
+  Inbox as they happen, on a second connection that does nothing else
+  (IDLE holds its connection, and tells of the selected folder only;
+  other folders wait for the poll). What it tells wakes the sync task
+  (`Provider::changed`), which takes a step as for a poll; so does the
+  watch's (re)beginning, as changes may have been missed meanwhile. The
+  IDLE is renewed every 10 minutes (RFC 2177's limit is 29), which also
+  finds a connection lost without a word; a watch that fails begins
+  anew 30 s later, polling going on meanwhile. The watch begins as the
+  task first waits.
 - **Threading**: IMAP servers give no thread ids, so they are the
   headers': the first message a message's `References` names, else the
   one it replies to (`In-Reply-To`), else itself. Unlike Gmail's, such

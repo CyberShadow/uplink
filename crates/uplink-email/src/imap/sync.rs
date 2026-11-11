@@ -19,6 +19,7 @@
 use super::{
     names,
     session::{self, Connection},
+    watch::Watcher,
 };
 use crate::{
     account::{Account, Outgoing, Pending, Provider, SendError, SyncTask},
@@ -44,7 +45,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt,
     path::Path,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 use tokio::sync::Mutex;
@@ -144,6 +145,8 @@ pub struct ImapSync {
     /// Kept between steps; dropped when a step fails, as what state it is
     /// in is then not known.
     connection: Mutex<Option<Connection>>,
+    /// Begun as the task first waits.
+    watcher: OnceLock<Watcher>,
 }
 
 /// An entry's external id: where the message is.
@@ -251,6 +254,16 @@ impl Provider for ImapSync {
         }
         Ok(())
     }
+
+    /// What IDLE tells of the Inbox, watched from the first wait on.
+    async fn changed(&self) {
+        self.watcher
+            .get_or_init(|| {
+                Watcher::start(self.config.clone(), self.sign_in.clone(), self.tls.clone())
+            })
+            .changed()
+            .await
+    }
 }
 
 impl ImapSync {
@@ -261,6 +274,7 @@ impl ImapSync {
             sign_in,
             tls,
             connection: Mutex::new(None),
+            watcher: OnceLock::new(),
         }
     }
 

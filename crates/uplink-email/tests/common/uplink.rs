@@ -62,6 +62,16 @@ impl Uplink {
 
     /// Runs `provider`'s sync task for the account, polling quickly.
     pub fn start<P: Provider>(&self, provider: P, address: &str) -> tokio::task::JoinHandle<()> {
+        self.start_polling(provider, address, Duration::from_millis(100))
+    }
+
+    /// As [`start`](Self::start), polling every `poll_interval`.
+    pub fn start_polling<P: Provider>(
+        &self,
+        provider: P,
+        address: &str,
+        poll_interval: Duration,
+    ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(
             SyncTask::new(
                 provider,
@@ -70,7 +80,7 @@ impl Uplink {
                 self.dispatcher.clone(),
                 self.reader(),
                 self.dir.path(),
-                Duration::from_millis(100),
+                poll_interval,
             )
             .run(),
         )

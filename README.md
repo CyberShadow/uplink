@@ -288,9 +288,10 @@ run `uplink oauth init --account alice-mail`.
 Folders are labels of which a message has one; the server's Sent,
 Drafts, Trash, Junk and Archive folders are uplink's, and an Archive is
 made if there is none. Read and starred are the `\Seen` and `\Flagged`
-flags, and other keywords are labels. Changes made in other mail
-clients arrive within 30 s. Sent mail goes by SMTP, and uplink files
-the copy in Sent itself.
+flags, and other keywords are labels. New mail, and changes to the
+Inbox, arrive at once if the server has IDLE (most do); other changes
+made in other mail clients, within 30 s. Sent mail goes by SMTP, and
+uplink files the copy in Sent itself.
 
 A server reached by POP3 instead takes the POP3 account of the example
 (`kind: pop3`, its `pop3` server on port 995, or 110 by STARTTLS), set

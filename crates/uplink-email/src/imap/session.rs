@@ -39,6 +39,8 @@ pub struct Connection {
     pub moves: bool,
     /// UIDPLUS (RFC 4315): `UID EXPUNGE`, of some messages only.
     pub uidplus: bool,
+    /// IDLE (RFC 2177): changes told as they happen.
+    pub idle: bool,
 }
 
 /// Connects to `account`'s IMAP server and signs in.
@@ -95,6 +97,7 @@ pub async fn connect(
         condstore: capabilities.has_str("CONDSTORE"),
         moves: capabilities.has_str("MOVE"),
         uidplus: capabilities.has_str("UIDPLUS"),
+        idle: capabilities.has_str("IDLE"),
         session,
     })
 }

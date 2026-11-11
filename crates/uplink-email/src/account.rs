@@ -71,6 +71,14 @@ pub trait Provider: Send + Sync + 'static {
         account: &Account,
         mail: Outgoing<'_>,
     ) -> impl Future<Output = Result<(), SendError>> + Send;
+
+    /// Resolves when the provider tells of a change, so that the task
+    /// syncs before the poll interval passes; or, for a provider that only
+    /// polls, never. A change told while no one waits is not lost: the
+    /// next call resolves at once.
+    fn changed(&self) -> impl Future<Output = ()> + Send {
+        std::future::pending()
+    }
 }
 
 /// A message to send, and what is known of earlier attempts.
@@ -381,8 +389,8 @@ impl<P: Provider> SyncTask<P> {
         Ok(())
     }
 
-    /// Until the poll interval passes, mail is due (unix ms), or the user
-    /// changes something.
+    /// Until the poll interval passes, mail is due (unix ms), the user
+    /// changes something, or the provider tells of a change.
     async fn wait(&self, wake: &mut broadcast::Receiver<Arc<LogEntry>>, next_due: Option<i64>) {
         let mut interval = self.poll_interval;
         if let Some(due) = next_due {
@@ -391,9 +399,12 @@ impl<P: Provider> SyncTask<P> {
         }
         let deadline = tokio::time::sleep(interval);
         tokio::pin!(deadline);
+        let changed = self.provider.changed();
+        tokio::pin!(changed);
         loop {
             tokio::select! {
                 () = &mut deadline => return,
+                () = &mut changed => return,
                 entry = wake.recv() => match entry {
                     Ok(entry) if entry.source == Source::User => return,
                     Ok(_) => {}
