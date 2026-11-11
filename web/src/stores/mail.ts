@@ -500,9 +500,15 @@ export class MailStore {
     const conversations = this.list.value?.conversations ?? []
     if (conversations.length === 0) return
     const index = conversations.findIndex((c) => conversationKey(c) === this.focus.value)
-    const next = Math.min(Math.max(index + by, 0), conversations.length - 1)
-    this.focus.value = conversationKey(conversations[next])
-    if (next >= conversations.length - 10) this.loadMore()
+    this.focusOn(conversations[Math.min(Math.max(index + by, 0), conversations.length - 1)])
+  }
+
+  /** Focuses a conversation of the list, loading more as the end nears,
+   * so that moving on, in the list or between conversations, finds more. */
+  focusOn(conversation: Conversation) {
+    const conversations = this.list.value!.conversations
+    this.focus.value = conversationKey(conversation)
+    if (conversations.indexOf(conversation) >= conversations.length - 10) this.loadMore()
   }
 
   toggleSelected(key: string) {

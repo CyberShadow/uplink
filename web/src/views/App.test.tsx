@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Entry, MemberState } from '../generated/protocol'
 import { Client } from '../stores/client'
-import { conversationKey } from '../stores/mail'
+import { conversationKey, PAGE } from '../stores/mail'
 import { TIMELINE_PAGE } from '../stores/matrix'
 import { scrolledTo } from '../test/intersection'
 import { FakeServer, ME, RECOVERY_KEY } from '../test/server'
@@ -552,6 +552,68 @@ describe('mail', () => {
       const [first, second] = client.mail.list.value!.conversations
       await waitFor(() => expect(server.labelsOf(second.latest.id)).toContain(projects))
       expect(server.labelsOf(first.latest.id)).toContain(projects)
+    })
+  })
+
+  describe('conversation toolbar', () => {
+    const toolbar = () => within(screen.getByRole('toolbar', { name: 'Conversation actions' }))
+    const openedSubject = () => screen.getByRole('article').querySelector('h1')!.textContent
+
+    it('says where the conversation is in the list, and goes to its neighbours and back', async () => {
+      const user = await start('/mail/work/INBOX')
+      await user.keyboard('{Enter}')
+      await screen.findByText('Body of First')
+      expect(toolbar().getByText(/of 3/).textContent).toBe('1 of 3')
+      expect((toolbar().getByRole('button', { name: 'Newer' }) as HTMLButtonElement).disabled).toBe(true)
+      await user.click(toolbar().getByRole('button', { name: 'Older' }))
+      await screen.findByText('Body of Second')
+      expect(toolbar().getByText(/of 3/).textContent).toBe('2 of 3')
+      await user.click(toolbar().getByRole('button', { name: 'Newer' }))
+      await screen.findByText('Body of First')
+      await user.click(toolbar().getByRole('button', { name: 'Back to the list' }))
+      await screen.findByRole('list', { name: 'Messages' })
+      expect(document.activeElement).toBe(document.body)
+    })
+
+    it('counts "many" while more are to load, and loads them as the end nears', async () => {
+      for (let i = 0; i < PAGE; i++) server.deliver('work', `Bulk ${i}`)
+      const user = await start('/mail/work/INBOX')
+      await user.keyboard('{Enter}')
+      expect((await toolbar().findByText(/of many/)).textContent).toBe('1 of many')
+      await user.keyboard('u')
+      await user.click(rows()[PAGE - 1])
+      await waitFor(() => expect(toolbar().getByText(/ of /).textContent).toBe(`${PAGE} of ${PAGE + 3}`))
+      expect((toolbar().getByRole('button', { name: 'Older' }) as HTMLButtonElement).disabled).toBe(false)
+    })
+
+    it('archives the conversation, leaving it for the list', async () => {
+      const user = await start('/mail/work/INBOX')
+      await user.keyboard('{Enter}')
+      await screen.findByText('Body of First')
+      await user.click(toolbar().getByRole('button', { name: 'Archive' }))
+      await waitFor(() => expect(subjects()).toEqual(['Second', 'Third']))
+    })
+
+    it('marks it unread, leaving it for the list, and stars it and marks it important from its menu', async () => {
+      const user = await start('/mail/work/INBOX')
+      await user.keyboard('{Enter}')
+      await screen.findByText('Body of First')
+      await user.click(toolbar().getByRole('button', { name: 'More' }))
+      await user.click(screen.getByRole('menuitem', { name: 'Add star' }))
+      await waitFor(() => expect(within(screen.getByRole('article')).getAllByTitle('Starred').length).toBeGreaterThan(0))
+      expect(openedSubject()).toMatch(/First/)
+      // Important or not, it offers the other.
+      const important = server.labelId('work', 'IMPORTANT')
+      const [first] = client.mail.list.value!.conversations
+      await user.click(toolbar().getByRole('button', { name: 'More' }))
+      await user.click(screen.getByRole('menuitem', { name: 'Mark as important' }))
+      await waitFor(() => expect(server.labelsOf(first.latest.id)).toContain(important))
+      await user.click(toolbar().getByRole('button', { name: 'More' }))
+      await user.click(await screen.findByRole('menuitem', { name: 'Mark as not important' }))
+      await waitFor(() => expect(server.labelsOf(first.latest.id)).not.toContain(important))
+      await user.click(await toolbar().findByRole('button', { name: 'Mark as unread' }))
+      await screen.findByRole('list', { name: 'Messages' })
+      await waitFor(() => expect(rows()[0].className).toMatch(/unread/))
     })
   })
 

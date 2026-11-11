@@ -89,25 +89,27 @@ export function Mail(props: Props) {
     openId === null ? mail.targets.value.map(threadOf) : openThread ? [openThread] : []
 
   useEffect(() => {
-    if (opened) mail.focus.value = conversationKey(opened)
+    if (opened) mail.focusOn(opened)
   }, [mail, opened])
 
   const open = (conversation: Conversation) => {
-    mail.focus.value = conversationKey(conversation)
+    mail.focusOn(conversation)
     route(pathFor(conversation.latest.id))
   }
+  /** The conversation `by` from the open one, if listed. */
+  const sibling = (by: number): Conversation | undefined =>
+    opened && conversations[conversations.indexOf(opened) + by]
   /** In a conversation, j and k open the next or previous one. */
   const openSibling = (by: number) => {
-    if (!opened) return
-    const sibling = conversations[conversations.indexOf(opened) + by]
-    if (sibling) open(sibling)
+    const to = sibling(by)
+    if (to) open(to)
   }
   /** In a conversation, [ and ] archive it and open the newer or older one. */
   const archiveAndOpen = (by: number) => {
-    if (!opened || !openThread) return
-    const sibling = conversations[conversations.indexOf(opened) + by]
+    if (!openThread) return
+    const to = sibling(by)
     mail.archive([openThread])
-    if (sibling) open(sibling)
+    if (to) open(to)
     else backToList()
   }
   const ifTargets = (action: (targets: Thread[]) => void) => () => {
@@ -186,19 +188,38 @@ export function Mail(props: Props) {
       {openId === null ? (
         <>
           {list?.found && <Found found={list.found} />}
-          {conversations.length > 0 && <Toolbar mail={mail} actions={common} />}
+          {conversations.length > 0 && <ListToolbar mail={mail} actions={common} />}
           <MessageList mail={mail} open={open} />
         </>
       ) : openThread ? (
-        <ConversationView
-          key={conversationKey(opened!)}
-          mail={mail}
-          thread={openThread}
-          entries={shown!}
-          back={backToList}
-          // The path names an entry of it, which may be the one leaving.
-          reopen={(entry) => route(pathFor(entry), true)}
-        />
+        <>
+          <ConversationToolbar
+            mail={mail}
+            actions={common}
+            thread={openThread}
+            back={backToList}
+            // A message by itself is of no list to go through.
+            place={
+              view.kind === 'message'
+                ? null
+                : {
+                    index: conversations.indexOf(opened!),
+                    count: list!.next === null ? conversations.length : null,
+                    newer: sibling(-1) ? () => openSibling(-1) : null,
+                    older: sibling(1) ? () => openSibling(1) : null,
+                  }
+            }
+          />
+          <ConversationView
+            key={conversationKey(opened!)}
+            mail={mail}
+            thread={openThread}
+            entries={shown!}
+            back={backToList}
+            // The path names an entry of it, which may be the one leaving.
+            reopen={(entry) => route(pathFor(entry), true)}
+          />
+        </>
       ) : (
         <p class={styles.placeholder}>
           {list?.loaded && !opened ? 'This conversation is not in the list.' : 'Loading…'}
@@ -232,21 +253,72 @@ type Actions = Record<
   () => void
 >
 
-/** Gmail's bar above the list: a box selecting all or none, with a menu
- * of which to select, and, while some are, what to do to them. */
-function Toolbar(props: { mail: MailStore; actions: Actions }) {
-  const { mail, actions } = props
-  const { todos } = useServices()
-  const conversations = mail.list.value!.conversations
-  const chosen = conversations.filter((c) => mail.selected.value.has(conversationKey(c))).map(threadOf)
-  const button = (label: string, icon: IconName, action: () => void) => (
-    <button type="button" class={styles.tool} aria-label={label} title={label} onMouseDown={keepFocus} onClick={action}>
-      <Icon name={icon} />
+/** An icon button of a toolbar; `null` disables it. */
+function ToolButton(props: { label: string; icon: IconName; action: (() => void) | null }) {
+  return (
+    <button
+      type="button"
+      class={styles.tool}
+      aria-label={props.label}
+      title={props.label}
+      disabled={props.action === null}
+      onMouseDown={keepFocus}
+      onClick={props.action ?? undefined}
+    >
+      <Icon name={props.icon} />
     </button>
   )
-  const unread = chosen.some((t) => mail.having(t, 'UNREAD'))
-  const flagged = chosen.every((t) => t.entries.some((e) => todos.flagged.value.has(e.message)))
-  const starred = chosen.every((t) => mail.having(t, 'STARRED'))
+}
+
+/** What a toolbar does to the threads, Gmail's groups of buttons. */
+function ThreadActions(props: { mail: MailStore; actions: Actions; threads: Thread[] }) {
+  const { mail, actions, threads } = props
+  const { todos } = useServices()
+  const unread = threads.some((t) => mail.having(t, 'UNREAD'))
+  const flagged = threads.every((t) => t.entries.some((e) => todos.flagged.value.has(e.message)))
+  const starred = threads.every((t) => mail.having(t, 'STARRED'))
+  const important = threads.every((t) => mail.having(t, 'IMPORTANT'))
+  return (
+    <>
+      <span class={styles.group}>
+        <ToolButton label="Archive" icon="archive" action={actions.archive} />
+        <ToolButton label={mail.spam(threads) ? 'Not spam' : 'Report spam'} icon="octagon-x" action={actions.spam} />
+        <ToolButton label="Delete" icon="trash" action={actions.delete} />
+      </span>
+      <span class={styles.group}>
+        {unread ? (
+          <ToolButton label="Mark as read" icon="mail-open" action={actions.markRead} />
+        ) : (
+          <ToolButton label="Mark as unread" icon="mail" action={actions.markUnread} />
+        )}
+        <ToolButton label={flagged ? 'Unflag' : 'Flag for follow-up'} icon="flag" action={actions.flag} />
+      </span>
+      <span class={styles.group}>
+        <ToolButton label="Move to" icon="folder" action={actions.move} />
+        <ToolButton label="Label" icon="tag" action={actions.label} />
+        <MenuButton
+          label="More"
+          icon="ellipsis-vertical"
+          groups={[
+            [
+              { label: starred ? 'Remove star' : 'Add star', action: actions.star },
+              important
+                ? { label: 'Mark as not important', action: actions.notImportant }
+                : { label: 'Mark as important', action: actions.important },
+            ],
+          ]}
+        />
+      </span>
+    </>
+  )
+}
+
+/** Gmail's bar above the list: a box selecting all or none, with a menu
+ * of which to select, and, while some are, what to do to them. */
+function ListToolbar(props: { mail: MailStore; actions: Actions }) {
+  const { mail, actions } = props
+  const conversations = mail.list.value!.conversations
+  const chosen = conversations.filter((c) => mail.selected.value.has(conversationKey(c))).map(threadOf)
   return (
     <div class={styles.toolbar} role="toolbar" aria-label="Selection">
       <span class={styles.select}>
@@ -276,34 +348,45 @@ function Toolbar(props: { mail: MailStore; actions: Actions }) {
       </span>
       {chosen.length > 0 && (
         <>
-          <span class={styles.group}>
-            {button('Archive', 'archive', actions.archive)}
-            {button(mail.spam(chosen) ? 'Not spam' : 'Report spam', 'octagon-x', actions.spam)}
-            {button('Delete', 'trash', actions.delete)}
-          </span>
-          <span class={styles.group}>
-            {unread
-              ? button('Mark as read', 'mail-open', actions.markRead)
-              : button('Mark as unread', 'mail', actions.markUnread)}
-            {button(flagged ? 'Unflag' : 'Flag for follow-up', 'flag', actions.flag)}
-          </span>
-          <span class={styles.group}>
-            {button('Move to', 'folder', actions.move)}
-            {button('Label', 'tag', actions.label)}
-            <MenuButton
-              label="More"
-              icon="ellipsis-vertical"
-              groups={[
-                [{ label: starred ? 'Remove star' : 'Add star', action: actions.star }],
-                [
-                  { label: 'Mark as important', action: actions.important },
-                  { label: 'Mark as not important', action: actions.notImportant },
-                ],
-              ]}
-            />
-          </span>
+          <ThreadActions mail={mail} actions={actions} threads={chosen} />
           <span class={styles.chosen}>{chosen.length} selected</span>
         </>
+      )}
+    </div>
+  )
+}
+
+/** Where the open conversation is in its list: `count` is `null` while
+ * more are to load; `newer` and `older` open its neighbours, if listed. */
+interface Place {
+  index: number
+  count: number | null
+  newer: (() => void) | null
+  older: (() => void) | null
+}
+
+/** Gmail's bar above a conversation: back to the list, what to do to it,
+ * and where it is in the list, with the way to its neighbours. */
+function ConversationToolbar(props: {
+  mail: MailStore
+  actions: Actions
+  thread: Thread
+  back: () => void
+  place: Place | null
+}) {
+  const { place } = props
+  return (
+    <div class={styles.toolbar} role="toolbar" aria-label="Conversation actions">
+      <span class={styles.group}>
+        <ToolButton label="Back to the list" icon="arrow-left" action={props.back} />
+      </span>
+      <ThreadActions mail={props.mail} actions={props.actions} threads={[props.thread]} />
+      {place && (
+        <span class={styles.place}>
+          {place.index + 1} of {place.count ?? 'many'}
+          <ToolButton label="Newer" icon="chevron-left" action={place.newer} />
+          <ToolButton label="Older" icon="chevron-right" action={place.older} />
+        </span>
       )}
     </div>
   )
