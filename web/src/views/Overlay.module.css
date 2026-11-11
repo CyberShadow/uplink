@@ -107,10 +107,14 @@
   padding: 2px 12px 2px 0;
 }
 
+/* The outcome of the last op: over the view, at the foot, without moving
+ * it; shown only where nothing else shows the outcome, and dismissable. */
 .notice {
-  grid-area: notice;
-  justify-self: start;
-  margin: 8px 24px;
+  position: fixed;
+  left: 24px;
+  bottom: 24px;
+  z-index: 10;
+  max-width: calc(100vw - 48px);
   display: flex;
   gap: 16px;
   align-items: center;
