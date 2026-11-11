@@ -1859,6 +1859,28 @@ describe('home', () => {
   })
 })
 
+describe('search', () => {
+  it('finds rooms, their messages, to-dos and events too, above the mail', async () => {
+    server.addMatrixAccount()
+    const lobby = server.addRoom('Lunch club')
+    server.receive(lobby.id, { body: 'Lunch at noon?' })
+    server.addEvent('work', 'Team lunch', '2026-11-20T12:00:00Z', '2026-11-20T13:00:00Z')
+    const user = await start()
+    await client.todos.create('Book lunch')
+    await user.keyboard('/')
+    await user.keyboard('lunch{Enter}')
+    const titles = async (name: string) =>
+      within(await screen.findByRole('region', { name })).getAllByRole('listitem').map((item) => item.querySelector('[class*=title]')!.textContent)
+    expect(await titles('Rooms found')).toEqual(['Lunch club'])
+    expect(await titles('Messages found')).toEqual(['Bob in Lunch club'])
+    expect(await titles('To-dos found')).toEqual(['Book lunch'])
+    expect(await titles('Events found')).toEqual(['Team lunch'])
+    expect(screen.getByRole('searchbox', { name: 'Search' })).toBeTruthy()
+    await user.click(within(screen.getByRole('region', { name: 'Rooms found' })).getByRole('link'))
+    expect(location.pathname).toBe(`/rooms/${lobby.id}`)
+  })
+})
+
 describe('to-dos', () => {
   const todoTitles = () =>
     within(screen.getByRole('list', { name: 'To-do list' }))

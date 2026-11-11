@@ -1,0 +1,68 @@
+/* Above the mail found, so at most part of the height. */
+.found {
+  flex: none;
+  max-height: 45%;
+  overflow: auto;
+  border-bottom: 1px solid var(--line);
+}
+
+.found h3 {
+  margin: 0;
+  padding: 8px 16px 4px;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+.found ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.found a {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 16em) minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 4px 16px;
+  border-bottom: 1px solid var(--line);
+  color: inherit;
+  text-decoration: none;
+}
+
+.found a:hover {
+  background: var(--hover);
+}
+
+.icon {
+  width: 20px;
+  height: 20px;
+  color: var(--muted);
+}
+
+.title,
+.detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail,
+.when {
+  color: var(--muted);
+}
+
+.when {
+  font-size: 0.875em;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .found a {
+    grid-template-columns: 24px minmax(0, 1fr) auto;
+  }
+
+  .detail {
+    grid-column: 2 / -1;
+  }
+}

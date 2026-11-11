@@ -19,6 +19,10 @@ use uplink_tx_log::answer::{error, internal, Reader, Response};
 /// The most conversations a page may ask for, as a list of mail.
 const MAX_LIMIT: u32 = uplink_email::service::MAX_LIMIT;
 
+/// The most rooms' messages a search lists: the latest; a room's own
+/// search finds more.
+const MESSAGES: u32 = 50;
+
 #[derive(Clone)]
 pub struct Items {
     reader: Reader,
@@ -72,12 +76,20 @@ impl Items {
                 this.check_names(&tx, &query)?;
                 let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
                 let matches = this.matches(&tx, &query, today, now, after, limit)?;
+                let messages = match after {
+                    None => {
+                        uplink_matrix::query::messages(&tx, &this.matrix_accounts, &query, MESSAGES)
+                            .map_err(internal)?
+                    }
+                    Some(_) => vec![],
+                };
                 Ok(ServerResponse::Items {
                     as_of,
                     conversations: matches.page.conversations,
                     next: matches.page.next,
                     scope: matches.page.scope,
                     rooms: matches.rooms,
+                    messages,
                     todos: matches.todos,
                     events: matches.events,
                 })

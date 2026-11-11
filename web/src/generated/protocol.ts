@@ -237,6 +237,10 @@ scope: ListScope, } | { "type": "entries", as_of: TxLogId, entries: Array<Entry>
  */
 rooms: Array<Room>, 
 /**
+ * Rooms' messages, the latest first, up to a few.
+ */
+messages: Array<FoundMessage>, 
+/**
  * Open ones first, by due date.
  */
 todos: Array<Todo>, 
@@ -272,6 +276,11 @@ query: string, conversations: Array<Conversation>,
  * Whether it lists more conversations than these.
  */
 more: boolean, rooms: Array<Room>, todos: Array<Todo>, events: Array<CalendarEvent>, };
+
+/**
+ * A message a search found, in its room.
+ */
+export type FoundMessage = { room: RoomId, event: RoomEvent, };
 
 export type ErrorCode = "not_found" | "not_undoable" | "already_undone" | "conflict" | "invalid" | "internal";
 

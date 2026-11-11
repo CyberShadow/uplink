@@ -55,6 +55,7 @@ fn main() {
         ServerResponse,
         ServerError,
         HomeBucket,
+        FoundMessage,
         ErrorCode,
         LogEntry,
         ListScope,

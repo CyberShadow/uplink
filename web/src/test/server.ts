@@ -22,6 +22,7 @@ import type {
   Label,
   LabelId,
   LabelState,
+  ListPosition,
   ListScope,
   ListingProgress,
   MailProvider,
@@ -556,7 +557,7 @@ export class FakeServer implements Requester, Blobs {
       case 'list_accounts':
         return { type: 'accounts', as_of: this.head(), accounts: this.listAccounts() }
       case 'list_items':
-        throw new Error('the test server lists no items of every kind')
+        return this.listItems(body.query, body.after, body.limit)
       case 'list_home': {
         // Its own buckets, not the language: rooms with unread messages
         // and open to-dos first, then the Inboxes' mail.
@@ -589,54 +590,8 @@ export class FakeServer implements Requester, Blobs {
           ],
         }
       }
-      case 'list_entries': {
-        // The query language as the client writes it: terms that must all
-        // match, of account:, label: and in:, and words of the subject or
-        // snippet.
-        const terms = [...body.query.matchAll(/(?:(\w+):)?(?:"((?:[^"\\]|\\.)*)"|(\S+))/g)].map(
-          ([, name, quoted, word]) => ({ name, value: quoted?.replace(/\\(.)/g, '$1') ?? word }),
-        )
-        const labels = this.accounts.flatMap((a) => a.labels)
-        const named = (name: string) => labels.filter((l) => l.name.toLowerCase() === name.toLowerCase())
-        const matchers = terms.map(({ name, value }): ((e: Entry) => boolean) => {
-          switch (name) {
-            case 'account':
-              return (e) => e.account === value
-            case 'label':
-            case 'in': {
-              const ids = named(value).map((l) => l.id)
-              return (e) => e.labels.some((l) => ids.includes(l))
-            }
-            case undefined:
-              return (e) => `${e.subject} ${e.snippet}`.toLowerCase().includes(value.toLowerCase())
-            default:
-              throw new Error(`the test server knows no ${name}:`)
-          }
-        })
-        const hiding = labels.filter((l) => HIDING.includes(l.external_id))
-        const within = terms
-          .filter(({ name }) => name === 'label' || name === 'in')
-          .flatMap(({ value }) => named(value))
-          .filter((l) => HIDING.includes(l.external_id))
-          .map((l) => l.id)
-        const scope: ListScope =
-          within.length > 0 ? { type: 'within', labels: within } : { type: 'except', labels: hiding.map((l) => l.id) }
-        const all = this.conversations(
-          (e) => e.labels.some((l) => scope.labels.includes(l)) === (scope.type === 'within'),
-          (e) => matchers.every((m) => m(e)),
-        )
-        const start = body.after ? all.findIndex((c) => c.latest.id === body.after!.entry) + 1 : 0
-        const page = all.slice(start, start + body.limit)
-        const last = page.at(-1)?.latest
-        const more = start + body.limit < all.length
-        return {
-          type: 'conversations',
-          as_of: this.head(),
-          conversations: page,
-          next: more && last ? { received_at: last.received_at, entry: last.id } : null,
-          scope,
-        }
-      }
+      case 'list_entries':
+        return this.listEntries(body.query, body.after, body.limit)
       case 'list_conversation': {
         const entry = this.entries.find((e) => e.id === body.entry)!
         const entries = this.sorted()
@@ -1124,6 +1079,77 @@ export class FakeServer implements Requester, Blobs {
       },
       undone: false,
     })
+  }
+
+  private listEntries(query: string, after: ListPosition | null, limit: number): Extract<ServerResponse, { type: 'conversations' }> {
+    // The query language as the client writes it: terms that must all
+    // match, of account:, label: and in:, and words of the subject or
+    // snippet.
+    const terms = [...query.matchAll(/(?:(\w+):)?(?:"((?:[^"\\]|\\.)*)"|(\S+))/g)].map(
+      ([, name, quoted, word]) => ({ name, value: quoted?.replace(/\\(.)/g, '$1') ?? word }),
+    )
+    const labels = this.accounts.flatMap((a) => a.labels)
+    const named = (name: string) => labels.filter((l) => l.name.toLowerCase() === name.toLowerCase())
+    const matchers = terms.map(({ name, value }): ((e: Entry) => boolean) => {
+      switch (name) {
+        case 'account':
+          return (e) => e.account === value
+        case 'label':
+        case 'in': {
+          const ids = named(value).map((l) => l.id)
+          return (e) => e.labels.some((l) => ids.includes(l))
+        }
+        case undefined:
+          return (e) => `${e.subject} ${e.snippet}`.toLowerCase().includes(value.toLowerCase())
+        default:
+          throw new Error(`the test server knows no ${name}:`)
+      }
+    })
+    const hiding = labels.filter((l) => HIDING.includes(l.external_id))
+    const within = terms
+      .filter(({ name }) => name === 'label' || name === 'in')
+      .flatMap(({ value }) => named(value))
+      .filter((l) => HIDING.includes(l.external_id))
+      .map((l) => l.id)
+    const scope: ListScope =
+      within.length > 0 ? { type: 'within', labels: within } : { type: 'except', labels: hiding.map((l) => l.id) }
+    const all = this.conversations(
+      (e) => e.labels.some((l) => scope.labels.includes(l)) === (scope.type === 'within'),
+      (e) => matchers.every((m) => m(e)),
+    )
+    const start = after ? all.findIndex((c) => c.latest.id === after!.entry) + 1 : 0
+    const page = all.slice(start, start + limit)
+    const last = page.at(-1)?.latest
+    const more = start + limit < all.length
+    return {
+      type: 'conversations',
+      as_of: this.head(),
+      conversations: page,
+      next: more && last ? { received_at: last.received_at, entry: last.id } : null,
+      scope,
+    }
+  }
+
+  /** Mail as `listEntries` lists it; of other kinds, those whose text has
+   * the query's words, all of them. */
+  private listItems(query: string, after: ListPosition | null, limit: number): ServerResponse {
+    const mail = this.listEntries(query, after, limit)
+    const words = query.split(/\s+/).filter((w) => w !== '' && !w.includes(':')).map((w) => w.toLowerCase())
+    const has = (text: string | null) => words.length > 0 && words.every((w) => (text ?? '').toLowerCase().includes(w))
+    const first = after === null
+    const rooms = this.matrixRooms().filter((r) => !r.space)
+    return {
+      ...mail,
+      type: 'items',
+      rooms: first ? rooms.filter((r) => has(r.name)) : [],
+      messages: first
+        ? rooms
+            .flatMap((r) => this.events.get(r.id)!.filter((e) => e.kind === 'm.room.message' && has(e.body)).map((event) => ({ room: r.id, event })))
+            .sort((a, b) => b.event.ts - a.event.ts)
+        : [],
+      todos: first ? this.sortedTodos().filter((t) => t.done_at === null && has(`${t.title} ${t.notes}`)) : [],
+      events: first ? this.calendar.filter((e) => has(e.subject)) : [],
+    }
   }
 
   private sortedTodos(): Todo[] {

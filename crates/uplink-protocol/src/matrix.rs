@@ -108,6 +108,14 @@ pub enum Encryption {
     Undecryptable,
 }
 
+/// A message a search found, in its room.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct FoundMessage {
+    pub room: RoomId,
+    pub event: RoomEvent,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RoomEvent {

@@ -6,6 +6,7 @@ import { keepFocus, useKeymap } from '../keymap'
 import { conversationKey, hasEntry, inScope, threadOf, type MailStore, type Thread, type View } from '../stores/mail'
 import { respond, type Response } from '../compose/reply'
 import { allMailPath, inboxPath, mailPath, searchPath } from './App'
+import { Found } from './Found'
 import { HtmlBody, QuoteToggle } from './HtmlBody'
 import { MenuButton } from './Menu'
 import { forwards, splitText } from './quote'
@@ -180,7 +181,10 @@ export function Mail(props: Props) {
   return (
     <>
       {openId === null ? (
-        <MessageList mail={mail} open={open} />
+        <>
+          {list?.found && <Found found={list.found} />}
+          <MessageList mail={mail} open={open} />
+        </>
       ) : openThread ? (
         <ConversationView
           key={conversationKey(opened!)}
@@ -218,7 +222,7 @@ function MessageList(props: { mail: MailStore; open: (conversation: Conversation
   }, [mail.focus.value])
 
   if (!list?.loaded) return <p class={styles.placeholder}>Loading…</p>
-  if (list.conversations.length === 0) return <p class={styles.placeholder}>No messages.</p>
+  if (list.conversations.length === 0) return <p class={styles.placeholder}>{list.found ? 'No mail.' : 'No messages.'}</p>
   // With several accounts, each row says whose it is.
   const accounts = mail.accounts.value ?? []
   const address = (account: string) =>

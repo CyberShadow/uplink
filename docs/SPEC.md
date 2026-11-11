@@ -1538,12 +1538,25 @@ Spaces are not listed. Of to-dos: `due:` (`today`, `tomorrow` or a
 date), `is:overdue` (open, and due before today), `has:due`, `is:done`,
 and dates, of its creation; done ones are left out unless the query
 names `is:done` outside a negation, as Trash is. Of events: `account:`
-and dates, of their start. A label or account no kind has is an error.
-`ListItems { query, today, after, limit }` lists them all in one read: a
-page of conversations (as `ListEntries`, a later page of them alone),
-and every room (most recently active first), to-do (as listed) and
-event (those yet to end, soonest first, then those past, latest first)
-matched. `today` is the user's date, as the browser has it (§12.10),
+and dates, of their start. Rooms' messages are of their rooms
+(`is:room`): words match their text or an edit's (as a substring, as a
+room's search does, §12.11), `from:` the sender's id or name, `from:me`
+the accounts' own; `is:unread` those after the room's read marker and
+not the account's, `is:mention` and `is:notifying` those that highlight
+or notify; dates are of the message, and the room's terms (`tag:`,
+`space:`, `is:dm`, `is:invite`, `account:`) are of its room. A label or
+account no kind has is an error. `ListItems { query, today, after,
+limit }` lists them all in one read: a page of conversations (as
+`ListEntries`, a later page of them alone), and every room (most
+recently active first), to-do (as listed) and event (those yet to end,
+soonest first, then those past, latest first) matched, and the latest
+50 messages of rooms (`FoundMessage { room, event }`), compiled to SQL
+(`uplink_matrix::query::messages`), a room's terms as the rooms they
+hold of. The search box at the top searches everything this way, but in
+a room, where it searches the room's messages (§12.11): the search page
+lists rooms, messages, to-dos and events found above the mail, each a
+link to it (a message to its room); it lists again when rooms, to-dos or
+calendars change, as it does when mail does. `today` is the user's date, as the browser has it (§12.10),
 which `due:` counts from. Rooms, to-dos and events are few, so they are
 matched as listed, in Rust (`uplink_query::matches`); mail's terms of
 other kinds fold to constants in its SQL, and a query of other kinds
@@ -2252,6 +2265,7 @@ src/views/
 ├── Nav.tsx                # drafts/outbox, mail labels, Matrix rooms
 ├── Home.tsx               # the agenda and the buckets (§12.13)
 ├── Mail.tsx               # conversation list and conversation view
+├── Found.tsx              # a search's rooms, messages, to-dos, events
 ├── HtmlBody.tsx           # sandboxed HTML mail (§8.9)
 ├── Icon.tsx               # the Lucide icons used, vendored (ISC)
 ├── LabelPicker.tsx

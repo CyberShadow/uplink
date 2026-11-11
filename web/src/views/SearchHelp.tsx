@@ -49,6 +49,24 @@ const SECTIONS: { title: string; rows: Row[] }[] = [
     ],
   },
   {
+    title: 'Rooms, to-dos and events',
+    rows: [
+      ['is:room', 'Rooms, and their messages; is:mail, is:todo and is:event too'],
+      ['is:unread is:room', 'Rooms with messages unread, and those messages'],
+      ['is:mention', 'Rooms whose unread messages mention you, and messages that do'],
+      ['is:notifying', 'Rooms with unread messages that notify (not of muted rooms)'],
+      ['is:dm', 'Direct chats'],
+      ['is:invite', 'Rooms you are invited to'],
+      ['tag:lowpriority', 'Rooms with the tag: favourite, lowpriority, or one of yours'],
+      ['space:Work', 'Rooms in the space, however deeply, and their messages'],
+      ['from:alice is:room', 'Messages in rooms by a sender whose name or id has the word'],
+      ['due:today', 'To-dos due today; due:tomorrow, due:2026-12-24'],
+      ['is:overdue', 'Open to-dos due before today'],
+      ['has:due', 'To-dos with a due date'],
+      ['is:done', 'Done to-dos, which are otherwise left out'],
+    ],
+  },
+  {
     title: 'Dates',
     rows: [
       ['after:2026-01-31', 'Received on or after the day (2026/1/31 too)'],
@@ -63,11 +81,15 @@ const SECTIONS: { title: string; rows: Row[] }[] = [
 export function SearchHelp() {
   return (
     <article class={styles.help} aria-label="Search help">
-      <h2>Searching mail</h2>
+      <h2>Searching</h2>
       <p>
-        Every term must match; a conversation is listed when one of its messages does. Mail in Trash and Spam is left
-        out, unless the search names <code>in:trash</code>, <code>in:spam</code> or <code>in:anywhere</code>, which
-        searches Trash or Spam instead, or everything.
+        A search lists mail, rooms, their messages, to-dos and calendar events. Every term must match; a term of one
+        kind matches nothing of another (<code>from:</code> no to-do, <code>is:overdue</code> no mail), and so its
+        negation everything of it. A conversation is listed when one of its messages matches. Mail in Trash and Spam
+        is left out, unless the search names <code>in:trash</code>, <code>in:spam</code> or <code>in:anywhere</code>,
+        which searches Trash or Spam instead, or everything. Words match a room's name and its messages' text (the
+        latest 50 of them; a room's own search finds more), a to-do's title and notes, and an event's subject,
+        location and preview. Dates are of a room's latest message, a to-do's creation and an event's start.
       </p>
       {SECTIONS.map((section) => (
         <section key={section.title}>
@@ -90,7 +112,7 @@ export function SearchHelp() {
       ))}
       <p>
         Operators, words and label names are not case-sensitive. An operator uplink does not know is an error
-        rather than text, as is a label that no account has; quote it, as in <code>"re:lunch"</code>, to search for
+        rather than text, as is a label that no account and no room has; quote it, as in <code>"re:lunch"</code>, to search for
         the text. Dates are of UTC.
       </p>
     </article>

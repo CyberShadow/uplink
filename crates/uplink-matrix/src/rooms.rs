@@ -1497,6 +1497,29 @@ pub fn listed_events(
     )
 }
 
+/// A pattern of `LIKE ... ESCAPE '\\'` that has `text`, its own `%` and
+/// `_` (and the escape) escaped.
+pub(crate) fn having(text: &str) -> String {
+    let escaped = text
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    format!("%{escaped}%")
+}
+
+/// Of a message `e`, whether its text, or that of one of its edits, is
+/// like `pattern` (a parameter, of `having`).
+pub(crate) fn has_text(pattern: &str) -> String {
+    format!(
+        "(e.body LIKE {pattern} ESCAPE '\\' OR EXISTS (
+           SELECT 1 FROM matrix_event x
+           WHERE x.room = e.room AND x.relates_to = e.event_id AND x.rel_type = 'm.replace'
+             AND x.sender = e.sender AND NOT x.redacted
+             AND json_extract(x.raw_json, '$.content.\"m.new_content\".body')
+                 LIKE {pattern} ESCAPE '\\'))"
+    )
+}
+
 /// The room's listed messages, of the main timeline or a thread, whose
 /// text, or one of their edits', has every one of `words` (ignoring the
 /// case of ASCII letters, as SQLite's `LIKE`), newest first: up to
@@ -1508,29 +1531,10 @@ pub fn search(
     before: Option<RoomEventId>,
     limit: u32,
 ) -> Result<(Vec<RoomEvent>, bool)> {
-    // A word's pattern, its own `%` and `_` (and the escape) escaped.
-    let patterns: Vec<String> = words
-        .iter()
-        .map(|word| {
-            let escaped = word
-                .replace('\\', "\\\\")
-                .replace('%', "\\%")
-                .replace('_', "\\_");
-            format!("%{escaped}%")
-        })
+    let patterns: Vec<String> = words.iter().map(|word| having(word)).collect();
+    let matches: Vec<String> = (0..patterns.len())
+        .map(|i| has_text(&format!("?{}", i + 4)))
         .collect();
-    let has = |i: usize| {
-        let p = i + 4;
-        format!(
-            "(e.body LIKE ?{p} ESCAPE '\\' OR EXISTS (
-               SELECT 1 FROM matrix_event x
-               WHERE x.room = e.room AND x.relates_to = e.event_id AND x.rel_type = 'm.replace'
-                 AND x.sender = e.sender AND NOT x.redacted
-                 AND json_extract(x.raw_json, '$.content.\"m.new_content\".body')
-                     LIKE ?{p} ESCAPE '\\'))"
-        )
-    };
-    let matches: Vec<String> = (0..patterns.len()).map(has).collect();
     let sql = format!(
         "SELECT {COLUMNS} FROM matrix_event e
          WHERE e.room = ?1 AND e.type = 'm.room.message' AND NOT e.redacted AND {LISTED}

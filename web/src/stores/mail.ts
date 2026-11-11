@@ -8,10 +8,12 @@
 import { batch, computed, signal } from '@preact/signals'
 import type {
   Account,
+  CalendarEvent,
   ClientRequest,
   Conversation,
   Entry,
   EntryId,
+  FoundMessage,
   Label,
   LabelId,
   ListPosition,
@@ -19,7 +21,10 @@ import type {
   LogEntry,
   MessageContent,
   MessageId,
+  Room,
+  Todo,
 } from '../generated/protocol'
+import { date } from '../format'
 import type { Requester } from '../connection'
 import type { Ops } from './ops'
 import { query } from './query'
@@ -61,6 +66,17 @@ export interface List {
   next: ListPosition | null
   /** The entries its conversations are made of; known once loaded. */
   scope: ListScope | null
+  /** What a search found besides mail; `null` of other lists, and until
+   * loaded. */
+  found: Found | null
+}
+
+/** A search's items of other kinds than mail (SPEC §8.7). */
+export interface Found {
+  rooms: Room[]
+  messages: FoundMessage[]
+  todos: Todo[]
+  events: CalendarEvent[]
 }
 
 /** Every entry, as a message's conversation is made of. */
@@ -187,15 +203,18 @@ export class MailStore {
           break
         case 'label_list_changed':
           break
+        case 'rooms_changed':
+        case 'timeline_added':
+        case 'todos_changed':
+        case 'calendar_changed':
+          // Not mail, but a search lists them too.
+          if (this.list.value?.view.kind === 'search') this.invalidateList()
+          continue
         case 'draft_edited':
         case 'drafts_changed':
         case 'outbox_changed':
-        case 'rooms_changed':
-        case 'timeline_added':
         case 'timeline_filled':
         case 'matrix_sends_changed':
-        case 'todos_changed':
-        case 'calendar_changed':
           // Not mail; no counts change.
           continue
       }
@@ -354,7 +373,7 @@ export class MailStore {
     if (this.list.value && sameView(this.list.value.view, view)) return
     this.generation++
     batch(() => {
-      this.list.value = { view, loaded: false, conversations: [], next: null, scope: null }
+      this.list.value = { view, loaded: false, conversations: [], next: null, scope: null, found: null }
       this.focus.value = null
       this.selected.value = new Set()
     })
@@ -393,11 +412,18 @@ export class MailStore {
       return
     }
     this.listLoad = load
-    let page: { conversations: Conversation[]; next: ListPosition | null; scope: ListScope } | undefined
+    let page:
+      | { conversations: Conversation[]; next: ListPosition | null; scope: ListScope; found?: Found }
+      | undefined
     try {
       if (request.type === 'list_message_entries') {
         const response = await query(this.server, request, 'entries')
         page = { conversations: response.entries.map(alone), next: null, scope: EVERY }
+      } else if (request.type === 'list_items') {
+        const { conversations, next, scope, rooms, messages, todos, events } = await query(this.server, request, 'items')
+        // A later page is of mail alone.
+        const found = request.after === null ? { rooms, messages, todos, events } : undefined
+        page = { conversations, next, scope, found }
       } else {
         page = await query(this.server, request, 'conversations')
       }
@@ -411,8 +437,9 @@ export class MailStore {
       const conversations =
         load === 'reload' ? page.conversations : [...current.conversations, ...page.conversations]
       const { next, scope } = page
+      const found = page.found ?? current.found
       batch(() => {
-        this.list.value = { ...current, loaded: true, conversations, next, scope }
+        this.list.value = { ...current, loaded: true, conversations, next, scope, found }
         this.keepFocus(current.conversations, conversations)
       })
     }
@@ -427,8 +454,9 @@ export class MailStore {
     const after = load === 'reload' ? null : list.next
     const entries = (query: string): ClientRequest => ({ type: 'list_entries', query, after, limit })
     switch (list.view.kind) {
+      // Of every kind, so names of every kind's.
       case 'search':
-        return entries(list.view.query)
+        return { type: 'list_items', query: list.view.query, today: date(new Date()), after, limit }
       case 'message':
         return { type: 'list_message_entries', message: list.view.message }
       case 'all':

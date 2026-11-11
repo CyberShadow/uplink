@@ -4,14 +4,15 @@ import { searchPath } from './App'
 import { roomSearchPath } from './Room'
 import styles from './App.module.css'
 
-/** The box at the top: it searches the room on show, or else mail. */
+/** The box at the top: it searches the room on show, or else everything:
+ * mail, rooms and their messages, to-dos and events. */
 export function SearchBox() {
   const { route, path } = useLocation()
   const { matrix } = useServices()
   const roomId = path.match(/^\/rooms\/(\d+)/)?.[1]
   const room = roomId === undefined ? undefined : matrix.rooms.value?.find((r) => String(r.id) === roomId)
   const shown = path.match(room ? /^\/rooms\/\d+\/search\/([^/]+)/ : /^\/search\/([^/]+)/)?.[1]
-  const label = room ? `Search ${room.name}` : 'Search mail'
+  const label = room ? `Search ${room.name}` : 'Search'
   return (
     <form
       class={styles.search}

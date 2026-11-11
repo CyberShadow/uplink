@@ -1699,4 +1699,91 @@ mod query {
         assert!(latest("Team chat").is_some());
         assert_eq!(latest("Bob"), None);
     }
+
+    fn said(id: &str, sender: &str, body: &str, ts: i64) -> ObservedEvent {
+        let raw = serde_json::json!({
+            "type": "m.room.message",
+            "event_id": id,
+            "sender": sender,
+            "origin_server_ts": ts,
+            "content": { "msgtype": "m.text", "body": body },
+        });
+        ObservedEvent::parse(&raw.to_string(), None, Encryption::None).unwrap()
+    }
+
+    #[tokio::test]
+    async fn queries_match_messages_by_text_sender_and_room() {
+        let db = Db::new();
+        let mut work = room("!work:x", "Work");
+        work.space = true;
+        work.children = vec![crate::rooms::SpaceChild {
+            room_id: "!team:x".into(),
+            order: None,
+        }];
+        let mut team = room("!team:x", "Team chat");
+        let mut mention = said("$3", "@bob:x", "Ping @me about the deploy", 3_000);
+        mention.push.highlight = true;
+        let edited = said("$5", "@carol:x", "Lunch at noon?", 5_000);
+        let mut edit = said("$6", "@carol:x", "* Deploy at noon?", 6_000);
+        edit.raw = serde_json::json!({
+            "type": "m.room.message",
+            "event_id": "$6",
+            "sender": "@carol:x",
+            "origin_server_ts": 6_000,
+            "content": {
+                "msgtype": "m.text",
+                "body": "* Deploy at noon?",
+                "m.new_content": { "msgtype": "m.text", "body": "Deploy at noon?" },
+                "m.relates_to": { "rel_type": "m.replace", "event_id": "$5" },
+            },
+        })
+        .to_string();
+        let edit = ObservedEvent::parse(&edit.raw, None, Encryption::None).unwrap();
+        team.events = vec![
+            said("$1", ME, "I will deploy today", 1_000),
+            said("$2", "@bob:x", "Deploy is green", 2_000),
+            mention,
+            edited,
+            edit,
+        ];
+        team.tags = vec!["u.Projects".into()];
+        let mut bob = room("!bob:x", "Bob");
+        bob.direct = true;
+        bob.events = vec![said("$4", "@bob:x", "100% deployed", 4_000)];
+        db.observe(Synced {
+            next_batch: "next".into(),
+            rooms: vec![work, team, bob],
+        })
+        .await
+        .unwrap();
+        let matching = |query: &str| -> Vec<String> {
+            let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
+            let tx = conn.transaction().unwrap();
+            let accounts = [ConfiguredAccount {
+                id: "mx".into(),
+                mxid: ME.into(),
+            }];
+            let query = uplink_query::parse(query, 0).unwrap();
+            crate::query::messages(&tx, &accounts, &query, 10)
+                .unwrap()
+                .into_iter()
+                .map(|m| m.event.event_id)
+                .collect()
+        };
+        // The latest first; an edit's text is its message's.
+        assert_eq!(matching("deploy"), ["$5", "$4", "$3", "$2", "$1"]);
+        assert_eq!(matching("deploy is:unread"), ["$5", "$4", "$3", "$2"]);
+        assert_eq!(matching("deploy from:me"), ["$1"]);
+        assert_eq!(matching("from:bob"), ["$4", "$3", "$2"]);
+        assert_eq!(matching("is:mention"), ["$3"]);
+        assert_eq!(matching("deploy is:dm"), ["$4"]);
+        assert_eq!(matching("deploy -space:work"), ["$4"]);
+        assert_eq!(matching("tag:projects green"), ["$2"]);
+        assert_eq!(matching("100%"), ["$4"], "% is no wildcard");
+        assert_eq!(matching("deploy before:1970-01-01"), Vec::<String>::new());
+        // Terms of other kinds are false of messages.
+        assert!(matching("deploy is:todo").is_empty());
+        assert!(matching("in:inbox OR subject:deploy").is_empty());
+        assert_eq!(matching("deploy is:room").len(), 5);
+    }
 }

@@ -446,6 +446,8 @@ pub enum ServerResponse {
         scope: mail::ListScope,
         /// Most recently active first.
         rooms: Vec<matrix::Room>,
+        /// Rooms' messages, the latest first, up to a few.
+        messages: Vec<matrix::FoundMessage>,
         /// Open ones first, by due date.
         todos: Vec<todos::Todo>,
         /// Those yet to end, soonest first, then those past, latest first.
