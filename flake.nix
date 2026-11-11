@@ -216,6 +216,12 @@
           uplink = uplinkBin;
           uplinkWeb = uplinkWeb;
           uplinkWebDeps = uplinkWebDeps;
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          # The README's, in docs/screenshots/ (a NixOS VM, so Linux only).
+          screenshots = import ./nix/screenshots {
+            inherit pkgs emulate;
+            uplinkModule = self.nixosModules.default;
+          };
         };
 
         # ── dev shell ──────────────────────────────────────────────────────
