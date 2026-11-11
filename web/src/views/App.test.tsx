@@ -277,6 +277,20 @@ describe('mail', () => {
     expect(document.activeElement).toBe(document.body)
   })
 
+  it('goes up by Esc: from a conversation to its list, selects none, then home', async () => {
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('j{Enter}')
+    expect(await screen.findByText('Body of Second')).toBeTruthy()
+    await user.keyboard('{Escape}')
+    await screen.findByRole('list', { name: 'Messages' })
+    expect(location.pathname).toBe('/mail/work/INBOX')
+    await user.keyboard('x{Escape}')
+    expect(client.mail.selected.value.size).toBe(0)
+    expect(location.pathname).toBe('/mail/work/INBOX')
+    await user.keyboard('{Escape}')
+    expect(location.pathname).toBe('/')
+  })
+
   it('opens a message, reads it, and goes back to the list', async () => {
     const user = await start('/mail/work/INBOX')
     await user.keyboard('j{Enter}')
@@ -1265,6 +1279,30 @@ describe('matrix', () => {
     // Other keys act on its line still.
     await user.keyboard('t')
     expect(document.activeElement).toBe(await screen.findByRole('textbox', { name: 'Reply in thread' }))
+  })
+
+  it('goes up by Esc: out of the box, off the line, closes the panel, then home', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const root = server.receive(room.id, { body: 'Plans' })
+    server.receiveInThread(room.id, root, { body: 'lunch then' })
+    const user = await start(`/rooms/${room.id}`)
+    await user.click(await within(screen.getByRole('list', { name: 'Timeline' })).findByRole('button', { name: /1 reply/ }))
+    const thread = screen.getByRole('list', { name: 'Thread messages' })
+    await within(thread).findByText('lunch then')
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Reply in thread' }))
+    await user.keyboard('{Escape}')
+    expect(document.activeElement).toBe(document.body)
+    // From no line, j/k go to the timeline's.
+    await user.keyboard('k')
+    expect(document.activeElement).toBe(document.getElementById(`event-${root.id}`))
+    await user.keyboard('{Escape}')
+    expect(document.activeElement).toBe(document.body)
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('complementary', { name: 'Thread' })).toBeNull()
+    expect(location.pathname).toBe(`/rooms/${room.id}`)
+    await user.keyboard('{Escape}')
+    expect(location.pathname).toBe('/')
   })
 
   it('moves the focus to a thread\'s box, and back to the room\'s once it closes', async () => {

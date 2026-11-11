@@ -84,7 +84,16 @@ function Timeline(props: { room: Room; words: string | null }) {
   const lines = useRef<HTMLOListElement>(null)
   // From no line (those of a list have its own), to the latest.
   const toLatest = () => moveLine(lines.current!, -1)
-  useKeymap({ reply: write, write, label: () => setTagging(true), next: toLatest, previous: toLatest, ...scrolling })
+  useKeymap({
+    reply: write,
+    write,
+    label: () => setTagging(true),
+    next: toLatest,
+    previous: toLatest,
+    ...scrolling,
+    // Else, home (`Shell`).
+    ...(panel && { up: () => setPanel(null) }),
+  })
   useMarkRead(room, events)
 
   const [overlay, outgoing] = useMemo(() => overlaid(events ?? [], sends ?? [], null), [events, sends])

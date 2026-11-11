@@ -653,6 +653,7 @@ function ReactButton(props: {
   useLayoutEffect(() => {
     if (open === 'key') input.current!.focus()
   }, [open])
+  useEscape(open !== null ? close : null)
   useEffect(() => {
     if (open === null) return
     const outside = (event: PointerEvent) => {
@@ -696,11 +697,6 @@ function ReactButton(props: {
               placeholder="Other…"
               value={typed}
               onInput={(event) => setTyped(event.currentTarget.value)}
-              onKeyDown={(event) => {
-                if (event.key !== 'Escape') return
-                event.stopPropagation()
-                close()
-              }}
             />
           </form>
         </div>

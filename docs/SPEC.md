@@ -2445,6 +2445,14 @@ as a native list does), `Enter` chooses and `Esc` closes.
   actions" menu. No `n`/`p` (a conversation's next or previous message)
   yet.
 
+- **`Esc` goes up**, pressed again and again, to a known place: a field
+  leaves itself (once it has cancelled what it was doing: a reply, a
+  completion), and so does anything else that has the focus (a room's
+  line, a link); from nothing, it closes a room's panel (a thread, the
+  info, a search, a message's details), takes an open conversation back
+  to its list, selects none, and else goes home. Dialogs, menus and
+  pickers close by it first.
+
 Sequences: all components' window bindings form one keymap with one
 pending sequence (`web/src/keymap.ts`), on tinykeys' key parsing and
 matching. A first press (`g`) thus keeps a binding of the second (`s`,

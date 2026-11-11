@@ -51,6 +51,7 @@ export type Action =
   | 'forward'
   | 'send'
   | 'close'
+  | 'up'
   | 'goHome'
   | 'goInbox'
   | 'goStarred'
@@ -141,6 +142,12 @@ export const KEYMAP: Binding[] = [
   { action: 'forward', keys: ['f'], label: 'f', help: 'Forward' },
   { action: 'send', keys: ['$mod+Enter'], label: `${MOD}+Enter`, help: 'Send (in compose)' },
   { action: 'close', keys: ['Escape'], label: 'Esc', help: 'Close compose (the draft is kept)' },
+  {
+    action: 'up',
+    keys: ['Escape'],
+    label: 'Esc',
+    help: 'Up, again and again: out of what has the focus, then closes a panel, back to the list, selects none, and home',
+  },
   { action: 'goHome', ...go('h'), help: 'Go home' },
   { action: 'goInbox', ...go('i'), help: 'Go to Inbox' },
   { action: 'goStarred', ...go('s'), help: 'Go to Starred' },
@@ -279,28 +286,34 @@ interface Bound {
 
 /** The window's bindings, by component, in the order they mounted. */
 const windowBindings: Bound[][] = []
+/** Whether a press is a field's own: what is typed into one, but with
+ * Ctrl, Cmd or Alt held. */
+const typed = (event: KeyboardEvent) =>
+  !event.ctrlKey &&
+  !event.metaKey &&
+  !event.altKey &&
+  (event.target as Element).matches('[contenteditable],input,select,textarea')
 // tinykeys' own ignores fields, and repeats: those, `sequences` handles.
-window.addEventListener(
-  'keydown',
-  sequences(
-    () => windowBindings,
-    (event) => {
-      const pressed = event.target as Element
-      return (
-        event.isComposing ||
-        // What is typed into a field is its own; but not Ctrl, Cmd or Alt
-        // held.
-        (!event.ctrlKey &&
-          !event.metaKey &&
-          !event.altKey &&
-          pressed.matches('[contenteditable],input,select,textarea')) ||
-        // As are the keys that activate a control that has the focus: a
-        // link in a message, Tabbed to.
-        (ACTIVATE.includes(event.key) && pressed.matches('a[href],button,summary'))
-      )
-    },
-  ),
+const windowKeys = sequences(
+  () => windowBindings,
+  (event) =>
+    event.isComposing ||
+    typed(event) ||
+    // As are the keys that activate a control that has the focus: a link
+    // in a message, Tabbed to.
+    (ACTIVATE.includes(event.key) && (event.target as Element).matches('a[href],button,summary')),
 )
+window.addEventListener('keydown', (event) => {
+  // Escape first leaves what has the focus (a line, a link), as fields
+  // leave themselves; only from nothing does it go `up`.
+  const focused = document.activeElement as HTMLElement
+  if (event.key === 'Escape' && focused !== document.body && !typed(event) && !event.isComposing) {
+    focused.blur()
+    event.preventDefault()
+    return
+  }
+  windowKeys(event)
+})
 
 const ACTIVATE = ['Enter', ' ']
 

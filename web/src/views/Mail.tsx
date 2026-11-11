@@ -167,6 +167,8 @@ export function Mail(props: Props) {
           selectUnread: () => mail.selectHaving('UNREAD', true),
           selectStarred: () => mail.selectHaving('STARRED', true),
           selectUnstarred: () => mail.selectHaving('STARRED', false),
+          // Else, home (`Shell`).
+          ...(mail.selected.value.size > 0 && { up: () => mail.selectNone() }),
         }
       : {
           ...common,
@@ -175,6 +177,7 @@ export function Mail(props: Props) {
           archiveNewer: () => archiveAndOpen(-1),
           archiveOlder: () => archiveAndOpen(1),
           back: backToList,
+          up: backToList,
         },
   )
 

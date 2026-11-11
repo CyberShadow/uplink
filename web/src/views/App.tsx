@@ -84,6 +84,8 @@ function Shell() {
     goDrafts: () => route('/drafts'),
     goTodos: () => route('/todos'),
     goHome: () => route('/'),
+    // As high as Esc goes, where views have nothing nearer (`up`).
+    up: () => route('/'),
     goHistory: () => route('/history'),
     undo: () => history.undoLast(),
     goCalendar: () => route(calendarPath('week', today())),
