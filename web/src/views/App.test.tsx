@@ -1466,6 +1466,39 @@ describe('matrix', () => {
     expect(location.pathname).toBe(unread[0].getAttribute('href'))
   })
 
+  it('gives back, going back or forward, what had the focus there', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const said = server.receive(room.id, { body: 'Plans' })
+    const user = await start(`/rooms/${room.id}`)
+    const box = () => screen.getByRole('textbox', { name: 'Message Lounge' })
+    await within(screen.getByRole('list', { name: 'Timeline' })).findByText('Plans')
+    const away = async () => {
+      await user.keyboard('gi')
+      await screen.findByRole('list', { name: 'Messages' })
+    }
+    const back = async () => {
+      history.back()
+      await waitFor(() => expect(location.pathname).toBe(`/rooms/${room.id}`))
+    }
+
+    // Left with nothing focused, it has nothing, not its box.
+    await user.keyboard('{Escape}')
+    await away()
+    await back()
+    expect(document.activeElement).toBe(document.body)
+    // Or its line.
+    await user.keyboard('k')
+    await away()
+    await back()
+    expect(document.activeElement).toBe(document.getElementById(`event-${said.id}`))
+    // Or its box.
+    await user.keyboard('i{Alt>}{Shift>}i{/Shift}{/Alt}')
+    await screen.findByRole('list', { name: 'Messages' })
+    await back()
+    expect(document.activeElement).toBe(box())
+  })
+
   it('goes up by Esc: out of the box, off the line, closes the panel, then home', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')

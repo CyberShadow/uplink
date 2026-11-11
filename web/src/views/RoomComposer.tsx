@@ -238,6 +238,8 @@ export function Composer(props: {
         )}
         <textarea
           ref={props.textarea}
+          // What the history gives the focus back to (`restoreFocus`).
+          id={thread === null ? 'message-box' : 'thread-box'}
           aria-label={thread !== null ? 'Reply in thread' : `Message ${room.name}`}
           placeholder={editing ? 'Edit your message' : thread !== null ? 'Reply in thread' : `Message ${room.name}`}
           rows={1}

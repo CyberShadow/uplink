@@ -2575,7 +2575,11 @@ the thread. The room's box unfocused is then the exception
 closed gives the focus back to where it was, so that `Ctrl+K Esc` (or
 `Ctrl+K` to the room on show) leaves one writing. A view shown has the
 focus it takes, or none: going to another drops the focus of a field
-outside it, as the search box. The `g` sequences also have
+outside it, as the search box. Gone back or forward to, a place has the
+focus it had when left (a room's box, a line, or nothing), as browsers
+give back where a page was scrolled: each history entry is stamped with
+a key, and what has the focus kept by key, by its element's id
+(`web/src/historyFocus.ts`), for the page's life. The `g` sequences also have
 synonyms, `Alt+Shift` and the sequence's second key (`Alt+Shift+H`
 home, `Alt+Shift+I` Inbox…), which work from within fields, as all
 presses with Ctrl, Cmd or Alt held do: of modifiers, those that
