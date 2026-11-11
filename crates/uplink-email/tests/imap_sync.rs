@@ -11,11 +11,13 @@ use common::{
 use futures_util::TryStreamExt;
 use std::{path::Path, process::Stdio, sync::Arc, time::Duration};
 use tokio_rustls::{rustls::pki_types::CertificateDer, TlsConnector};
-use uplink_config::{ImapAccountConfig, MailServer, Security};
+use uplink_config::{ImapAccountConfig, MailServer, OAuthConfig, Security};
 use uplink_email::imap::{
     session::{self, Connection, SignIn},
+    smtp,
     sync::ImapSync,
 };
+use uplink_email::oauth;
 use uplink_protocol::{mail::MailProvider, ServerResponse};
 use uplink_storage::seal::MasterKey;
 
@@ -28,6 +30,8 @@ struct Stalwart {
     dir: std::path::PathBuf,
     imap: u16,
     smtp: u16,
+    /// Its HTTP, for OAuth.
+    http: u16,
     tls: TlsConnector,
     key: Arc<MasterKey>,
     _server: tokio::process::Child,
@@ -51,7 +55,7 @@ impl Stalwart {
             rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
         std::fs::write(dir.join("cert.pem"), cert.pem()).unwrap();
         std::fs::write(dir.join("key.pem"), key_pair.serialize_pem()).unwrap();
-        let (imap, smtp) = (free_port(), free_port());
+        let (imap, smtp, http) = (free_port(), free_port(), free_port());
         let d = dir.display();
         let config = format!(
             r#"
@@ -65,6 +69,9 @@ tls.implicit = true
 bind = "127.0.0.1:{smtp}"
 protocol = "smtp"
 tls.implicit = true
+[server.listener.http]
+bind = "127.0.0.1:{http}"
+protocol = "http"
 [certificate.default]
 cert = "%{{file:{d}/cert.pem}}%"
 private-key = "%{{file:{d}/key.pem}}%"
@@ -116,6 +123,7 @@ enable = true
             dir,
             imap,
             smtp,
+            http,
             tls,
             key,
             _server: server,
@@ -459,4 +467,76 @@ async fn sends_mail_by_smtp_and_files_it_in_sent() {
     })
     .await;
     sync.abort();
+}
+
+/// An account that signs in by XOAUTH2: Stalwart grants a refresh token
+/// (as its own sign-in page would; it refuses the loopback redirect of
+/// `uplink oauth init`, which is not HTTPS), and uplink redeems it for
+/// the access token that signs in to IMAP and SMTP.
+#[tokio::test(flavor = "multi_thread")]
+async fn signs_in_by_xoauth2() {
+    let dir = tempfile::tempdir().unwrap();
+    let stalwart = Stalwart::start(dir.path()).await;
+    let http = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{}", stalwart.http);
+    let code: serde_json::Value = http
+        .post(format!("{base}/api/oauth"))
+        .basic_auth("alice", Some("alice-secret"))
+        .body(r#"{"type": "code", "client_id": "uplink"}"#)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token: serde_json::Value = http
+        .post(format!("{base}/auth/token"))
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("client_id", "uplink"),
+            ("code", code["data"]["code"].as_str().unwrap()),
+            ("redirect_uri", ""),
+        ])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let refresh_token = token["refresh_token"].as_str().unwrap();
+
+    let oauth = OAuthConfig {
+        client_id: "uplink".into(),
+        client_secret: None,
+        auth_url: format!("{base}/authorize"),
+        token_url: format!("{base}/auth/token"),
+        scope: String::new(),
+        token_file: stalwart.dir.join("alice.token"),
+    };
+    let account = ImapAccountConfig {
+        oauth: Some(oauth.clone()),
+        ..stalwart.account("alice")
+    };
+    let grant = session::grant(&account, &oauth);
+    oauth::store(&stalwart.key, &grant, refresh_token.into()).unwrap();
+    let sign_in = stalwart.sign_in(&account);
+    assert!(matches!(sign_in, SignIn::OAuth(_)));
+
+    let mut alice = session::connect(&account, &sign_in, &stalwart.tls)
+        .await
+        .unwrap();
+    alice.session.select("INBOX").await.unwrap();
+    let raw = format!(
+        "Message-ID: <oauth@uplink.test>\r\nFrom: {ALICE}\r\nTo: {BOB}\r\n\
+         Date: Tue, 3 Nov 2026 10:00:00 +0000\r\nSubject: oauth \r\n\r\nhi\r\n"
+    );
+    smtp::send(&account, &sign_in, &stalwart.tls, raw.as_bytes())
+        .await
+        .unwrap();
+    eventually("the message to reach Bob", || async {
+        find(&mut stalwart.client("bob").await, "INBOX", "oauth").await
+    })
+    .await;
 }

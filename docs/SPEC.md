@@ -3445,7 +3445,10 @@ request).
   clients over IMAP: delivering by `APPEND`, flagging, moving and
   expunging; mail uplink sends goes through its SMTP to the other
   user's Inbox. Its folders have special-use attributes but no Archive,
-  which uplink then makes.
+  which uplink then makes. It is an OAuth provider too: a code it grants
+  (by its API, as it refuses the loopback redirect of `uplink oauth
+  init`, not being HTTPS) yields the refresh token that uplink redeems
+  to sign in by XOAUTH2.
 - **Matrix:** Conduit (single-binary Rust homeserver, from nixpkgs), a
   real homeserver rather than a fake. The Rust tests start one per test
   (`UPLINK_CONDUIT`, set by the dev shell and the checks; in the build
