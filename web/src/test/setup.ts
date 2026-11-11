@@ -1,5 +1,6 @@
 import { cleanup, configure } from '@testing-library/preact'
 import { afterEach } from 'vitest'
+import './intersection'
 
 // jsdom does no layout, nor media queries: the system's theme is light.
 Element.prototype.scrollIntoView = () => {}

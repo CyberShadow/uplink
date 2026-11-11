@@ -4,6 +4,7 @@
 // sent follow, and the box to write one. Beside it, a panel: the room's
 // info, or a thread.
 
+import type { RefObject } from 'preact'
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import type {
@@ -141,13 +142,7 @@ function Timeline(props: { room: Room; words: string | null }) {
         {/* Reversed, so that it stays scrolled to the latest event. */}
         <div class={styles.scroller}>
           <ol class={styles.events} aria-label="Timeline">
-            {timeline.moreBefore.value && (
-              <li class={styles.earlier}>
-                <button type="button" onMouseDown={keepFocus} onClick={() => timeline.loadEarlier()}>
-                  Load earlier events
-                </button>
-              </li>
-            )}
+            {timeline.moreBefore.value && <Earlier room={room} />}
             {events === null && <li class={styles.muted}>Loading…</li>}
             <Events
               room={room}
@@ -215,8 +210,6 @@ export function Events(props: {
   openThread: ((root: RoomEventId) => void) | null
 }) {
   const { room, me, overlay, act, openThread } = props
-  const { matrix } = useServices()
-  const timeline = matrix.timeline(room.id)
   return (
     <>
       {props.rows.map((row) => {
@@ -235,17 +228,8 @@ export function Events(props: {
             )
           case 'members':
             return <MembershipRun key={row.key} room={room} events={row.events} />
-          case 'gap': {
-            const filling = timeline.filling.value.has(row.gap)
-            return (
-              <li key={row.key} class={styles.gap} role="separator" aria-label="Events missing">
-                <span>Earlier events are missing here.</span>
-                <button type="button" disabled={filling} onMouseDown={keepFocus} onClick={() => timeline.fill(row.gap)}>
-                  {filling ? 'Fetching…' : 'Fetch them'}
-                </button>
-              </li>
-            )
-          }
+          case 'gap':
+            return <Gap key={row.key} room={room} gap={row.gap} />
           case 'event':
             return (
               <EventRow
@@ -267,6 +251,60 @@ export function Events(props: {
         <Pending key={item.id} item={item} />
       ))}
     </>
+  )
+}
+
+/** Calls `load` once the element comes into view (in the window, and
+ * in its scroller), and again whenever `key` changes while it is in
+ * view: a load that brought something changes it, so that loading goes
+ * on until the view is full; one that failed is not repeated, but left
+ * to the element's button. */
+function useLoadInView(element: RefObject<HTMLElement>, key: unknown, load: () => void) {
+  const current = useRef(load)
+  current.current = load
+  useEffect(() => {
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return
+      observer.disconnect()
+      current.current()
+    })
+    observer.observe(element.current!)
+    return () => observer.disconnect()
+  }, [element, key])
+}
+
+/** The start of the events loaded, with more before: those load as it
+ * comes into view. */
+function Earlier(props: { room: Room }) {
+  const { matrix } = useServices()
+  const timeline = matrix.timeline(props.room.id)
+  const element = useRef<HTMLLIElement>(null)
+  useLoadInView(element, timeline.events.value?.[0]?.id, () => timeline.loadEarlier())
+  return (
+    <li ref={element} class={styles.earlier}>
+      <button type="button" onMouseDown={keepFocus} onClick={() => timeline.loadEarlier()}>
+        Load earlier events
+      </button>
+    </li>
+  )
+}
+
+/** Where events are missing: the homeserver is asked for them as it
+ * comes into view. Those fetched fill it, and a gap left where they end
+ * is another. */
+function Gap(props: { room: Room; gap: GapId }) {
+  const { matrix } = useServices()
+  const timeline = matrix.timeline(props.room.id)
+  const element = useRef<HTMLLIElement>(null)
+  useLoadInView(element, props.gap, () => timeline.fill(props.gap))
+  const filling = timeline.filling.value.has(props.gap)
+  return (
+    <li ref={element} class={styles.gap} role="separator" aria-label="Events missing">
+      <span>Earlier events are missing here.</span>
+      <button type="button" disabled={filling} onMouseDown={keepFocus} onClick={() => timeline.fill(props.gap)}>
+        {filling ? 'Fetching…' : 'Fetch them'}
+      </button>
+    </li>
   )
 }
 

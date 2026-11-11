@@ -2450,8 +2450,14 @@ the membership's buttons.
   cancelled), are listed after the timeline with their state and
   buttons (§9.3).
 - **Gaps**, where events are missing (§9.2), are rows ("Earlier events
-  are missing here") with a button that fetches them; they fill in
-  place, merged by position, and a gap left shows where they end.
+  are missing here") that fetch them as they come into view, or by
+  their button; they fill in place, merged by position, and a gap left
+  shows where they end, fetching on if it is in view.
+- **Earlier pages** of the timeline load as its start ("Load earlier
+  events") comes into view, page after page while it stays there. A
+  load that brought something looks again; one that failed (the
+  homeserver's refusal to fill a gap, say) is not repeated, but left to
+  the row's button.
 - **Starting a conversation**, from each Matrix account's "Start a
   conversation" in the navigation, as Element's "+": a dialog of three
   tabs, a new room (name, topic, users to invite, public with its

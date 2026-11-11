@@ -6,6 +6,7 @@ import type { Entry, MemberState } from '../generated/protocol'
 import { Client } from '../stores/client'
 import { conversationKey } from '../stores/mail'
 import { TIMELINE_PAGE } from '../stores/matrix'
+import { scrolledTo } from '../test/intersection'
 import { FakeServer, ME, RECOVERY_KEY } from '../test/server'
 import { App } from './App'
 import { text } from '../matrix'
@@ -1590,6 +1591,19 @@ describe('room timeline', () => {
     expect(screen.queryByRole('complementary', { name: 'Room info' })).toBeNull()
   })
 
+  it('loads earlier events as their start comes into view, until it is out of view', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    for (let i = 1; i <= 2 * TIMELINE_PAGE + 10; i++) server.receive(room.id, { body: `Message ${i}` })
+    await start(`/rooms/${room.id}`)
+    await within(timeline()).findByText(`Message ${2 * TIMELINE_PAGE + 10}`)
+    expect(within(timeline()).queryByText('Message 1')).toBeNull()
+    scrolledTo(within(timeline()).getByRole('button', { name: 'Load earlier events' }).closest('li')!)
+    // Page after page, while it stays in view.
+    await within(timeline()).findByText('Message 1')
+    expect(within(timeline()).queryByRole('button', { name: 'Load earlier events' })).toBeNull()
+  })
+
   it('fetches events missing where a gap is, in place', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')
@@ -1602,7 +1616,8 @@ describe('room timeline', () => {
     const gaps = within(timeline()).getAllByRole('separator', { name: 'Events missing' })
     expect(gaps).toHaveLength(2)
 
-    await user.click(within(gaps[1]).getByRole('button', { name: 'Fetch them' }))
+    // As it comes into view; or else by its button.
+    scrolledTo(gaps[1])
     await within(timeline()).findByText('Missed two')
     const bodies = () =>
       within(timeline())
