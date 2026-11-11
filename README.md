@@ -1,25 +1,170 @@
-# uplink
+<p align="center">
+  <img alt="uplink logo" src="web/public/logo.svg" width="96">
+</p>
 
-A self-hosted, single-user web client for mail (Gmail and Microsoft 365),
-Matrix, calendar and tasks: one HTTPS + WebSocket server, a
-keyboard-driven web UI with Gmail's shortcuts, and a transaction log that
-makes every action undoable. See `docs/VISION.md` for the goals and
-`docs/SPEC.md` for the design.
+<h1 align="center">uplink</h1>
 
-**Status:** Gmail and Microsoft 365 mail can be read by conversation, as
-Gmail groups it (attachments too), searched,
-archived, labelled, starred, marked read/unread, trashed and reported as
-spam, with undo, and written (drafts saved as you type, synced across
-tabs, with files attached), replied to, forwarded and sent, with
-undo-send. Matrix rooms (end-to-end encrypted ones too) can be read,
-written to in plain text, joined and left. To-dos can be kept, and
-messages flagged for follow-up (which adds a to-do). The history lists
-everything done, and undoes any of it. With several mail accounts, their
-Inboxes are also one list. Microsoft 365 calendars are shown by week or
-as an agenda (read-only). Microsoft 365 is tested against an emulator
-only so far (SPEC §15.12).
+<p align="center">
+  <em>Your mail, chat, calendar and to-dos in one fast, keyboard-driven web app.<br>
+  Self-hosted, and every action undoable.</em>
+</p>
 
-## Try it
+---
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/uplink/docs/screenshots/inbox-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/uplink/docs/screenshots/inbox-light.png">
+    <img alt="All inboxes: personal Gmail and work Microsoft 365 mail in one list" src="https://files.cy.md/uplink/docs/screenshots/inbox-light.png" width="800">
+  </picture>
+</p>
+
+## What is this?
+
+uplink is a web client for the places your messages live: **Gmail**,
+**Microsoft 365** (mail and calendar) and **Matrix**, plus a to-do list of
+its own. It runs on your own server, for one person: you. You open it in
+a browser, on your desktop or your phone, and everything you do in one
+tab shows up in every other at once.
+
+It is built for people who live in their inbox and want it fast:
+
+- **One inbox for all your mail.**
+  Personal Gmail and work Microsoft 365 side by side, or one at a time.
+  Each message says whose it is; replies go out from the right account.
+  Labels, Microsoft 365 folders and categories, stars, read and unread,
+  archive, trash and spam all work as they do at the provider, and
+  changes on either side show up on the other within seconds (half a
+  minute for Microsoft 365).
+
+- **Gmail's keyboard shortcuts, everywhere.**
+  `j`/`k` to move, `e` to archive, `r` to reply, `l` to label, `g i` to go
+  to the Inbox, and the rest of Gmail's scheme, in mail and beyond: `g c`
+  for the calendar, `g k` for to-dos, `Ctrl+K` to jump to any view or
+  room. Press `?` for the full list.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/uplink/docs/screenshots/conversation-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/uplink/docs/screenshots/conversation-light.png">
+    <img alt="A conversation, as Gmail groups it" src="https://files.cy.md/uplink/docs/screenshots/conversation-light.png" width="800">
+  </picture>
+</p>
+
+- **Undo anything.**
+  Every change you make is recorded, and the History (`g h`) undoes any of
+  it, not just the last: an archive from yesterday, a label applied to
+  fifty conversations, a room you left. Sent mail waits a few seconds in
+  the outbox, so sending can be undone too.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/uplink/docs/screenshots/history-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/uplink/docs/screenshots/history-light.png">
+    <img alt="The history: every change, each with its Undo" src="https://files.cy.md/uplink/docs/screenshots/history-light.png" width="800">
+  </picture>
+</p>
+
+- **Writing that never loses a word.**
+  Drafts are saved as you type, on the server, and stay in step across
+  tabs and devices: start a reply on your laptop, finish it on your phone.
+  Rich text, attachments, reply, reply to all and forward, with the quoted
+  mail folded away.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/uplink/docs/screenshots/compose-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/uplink/docs/screenshots/compose-light.png">
+    <img alt="Writing a reply" src="https://files.cy.md/uplink/docs/screenshots/compose-light.png" width="800">
+  </picture>
+</p>
+
+- **Search that speaks Gmail.**
+  `from:`, `to:`, `subject:`, `label:`, `is:unread`, `has:attachment`,
+  `after:`, `older_than:`, `OR`, `-` and parentheses, across all your
+  accounts at once, over a full-text index on your server. Every list is
+  a search, so any search can be bookmarked like a label.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/uplink/docs/screenshots/search-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/uplink/docs/screenshots/search-light.png">
+    <img alt="Searching across accounts" src="https://files.cy.md/uplink/docs/screenshots/search-light.png" width="800">
+  </picture>
+</p>
+
+- **A Matrix client beside your mail.**
+  Rooms and direct chats, nested in their spaces, with end-to-end
+  encryption (device verification by emoji, key backup and recovery),
+  replies, threads, reactions, edits, files, link previews, pinned
+  messages, mentions and notifications, and search, encrypted rooms
+  included. Bridges bring other chat networks into Matrix, and so into
+  uplink.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/uplink/docs/screenshots/room-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/uplink/docs/screenshots/room-light.png">
+    <img alt="A Matrix room in a space" src="https://files.cy.md/uplink/docs/screenshots/room-light.png" width="800">
+  </picture>
+</p>
+
+- **Your calendar, at a glance.**
+  Microsoft 365 calendars by week or as an agenda, recurring meetings
+  and all (read-only for now).
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/uplink/docs/screenshots/calendar-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/uplink/docs/screenshots/calendar-light.png">
+    <img alt="The calendar's week" src="https://files.cy.md/uplink/docs/screenshots/calendar-light.png" width="800">
+  </picture>
+</p>
+
+- **To-dos, and mail to follow up.**
+  Keep a to-do list, and flag a message (`Shift+T`) to make a to-do of it
+  that opens the message again.
+
+- **On your phone too.**
+  The layout becomes a phone app's when the window is narrow, and uplink
+  can be installed to the home screen. Light and dark themes follow your
+  system; HTML mail goes dark with them.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/uplink/docs/screenshots/mobile-inbox-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/uplink/docs/screenshots/mobile-inbox-light.png">
+    <img alt="The inbox on a phone" src="https://files.cy.md/uplink/docs/screenshots/mobile-inbox-light.png" height="400">
+  </picture>
+  &nbsp;&nbsp;
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/uplink/docs/screenshots/mobile-room-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/uplink/docs/screenshots/mobile-room-light.png">
+    <img alt="A Matrix room on a phone" src="https://files.cy.md/uplink/docs/screenshots/mobile-room-light.png" height="400">
+  </picture>
+</p>
+
+- **Yours.**
+  uplink keeps its copy of your mail and chats on your server, and talks
+  to the providers with your own credentials. Sign-in tokens are sealed
+  with a key only your server has. HTML mail is sanitized and sandboxed,
+  and its remote images, loaded only when you ask, are fetched by the
+  server rather than by your browser.
+
+## Status
+
+uplink is young. Some things to know:
+
+- **Microsoft 365** has so far been tested against an emulator of
+  Microsoft Graph, not a real tenant; reports are welcome. Its calendar
+  is read-only.
+- **One user per server**, by design. Signing in is HTTP basic
+  authentication, so put uplink behind TLS (or keep it on loopback).
+- **Matrix** is the only chat protocol; others come through Matrix bridges.
+- Planned: an Android app, push for Microsoft 365 (it polls every 30 s
+  for now), and more; see [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
+## Getting started
 
 You need [Nix](https://nixos.org/download) with flakes.
 
@@ -30,7 +175,7 @@ nix build                      # result/bin/uplink, with the web UI built in
 
 `uplink init` writes `uplink.yaml` (a copy of `examples/uplink.yaml`,
 with your user and password hash) and makes its data directory, `data`,
-with the master key that seals accounts' tokens. Add an account to it
+with the master key that seals accounts' tokens. Add your accounts to it
 (the next sections), and:
 
 ```sh
@@ -49,12 +194,10 @@ own (`server.tls`). To change the password, put the output of
 `uplink` reads `uplink.yaml` in the current directory; pass `--config PATH`
 otherwise. Relative paths in it are relative to its directory.
 
-Press `?` in the UI for the keyboard shortcuts.
+### Connecting a Gmail account
 
-## Connecting a Gmail account
-
-Gmail access goes through an OAuth client that you register yourself
-(SPEC §15.2); it takes about ten minutes, once.
+Gmail access goes through an OAuth client that you register yourself; it
+takes about ten minutes, once.
 
 1. In the [Google Cloud console](https://console.cloud.google.com/), create
    a project (any name).
@@ -86,10 +229,10 @@ uplink asks for the `gmail.modify` scope: read mail, change labels and
 send. It never deletes mail itself: `#` moves it to Trash, which Gmail
 empties after 30 days.
 
-## Connecting a Microsoft 365 account
+### Connecting a Microsoft 365 account
 
 Microsoft 365 access goes through an app registration in Microsoft Entra
-ID that you (or your organization's administrator) create (SPEC §13.3).
+ID that you (or your organization's administrator) create.
 
 1. In the [Microsoft Entra admin center](https://entra.microsoft.com/),
    under App registrations, register a new application (any name), for
@@ -120,7 +263,7 @@ the account up once restarted; changes made in Outlook arrive within
 labels too. The account's calendar, from a month ago to a year ahead,
 is under Calendar (`g c`), within 5 minutes of a change.
 
-## Connecting a Matrix account
+### Connecting a Matrix account
 
 Add the account to `uplink.yaml` (see the commented example), then pair
 uplink with it as a new device:
@@ -132,12 +275,11 @@ uplink with it as a new device:
 It asks for the account's password, then for its recovery key (or
 Secret Storage passphrase): with it, uplink's device is verified, so your
 other devices share encrypted rooms' keys with it. Leave it empty to
-skip. A running uplink starts syncing the account within a minute.
-Messages are plain text; other events show as their raw JSON.
-Invitations are joined or declined, and rooms left, from the room's
-header.
+skip; you can verify it later from the account's Security page, by
+comparing emoji with another device. A running uplink starts syncing the
+account within a minute.
 
-## Running on NixOS
+### Running on NixOS
 
 The flake provides a module that runs uplink as a systemd service:
 
@@ -193,10 +335,14 @@ basic-auth changes apply live.
 
 ## Development
 
+uplink is a Rust server (one process, one port: HTTPS and a WebSocket)
+and a Preact web app. [`docs/VISION.md`](docs/VISION.md) has its goals,
+and [`docs/SPEC.md`](docs/SPEC.md) its design.
+
 ```sh
-nix develop                 # Rust, Node, pnpm, and UPLINK_EMULATE for the tests
+nix develop                 # Rust, Node, pnpm, and the emulators for the tests
 nix flake check             # everything CI runs, including the NixOS VM tests
-cargo test --workspace      # Rust tests (Gmail ones run against emulate)
+cargo test --workspace      # Rust tests (against emulated Gmail and Microsoft 365, and Conduit)
 cd web && pnpm install && pnpm test   # web tests
 ```
 
@@ -208,6 +354,10 @@ adding those credentials.
 `web/src/generated/protocol.ts` is generated from `crates/uplink-protocol`;
 after changing wire types, regenerate it with
 `cargo run -q -p uplink-protocol --example typescript > web/src/generated/protocol.ts`.
+
+The screenshots above are taken in a VM, of a demo seeded into emulated
+providers: `nix build .#screenshots` puts them in
+`result/docs/screenshots/`.
 
 ### Testing against a real Gmail account
 
