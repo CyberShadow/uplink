@@ -2445,6 +2445,12 @@ as a native list does), `Enter` chooses and `Esc` closes.
   actions" menu. No `n`/`p` (a conversation's next or previous message)
   yet.
 
+- **`Alt+↑`/`Alt+↓` move through the nav** (`Option` on macOS), from
+  within fields too, as Element's and Slack's do through rooms: to the
+  view linked before or after the one on show, in the nav as shown
+  (what a fold hides is passed over), or from its end if none is;
+  `Alt+Shift+↑`/`↓` to the nearest with unread (a count, or a bold
+  name). They repeat while held.
 - **`Esc` goes up**, pressed again and again, to a known place: a field
   leaves itself (once it has cancelled what it was doing: a reply, a
   completion), and so does anything else that has the focus (a room's

@@ -67,6 +67,10 @@ export type Action =
   | 'agendaView'
   | 'search'
   | 'switch'
+  | 'navNext'
+  | 'navPrevious'
+  | 'navNextUnread'
+  | 'navPreviousUnread'
   | 'help'
 
 /** What a component does by actions' keys. */
@@ -99,6 +103,12 @@ function go(key: string): Pick<Binding, 'keys' | 'label'> {
   return MAC
     ? { keys: [`g ${key}`, `Control+Alt+Key${upper}`], label: `g ${key}, Ctrl+Option+${upper}` }
     : { keys: [`g ${key}`, `Alt+Shift+${key}`], label: `g ${key}, Alt+Shift+${upper}` }
+}
+
+/** Of a move in the nav, by Alt (Option) and an arrow, from within
+ * fields too, as Element's and Slack's moves through rooms. */
+function nav(action: Action, key: string, label: string, help: string): Binding {
+  return { action, keys: [`Alt+${key}`], label: `${MAC ? 'Option' : 'Alt'}+${label}`, help, repeats: true }
 }
 
 export const KEYMAP: Binding[] = [
@@ -163,6 +173,10 @@ export const KEYMAP: Binding[] = [
   { action: 'agendaView', keys: ['a'], label: 'a', help: 'Agenda view (in the calendar)' },
   { action: 'search', keys: ['/'], label: '/', help: 'Search' },
   { action: 'switch', keys: ['$mod+k'], label: `${MOD}+K`, help: 'Switch to a view or room, the most recent first (also while typing)' },
+  nav('navNext', 'ArrowDown', '↓', 'The next view in the nav, as Element\'s next room'),
+  nav('navPrevious', 'ArrowUp', '↑', 'The previous view in the nav'),
+  nav('navNextUnread', 'Shift+ArrowDown', 'Shift+↓', 'The next view in the nav with unread'),
+  nav('navPreviousUnread', 'Shift+ArrowUp', 'Shift+↑', 'The previous view in the nav with unread'),
   { action: 'help', keys: ['[Shift]+?'], label: '?', help: 'Keyboard shortcuts' },
 ]
 

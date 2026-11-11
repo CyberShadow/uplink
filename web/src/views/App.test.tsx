@@ -1281,6 +1281,41 @@ describe('matrix', () => {
     expect(document.activeElement).toBe(await screen.findByRole('textbox', { name: 'Reply in thread' }))
   })
 
+  it('moves through the nav by Alt and the arrows, from the box too, and to unread with Shift', async () => {
+    server.addMatrixAccount()
+    server.addRoom('Lounge')
+    server.addRoom('Hall')
+    const quiet = server.addRoom('Quiet')
+    const user = await start('/')
+    const links = () => [...document.querySelector('nav')!.querySelectorAll('a[href]')].map((a) => a.getAttribute('href'))
+    await within(document.querySelector('nav')!).findByRole('link', { name: 'Quiet' })
+    const order = links()
+    await user.keyboard('{Alt>}{ArrowDown}{/Alt}')
+    expect(location.pathname).toBe(order[1])
+    await user.keyboard('{Alt>}{ArrowDown}{ArrowDown}{ArrowUp}{/Alt}')
+    expect(location.pathname).toBe(order[2])
+
+    // From a room's box, which has the focus, to the room after it.
+    const rooms = order.filter((href) => href!.startsWith('/rooms/'))
+    await user.click(within(document.querySelector('nav')!).getByRole('link', { name: 'Lounge' }))
+    expect(document.activeElement?.tagName).toBe('TEXTAREA')
+    const at = rooms.indexOf(location.pathname)
+    await user.keyboard('{Alt>}{ArrowDown}{/Alt}')
+    expect(location.pathname).toBe(rooms[at + 1] ?? location.pathname)
+
+    // With Shift, past those read, to one unread.
+    server.receive(quiet.id, { body: 'psst' })
+    await waitFor(() =>
+      expect(within(document.querySelector('nav')!).getByRole('link', { name: /Quiet/ }).dataset.unread).toBe('true'),
+    )
+    await user.keyboard('{Escape}{Escape}')
+    expect(location.pathname).toBe('/')
+    await user.keyboard('{Alt>}{Shift>}{ArrowDown}{/Shift}{/Alt}')
+    expect(location.pathname).not.toBe('/')
+    const unread = [...document.querySelector('nav')!.querySelectorAll<HTMLElement>('a[data-unread]')]
+    expect(location.pathname).toBe(unread[0].getAttribute('href'))
+  })
+
   it('goes up by Esc: out of the box, off the line, closes the panel, then home', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')

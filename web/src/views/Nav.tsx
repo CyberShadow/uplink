@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import type { ComponentChildren, RefObject } from 'preact'
 import { useLocation } from 'preact-iso'
 import { duration } from '../format'
-import { keepFocus, returnFocus } from '../keymap'
+import { keepFocus, returnFocus, useKeymap } from '../keymap'
 import type { Account, Label, ListingProgress, MailProvider, MatrixAccount, Room, RoomId } from '../generated/protocol'
 import { bySpaceOrder, moveSpace } from '../spaceOrder'
 import { useServices } from '../context'
@@ -290,13 +290,32 @@ function roomBadge(rooms: readonly Room[]): { count: number; tone: Tone; bold: b
 /** `open`: shown as a drawer, where the window is narrow. */
 export function Nav(props: { open: boolean }) {
   const { mail, drafts, matrix, todos } = useServices()
-  const { path } = useLocation()
+  const { path, route } = useLocation()
   const nav = useRef<HTMLElement>(null)
   // The Matrix account a conversation is being started with.
   const [starting, setStarting] = useState<string | null>(null)
   // The top-level space being dragged, and where it would go.
   const [drag, setDrag] = useState<Drag | null>(null)
   useReveal(path, props.open, nav)
+  /** Goes to the view `by` links after the one on show, in the nav as
+   * shown (folded, it hides what is in the fold), or else from its end;
+   * if `unread`, to the next with unread. */
+  const step = (by: 1 | -1, unread: boolean) => () => {
+    const links = [...nav.current!.querySelectorAll<HTMLAnchorElement>('a[href]')]
+    const at = links.findIndex((l) => l.getAttribute('aria-current') === 'page')
+    const from = at === -1 ? (by === 1 ? -1 : links.length) : at
+    for (let i = from + by; i >= 0 && i < links.length; i += by) {
+      if (unread && links[i].dataset.unread === undefined) continue
+      route(links[i].getAttribute('href')!)
+      return
+    }
+  }
+  useKeymap({
+    navNext: step(1, false),
+    navPrevious: step(-1, false),
+    navNextUnread: step(1, true),
+    navPreviousUnread: step(-1, true),
+  })
   const link = (
     href: string,
     lead: ComponentChildren,
@@ -312,6 +331,8 @@ export function Nav(props: { open: boolean }) {
         href={href}
         class={[current && styles.current, bold && styles.bold].filter(Boolean).join(' ') || undefined}
         aria-current={current ? 'page' : undefined}
+        // What Alt+Shift+arrows move to (`step`).
+        data-unread={count > 0 || bold || undefined}
         style={{ '--depth': depth }}
       >
         {lead}
