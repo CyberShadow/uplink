@@ -165,6 +165,8 @@ pub enum Pending {
         sends: Vec<crate::matrix::MatrixSend>,
         /// Rooms being joined or left, by the op that asked, newest first.
         memberships: Vec<crate::matrix::PendingMembership>,
+        /// Spaces being reordered, by the op that asked, newest first.
+        space_orders: Vec<crate::matrix::PendingSpaceOrders>,
         /// Rooms read past their latest read receipt.
         receipts: Vec<crate::matrix::RoomId>,
     },

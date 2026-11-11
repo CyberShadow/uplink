@@ -857,8 +857,8 @@ than it buffers is closed; the client reconnects and resumes.
   change taken back to what the provider has (§6.6);
   `SendMatrixMessage { room, body }`, `CancelMatrixSend { item }`,
   `KeepMatrixSent { item }`,
-  `MarkRoomRead { room, event }`, `ChangeMembership { room, change }`
-  (§9).
+  `MarkRoomRead { room, event }`, `ChangeMembership { room, change }`,
+  `OrderSpaces { changes }` (§9).
 
 Query responses carry `as_of`, the last log entry they reflect; `Undone`
 and `Dispatched` reflect the log up to their own entry. The session sends
@@ -1020,13 +1020,14 @@ provider made of a push):
 
 - a mail entry's labels: its labels, folder, read and starred state;
 - whether a mail or a Matrix message is sent (§6.7);
-- a Matrix room's membership (§9.7) and read receipt (§9.5).
+- a Matrix room's membership (§9.7) and read receipt, and a space's
+  order (§9.5).
 
 Each account runs a reconciler (its sync task) that, after every commit
 touching its state, pushes the differences — Gmail `messages.batchModify`
 and `messages.send`; Graph `PATCH`, `move` and draft `send`; Matrix sends,
-joins, leaves and receipts. The UI shows desired state immediately, so
-actions feel instant and survive a provider outage.
+joins, leaves, receipts and space orders. The UI shows desired state
+immediately, so actions feel instant and survive a provider outage.
 
 A difference is *pending* until the provider is observed to match. Each
 records the op that made it (`desired_by`), so that it can be told in
@@ -1902,12 +1903,28 @@ which a verified device gives.
 - Spaces nest the rooms they list (by `m.space.child` events with
   `via`), as Element shows them: a joined space has its joined subspaces,
   in its `order` (those without one last, then by room id), then its
-  rooms, by activity; at the top are the spaces in no other, by name, then
-  the rooms in no space. A room may be in several spaces. Spaces that are
-  only in each other go at the top; a space is never nested in itself.
-  `m.space.parent` is not used: a child's claim to a parent is not the
-  parent's listing. Spaces are not links, as their overview is deferred;
-  an invited space is a room to join.
+  rooms, by activity; at the top are the spaces in no other, in the
+  user's order, then the rooms in no space. A room may be in several
+  spaces. Spaces that are only in each other go at the top; a space is
+  never nested in itself. `m.space.parent` is not used: a child's claim to
+  a parent is not the parent's listing. Spaces are not links, as their
+  overview is deferred; an invited space is a room to join.
+- The user's order of the top-level spaces is MSC3230's, as Element keeps
+  it: each space's `org.matrix.msc3230.space_order` room account data
+  holds an `order` (a string of `\x20`–`\x7E`, at most 50 long; others
+  are ignored). Spaces with one go first, by it, character by character;
+  then those without; ties by room id. It is desired state (§6.6):
+  dragging a top-level space in the nav dispatches `OrderSpaces`, a list
+  of `{ space, from, to }`, which the client computes as MSC3230
+  recommends, changing as few spaces as it can: the space moved takes an
+  order between its new neighbours' (as base-95 numbers, the shorter
+  padded with spaces), and those before it without one take one too;
+  where none fits between, its neighbours move as well. A space whose
+  order is no longer `from` makes it a conflict; its inverse swaps `from`
+  and `to`. The sender loop sets each order asked for (no order is empty
+  content), and records it, or the homeserver's refusal, which waits in
+  the outbox for a decision (undoing the op); sync settles an order asked
+  for once it sees the homeserver has it, however it came about.
 - Avatars: a room's `m.room.avatar`, or of a direct chat without one, the
   other user's, as the SDK's store has them when the room is synced (so a
   change to `m.direct` shows when the room next changes). The server

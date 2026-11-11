@@ -37,6 +37,7 @@ import type {
   RoomEventId,
   VerificationPhase,
   Membership,
+  PendingSpaceOrders,
   Room,
   RoomEvent,
   MemberReceipt,
@@ -44,6 +45,7 @@ import type {
   RoomId,
   Sender,
   ServerEvent,
+  SpaceOrderChange,
   TimelinePage,
   Todo,
   TodoEdit,
@@ -103,6 +105,8 @@ export class FakeServer implements Requester, Blobs {
   readonly rooms: Room[] = []
   /** The op that asked for each room's pending membership. */
   private readonly membershipBy = new Map<RoomId, number>()
+  /** Spaces reordered, not yet at the homeserver. */
+  private spaceOrders: PendingSpaceOrders[] = []
   readonly events = new Map<RoomId, RoomEvent[]>()
   /** Of Matrix accounts, their security: unverified until recovered. */
   readonly security = new Map<string, MatrixSecurity>()
@@ -306,6 +310,7 @@ export class FakeServer implements Requester, Blobs {
       highlighted: 0,
       pinned: [],
       may_pin: true,
+      space_order: null,
     }
     this.rooms.push(room)
     this.events.set(room.id, [])
@@ -675,11 +680,17 @@ export class FakeServer implements Requester, Blobs {
             op: { id: this.membershipBy.get(r.id)!, description: `${r.pending === 'join' ? 'Joined' : 'Left'} '${r.name}'`, ts: 0 },
             refused: r.membership_error,
           }))
-        if (this.matrixSends.length > 0 || memberships.length > 0) {
+        if (this.matrixSends.length > 0 || memberships.length > 0 || this.spaceOrders.length > 0) {
           accounts.push({
             account: 'mx',
             failing: null,
-            pending: { kind: 'matrix', sends: [...this.matrixSends], memberships, receipts: [] },
+            pending: {
+              kind: 'matrix',
+              sends: [...this.matrixSends],
+              memberships,
+              space_orders: [...this.spaceOrders].reverse(),
+              receipts: [],
+            },
           })
         }
         accounts.sort((a, b) => a.account.localeCompare(b.account))
@@ -979,7 +990,39 @@ export class FakeServer implements Requester, Blobs {
         })
         return response
       }
+      case 'order_spaces':
+        return { type: 'dispatched', tx_log_id: this.orderSpaces(body.changes) }
     }
+  }
+
+  /** Reorders spaces, as the server applies `OrderSpaces`. */
+  private orderSpaces(changes: SpaceOrderChange[]): number {
+    const spaces = changes.map((change) => {
+      const space = this.rooms.find((r) => r.id === change.space)!
+      if (space.space_order !== change.from) {
+        throw new RequestError({ code: 'conflict', message: `'${space.name}' moved since` })
+      }
+      return space
+    })
+    changes.forEach((change, i) => (spaces[i]!.space_order = change.to))
+    const description = spaces.length === 1 ? `Moved '${spaces[0]!.name}'` : `Reordered ${spaces.length} spaces`
+    const id = this.commit({ type: 'user' }, description, [
+      { type: 'rooms_changed', rooms: spaces.map((s) => s.id) },
+      { type: 'outbox_changed', accounts: ['mx'] },
+    ])
+    this.spaceOrders = this.spaceOrders.filter((p) => !p.spaces.some((s) => spaces.some((m) => m.id === s)))
+    this.spaceOrders.push({ op: { id, description, ts: 0 }, spaces: spaces.map((s) => s.id), refused: null })
+    this.undoable.set(id, {
+      revert: () => this.orderSpaces(changes.map((c) => ({ space: c.space, from: c.to, to: c.from }))),
+      undone: false,
+    })
+    return id
+  }
+
+  /** The homeserver has the orders asked for. */
+  spaceOrdersSet() {
+    this.spaceOrders = []
+    this.observe('mx', [{ type: 'outbox_changed', accounts: ['mx'] }])
   }
 
   private undoableLabels(id: number, changes: LabelState[]) {

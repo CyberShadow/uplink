@@ -220,7 +220,7 @@ export type SasEmoji = { symbol: string, description: string, };
  */
 export type VerificationAnswer = "accept" | "confirm" | "mismatch" | "cancel";
 
-export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": "list_history", before: TxLogId | null, limit: number, } | { "type": "list_accounts" } | { "type": "list_entries", query: string, after: ListPosition | null, limit: number, } | { "type": "list_conversation", entry: EntryId, } | { "type": "list_message_entries", message: MessageId, } | { "type": "load_message", message: MessageId, } | { "type": "modify_labels", entries: Array<EntryId>, add: Array<LabelId>, remove: Array<LabelId>, } | { "type": "list_drafts" } | { "type": "create_draft", id: DraftId, account: string, content: DraftContent, in_reply_to: MessageId | null, } | { "type": "edit_draft", draft: DraftId, revision: number, splice: Splice, } | { "type": "delete_draft", draft: DraftId, } | { "type": "attach_to_draft", draft: DraftId, blob: BlobId, name: string, mime: string, } | { "type": "detach_from_draft", draft: DraftId, attachment: DraftAttachmentId, } | { "type": "send_draft", draft: DraftId, } | { "type": "cancel_send", item: OutboxId, } | { "type": "keep_sent", item: OutboxId, } | { "type": "list_outbox" } | { "type": "keep_observed", account: string, op: TxLogId | null, } | { "type": "list_rooms" } | { "type": "list_timeline", room: RoomId, page: TimelinePage, limit: number, } | { "type": "fill_gap", room: RoomId, gap: GapId, } | { "type": "list_room_events", room: RoomId, events: Array<RoomEventId>, } | { "type": "list_edits", room: RoomId, event: RoomEventId, } | { "type": "list_matrix_sends", room: RoomId, } | { "type": "send_matrix_message", room: RoomId, content: MatrixContent, } | { "type": "cancel_matrix_send", item: MatrixSendId, } | { "type": "keep_matrix_sent", item: MatrixSendId, } | { "type": "mark_room_read", room: RoomId, event: RoomEventId, } | { "type": "set_typing", room: RoomId, typing: boolean, } | { "type": "list_receipts", room: RoomId, } | { "type": "list_members", room: RoomId, } | { "type": "list_pinned", room: RoomId, } | { "type": "list_thread", room: RoomId, root: RoomEventId, } | { "type": "search_room", room: RoomId, query: string, before: RoomEventId | null, limit: number, } | { "type": "preview_url", room: RoomId, event: RoomEventId, url: string, } | { "type": "create_matrix_room", account: string, room: NewRoom, } | { "type": "start_direct_chat", account: string, user: string, } | { "type": "join_matrix_room", account: string, room: string, } | { "type": "get_matrix_security", account: string, } | { "type": "recover_matrix", account: string, recovery: string, } | { "type": "verify_matrix_device", account: string, device: string | null, } | { "type": "answer_verification", account: string, flow_id: string, answer: VerificationAnswer, } | { "type": "import_room_keys", account: string, blob: BlobId, passphrase: string, } | { "type": "change_membership", room: RoomId, change: MembershipChange, } | { "type": "list_events", from: number, to: number, } | { "type": "list_todos" } | { "type": "create_todo", title: string, notes: string, due: string | null, message: MessageId | null, } | { "type": "edit_todo", todo: TodoId, edit: TodoEdit, } | { "type": "delete_todo", todo: TodoId, };
+export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": "list_history", before: TxLogId | null, limit: number, } | { "type": "list_accounts" } | { "type": "list_entries", query: string, after: ListPosition | null, limit: number, } | { "type": "list_conversation", entry: EntryId, } | { "type": "list_message_entries", message: MessageId, } | { "type": "load_message", message: MessageId, } | { "type": "modify_labels", entries: Array<EntryId>, add: Array<LabelId>, remove: Array<LabelId>, } | { "type": "list_drafts" } | { "type": "create_draft", id: DraftId, account: string, content: DraftContent, in_reply_to: MessageId | null, } | { "type": "edit_draft", draft: DraftId, revision: number, splice: Splice, } | { "type": "delete_draft", draft: DraftId, } | { "type": "attach_to_draft", draft: DraftId, blob: BlobId, name: string, mime: string, } | { "type": "detach_from_draft", draft: DraftId, attachment: DraftAttachmentId, } | { "type": "send_draft", draft: DraftId, } | { "type": "cancel_send", item: OutboxId, } | { "type": "keep_sent", item: OutboxId, } | { "type": "list_outbox" } | { "type": "keep_observed", account: string, op: TxLogId | null, } | { "type": "list_rooms" } | { "type": "list_timeline", room: RoomId, page: TimelinePage, limit: number, } | { "type": "fill_gap", room: RoomId, gap: GapId, } | { "type": "list_room_events", room: RoomId, events: Array<RoomEventId>, } | { "type": "list_edits", room: RoomId, event: RoomEventId, } | { "type": "list_matrix_sends", room: RoomId, } | { "type": "send_matrix_message", room: RoomId, content: MatrixContent, } | { "type": "cancel_matrix_send", item: MatrixSendId, } | { "type": "keep_matrix_sent", item: MatrixSendId, } | { "type": "mark_room_read", room: RoomId, event: RoomEventId, } | { "type": "set_typing", room: RoomId, typing: boolean, } | { "type": "list_receipts", room: RoomId, } | { "type": "list_members", room: RoomId, } | { "type": "list_pinned", room: RoomId, } | { "type": "list_thread", room: RoomId, root: RoomEventId, } | { "type": "search_room", room: RoomId, query: string, before: RoomEventId | null, limit: number, } | { "type": "preview_url", room: RoomId, event: RoomEventId, url: string, } | { "type": "create_matrix_room", account: string, room: NewRoom, } | { "type": "start_direct_chat", account: string, user: string, } | { "type": "join_matrix_room", account: string, room: string, } | { "type": "get_matrix_security", account: string, } | { "type": "recover_matrix", account: string, recovery: string, } | { "type": "verify_matrix_device", account: string, device: string | null, } | { "type": "answer_verification", account: string, flow_id: string, answer: VerificationAnswer, } | { "type": "import_room_keys", account: string, blob: BlobId, passphrase: string, } | { "type": "change_membership", room: RoomId, change: MembershipChange, } | { "type": "order_spaces", changes: Array<SpaceOrderChange>, } | { "type": "list_events", from: number, to: number, } | { "type": "list_todos" } | { "type": "create_todo", title: string, notes: string, due: string | null, message: MessageId | null, } | { "type": "edit_todo", todo: TodoId, edit: TodoEdit, } | { "type": "delete_todo", todo: TodoId, };
 
 export type ServerResponse = { "type": "undone", tx_log_id: TxLogId, } | { "type": "dispatched", tx_log_id: TxLogId, } | { "type": "done" } | { "type": "matrix_security", security: MatrixSecurity, } | { "type": "room_keys_imported", imported: number, total: number, } | { "type": "accounts", as_of: TxLogId, accounts: Array<Account>, } | { "type": "conversations", as_of: TxLogId, conversations: Array<Conversation>, 
 /**
@@ -587,6 +587,10 @@ sends: Array<MatrixSend>,
  */
 memberships: Array<PendingMembership>, 
 /**
+ * Spaces being reordered, by the op that asked, newest first.
+ */
+space_orders: Array<PendingSpaceOrders>, 
+/**
  * Rooms read past their latest read receipt.
  */
 receipts: Array<RoomId>, };
@@ -723,7 +727,12 @@ topic: string | null,
 /**
  * How many members have joined, as the homeserver counts them.
  */
-joined_members: number, };
+joined_members: number, 
+/**
+ * Of a space, where the user puts it among the top-level spaces
+ * (MSC3230): its `order`, as asked for if being changed.
+ */
+space_order: string | null, };
 
 export type Encryption = "none" | "decrypted" | "undecryptable";
 
@@ -916,6 +925,31 @@ op: PendingOp,
 /**
  * Why the homeserver refused it: it needs a decision, which undoing
  * the op makes.
+ */
+refused: string | null, };
+
+/**
+ * A change to a space's order among the top-level spaces (MSC3230):
+ * from `from`, as it is, to `to`; `None` is no order, which puts the
+ * space after those with one.
+ */
+export type SpaceOrderChange = { space: RoomId, from: string | null, to: string | null, };
+
+/**
+ * Spaces being reordered by one op.
+ */
+export type PendingSpaceOrders = { 
+/**
+ * The op that asked: undoing it puts the spaces back.
+ */
+op: PendingOp, 
+/**
+ * The spaces whose order is yet to reach the homeserver.
+ */
+spaces: Array<RoomId>, 
+/**
+ * Why the homeserver refused one, if it did: it needs a decision,
+ * which undoing the op makes.
  */
 refused: string | null, };
 

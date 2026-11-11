@@ -4,7 +4,8 @@ import type { ComponentChildren } from 'preact'
 import { useLocation } from 'preact-iso'
 import { duration } from '../format'
 import { keepFocus } from '../keymap'
-import type { Account, Label, ListingProgress, MailProvider, Room } from '../generated/protocol'
+import type { Account, Label, ListingProgress, MailProvider, Room, RoomId } from '../generated/protocol'
+import { bySpaceOrder, moveSpace } from '../spaceOrder'
 import { useServices } from '../context'
 import { outboxCount, outboxNeedsAttention } from '../stores/drafts'
 import { allMailPath, inboxPath, mailPath } from './App'
@@ -179,16 +180,17 @@ export interface RoomNode {
   children: RoomNode[]
 }
 
+const isSpace = (room: Room) => room.space && room.membership === 'joined'
+
 /** The account's rooms as its joined spaces nest them, as Element shows
  * them: a space has its subspaces, in its order, then its rooms, by
- * activity; at the top are the spaces in no other, by name, then the
- * rooms in none. `rooms` is by activity. A room may be in several spaces;
- * a space is not nested in itself again, and spaces only in each other go
- * at the top. */
+ * activity; at the top are the spaces in no other, in the user's order
+ * (MSC3230), then the rooms in none. `rooms` is by activity. A room may be
+ * in several spaces; a space is not nested in itself again, and spaces
+ * only in each other go at the top. */
 export function roomTree(rooms: readonly Room[]): RoomNode[] {
   const byId = new Map(rooms.map((room) => [room.room_id, room]))
-  const isSpace = (room: Room) => room.space && room.membership === 'joined'
-  const spaces = rooms.filter(isSpace).sort((a, b) => a.name.localeCompare(b.name))
+  const spaces = rooms.filter(isSpace).sort(bySpaceOrder)
   const listed = new Set(spaces.flatMap((space) => space.children))
   const reached = new Set<string>()
   const node = (room: Room, outer: ReadonlySet<string>): RoomNode => {
@@ -204,6 +206,7 @@ export function roomTree(rooms: readonly Room[]): RoomNode[] {
   }
   const top = spaces.filter((space) => !listed.has(space.room_id)).map((space) => node(space, new Set()))
   for (const space of spaces) if (!reached.has(space.room_id)) top.push(node(space, new Set()))
+  top.sort((a, b) => bySpaceOrder(a.room, b.room))
   const others = rooms.filter((room) => !isSpace(room) && !listed.has(room.room_id))
   return [...top, ...others.map((room) => ({ room, children: [] }))]
 }
@@ -235,6 +238,8 @@ export function Nav(props: { open: boolean }) {
   const { path } = useLocation()
   // The Matrix account a conversation is being started with.
   const [starting, setStarting] = useState<string | null>(null)
+  // The top-level space being dragged, and where it would go.
+  const [drag, setDrag] = useState<Drag | null>(null)
   const link = (
     href: string,
     lead: ComponentChildren,
@@ -309,7 +314,47 @@ export function Nav(props: { open: boolean }) {
       </li>
     )
   }
-  const roomNode = (node: RoomNode, depth: number) => {
+  // A top-level space moves among `spaces`, its account's, by dragging
+  // its row; `at` marks where the space dragged would go.
+  const reorderable = (space: Room, spaces: readonly Room[]) => {
+    const over = drag?.space === space.id ? null : drag?.over
+    const at = over?.space === space.id ? (over.after ? styles.dropAfter : styles.dropBefore) : undefined
+    // Of the drag that `onDragOver` let drop here.
+    const dropped = (after: boolean) => {
+      const moved = spaces.find((s) => s.id === drag!.space)!
+      const before = after ? (spaces[spaces.indexOf(space) + 1] ?? null) : space
+      const changes = before === moved ? [] : moveSpace(spaces, moved, before)
+      if (changes.length > 0) void matrix.orderSpaces(changes)
+    }
+    const handlers = {
+      draggable: true,
+      onDragStart: (e: DragEvent) => {
+        // Not the rooms in it, which are links.
+        if (!row(e).contains(e.target as Node)) return
+        e.dataTransfer!.effectAllowed = 'move'
+        e.dataTransfer!.setData('text/plain', space.name)
+        setDrag({ space: space.id, over: null })
+      },
+      onDragOver: (e: DragEvent) => {
+        if (!spaces.some((s) => s.id === drag?.space)) return
+        e.preventDefault()
+        const after = droppedAfter(e)
+        if (drag!.over?.space !== space.id || drag!.over.after !== after) {
+          setDrag({ space: drag!.space, over: { space: space.id, after } })
+        }
+      },
+      onDrop: (e: DragEvent) => {
+        e.preventDefault()
+        dropped(droppedAfter(e))
+        setDrag(null)
+      },
+      onDragEnd: () => setDrag(null),
+    }
+    return { at, handlers }
+  }
+  /** `spaces`: given at the top, its account's spaces there, among which
+   * a space there moves. */
+  const roomNode = (node: RoomNode, depth: number, spaces?: readonly Room[]) => {
     const { room } = node
     if (!(room.space && room.membership === 'joined')) {
       const badge = roomBadge([room])
@@ -337,8 +382,9 @@ export function Nav(props: { open: boolean }) {
         {badge && <Count count={badge.count} tone={badge.tone} />}
       </>
     )
+    const { at, handlers } = spaces ? reorderable(room, spaces) : { at: undefined, handlers: {} }
     return (
-      <li key={room.id} class={styles.node}>
+      <li key={room.id} {...handlers} class={at ? `${styles.node} ${at}` : styles.node}>
         {node.children.length > 0 ? (
           // The whole row folds the space, which is not a link.
           <button
@@ -404,6 +450,8 @@ export function Nav(props: { open: boolean }) {
       ))}
       {matrix.accounts.value?.map((account) => {
         const rooms = matrix.rooms.value?.filter((room) => room.account === account.id) ?? []
+        const tree = roomTree(rooms)
+        const spaces = tree.map((node) => node.room).filter(isSpace)
         return (
           <Section
             key={account.id}
@@ -422,7 +470,7 @@ export function Nav(props: { open: boolean }) {
                 <span class={styles.name}>Start a conversation</span>
               </button>
             </li>
-            {roomTree(rooms).map((node) => roomNode(node, 0))}
+            {tree.map((node) => roomNode(node, 0, spaces))}
           </Section>
         )
       })}
@@ -444,6 +492,25 @@ function Count(props: { count: number; tone: Tone }) {
       {props.count}
     </span>
   )
+}
+
+/** A top-level space being dragged, and the one it is over: to go before
+ * it, or after. */
+interface Drag {
+  space: RoomId
+  over: { space: RoomId; after: boolean } | null
+}
+
+/** The row of the space whose item handles `e`. */
+function row(e: DragEvent): Element {
+  return (e.currentTarget as HTMLElement).firstElementChild!
+}
+
+/** Whether a drag over a space's item drops after it: past the middle of
+ * its row (not of the rooms in it). */
+function droppedAfter(e: DragEvent): boolean {
+  const { top, height } = row(e).getBoundingClientRect()
+  return e.clientY > top + height / 2
 }
 
 function inboxUnread(account: Account): number {

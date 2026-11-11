@@ -335,6 +335,11 @@ pub enum ClientRequest {
         room: RoomId,
         change: MembershipChange,
     },
+    /// Reorder top-level spaces (MSC3230): each change is to a joined
+    /// space of the same account.
+    OrderSpaces {
+        changes: Vec<matrix::SpaceOrderChange>,
+    },
     /// The events overlapping `from`–`to` (ms since the Unix epoch), of
     /// every account's calendar, by start.
     ListEvents {

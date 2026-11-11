@@ -1000,6 +1000,7 @@ impl Backend for Services {
             ClientRequest::ChangeMembership { room, change } => {
                 self.matrix.change_membership(room, change).await
             }
+            ClientRequest::OrderSpaces { changes } => self.matrix.order_spaces(changes).await,
             ClientRequest::ListTodos => self.todos.list().await,
             ClientRequest::ListEvents { from, to } => self.calendar.list(from, to).await,
             ClientRequest::CreateTodo {

@@ -106,6 +106,7 @@ function isResendable(body: ClientRequest): boolean {
     case 'answer_verification':
     case 'import_room_keys':
     case 'change_membership':
+    case 'order_spaces':
     case 'create_matrix_room':
     case 'start_direct_chat':
     case 'create_todo':

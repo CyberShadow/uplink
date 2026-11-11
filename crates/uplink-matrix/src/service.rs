@@ -9,6 +9,7 @@ use crate::{
     rooms::{self, Filled, MarkRead},
     security,
     send::{self, CancelMessage, KeepSent, SendMessage},
+    space_order::{self, OrderSpaces},
     verification,
 };
 use matrix_sdk::ruma::events::room::MediaSource as MatrixMediaSource;
@@ -18,7 +19,7 @@ use uplink_protocol::{
     matrix::{
         GapId, MatrixAccount, MatrixContent, MatrixSendId, MemberAction, MemberInfo, MemberReceipt,
         MemberState, Membership, MembershipChange, NewRoom, RoomEventId, RoomId, RoomMember,
-        RoomPowers, TimelinePage, VerificationAnswer,
+        RoomPowers, SpaceOrderChange, TimelinePage, VerificationAnswer,
     },
     ErrorCode, ServerError, ServerResponse,
 };
@@ -1094,6 +1095,51 @@ impl Matrix {
         self.dispatcher
             .answer(ChangeMembership { room, change })
             .await
+    }
+
+    /// Reordering joined spaces of one account, each to a valid order
+    /// other than its own.
+    pub async fn order_spaces(&self, changes: Vec<SpaceOrderChange>) -> Response {
+        let accounts = self.accounts.clone();
+        let asked = changes.clone();
+        self.reader
+            .read(move |conn| {
+                let invalid = |why: String| Err(error(ErrorCode::Invalid, why));
+                let Some(first) = asked.first() else {
+                    return invalid("no spaces to reorder".to_owned());
+                };
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                let account = rooms::room_account(&tx, first.space)
+                    .map_err(internal)?
+                    .ok_or_else(|| no_room(first.space))?;
+                let configured = accounts
+                    .iter()
+                    .find(|a| a.id == account)
+                    .ok_or_else(|| no_room(first.space))?;
+                let listed = rooms::rooms(&tx, &account, &configured.mxid).map_err(internal)?;
+                let mut seen = std::collections::HashSet::new();
+                for change in &asked {
+                    let room = listed
+                        .iter()
+                        .find(|r| r.id == change.space)
+                        .ok_or_else(|| no_room(change.space))?;
+                    if !(room.space && room.membership == Membership::Joined) {
+                        return invalid(format!("room {} is not a joined space", room.id.0));
+                    }
+                    if !seen.insert(change.space) {
+                        return invalid(format!("space {} reordered twice", room.id.0));
+                    }
+                    if change.to.as_deref().is_some_and(|o| !space_order::valid(o)) {
+                        return invalid(format!("invalid order {:?}", change.to));
+                    }
+                    if change.to == change.from {
+                        return invalid(format!("space {} is not moved", room.id.0));
+                    }
+                }
+                Ok(())
+            })
+            .await?;
+        self.dispatcher.answer(OrderSpaces { changes }).await
     }
 
     pub async fn mark_read(&self, room: RoomId, event: RoomEventId) -> Response {

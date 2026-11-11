@@ -14,6 +14,7 @@ import type {
   MatrixSend,
   MatrixSendId,
   MembershipChange,
+  SpaceOrderChange,
   Room,
   RoomEvent,
   RoomEventId,
@@ -287,6 +288,11 @@ export class MatrixStore {
 
   changeMembership(room: RoomId, change: MembershipChange) {
     return this.ops.dispatch({ type: 'change_membership', room, change })
+  }
+
+  /** Moves top-level spaces (MSC3230). */
+  orderSpaces(changes: SpaceOrderChange[]) {
+    return this.ops.dispatch({ type: 'order_spaces', changes })
   }
 
   /** Quietly: reading a room is not news. */

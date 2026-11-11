@@ -932,6 +932,38 @@ describe('matrix', () => {
     expect(within(space).getByRole('button', { name: 'Team1' }).getAttribute('aria-expanded')).toBe('false')
   })
 
+  it('moves top-level spaces by dragging them, with undo', async () => {
+    server.addMatrixAccount()
+    for (const name of ['Alpha', 'Beta', 'Gamma']) server.addRoom(name).space = true
+    const user = await start()
+    const rooms = within(screen.getByRole('navigation')).getByRole('region', { name: `Rooms of ${ME}` })
+    const order = () => [...rooms.querySelectorAll('[class*=parent] [class*=name]')].map((n) => n.textContent)
+    const item = (name: string) => within(rooms).getByText(name).closest('li')!
+    // None ordered yet: by room id.
+    await waitFor(() => expect(order()).toEqual(['Alpha', 'Beta', 'Gamma']))
+
+    // Onto the top of Alpha's row: before it. Only Gamma needs an order.
+    const dataTransfer = { setData: vi.fn(), effectAllowed: 'none' }
+    fireEvent.dragStart(within(item('Gamma')).getByText('Gamma'), { dataTransfer })
+    fireEvent.dragOver(item('Alpha'), { dataTransfer, clientY: 0 })
+    expect(item('Alpha').className).toMatch(/dropBefore/)
+    fireEvent.drop(item('Alpha'), { dataTransfer, clientY: 0 })
+    await waitFor(() => expect(order()).toEqual(['Gamma', 'Alpha', 'Beta']))
+    expect(item('Alpha').className).not.toMatch(/drop/)
+    const notice = await screen.findByRole('status')
+    expect(notice.textContent).toContain("Moved 'Gamma'")
+
+    // Pending in the outbox until the homeserver has it.
+    await user.click(within(screen.getByRole('navigation')).getByRole('link', { name: /Outbox/ }))
+    const pending = await screen.findByText("Moved 'Gamma'", { selector: '[class*=subject]' })
+    expect(pending.closest('li')!.textContent).toContain('to go: Gamma')
+    server.spaceOrdersSet()
+    await waitFor(() => expect(screen.queryByText("Moved 'Gamma'", { selector: '[class*=subject]' })).toBeNull())
+
+    await user.click(within(screen.getByRole('status')).getByRole('button', { name: 'Undo' }))
+    await waitFor(() => expect(order()).toEqual(['Alpha', 'Beta', 'Gamma']))
+  })
+
   it('joins an invitation, and leaves the room, with undo in between', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Party', false, 'invited')

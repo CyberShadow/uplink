@@ -85,6 +85,9 @@ pub struct Room {
     pub topic: Option<String>,
     /// How many members have joined, as the homeserver counts them.
     pub joined_members: u64,
+    /// Of a space, where the user puts it among the top-level spaces
+    /// (MSC3230): its `order`, as asked for if being changed.
+    pub space_order: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -322,6 +325,30 @@ pub struct PendingMembership {
     pub op: crate::compose::PendingOp,
     /// Why the homeserver refused it: it needs a decision, which undoing
     /// the op makes.
+    pub refused: Option<String>,
+}
+
+/// A change to a space's order among the top-level spaces (MSC3230):
+/// from `from`, as it is, to `to`; `None` is no order, which puts the
+/// space after those with one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SpaceOrderChange {
+    pub space: RoomId,
+    pub from: Option<String>,
+    pub to: Option<String>,
+}
+
+/// Spaces being reordered by one op.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PendingSpaceOrders {
+    /// The op that asked: undoing it puts the spaces back.
+    pub op: crate::compose::PendingOp,
+    /// The spaces whose order is yet to reach the homeserver.
+    pub spaces: Vec<RoomId>,
+    /// Why the homeserver refused one, if it did: it needs a decision,
+    /// which undoing the op makes.
     pub refused: Option<String>,
 }
 

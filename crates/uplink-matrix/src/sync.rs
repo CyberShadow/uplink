@@ -12,6 +12,7 @@ use crate::{
     membership::{self, MembershipChanged},
     rooms::{self, Decrypted, ObservedEvent, ObservedRoom, Push, ReceiptSent, SpaceChild, Synced},
     send::{self, SendFailed, SendStarted, SendSucceeded},
+    space_order::{self, SpaceOrderSet},
     verification,
 };
 use anyhow::{Context, Result};
@@ -33,7 +34,7 @@ use matrix_sdk::{
         events::{
             receipt::ReceiptThread,
             room::message::{AddMentions, FormattedBody},
-            StateEventType,
+            AnyRoomAccountDataEventContent, RoomAccountDataEventType, StateEventType,
         },
         EventId, OwnedEventId, OwnedTransactionId, RoomId, UserId,
     },
@@ -354,7 +355,7 @@ impl Syncer {
 
     /// The rooms in `response` with changes uplink may store: events, the
     /// account's own receipts, state (a name, an avatar, a space's
-    /// children), or membership. Others' receipts are not stored, so on
+    /// children), account data (a space's order), or membership. Others' receipts are not stored, so on
     /// their own they are not changes; but the first sync records every
     /// room.
     async fn observe(&self, response: SyncResponse, first: bool) -> Result<Vec<ObservedRoom>> {
@@ -368,6 +369,7 @@ impl Syncer {
             if first
                 || !update.timeline.events.is_empty()
                 || !state.is_empty()
+                || !update.account_data.is_empty()
                 || !receipts.is_empty()
             {
                 observed.push(
@@ -428,6 +430,7 @@ impl Syncer {
             space: room.is_space(),
             avatar: avatar(&room).await?,
             children: space_children(&room).await?,
+            space_order: order(&room).await?,
             topic: room.topic().filter(|t| !t.trim().is_empty()),
             pinned: room
                 .pinned_event_ids()
@@ -482,6 +485,18 @@ async fn space_children(room: &Room) -> Result<Vec<SpaceChild>> {
         children.extend(SpaceChild::parse(raw)?);
     }
     Ok(children)
+}
+
+/// The room's MSC3230 order, as the client's store has it, if valid.
+async fn order(room: &Room) -> Result<Option<String>> {
+    let Some(raw) = room
+        .account_data(RoomAccountDataEventType::from(space_order::EVENT_TYPE))
+        .await?
+    else {
+        return Ok(None);
+    };
+    let event: serde_json::Value = serde_json::from_str(raw.json().get())?;
+    Ok(space_order::parse(&event["content"]))
 }
 
 /// The sync filter: no presence, and of ephemeral events receipts and
@@ -805,6 +820,7 @@ impl Sender {
 
     async fn step(&self) -> Result<()> {
         self.change_memberships().await?;
+        self.order_spaces().await?;
         self.send_due().await?;
         self.push_receipts().await
     }
@@ -835,6 +851,50 @@ impl Sender {
             self.observe(MembershipChanged {
                 room: wanted.room,
                 change: wanted.change,
+                refused,
+            })
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Sets the orders of the spaces the user reordered.
+    async fn order_spaces(&self) -> Result<()> {
+        let account = self.account.clone();
+        let wanted = read(&self.reader, move |conn| {
+            space_order::wanted(conn, &account)
+        })
+        .await?;
+        for wanted in wanted {
+            let room_id = <&RoomId>::try_from(wanted.room_id.as_str())?;
+            let room = self
+                .client
+                .get_room(room_id)
+                .with_context(|| format!("room {room_id} is not in the client"))?;
+            // No order is none in the content, as Element sets it.
+            let content = match &wanted.order {
+                Some(order) => json!({ "order": order }),
+                None => json!({}),
+            };
+            let done = room
+                .set_account_data_raw(
+                    RoomAccountDataEventType::from(space_order::EVENT_TYPE),
+                    Raw::<AnyRoomAccountDataEventContent>::from_json(
+                        serde_json::value::to_raw_value(&content)?,
+                    ),
+                )
+                .await
+                .map(drop);
+            let refused = match &done {
+                Ok(()) => None,
+                Err(e) => match refusal(e) {
+                    Some(refused) => Some(refused),
+                    None => return done.context("setting a space's order"),
+                },
+            };
+            self.observe(SpaceOrderSet {
+                room: wanted.room,
+                order: wanted.order,
                 refused,
             })
             .await?;

@@ -181,3 +181,13 @@
   text-align: left;
   cursor: pointer;
 }
+
+/* Where a top-level space being dragged would go: a line before or after
+ * the space it is over. */
+.dropBefore {
+  box-shadow: inset 0 2px var(--accent);
+}
+
+.dropAfter {
+  box-shadow: inset 0 -2px var(--accent);
+}

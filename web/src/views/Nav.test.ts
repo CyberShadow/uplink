@@ -71,6 +71,7 @@ describe('roomTree', () => {
     highlighted: 0,
     pinned: [],
     may_pin: false,
+    space_order: null,
     ...fields,
   })
   const space = (name: string, children: Room[], fields: Partial<Room> = {}) =>
@@ -87,10 +88,13 @@ describe('roomTree', () => {
     expect(names(roomTree(rooms))).toEqual([{ top: [{ sub: ['old'] }, 'recent', 'old'] }, 'loose'])
   })
 
-  it('puts top-level spaces by name, and leaves out children not listed', () => {
-    const b = space('b', [])
+  it('puts top-level spaces in the order given them, and leaves out children not listed', () => {
+    // Those without an order last, by room id.
+    const c = space('c', [])
+    const b = space('b', [], { space_order: 'b' })
     const a = space('a', [room('unjoined')])
-    expect(names(roomTree([b, a]))).toEqual([{ a: [] }, { b: [] }])
+    const d = space('d', [], { space_order: 'a' })
+    expect(names(roomTree([c, b, a, d]))).toEqual([{ d: [] }, { b: [] }, { a: [] }, { c: [] }])
   })
 
   it('does not nest invited spaces, nor in them', () => {

@@ -109,6 +109,7 @@ impl Db {
                 space: false,
                 avatar: None,
                 children: vec![],
+                space_order: None,
                 topic: None,
                 pinned: pinned.iter().map(|p| p.to_string()).collect(),
                 may_pin: true,
@@ -498,6 +499,7 @@ mod membership {
                     space: false,
                     avatar: None,
                     children: vec![],
+                    space_order: None,
                     topic: None,
                     pinned: vec![],
                     may_pin: false,
@@ -665,6 +667,215 @@ mod membership {
         let room = db.room().await;
         assert_eq!((room.pending, room.membership_error), (None, None));
         assert!(memberships(&db).is_empty());
+    }
+}
+
+mod space_order {
+    use super::*;
+    use crate::space_order::SpaceOrderSet;
+    use uplink_protocol::{
+        matrix::{PendingSpaceOrders, SpaceOrderChange},
+        ErrorCode, ServerError,
+    };
+
+    impl Db {
+        /// Syncs the room as a joined space, its order as the homeserver
+        /// has it.
+        async fn sync_space(&self, order: Option<&str>) {
+            self.observe(Synced {
+                next_batch: "next".into(),
+                rooms: vec![ObservedRoom {
+                    room_id: ROOM.into(),
+                    name: "Space".into(),
+                    encrypted: false,
+                    membership: Membership::Joined,
+                    events: vec![],
+                    limited: false,
+                    own_receipts: vec![],
+                    space: true,
+                    avatar: None,
+                    children: vec![],
+                    space_order: order.map(Into::into),
+                    topic: None,
+                    pinned: vec![],
+                    may_pin: false,
+                    joined_members: 1,
+                    version: "11".into(),
+                }],
+            })
+            .await
+            .unwrap();
+        }
+
+        async fn reorder(
+            &self,
+            from: Option<&str>,
+            to: Option<&str>,
+        ) -> Result<TxLogId, ServerError> {
+            let space = self.room().await.id;
+            let change = SpaceOrderChange {
+                space,
+                from: from.map(Into::into),
+                to: to.map(Into::into),
+            };
+            match self.matrix.order_spaces(vec![change]).await? {
+                ServerResponse::Dispatched { tx_log_id } => Ok(tx_log_id),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+
+        /// The homeserver set the order, or refused.
+        async fn pushed(&self, order: Option<&str>, refused: Option<&str>) {
+            let room = self.room().await.id;
+            self.observe(SpaceOrderSet {
+                room,
+                order: order.map(Into::into),
+                refused: refused.map(Into::into),
+            })
+            .await
+            .unwrap();
+        }
+
+        /// The orders still to set.
+        fn wanted(&self) -> Vec<Option<String>> {
+            let conn = uplink_storage::open_reader(self._dir.path()).unwrap();
+            crate::space_order::wanted(&conn, "mx")
+                .unwrap()
+                .into_iter()
+                .map(|w| w.order)
+                .collect()
+        }
+
+        fn pending_orders(&self) -> Vec<PendingSpaceOrders> {
+            match self.outbox().into_iter().next().map(|a| a.pending) {
+                Some(Pending::Matrix { space_orders, .. }) => space_orders,
+                None => vec![],
+                other => panic!("{other:?}"),
+            }
+        }
+
+        async fn order(&self) -> Option<String> {
+            self.room().await.space_order
+        }
+    }
+
+    #[tokio::test]
+    async fn reordering_shows_at_once_and_is_set_then_undone() {
+        let db = Db::new();
+        db.sync_space(Some("b")).await;
+        assert_eq!(db.order().await.as_deref(), Some("b"));
+        let moved = db.reorder(Some("b"), Some("a")).await.unwrap();
+        assert_eq!(db.order().await.as_deref(), Some("a"));
+        assert_eq!(db.wanted(), [Some("a".to_owned())]);
+        let [pending] = &db.pending_orders()[..] else {
+            panic!()
+        };
+        assert_eq!(
+            (
+                pending.op.id,
+                &pending.op.description[..],
+                &pending.spaces[..],
+                &pending.refused
+            ),
+            (moved, "Moved 'Space'", &[db.room().await.id][..], &None)
+        );
+
+        db.pushed(Some("a"), None).await;
+        assert!(db.wanted().is_empty());
+        assert!(db.pending_orders().is_empty());
+        assert_eq!(db.order().await.as_deref(), Some("a"));
+        // The echo changes nothing.
+        db.sync_space(Some("a")).await;
+        assert!(db.pending_orders().is_empty());
+
+        // Undoing asks for the order replaced, which sync sees had.
+        db.dispatcher.undo(moved).await.unwrap();
+        assert_eq!(db.order().await.as_deref(), Some("b"));
+        assert_eq!(db.wanted(), [Some("b".to_owned())]);
+        db.sync_space(Some("b")).await;
+        assert!(db.wanted().is_empty());
+        assert!(db.pending_orders().is_empty());
+    }
+
+    #[tokio::test]
+    async fn no_order_is_asked_for_as_none() {
+        let db = Db::new();
+        db.sync_space(None).await;
+        let ordered = db.reorder(None, Some("m")).await.unwrap();
+        db.pushed(Some("m"), None).await;
+        db.dispatcher.undo(ordered).await.unwrap();
+        assert_eq!((db.order().await, db.wanted()), (None, vec![None]));
+        db.pushed(None, None).await;
+        assert!(db.pending_orders().is_empty());
+    }
+
+    #[tokio::test]
+    async fn changes_since_conflict_and_others_prevail_until_pushed() {
+        let db = Db::new();
+        db.sync_space(Some("b")).await;
+        let code = db.reorder(Some("c"), Some("a")).await.unwrap_err().code;
+        assert_eq!(code, ErrorCode::Conflict, "moved since it was shown");
+
+        let moved = db.reorder(Some("b"), Some("a")).await.unwrap();
+        // Another client's order meanwhile: uplink's is pushed regardless.
+        db.sync_space(Some("z")).await;
+        assert_eq!(db.order().await.as_deref(), Some("a"));
+        assert_eq!(db.wanted(), [Some("a".to_owned())]);
+        // Moved again, undoing the first move conflicts.
+        db.reorder(Some("a"), Some("c")).await.unwrap();
+        let undo = db.dispatcher.undo(moved).await;
+        assert!(undo.is_err(), "{undo:?}");
+        // A push of an order no longer asked for leaves the one asked.
+        db.pushed(Some("a"), None).await;
+        assert_eq!(db.wanted(), [Some("c".to_owned())]);
+    }
+
+    #[tokio::test]
+    async fn refusals_wait_for_a_decision() {
+        let db = Db::new();
+        db.sync_space(Some("b")).await;
+        let moved = db.reorder(Some("b"), Some("a")).await.unwrap();
+        db.pushed(Some("a"), Some("M_FORBIDDEN")).await;
+        assert!(db.wanted().is_empty(), "not asked again");
+        assert_eq!(
+            db.pending_orders()[0].refused.as_deref(),
+            Some("M_FORBIDDEN")
+        );
+        assert_eq!(db.order().await.as_deref(), Some("a"));
+        // Undoing decides: the order as the homeserver has it, which is
+        // set again, harmlessly.
+        db.dispatcher.undo(moved).await.unwrap();
+        assert_eq!(db.wanted(), [Some("b".to_owned())]);
+        assert_eq!(db.pending_orders()[0].refused, None);
+    }
+
+    #[tokio::test]
+    async fn only_joined_spaces_move_to_valid_orders() {
+        let db = Db::new();
+        db.sync_space(None).await;
+        for to in ["é", &"a".repeat(51)] {
+            let code = db.reorder(None, Some(to)).await.unwrap_err().code;
+            assert_eq!(code, ErrorCode::Invalid, "{to}");
+        }
+        let code = db.reorder(None, None).await.unwrap_err().code;
+        assert_eq!(code, ErrorCode::Invalid, "not moved");
+        let code = db.matrix.order_spaces(vec![]).await.unwrap_err().code;
+        assert_eq!(code, ErrorCode::Invalid, "nothing moved");
+        db.reorder(None, Some(&"~".repeat(50))).await.unwrap();
+
+        db.sync(&[], &[]).await;
+        let code = db.reorder(None, Some("a")).await.unwrap_err().code;
+        assert_eq!(code, ErrorCode::Invalid, "not a space");
+    }
+
+    #[test]
+    fn orders_are_read_if_valid() {
+        use crate::space_order::parse;
+        assert_eq!(parse(&json!({ "order": "a b~" })).as_deref(), Some("a b~"));
+        for order in [json!("a".repeat(51)), json!("é"), json!("\n"), json!(1)] {
+            assert_eq!(parse(&json!({ "order": order })), None);
+        }
+        assert_eq!(parse(&json!({})), None);
     }
 }
 

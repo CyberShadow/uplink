@@ -1,7 +1,7 @@
 //! What of the Matrix accounts is not yet reconciled with their
 //! homeservers (SPEC §6.6): messages being sent, rooms being joined or
-//! left, read receipts to send; and why an account's changes are not
-//! reaching its homeserver.
+//! left, spaces being reordered, read receipts to send; and why an
+//! account's changes are not reaching its homeserver.
 
 use crate::{
     membership::parse_desired,
@@ -12,7 +12,7 @@ use anyhow::Result;
 use std::collections::BTreeMap;
 use uplink_protocol::{
     compose::{AccountOutbox, Failing, OutboxChanged, Pending, PendingOp},
-    matrix::{MatrixSend, PendingMembership, RoomId},
+    matrix::{MatrixSend, PendingMembership, PendingSpaceOrders, RoomId},
     ServerEvent, TxLogId,
 };
 use uplink_storage::rusqlite::{Connection, Transaction};
@@ -22,6 +22,7 @@ struct MatrixOutbox {
     failing: Option<Failing>,
     sends: Vec<MatrixSend>,
     memberships: Vec<PendingMembership>,
+    space_orders: Vec<PendingSpaceOrders>,
     receipts: Vec<RoomId>,
 }
 
@@ -65,6 +66,13 @@ pub fn outbox(tx: &Transaction) -> Result<Vec<AccountOutbox>> {
             .memberships
             .push(membership);
     }
+    for (account, orders) in space_orders(tx)? {
+        accounts
+            .entry(account)
+            .or_default()
+            .space_orders
+            .push(orders);
+    }
     for (account, room) in unsent_receipts(tx)? {
         accounts.entry(account).or_default().receipts.push(room);
     }
@@ -76,10 +84,55 @@ pub fn outbox(tx: &Transaction) -> Result<Vec<AccountOutbox>> {
             pending: Pending::Matrix {
                 sends: outbox.sends,
                 memberships: outbox.memberships,
+                space_orders: outbox.space_orders,
                 receipts: outbox.receipts,
             },
         })
         .collect())
+}
+
+/// The spaces being reordered, by the op that asked, newest first, with
+/// their accounts.
+fn space_orders(conn: &Connection) -> Result<Vec<(String, PendingSpaceOrders)>> {
+    let rows: Vec<(String, i64, i64, String, i64, Option<String>)> = conn
+        .prepare(
+            "SELECT r.account_id, r.id, t.id, t.description, t.ts, r.space_order_error
+             FROM matrix_room r JOIN tx_log t ON t.id = r.space_order_by
+             ORDER BY r.account_id, t.id DESC, r.id",
+        )?
+        .query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
+        })?
+        .collect::<Result<_, _>>()?;
+    let mut orders: Vec<(String, PendingSpaceOrders)> = vec![];
+    for (account, room, op, description, ts, refused) in rows {
+        let same = orders.last().is_some_and(|(_, last)| last.op.id.0 == op);
+        if !same {
+            orders.push((
+                account,
+                PendingSpaceOrders {
+                    op: PendingOp {
+                        id: TxLogId(op),
+                        description,
+                        ts,
+                    },
+                    spaces: vec![],
+                    refused: None,
+                },
+            ));
+        }
+        let (_, last) = orders.last_mut().expect("pushed");
+        last.spaces.push(RoomId(room));
+        last.refused = last.refused.take().or(refused);
+    }
+    Ok(orders)
 }
 
 /// The joined rooms read past their latest receipt, with their accounts.
@@ -94,23 +147,41 @@ fn unsent_receipts(conn: &Connection) -> Result<Vec<(String, RoomId)>> {
         .collect::<Result<_, _>>()?)
 }
 
-/// What of the account's rooms is pending: their memberships asked for
-/// (and refusals) and receipts to send. Taken before and after a change,
+/// What of the account's rooms is pending: their memberships and space
+/// orders asked for (and refusals) and receipts to send. Taken before and after a change,
 /// it tells whether the account's outbox changed.
 #[derive(Debug, PartialEq)]
-pub(crate) struct PendingRooms(Vec<(i64, Option<String>, Option<String>, bool)>);
+pub(crate) struct PendingRooms(Vec<PendingRoom>);
+
+type PendingRoom = (
+    i64,
+    Option<String>,
+    Option<String>,
+    bool,
+    Option<i64>,
+    Option<String>,
+);
 
 pub(crate) fn pending_rooms(conn: &Connection, account: &str) -> Result<PendingRooms> {
     Ok(PendingRooms(
         conn.prepare(&format!(
             "SELECT r.id, r.desired, r.membership_error,
-                    r.membership = 'joined' AND {UNSENT_RECEIPT} AS receipt
+                    r.membership = 'joined' AND {UNSENT_RECEIPT} AS receipt,
+                    r.space_order_by, r.space_order_error
              FROM matrix_room r
-             WHERE r.account_id = ?1 AND (r.desired IS NOT NULL OR receipt)
+             WHERE r.account_id = ?1
+               AND (r.desired IS NOT NULL OR receipt OR r.space_order_by IS NOT NULL)
              ORDER BY r.id"
         ))?
         .query_map([account], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
         })?
         .collect::<Result<_, _>>()?,
     ))

@@ -120,6 +120,8 @@ fn main() {
         MatrixContent,
         MatrixSend,
         PendingMembership,
+        SpaceOrderChange,
+        PendingSpaceOrders,
         RoomsChanged,
         TimelineAdded,
         TimelineChanged,

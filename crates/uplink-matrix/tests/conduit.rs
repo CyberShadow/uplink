@@ -755,6 +755,95 @@ async fn spaces_list_their_rooms_and_avatars_are_served() {
     assert_eq!(other.code, uplink_protocol::ErrorCode::NotFound);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn spaces_are_ordered_as_other_clients_order_them() {
+    use matrix_sdk::ruma::{
+        api::client::room::create_room::v3::{CreationContent, Request as CreateRoom},
+        events::{AnyRoomAccountDataEventContent, RoomAccountDataEventType},
+        serde::Raw,
+    };
+    use uplink_protocol::matrix::SpaceOrderChange;
+    const TYPE: &str = "org.matrix.msc3230.space_order";
+
+    let dir = tempfile::tempdir().unwrap();
+    let homeserver = Homeserver::start(dir.path()).await;
+    let alice_phone = homeserver.register(dir.path(), "alice").await;
+    let mut request = CreateRoom::new();
+    request.name = Some("Space".into());
+    request.creation_content =
+        Some(Raw::<CreationContent>::from_json_string(r#"{"type":"m.space"}"#.into()).unwrap());
+    let space = alice_phone.create_room(request).await.unwrap();
+    let set_order = |order: &'static str| {
+        let space = space.clone();
+        async move {
+            space
+                .set_account_data_raw(
+                    RoomAccountDataEventType::from(TYPE),
+                    Raw::<AnyRoomAccountDataEventContent>::from_json_string(
+                        json!({ "order": order }).to_string(),
+                    )
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+    };
+    set_order("m").await;
+
+    let uplink = Uplink::new(&homeserver);
+    let _sync = uplink.pair_and_sync().await;
+    let synced = eventually("uplink to see the order", || async {
+        uplink
+            .room(space.room_id())
+            .await
+            .filter(|r| r.space_order.as_deref() == Some("m"))
+    })
+    .await;
+
+    // Moved in uplink: the phone sees it, and nothing is left to push.
+    let moved = match uplink
+        .matrix
+        .order_spaces(vec![SpaceOrderChange {
+            space: synced.id,
+            from: Some("m".into()),
+            to: Some("c".into()),
+        }])
+        .await
+        .unwrap()
+    {
+        ServerResponse::Dispatched { tx_log_id } => tx_log_id,
+        other => panic!("unexpected {other:?}"),
+    };
+    eventually("the phone to see uplink's order", || async {
+        alice_phone
+            .sync_once(SyncSettings::default())
+            .await
+            .unwrap();
+        let raw = space.account_data(TYPE.into()).await.unwrap()?;
+        let event: serde_json::Value = serde_json::from_str(raw.json().get()).unwrap();
+        (event["content"] == json!({ "order": "c" })).then_some(())
+    })
+    .await;
+    eventually("the order to be settled", || async {
+        let mut conn = uplink_storage::open_reader(uplink.dir.path()).unwrap();
+        let tx = conn.transaction().unwrap();
+        uplink_matrix::outbox::outbox(&tx)
+            .unwrap()
+            .is_empty()
+            .then_some(())
+    })
+    .await;
+
+    // Moved on the phone since: undoing uplink's move conflicts.
+    set_order("x").await;
+    eventually("uplink to see the phone's order", || async {
+        let room = uplink.room(space.room_id()).await?;
+        (room.space_order.as_deref() == Some("x")).then_some(())
+    })
+    .await;
+    assert!(uplink.dispatcher.undo(moved).await.is_err());
+}
+
 /// A plain message.
 fn text(body: &str) -> uplink_protocol::matrix::MatrixContent {
     uplink_protocol::matrix::MatrixContent::Text {
