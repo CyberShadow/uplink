@@ -70,6 +70,10 @@ pub struct ObservedRoom {
     pub avatar: Option<String>,
     /// Of a space, the rooms it lists.
     pub children: Vec<SpaceChild>,
+    /// `m.room.topic`, if set and not empty.
+    pub topic: Option<String>,
+    /// How many members have joined, as the homeserver counts them.
+    pub joined_members: u64,
     /// The room version, whose rules redact its events: the SDK's
     /// fallback if it does not know.
     pub version: String,
@@ -290,14 +294,23 @@ impl Observation for Synced {
 }
 
 /// The room's id, and whether it is new or its name, encryption,
-/// membership, type or avatar changed.
+/// membership, type, avatar, topic or member count changed.
 fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(RoomId, bool)> {
     let membership = membership_str(room.membership);
-    type Stored = (i64, String, bool, String, bool, Option<String>);
+    type Stored = (
+        i64,
+        String,
+        bool,
+        String,
+        bool,
+        Option<String>,
+        Option<String>,
+        u64,
+    );
     let existing: Option<Stored> = tx
         .query_row(
-            "SELECT id, name, encrypted, membership, space, avatar FROM matrix_room
-             WHERE account_id = ?1 AND room_id = ?2",
+            "SELECT id, name, encrypted, membership, space, avatar, topic, joined_members
+             FROM matrix_room WHERE account_id = ?1 AND room_id = ?2",
             [account, &room.room_id],
             |r| {
                 Ok((
@@ -307,32 +320,38 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                     r.get(3)?,
                     r.get(4)?,
                     r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
                 ))
             },
         )
         .optional()?;
     Ok(match existing {
-        Some((id, name, encrypted, old_membership, space, avatar)) => {
+        Some((id, name, encrypted, old_membership, space, avatar, topic, joined)) => {
             let changed = name != room.name
                 || encrypted != room.encrypted
                 || old_membership != membership
                 || space != room.space
-                || avatar != room.avatar;
+                || avatar != room.avatar
+                || topic != room.topic
+                || joined != room.joined_members;
             if changed {
                 // A membership asked for is had, however it came about.
                 tx.execute(
                     "UPDATE matrix_room SET name = ?1, encrypted = ?2, membership = ?3,
-                       space = ?4, avatar = ?5,
+                       space = ?4, avatar = ?5, topic = ?6, joined_members = ?7,
                        membership_by = CASE WHEN desired = ?3 THEN NULL ELSE membership_by END,
                        membership_error = CASE WHEN desired = ?3 THEN NULL ELSE membership_error END,
                        desired = CASE WHEN desired = ?3 THEN NULL ELSE desired END
-                     WHERE id = ?6",
+                     WHERE id = ?8",
                     params![
                         room.name,
                         room.encrypted,
                         membership,
                         room.space,
                         room.avatar,
+                        room.topic,
+                        room.joined_members,
                         id
                     ],
                 )?;
@@ -342,8 +361,9 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
         None => {
             let id = tx.query_row(
                 "INSERT INTO matrix_room
-                   (account_id, room_id, name, encrypted, membership, space, avatar)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING id",
+                   (account_id, room_id, name, encrypted, membership, space, avatar, topic,
+                    joined_members)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) RETURNING id",
                 params![
                     account,
                     room.room_id,
@@ -351,7 +371,9 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                     room.encrypted,
                     membership,
                     room.space,
-                    room.avatar
+                    room.avatar,
+                    room.topic,
+                    room.joined_members
                 ],
                 |r| r.get(0),
             )?;
@@ -699,7 +721,8 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
                     -- In the space's order: by `order`, those without last.
                     (SELECT json_group_array(child) FROM
                        (SELECT child FROM matrix_space_child c WHERE c.space = r.id
-                        ORDER BY child_order IS NULL, child_order, child))
+                        ORDER BY child_order IS NULL, child_order, child)),
+                    r.topic, r.joined_members
              FROM matrix_room r
              WHERE r.account_id = ?1 AND (r.membership != 'left' OR r.desired = 'joined')
              ORDER BY 8 DESC NULLS LAST, r.id"
@@ -721,6 +744,8 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
                 avatar: r.get(12)?,
                 children: serde_json::from_str(&r.get::<_, String>(13)?)
                     .expect("json_group_array makes an array of strings"),
+                topic: r.get(14)?,
+                joined_members: r.get(15)?,
             })
         })?
         .collect::<Result<_, _>>()?)

@@ -72,6 +72,10 @@ pub struct Room {
     /// Of a space, the Matrix ids of the rooms it lists, joined or not, in
     /// the space's order.
     pub children: Vec<String>,
+    /// `m.room.topic`, if set and not empty.
+    pub topic: Option<String>,
+    /// How many members have joined, as the homeserver counts them.
+    pub joined_members: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

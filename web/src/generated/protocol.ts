@@ -489,7 +489,15 @@ avatar: string | null,
  * Of a space, the Matrix ids of the rooms it lists, joined or not, in
  * the space's order.
  */
-children: Array<string>, };
+children: Array<string>, 
+/**
+ * `m.room.topic`, if set and not empty.
+ */
+topic: string | null, 
+/**
+ * How many members have joined, as the homeserver counts them.
+ */
+joined_members: number, };
 
 export type Encryption = "none" | "decrypted" | "undecryptable";
 

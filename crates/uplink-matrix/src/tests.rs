@@ -98,6 +98,8 @@ impl Db {
                 space: false,
                 avatar: None,
                 children: vec![],
+                topic: None,
+                joined_members: 2,
                 version: "11".into(),
             }],
         })
@@ -415,6 +417,8 @@ mod membership {
                     space: false,
                     avatar: None,
                     children: vec![],
+                    topic: None,
+                    joined_members: 2,
                     version: "11".into(),
                 }],
             })

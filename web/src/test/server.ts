@@ -214,6 +214,8 @@ export class FakeServer implements Requester, Blobs {
       space: false,
       avatar: null,
       children: [],
+      topic: null,
+      joined_members: 2,
     }
     this.rooms.push(room)
     this.events.set(room.id, [])

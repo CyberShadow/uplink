@@ -278,6 +278,8 @@ impl Syncer {
             space: room.is_space(),
             avatar: avatar(&room).await?,
             children: space_children(&room).await?,
+            topic: room.topic().filter(|t| !t.trim().is_empty()),
+            joined_members: room.joined_members_count(),
             version: room
                 .version()
                 .unwrap_or(matrix_sdk::ROOM_VERSION_FALLBACK)
