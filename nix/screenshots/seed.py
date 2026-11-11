@@ -242,30 +242,46 @@ users = {
         ("whatsapp_lena", "Lena"), ("whatsapp_maya", "Maya Chen"),
         ("telegrambot", "Telegram bridge bot"), ("telegram_maya", "Maya Chen"), ("telegram_tom", "Tom Becker"),
         ("signalbot", "Signal bridge bot"), ("signal_priya", "Priya Raman"), ("signal_noor", "Noor Haddad"),
-        ("messengerbot", "Messenger bridge bot"), ("messenger_ines", "Inês Costa"),
-        ("messenger_jonas", "Jonas Weber"),
+        ("slackbot", "Slack bridge bot"), ("slack_ines", "Inês Costa"), ("slack_jonas", "Jonas Weber"),
     ]
 }
 
 
-def space(creator, name, members, children, topic=None):
+def upload(user, path):
+    return json.loads(machine.succeed(
+        f"curl -sf -X POST -H 'Authorization: Bearer {users[user]}' -H 'Content-Type: image/png' "
+        f"--data-binary @{path} http://127.0.0.1:6167/_matrix/media/v3/upload"))["content_uri"]
+
+
+def space(creator, name, members, children, topic=None, avatar=None):
     space_id = room(creator, name, members, topic=topic, space=True)
+    if avatar:
+        matrix(users[creator], "PUT", f"/rooms/{space_id}/state/m.room.avatar", {"url": avatar})
     for child in children:
         matrix(users[creator], "PUT", f"/rooms/{space_id}/state/m.space.child/{child}", {"via": ["example.org"]})
 
+
+icons = {}
+for bridge in ["whatsapp", "telegram", "signal", "slack"]:
+    icons[bridge] = upload(f"{bridge}bot", f"{BRIDGE_ICONS}/{bridge}.png")
+    matrix(users[f"{bridge}bot"], "PUT", f"/profile/@{bridge}bot:example.org/avatar_url", {"avatar_url": icons[bridge]})
 
 platform = room("alice", "Platform", ["daniel", "sofia"], topic="Deploys, incidents and infrastructure")
 design = room("alice", "Design", ["sofia"], topic="Critiques and prototypes")
 space("alice", "Acme", ["daniel", "sofia"], [platform, design])
 family = room("whatsappbot", "Family chat", ["alice", "whatsapp_mom", "whatsapp_dad", "whatsapp_lena"])
 maya = room("whatsapp_maya", "", ["alice"], direct=True)
-space("whatsappbot", "WhatsApp", ["alice"], [family, maya], topic="Your WhatsApp bridged chats")
+space("whatsappbot", "WhatsApp", ["alice"], [family, maya], topic="Your WhatsApp bridged chats",
+      avatar=icons["whatsapp"])
 hiking = room("telegrambot", "Hiking club", ["alice", "telegram_maya", "telegram_tom"], topic="Weekend trails")
-space("telegrambot", "Telegram", ["alice"], [hiking], topic="Your Telegram bridged chats")
+space("telegrambot", "Telegram", ["alice"], [hiking], topic="Your Telegram bridged chats",
+      avatar=icons["telegram"])
 books = room("signalbot", "Book club", ["alice", "signal_priya", "signal_noor"])
-space("signalbot", "Signal", ["alice"], [books], topic="Your Signal bridged chats")
-lisbon = room("messengerbot", "Lisbon trip", ["alice", "messenger_ines", "messenger_jonas"])
-space("messengerbot", "Messenger", ["alice"], [lisbon], topic="Your Messenger bridged chats")
+space("signalbot", "Signal", ["alice"], [books], topic="Your Signal bridged chats",
+      avatar=icons["signal"])
+meetup = room("slackbot", "rust-meetup", ["alice", "slack_ines", "slack_jonas"])
+space("slackbot", "Slack", ["alice"], [meetup], topic="Your Slack bridged chats",
+      avatar=icons["slack"])
 matrix(users["alice"], "PUT", "/user/@alice:example.org/account_data/m.direct", {"@whatsapp_maya:example.org": [maya]})
 
 for user, body in [
@@ -313,8 +329,8 @@ for user, body in [
     say(user, hiking, body)
 say("signal_priya", books, "Halfway through The Dispossessed and I already want to argue about Anarres")
 say("signal_noor", books, "No spoilers, I'm only on chapter 3!")
-say("messenger_ines", lisbon, "Found a great place for dinner in Alfama, booking for Friday at 8?")
-say("messenger_jonas", lisbon, "Yes please! 🇵🇹")
+say("slack_ines", meetup, "Next meetup is on the 19th, who wants to give a talk?")
+say("slack_jonas", meetup, "I could do 20 minutes on the async pitfalls we hit at work")
 say("whatsapp_maya", maya, "Did you see the forecast? Clear skies all weekend ☀️")
 
 machine.succeed(

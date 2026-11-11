@@ -21,6 +21,24 @@ let
       flakeIgnore = [ "E501" ];
     }
     (builtins.readFile ./capture.py);
+
+  # The networks' icons, as their mautrix bridges ship them, which the
+  # bridges give their spaces and bots.
+  bridgeIcons = pkgs.runCommand "bridge-icons" { nativeBuildInputs = [ pkgs.librsvg ]; } (
+    pkgs.lib.concatStrings (pkgs.lib.mapAttrsToList
+      (bridge: { rev, hash }: ''
+        mkdir -p $out
+        rsvg-convert --width 128 --height 128 --keep-aspect-ratio --output $out/${bridge}.png ${pkgs.fetchurl {
+          url = "https://raw.githubusercontent.com/mautrix/${bridge}/${rev}/.idea/icon.svg";
+          inherit hash;
+        }}
+      '')
+      {
+        whatsapp = { rev = "015ad733a3ef8a8776266b0c490ef6c740fe2ed8"; hash = "sha256-O4AKfdZ/7Ksktef1+wV3dAJaUwVn+FXO09qG+OEv+aU="; };
+        telegram = { rev = "a36e68b399a3b014c1365f5c38ab05e8749080c0"; hash = "sha256-MCu12d/UHP5t9+TokmP1hlQa6I+bZ3e5plwvpQ07B0U="; };
+        signal = { rev = "a96f214609cbe04426c637845902bc2fa5a0c537"; hash = "sha256-GoWErFg9/arf/N2M9n+EiUe9m3HaNSgg2UIgfWy4ZkE="; };
+        slack = { rev = "6ffd02f161fc38c76a2fe50428fca5f6b980592c"; hash = "sha256-FxYEd6R1FmrQVW4AKOOwvQY01wwC57kgwEpEKeoYSrM="; };
+      }));
 in
 pkgs.testers.nixosTest {
   name = "uplink-screenshots";
@@ -81,5 +99,6 @@ pkgs.testers.nixosTest {
 
   testScript = machine.testScriptPrefix + ''
     MICROSOFT = "${microsoft}"
+    BRIDGE_ICONS = "${bridgeIcons}"
   '' + builtins.readFile ./seed.py;
 }

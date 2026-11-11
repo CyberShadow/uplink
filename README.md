@@ -98,7 +98,7 @@ It is built for people who live in their inbox and want it fast:
   reactions, edits, files, link previews, pinned messages, mentions and
   notifications, and search, encrypted rooms included. With
   [bridges](https://matrix.org/ecosystem/bridges/) on your homeserver,
-  your WhatsApp, Telegram, Signal and Messenger chats are Matrix rooms
+  your WhatsApp, Telegram, Signal and Slack chats are Matrix rooms
   too, so they are all here, in one place, beside your mail.
 
 <p align="center">
