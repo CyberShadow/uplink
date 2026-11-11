@@ -619,7 +619,8 @@ async fn event_media_handler(
 }
 
 /// A thumbnail of a room member's avatar. Members change their avatars,
-/// so it is cached for an hour only.
+/// so it is cached for an hour only. A member without one is no error,
+/// which browsers would log for each: it is No Content.
 async fn member_avatar_handler(
     State(state): State<AppState>,
     extract::Path((room, user)): extract::Path<(i64, String)>,
@@ -630,7 +631,12 @@ async fn member_avatar_handler(
         .member_avatar(uplink_protocol::matrix::RoomId(room), user)
         .await
     {
-        Ok((mime, image)) => (
+        Ok(None) => (
+            StatusCode::NO_CONTENT,
+            [(header::CACHE_CONTROL, "private, max-age=3600")],
+        )
+            .into_response(),
+        Ok(Some((mime, image))) => (
             [
                 (header::CONTENT_TYPE, mime),
                 (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),

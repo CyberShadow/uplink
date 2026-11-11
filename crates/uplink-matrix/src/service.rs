@@ -261,12 +261,13 @@ impl Matrix {
         Ok((mime, image))
     }
 
-    /// A thumbnail of `user`'s avatar in the room, and its media type.
+    /// A thumbnail of `user`'s avatar in the room, and its media type;
+    /// `None` if the client knows of none.
     pub async fn member_avatar(
         &self,
         room: RoomId,
         user: String,
-    ) -> Result<(&'static str, Vec<u8>), ServerError> {
+    ) -> Result<Option<(&'static str, Vec<u8>)>, ServerError> {
         let (account, room_id) = self
             .reader
             .read(move |conn| {
@@ -276,10 +277,12 @@ impl Matrix {
             })
             .await?;
         let client = self.client(&account)?;
-        let mxc = client::member_avatar(&client, &room_id, &user)
+        let Some(mxc) = client::member_avatar(&client, &room_id, &user)
             .await
             .map_err(internal)?
-            .ok_or_else(|| error(ErrorCode::NotFound, format!("{user} has no avatar")))?;
+        else {
+            return Ok(None);
+        };
         let image = client::avatar_thumbnail(&client, &mxc)
             .await
             .map_err(internal)?;
@@ -288,7 +291,7 @@ impl Matrix {
                 "the thumbnail of {mxc} is not an image shown"
             ))
         })?;
-        Ok((mime, image))
+        Ok(Some((mime, image)))
     }
 
     /// The room's client-side room, of a joined room the client has.

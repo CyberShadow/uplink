@@ -216,8 +216,8 @@ function Sender(props: { room: Room; user: string; name: string | null; emote: b
   )
 }
 
-/** Members whose avatars the server had none of, so that their other
- * lines do not ask again. */
+/** Members whose avatars the server had none of (No Content, which an
+ * image fails to load), so that their other lines do not ask again. */
 const noAvatar = new Set<string>()
 
 /** The member's avatar in the room, or their initial; `class` sizes it. */

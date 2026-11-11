@@ -2028,7 +2028,9 @@ decrypted, of encrypted rooms):
   see encrypted ones (their senders attach thumbnails of their own).
 - `/api/rooms/:room/members/:user/avatar` — a 64 px thumbnail of a
   member's avatar, as the SDK's store has it; cached for an hour, as
-  members change their avatars.
+  members change their avatars. A member without one is `204 No
+  Content`, not an error (which browsers log): the image fails to load,
+  and the web UI shows their initial.
 
 **Link previews.** `PreviewUrl { room, event, url }` (not logged) asks
 the account's homeserver for its preview of a web page (authenticated
