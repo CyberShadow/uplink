@@ -934,6 +934,69 @@ describe('matrix', () => {
   })
 })
 
+describe('room composer', () => {
+  it('completes members, emoji and commands, and runs commands', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const member = (user: string, name: string) => ({
+      user,
+      name,
+      membership: 'joined' as const,
+      power: 0,
+      kickable: false,
+      bannable: false,
+    })
+    server.members.set(room.id, {
+      members: [member(ME, 'Me'), member('@carol:example.org', 'Carol Danvers'), member('@bob:example.org', 'Bob')],
+      powers: { invite: true, name: true, topic: true },
+    })
+    const user = await start(`/rooms/${room.id}`)
+    const box = screen.getByRole('textbox', { name: 'Message Lounge' }) as HTMLTextAreaElement
+    const options = () => within(screen.getByRole('listbox', { name: 'Suggestions' })).getAllByRole('option')
+    const sent = () => server.requests.filter((r) => r.type === 'send_matrix_message').map((r) => r.content)
+
+    await user.click(box)
+    await user.keyboard('hi @dan')
+    await waitFor(() => expect(options().map((o) => o.textContent)).toEqual(['Carol Danvers@carol:example.org']))
+    await user.keyboard('{Tab}')
+    expect(box.value).toBe('hi [Carol Danvers](https://matrix.to/#/@carol:example.org) ')
+    expect(screen.queryByRole('listbox')).toBeNull()
+    await user.keyboard(':thumbsu')
+    await waitFor(() => expect(options()[0].textContent).toContain('👍'))
+    await user.keyboard('{Enter}')
+    // A whole shortcode becomes its emoji.
+    await user.keyboard(' :tada:')
+    expect(box.value).toBe('hi [Carol Danvers](https://matrix.to/#/@carol:example.org) 👍 🎉')
+    await user.keyboard('{Enter}')
+    await waitFor(() =>
+      expect(sent()).toEqual([text('hi [Carol Danvers](https://matrix.to/#/@carol:example.org) 👍 🎉')]),
+    )
+
+    // Escape dismisses a completion; Enter then sends.
+    await user.keyboard('@b')
+    await waitFor(() => expect(options()).toHaveLength(1))
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('listbox')).toBeNull()
+    await user.keyboard('{Backspace}{Backspace}')
+
+    await user.keyboard('/inv')
+    expect(options().map((o) => o.textContent)).toEqual(['/invite <user-id>Invites the user to the room'])
+    await user.keyboard('{Tab}@dave:example.org{Enter}')
+    await user.keyboard('/plain **as is**{Enter}')
+    await waitFor(() =>
+      expect(sent().slice(1)).toEqual([
+        { type: 'member', action: 'invite', user: '@dave:example.org', reason: null },
+        text('**as is**', { markdown: false }),
+      ]),
+    )
+    await user.keyboard('/frobnicate{Enter}')
+    expect(screen.getByRole('alert').textContent).toBe(
+      'Unknown command /frobnicate. To send it as a message, begin with //.',
+    )
+    expect(box.value).toBe('/frobnicate')
+  })
+})
+
 describe('room timeline', () => {
   const day = (iso: string) => new Date(iso).getTime()
   const timeline = () => screen.getByRole('list', { name: 'Timeline' })

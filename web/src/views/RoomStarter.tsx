@@ -23,22 +23,30 @@ export function userIds(text: string): string[] {
   return text.split(/[\s,]+/).filter((id) => id !== '')
 }
 
-export function RoomStarter(props: { account: string; close: () => void }) {
+/** Opens a room the account joined, once sync lists it, and calls
+ * `opened`: the room's Matrix id being opened (`null` while none), and
+ * its setter. */
+export function useOpenJoined(account: string, opened: () => void): [string | null, (roomId: string) => void] {
   const { matrix } = useServices()
   const { route } = useLocation()
-  const [mode, setMode] = useState<Mode>('room')
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  // The room joined, by its Matrix id, to open once listed.
   const [joined, setJoined] = useState<string | null>(null)
   const rooms = matrix.rooms.value
-  const { account, close } = props
   useEffect(() => {
     const room = joined === null ? undefined : rooms?.find((r) => r.account === account && r.room_id === joined)
     if (!room) return
-    close()
+    setJoined(null)
+    opened()
     route(roomPath(room.id))
-  }, [joined, rooms, account, close, route])
+  }, [joined, rooms, account, opened, route])
+  return [joined, setJoined]
+}
+
+export function RoomStarter(props: { account: string; close: () => void }) {
+  const { matrix } = useServices()
+  const [mode, setMode] = useState<Mode>('room')
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [joined, setJoined] = useOpenJoined(props.account, props.close)
 
   const start = async (request: Parameters<typeof matrix.join>[0]) => {
     setBusy(true)

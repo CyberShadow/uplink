@@ -585,3 +585,42 @@
     grid-column: 1 / -1;
   }
 }
+
+/* Completions, above the composer's box. */
+.suggestions {
+  margin: 0 0 4px;
+  padding: 4px 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  list-style: none;
+}
+
+.suggestions li {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.suggestions li[aria-selected='true'] {
+  background: var(--selected);
+}
+
+.suggestion {
+  white-space: nowrap;
+}
+
+.suggestions .muted {
+  overflow: hidden;
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.composerError {
+  margin: 0 0 4px;
+  color: var(--error-fg);
+  font-size: 13px;
+}

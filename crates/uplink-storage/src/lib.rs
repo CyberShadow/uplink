@@ -493,7 +493,8 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let conn = open(dir.path()).unwrap();
+        // As V0026 left them: later ones change content again (V0030).
+        let conn = migrated_to(dir.path(), 26);
         let text = r#"{"type":"text","body":"hi","emote":false,"reply_to":null,"replaces":null}"#;
         let content: String = conn
             .query_row("SELECT content FROM matrix_send WHERE id = 3", [], |r| {
@@ -525,5 +526,64 @@ mod tests {
             )
             .unwrap();
         assert_eq!(next, 5);
+    }
+
+    /// Matrix sends of text, and the log's, are Markdown (V0030), as
+    /// their contents say since; sends are kept as they were (V0029).
+    #[test]
+    fn matrix_texts_are_markdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = migrated_to(dir.path(), 28);
+        let text = r#"{"type":"text","body":"hi","emote":false,"reply_to":null,"replaces":null}"#;
+        let op = format!(r#"{{"room":5,"content":{text}}}"#);
+        conn.execute_batch(&format!(
+            r#"INSERT INTO account (id, kind) VALUES ('mx', 'matrix');
+               INSERT INTO matrix_room (id, account_id, room_id, name, encrypted, membership)
+               VALUES (5, 'mx', '!r:x', 'Room', 0, 'joined');
+               INSERT INTO tx_log (id, ts, description, op_type, op_json, inverse_type,
+                                   inverse_json, events_json)
+               VALUES (1, 0, '', 'matrix.send', '{op}', 'matrix.cancel_send', '{{"item":3}}', '[]'),
+                      (2, 0, '', 'matrix.cancel_send', '{{"item":3}}', 'matrix.send', '{op}', '[]'),
+                      (3, 0, '', 'matrix.send',
+                       '{{"room":5,"content":{{"type":"reaction","event":"$e","key":"x"}}}}',
+                       'matrix.cancel_send', '{{"item":4}}', '[]');
+               INSERT INTO matrix_send (id, room, content, queued_at, wanted, desired_by, state,
+                                        error, event_id, synced)
+               VALUES (3, 5, '{text}', 0, 1, 1, 'sent', NULL, '$e', 0),
+                      (4, 5, '{{"type":"reaction","event":"$e","key":"x"}}', 0, 1, 3, 'queued',
+                       NULL, NULL, 0);"#
+        ))
+        .unwrap();
+        drop(conn);
+
+        let conn = open(dir.path()).unwrap();
+        let markdown = |sql: &str| -> Vec<Option<bool>> {
+            conn.prepare(sql)
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        assert_eq!(
+            markdown("SELECT json_extract(content, '$.markdown') FROM matrix_send ORDER BY id"),
+            [Some(true), None]
+        );
+        assert_eq!(
+            markdown("SELECT json_extract(op_json, '$.content.markdown') FROM tx_log ORDER BY id"),
+            [Some(true), None, None]
+        );
+        assert_eq!(
+            markdown(
+                "SELECT json_extract(inverse_json, '$.content.markdown') FROM tx_log ORDER BY id"
+            ),
+            [None, Some(true), None]
+        );
+        let event: String = conn
+            .query_row("SELECT event_id FROM matrix_send WHERE id = 3", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(event, "$e");
     }
 }

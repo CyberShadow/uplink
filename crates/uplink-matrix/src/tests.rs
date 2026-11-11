@@ -806,8 +806,67 @@ mod relations {
 fn text(body: &str) -> uplink_protocol::matrix::MatrixContent {
     uplink_protocol::matrix::MatrixContent::Text {
         body: body.into(),
+        markdown: true,
         emote: false,
         reply_to: None,
         replaces: None,
     }
+}
+
+#[test]
+fn messages_mention_the_users_they_link_and_whom_they_reply_to() {
+    use crate::sync::text_content;
+    let content = text_content(
+        "hi [Bob](https://matrix.to/#/@bob:example.org), [a link](https://example.org) [x](https://matrix.to/#/nobody)",
+        true,
+        false,
+        Some(("$q", "@carol:example.org")),
+        None,
+    );
+    assert_eq!(
+        content["body"],
+        "hi Bob, [a link](https://example.org) [x](https://matrix.to/#/nobody)"
+    );
+    assert_eq!(
+        content["m.mentions"],
+        json!({ "user_ids": ["@bob:example.org", "@carol:example.org"] })
+    );
+    assert!(content["formatted_body"]
+        .as_str()
+        .unwrap()
+        .contains(r#"<a href="https://matrix.to/#/@bob:example.org">Bob</a>"#));
+    assert_eq!(content["m.relates_to"]["m.in_reply_to"]["event_id"], "$q");
+
+    // Plain: as it is, mentioning no one.
+    let plain = text_content(
+        "**[Bob](https://matrix.to/#/@bob:example.org)**",
+        false,
+        false,
+        None,
+        None,
+    );
+    assert_eq!(
+        plain,
+        json!({
+            "msgtype": "m.text",
+            "body": "**[Bob](https://matrix.to/#/@bob:example.org)**",
+            "m.mentions": {},
+        })
+    );
+
+    // An edit mentions none anew; its new content, all.
+    let edit = text_content(
+        "[Bob](https://matrix.to/#/@bob:example.org)!",
+        true,
+        true,
+        None,
+        Some("$e"),
+    );
+    assert_eq!(edit["body"], "* Bob!");
+    assert_eq!(edit["msgtype"], "m.emote");
+    assert_eq!(edit["m.mentions"], json!({}));
+    assert_eq!(
+        edit["m.new_content"]["m.mentions"],
+        json!({ "user_ids": ["@bob:example.org"] })
+    );
 }

@@ -204,9 +204,12 @@ pub enum MatrixSendState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MatrixContent {
-    /// A message, in Markdown (formatted, if it has formatting, as HTML).
+    /// A message, in Markdown (formatted, if it has formatting, as HTML),
+    /// whose links to users (`[name](https://matrix.to/#/@user:server)`)
+    /// mention them; or else plain text, sent as it is (`/plain`).
     Text {
         body: String,
+        markdown: bool,
         /// `m.emote` (`/me`) rather than `m.text`.
         emote: bool,
         /// The event it replies to.

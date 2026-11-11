@@ -16,6 +16,7 @@
     "@tiptap/core": "^3.33.0",
     "@tiptap/pm": "^3.33.0",
     "@tiptap/starter-kit": "^3.33.0",
+    "emojibase-data": "18.0.0",
     "preact": "^10.26.9",
     "preact-iso": "^2.12.2",
     "tinykeys": "^4.0.1"

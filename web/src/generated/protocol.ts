@@ -821,7 +821,7 @@ export type MatrixSendState = "queued" | "sending" | "sent" | "refused";
  * What a send sends to a room (SPEC §9.3). Events it is of are named
  * by their Matrix ids, which the homeserver knows them by.
  */
-export type MatrixContent = { "type": "text", body: string, 
+export type MatrixContent = { "type": "text", body: string, markdown: boolean, 
 /**
  * `m.emote` (`/me`) rather than `m.text`.
  */

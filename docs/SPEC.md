@@ -1704,11 +1704,17 @@ JSON since V0026) is one of:
 
 - **text**, in Markdown: sent as `m.text` (or `m.emote`, for `/me`) with
   the plain body, and, if Markdown formats it, `formatted_body` in HTML
-  (ruma's CommonMark, as Element does). It may reply to a stored event
-  (`m.in_reply_to`, without the fallback quote, which the spec no longer
-  asks for) or edit one of the account's own messages (`m.replace`,
-  with `m.new_content`, and `* ` before the body for clients that do not
-  know edits);
+  (ruma's CommonMark, as Element does). Its links to users
+  (`[name](https://matrix.to/#/@user:server)`, which Element shows as
+  pills) mention them: the plain body has their names, and
+  `m.mentions.user_ids` the users (intentional mentions; `{}` with
+  none). Or else (`markdown: false`, `/plain`; V0030 marked the earlier
+  sends Markdown) it is sent as it is, mentioning no one. It may reply to
+  a stored event (`m.in_reply_to`, without the fallback quote, which the
+  spec no longer asks for), mentioning its sender, or edit one of the
+  account's own messages (`m.replace`, with `m.new_content`, which
+  mentions whom it does, and `* ` before the body for clients that do
+  not know edits; the edit itself mentions no one anew);
 - a **reaction** to a stored event (`m.reaction`, `m.annotation`);
 - a **redaction** of a stored event not yet redacted (deleting a
   message, or taking a reaction back), through the redaction endpoint,
@@ -2327,7 +2333,20 @@ the membership's buttons.
 - **Who is typing** shows above the composer; who has read how far, as
   up to three avatars (and how many more) at the end of a line.
 - **The composer** sends Markdown with Enter (Shift+Enter for a new
-  line); `/me` sends an emote. Replying shows what it answers above the
+  line). A message beginning with `/` is a command, as Element's (`//`
+  sends one `/`): `/me` (an emote), `/plain` (without Markdown),
+  `/shrug`, `/tableflip`, `/unflip` and `/lenny` (plain text before the
+  message), `/invite`, `/remove` (`/kick`), `/ban` and `/unban` (with a
+  reason, but inviting), `/topic`, `/roomname`, `/join` (`/j`; opens the
+  room) and `/leave` (`/part`). An unknown command, or one misused, says
+  so above the box, which keeps the text. Completions show above the box
+  as one types, as Element's: commands after a leading `/`, joined
+  members (but the account) after `@`, by a word of their name or their
+  id, inserted as a link that mentions them, and emoji after `:` and two
+  characters, by their Slack-style shortcodes (Emojibase's data, loaded
+  on first use); a whole `:shortcode:` typed becomes its emoji. Up and
+  Down choose, Tab or Enter take one, Escape hides them until the text
+  changes. Replying shows what it answers above the
   box; editing fills the box with the message, the draft kept apart.
   Up, in an empty box, edits the account's last message; Escape cancels
   a reply or edit. Files attached (the paperclip), pasted or dropped on

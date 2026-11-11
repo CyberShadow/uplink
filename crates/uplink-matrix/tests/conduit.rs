@@ -756,6 +756,7 @@ async fn spaces_list_their_rooms_and_avatars_are_served() {
 fn text(body: &str) -> uplink_protocol::matrix::MatrixContent {
     uplink_protocol::matrix::MatrixContent::Text {
         body: body.into(),
+        markdown: true,
         emote: false,
         reply_to: None,
         replaces: None,
@@ -820,6 +821,7 @@ async fn replies_edits_reactions_redactions_and_files() {
     // A reply, in Markdown.
     let timeline = send(MatrixContent::Text {
         body: "**hi** bob".into(),
+        markdown: true,
         emote: false,
         reply_to: Some(hello.event_id.clone()),
         replaces: None,
@@ -834,6 +836,7 @@ async fn replies_edits_reactions_redactions_and_files() {
     // Its edit.
     let timeline = send(MatrixContent::Text {
         body: "hi again".into(),
+        markdown: true,
         emote: false,
         reply_to: None,
         replaces: Some(reply.event_id.clone()),

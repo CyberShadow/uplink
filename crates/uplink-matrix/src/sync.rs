@@ -866,7 +866,7 @@ impl Sender {
                 continue;
             };
             let txn_id: OwnedTransactionId = send::transaction_id(item.item).into();
-            let sent = self.send(&room, &item.content, txn_id).await?;
+            let sent = self.send(&room, item.room, &item.content, txn_id).await?;
             match sent {
                 Ok(event_id) => {
                     self.observe(SendSucceeded {
@@ -898,17 +898,40 @@ impl Sender {
     async fn send(
         &self,
         room: &Room,
+        stored_room: uplink_protocol::matrix::RoomId,
         content: &MatrixContent,
         txn_id: OwnedTransactionId,
     ) -> Result<Result<Option<OwnedEventId>, matrix_sdk::Error>> {
         let sent = match content {
             MatrixContent::Text {
                 body,
+                markdown,
                 emote,
                 reply_to,
                 replaces,
             } => {
-                let content = text_content(body, *emote, reply_to.as_deref(), replaces.as_deref());
+                // A reply mentions whom it answers, as the SDK's do.
+                let reply = match reply_to {
+                    Some(event) => {
+                        let event = event.clone();
+                        let replied = read(&self.reader, move |conn| {
+                            rooms::stored_event(conn, stored_room, &event)
+                        })
+                        .await?
+                        .context("the event replied to is stored")?;
+                        Some((reply_to.as_deref().expect("matched"), replied.sender))
+                    }
+                    None => None,
+                };
+                let content = text_content(
+                    body,
+                    *markdown,
+                    *emote,
+                    reply
+                        .as_ref()
+                        .map(|(event, sender)| (*event, sender.as_str())),
+                    replaces.as_deref(),
+                );
                 room.send_raw("m.room.message", content)
                     .with_transaction_id(&txn_id)
                     .await
@@ -1028,44 +1051,87 @@ impl Sender {
     }
 }
 
-/// A message's content: `body` in Markdown, formatted as HTML if it has
-/// formatting (as Element does), replying to `reply_to` or replacing the
-/// account's own message `replaces`. Replies carry no fallback (the
-/// quote of what they answer), which the spec no longer asks for.
+/// The content of a message of text: Markdown, formatted as HTML if it
+/// formats anything, its links to users mentioning them (the plain body
+/// has their names); or else plain text. It may reply to an event, which
+/// mentions its sender, or edit one: the edit's own body, for clients
+/// that do not know edits, is the new one marked as such, and as the
+/// edited message mentioned whom it did, it mentions none anew.
 pub fn text_content(
     body: &str,
+    markdown: bool,
     emote: bool,
-    reply_to: Option<&str>,
+    reply_to: Option<(&str, &str)>,
     replaces: Option<&str>,
 ) -> serde_json::Value {
-    let message = |body: &str| {
+    let message = |body: &str, mentioned: &[&str]| {
+        let (plain, mut users) = match markdown {
+            true => mentions(body),
+            false => (body.to_owned(), vec![]),
+        };
+        users.extend(mentioned.iter().map(|&user| user.to_owned()));
+        users.sort();
+        users.dedup();
         let mut content = json!({
             "msgtype": if emote { "m.emote" } else { "m.text" },
-            "body": body,
+            "body": plain,
+            "m.mentions": if users.is_empty() { json!({}) } else { json!({ "user_ids": users }) },
         });
-        if let Some(html) = FormattedBody::markdown(body) {
+        if let Some(html) = markdown.then(|| FormattedBody::markdown(body)).flatten() {
             content["format"] = json!("org.matrix.custom.html");
             content["formatted_body"] = json!(html.body);
         }
         content
     };
+    let replied: Vec<&str> = reply_to.iter().map(|&(_, sender)| sender).collect();
     match replaces {
-        // An edit: its own body, for clients that do not know edits, is the
-        // new one marked as such.
         Some(replaces) => {
-            let mut content = message(&format!("* {body}"));
-            content["m.new_content"] = message(body);
+            let mut content = message(&format!("* {body}"), &[]);
+            content["m.mentions"] = json!({});
+            content["m.new_content"] = message(body, &replied);
             content["m.relates_to"] = json!({ "rel_type": "m.replace", "event_id": replaces });
             content
         }
         None => {
-            let mut content = message(body);
-            if let Some(reply_to) = reply_to {
-                content["m.relates_to"] = json!({ "m.in_reply_to": { "event_id": reply_to } });
+            let mut content = message(body, &replied);
+            if let Some((event, _)) = reply_to {
+                content["m.relates_to"] = json!({ "m.in_reply_to": { "event_id": event } });
             }
             content
         }
     }
+}
+
+/// Markdown's links to users, `[name](https://matrix.to/#/@user:server)`:
+/// the text with each as its name, and the users.
+fn mentions(markdown: &str) -> (String, Vec<String>) {
+    const PERMALINK: &str = "](https://matrix.to/#/";
+    let mut plain = String::new();
+    let mut users = vec![];
+    let mut rest = markdown;
+    while let Some(open) = rest.find('[') {
+        let link = rest[open + 1..]
+            .split_once(PERMALINK)
+            .and_then(|(name, after)| {
+                let (target, after) = after.split_once(')')?;
+                let user = matrix_sdk::ruma::UserId::parse(target).ok()?;
+                (!name.contains(['[', ']'])).then_some((name, user, after))
+            });
+        match link {
+            Some((name, user, after)) => {
+                plain.push_str(&rest[..open]);
+                plain.push_str(name);
+                users.push(user.to_string());
+                rest = after;
+            }
+            None => {
+                plain.push_str(&rest[..=open]);
+                rest = &rest[open + 1..];
+            }
+        }
+    }
+    plain.push_str(rest);
+    (plain, users)
 }
 
 /// The homeserver's reason, if it refused the request (a 4xx other than

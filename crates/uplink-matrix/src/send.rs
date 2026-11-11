@@ -319,6 +319,7 @@ impl Op for KeepSent {
 #[derive(Debug, Clone)]
 pub struct Due {
     pub item: MatrixSendId,
+    pub room: RoomId,
     pub room_id: String,
     pub content: MatrixContent,
 }
@@ -327,12 +328,13 @@ pub struct Due {
 pub fn due(conn: &Connection, account: &str) -> Result<Vec<Due>> {
     Ok(conn
         .prepare(
-            "SELECT s.id, r.room_id, s.content FROM matrix_send s JOIN matrix_room r ON r.id = s.room
+            "SELECT s.id, r.room_id, s.content, s.room FROM matrix_send s JOIN matrix_room r ON r.id = s.room
              WHERE r.account_id = ?1 AND s.state = 'queued' ORDER BY s.id",
         )?
         .query_map([account], |r| {
             Ok(Due {
                 item: MatrixSendId(r.get(0)?),
+                room: RoomId(r.get(3)?),
                 room_id: r.get(1)?,
                 content: content(&r.get::<_, String>(2)?),
             })

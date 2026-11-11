@@ -5,14 +5,15 @@ import type { MatrixContent, MemberAction, RoomEvent, RoomId } from './generated
 /** Message types of text: shown as such, and edited. */
 export const TEXT = new Set(['m.text', 'm.notice', 'm.emote'])
 
-/** A message to send, in Markdown. */
+/** A message to send, in Markdown unless `markdown` is false. */
 export function text(
   body: string,
-  options: { emote?: boolean; reply_to?: string | null; replaces?: string | null } = {},
+  options: { markdown?: boolean; emote?: boolean; reply_to?: string | null; replaces?: string | null } = {},
 ): MatrixContent {
   return {
     type: 'text',
     body,
+    markdown: options.markdown ?? true,
     emote: options.emote ?? false,
     reply_to: options.reply_to ?? null,
     replaces: options.replaces ?? null,
