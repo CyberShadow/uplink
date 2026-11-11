@@ -769,8 +769,10 @@ than it buffers is closed; the client reconnects and resumes.
   `OutboxChanged`).
 - **Matrix**: `RoomsChanged { rooms }` (appeared, or name, membership,
   unread count or read marker changed), `TimelineAdded { room, events }`
-  (appended to the timeline), `MatrixSendsChanged { rooms }` (their sends
-  were added, changed state or went).
+  (appended to the timeline), `TimelineChanged { room, events }` (what
+  those events show changed: they were edited, reacted to or redacted,
+  or what they reply to was; §9.2), `MatrixSendsChanged { rooms }` (their
+  sends were added, changed state or went).
 - **Calendar**: `CalendarEventAdded`, `CalendarEventRemoved`,
   `CalendarEventChanged`.
 - **To-dos**: `TodosChanged { todos }` (added, edited or deleted; the
@@ -806,8 +808,12 @@ than it buffers is closed; the client reconnects and resumes.
   HTML body if there is one (§8.9).
 - `ListRooms` — Matrix accounts and their rooms with unread counts;
   `ListTimeline { room, page, limit }` — the latest events, or those
-  before or after one, oldest first; `ListMatrixSends { room }`: its
-  sends not yet synced back, for the end of the timeline.
+  before or after one, oldest first, each with what is folded into it
+  (§9.2); `ListRoomEvents { room, events }` — those of the events the
+  timeline lists, as it lists them (for `TimelineChanged`);
+  `ListEdits { room, event }` — a message's edits, oldest first, for its
+  edit history; `ListMatrixSends { room }`: its sends not yet synced
+  back, for the end of the timeline.
 - `Undo { tx_log_id }`; `ListHistory { before, limit }` — the user's
   ops, newest first, each with the entry that undid it, if any (§6.3).
 - `ListDrafts` — all drafts. `ListOutbox` — per account, its push
@@ -1598,6 +1604,37 @@ has, taking it for one it processed; but a first sync that ends where the
 last one did (nothing happened since, as after pairing) is not that one,
 and has every room.
 
+**Relations.** Each event's relation is stored with it, from its JSON
+(V0025): `m.relates_to`'s `rel_type` and `event_id`, a reply's
+`m.in_reply_to`, a redaction's `redacts` (in the content from room
+version 11, at the top level before), and whether it is redacted. The
+timeline folds into a stored event what is of it, as Element shows
+them, and does not list them on their own:
+
+- **edits** (`m.replace`, messages by the same sender with
+  `m.new_content`): an event carries its latest, by `origin_server_ts`
+  then event id; an edit is not edited itself. Its other edits are
+  listed by `ListEdits`;
+- **reactions** (`m.reaction` with `m.annotation`): an event carries
+  them by key, in the order first reacted with, each sender once, with
+  the reaction's event (redacting it takes the reaction back);
+- **redactions**: the event redacted is redacted in storage too, by the
+  room version's rules (ruma's, the SDK's fallback version if it does
+  not know it; an encrypted event's payload, which may not be canonical
+  JSON, loses its content), with `unsigned.redacted_because`, as the
+  homeserver would serve it. Redacted relations stay folded: a
+  redacted edit or reaction no longer counts. A reaction that came
+  redacted (and so no longer says what it was of) is not listed either.
+
+Relations of events not stored are listed, as their raw JSON, since
+nothing is dropped. A reply carries the event it answers, if stored,
+with its latest edit, for the reply to show. A sync that adds or
+redacts relations names the events they change as `TimelineChanged`,
+which clients load again (`ListRoomEvents`). Pages count only the
+events listed; so does the unread count, which skips redacted messages
+too. Threads (`m.thread`) are listed in the room's timeline, as replies
+to their root.
+
 The timeline is ordered by sync arrival. uplink only syncs forward, so
 the first sync brings the latest events of each room, and a gappy
 (`limited`) sync leaves a gap; backfilling with `/messages` is deferred.
@@ -1688,8 +1725,7 @@ done once per device, ever; device verification UI is out of scope.
 ### 9.6 What we deliberately don't do
 
 - No formatted_body rendering. ROADMAP item, deferred.
-- No reactions, edits, threads, replies — also deferred. These arrive in
-  `matrix_event.raw_json` and render as raw JSON in the timeline.
+- No thread view: threads are listed in the room's timeline (§9.2).
 - No room creation, no inviting others, and no joining rooms one is not
   invited to (by id or alias); invitations are joined or declined, and
   rooms left (§9.7).

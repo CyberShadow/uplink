@@ -750,6 +750,10 @@ impl Backend for Services {
             ClientRequest::ListTimeline { room, page, limit } => {
                 self.matrix.list_timeline(room, page, limit).await
             }
+            ClientRequest::ListRoomEvents { room, events } => {
+                self.matrix.list_room_events(room, events).await
+            }
+            ClientRequest::ListEdits { room, event } => self.matrix.list_edits(room, event).await,
             ClientRequest::ListMatrixSends { room } => self.matrix.list_sends(room).await,
             ClientRequest::SendMatrixMessage { room, body } => {
                 self.matrix.send_message(room, body).await

@@ -103,6 +103,60 @@ pub struct RoomEvent {
     /// uplink does not display otherwise.
     pub raw: String,
     pub encryption: Encryption,
+    /// Whether the event is redacted: `raw` is as redacted, with
+    /// `unsigned.redacted_because`.
+    pub redacted: bool,
+    /// Of a message, its latest edit by its sender.
+    pub edit: Option<EventEdit>,
+    /// The reactions to it, by key, in the order first reacted with.
+    pub reactions: Vec<Reaction>,
+    /// Of a reply (`m.in_reply_to`), the event it answers, if stored.
+    pub replied: Option<RepliedEvent>,
+}
+
+/// An edit (`m.replace`) of a message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct EventEdit {
+    pub event_id: String,
+    /// Ms since the Unix epoch.
+    pub ts: i64,
+    /// The message's content as edited (`m.new_content`), as JSON.
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Reaction {
+    /// What is reacted with: usually an emoji.
+    pub key: String,
+    /// Each sender once, in the order they reacted.
+    pub senders: Vec<Reactor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Reactor {
+    pub sender: String,
+    pub sender_name: Option<String>,
+    /// The reaction's event: redacting it takes the reaction back.
+    pub event_id: String,
+}
+
+/// The event a reply answers, as the reply shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RepliedEvent {
+    pub id: RoomEventId,
+    pub event_id: String,
+    pub sender: String,
+    pub sender_name: Option<String>,
+    pub kind: String,
+    /// As last edited.
+    pub msgtype: Option<String>,
+    /// As last edited.
+    pub body: Option<String>,
+    pub redacted: bool,
 }
 
 /// Which part of a room's timeline to list.
@@ -177,6 +231,15 @@ pub struct RoomsChanged {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct TimelineAdded {
+    pub room: RoomId,
+    pub events: Vec<RoomEventId>,
+}
+
+/// What these events of the room show changed: they were edited,
+/// reacted to or redacted, or the event they reply to was.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct TimelineChanged {
     pub room: RoomId,
     pub events: Vec<RoomEventId>,
 }

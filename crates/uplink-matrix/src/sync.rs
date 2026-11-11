@@ -266,6 +266,10 @@ impl Syncer {
             space: room.is_space(),
             avatar: avatar(&room).await?,
             children: space_children(&room).await?,
+            version: room
+                .version()
+                .unwrap_or(matrix_sdk::ROOM_VERSION_FALLBACK)
+                .to_string(),
             events: observed,
             own_receipts,
         })

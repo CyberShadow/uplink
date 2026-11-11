@@ -189,6 +189,17 @@ pub enum ClientRequest {
         page: TimelinePage,
         limit: u32,
     },
+    /// These events of the room's timeline, as listed there; those
+    /// unknown or not listed are left out.
+    ListRoomEvents {
+        room: RoomId,
+        events: Vec<RoomEventId>,
+    },
+    /// The edits of the room's message `event`, oldest first.
+    ListEdits {
+        room: RoomId,
+        event: RoomEventId,
+    },
     /// The room's messages being sent, sent and not yet synced back, or
     /// sent though cancelled: for the end of its timeline.
     ListMatrixSends {
@@ -294,6 +305,18 @@ pub enum ServerResponse {
         /// Whether there are earlier events than those listed.
         more_before: bool,
     },
+    RoomEvents {
+        as_of: TxLogId,
+        room: RoomId,
+        events: Vec<matrix::RoomEvent>,
+    },
+    /// Of `ListEdits`: the edit events, as stored.
+    Edits {
+        as_of: TxLogId,
+        room: RoomId,
+        event: RoomEventId,
+        edits: Vec<matrix::RoomEvent>,
+    },
     MatrixSends {
         as_of: TxLogId,
         room: RoomId,
@@ -329,6 +352,8 @@ impl ServerResponse {
             | Self::Outbox { as_of, .. }
             | Self::Rooms { as_of, .. }
             | Self::Timeline { as_of, .. }
+            | Self::RoomEvents { as_of, .. }
+            | Self::Edits { as_of, .. }
             | Self::MatrixSends { as_of, .. }
             | Self::Todos { as_of, .. }
             | Self::Events { as_of, .. }
@@ -411,6 +436,7 @@ pub enum ServerEvent {
     OutboxChanged(compose::OutboxChanged),
     RoomsChanged(matrix::RoomsChanged),
     TimelineAdded(matrix::TimelineAdded),
+    TimelineChanged(matrix::TimelineChanged),
     MatrixSendsChanged(matrix::MatrixSendsChanged),
     TodosChanged(todos::TodosChanged),
     CalendarChanged(calendar::CalendarChanged),

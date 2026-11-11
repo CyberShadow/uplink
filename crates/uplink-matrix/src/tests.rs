@@ -11,10 +11,10 @@ use std::sync::Arc;
 use uplink_protocol::{
     compose::{AccountOutbox, Pending},
     matrix::{
-        Encryption, MatrixSend, MatrixSendId, MatrixSendState, Membership, Room, RoomEventId,
-        RoomId,
+        Encryption, MatrixSend, MatrixSendId, MatrixSendState, Membership, Room, RoomEvent,
+        RoomEventId, RoomId,
     },
-    ServerResponse, TxLogId,
+    ServerEvent, ServerResponse, TxLogId,
 };
 use uplink_realtime::Hub;
 use uplink_tx_log::{Dispatcher, Observation, Registry};
@@ -60,6 +60,31 @@ impl Db {
     /// Syncs `events` (by event id and sender) into the room, and the
     /// account's own receipts.
     async fn sync(&self, events: &[(&str, &str)], own_receipts: &[&str]) {
+        self.sync_events(
+            events
+                .iter()
+                .map(|(id, sender)| message(id, sender))
+                .collect(),
+            own_receipts,
+        )
+        .await;
+    }
+
+    /// Syncs `events` as JSON, each with a timestamp by its place.
+    async fn sync_json(&self, events: &[serde_json::Value]) -> TxLogId {
+        let events = events
+            .iter()
+            .enumerate()
+            .map(|(i, event)| {
+                let mut event = event.clone();
+                event["origin_server_ts"] = json!(1_700_000_000_000_i64 + i as i64);
+                ObservedEvent::parse(&event.to_string(), None, Encryption::None).unwrap()
+            })
+            .collect();
+        self.sync_events(events, &[]).await
+    }
+
+    async fn sync_events(&self, events: Vec<ObservedEvent>, own_receipts: &[&str]) -> TxLogId {
         self.observe(Synced {
             next_batch: "next".into(),
             rooms: vec![ObservedRoom {
@@ -67,18 +92,42 @@ impl Db {
                 name: "Room".into(),
                 encrypted: false,
                 membership: Membership::Joined,
-                events: events
-                    .iter()
-                    .map(|(id, sender)| message(id, sender))
-                    .collect(),
+                events,
                 own_receipts: own_receipts.iter().map(|r| r.to_string()).collect(),
                 space: false,
                 avatar: None,
                 children: vec![],
+                version: "11".into(),
             }],
         })
         .await
-        .unwrap();
+        .unwrap()
+    }
+
+    async fn timeline(&self) -> Vec<RoomEvent> {
+        let room = self.room().await;
+        match self
+            .matrix
+            .list_timeline(room.id, uplink_protocol::matrix::TimelinePage::Latest, 100)
+            .await
+            .unwrap()
+        {
+            ServerResponse::Timeline { events, .. } => events,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    /// The events of the log entry `entry`.
+    fn events_of(&self, entry: TxLogId) -> Vec<ServerEvent> {
+        let conn = uplink_storage::open_reader(self._dir.path()).unwrap();
+        let events: String = conn
+            .query_row(
+                "SELECT events_json FROM tx_log WHERE id = ?1",
+                [entry.0],
+                |r| r.get(0),
+            )
+            .unwrap();
+        serde_json::from_str(&events).unwrap()
     }
 
     async fn room(&self) -> Room {
@@ -370,6 +419,7 @@ mod membership {
                     space: false,
                     avatar: None,
                     children: vec![],
+                    version: "11".into(),
                 }],
             })
             .await
@@ -563,5 +613,189 @@ fn space_children_are_listed_by_via_with_valid_orders() {
                 .order,
             None
         );
+    }
+}
+
+mod relations {
+    use super::*;
+    use uplink_protocol::matrix::{TimelineChanged, TimelinePage};
+
+    fn text(id: &str, sender: &str, body: &str) -> serde_json::Value {
+        json!({ "type": "m.room.message", "event_id": id, "sender": sender,
+                "content": { "msgtype": "m.text", "body": body } })
+    }
+
+    fn edit(id: &str, sender: &str, of: &str, body: &str) -> serde_json::Value {
+        json!({ "type": "m.room.message", "event_id": id, "sender": sender,
+                "content": { "msgtype": "m.text", "body": format!("* {body}"),
+                             "m.new_content": { "msgtype": "m.text", "body": body },
+                             "m.relates_to": { "rel_type": "m.replace", "event_id": of } } })
+    }
+
+    fn reaction(id: &str, sender: &str, of: &str, key: &str) -> serde_json::Value {
+        json!({ "type": "m.reaction", "event_id": id, "sender": sender,
+                "content": { "m.relates_to": { "rel_type": "m.annotation", "event_id": of,
+                                               "key": key } } })
+    }
+
+    fn redaction(id: &str, sender: &str, of: &str) -> serde_json::Value {
+        json!({ "type": "m.room.redaction", "event_id": id, "sender": sender,
+                "content": { "redacts": of, "reason": "oops" } })
+    }
+
+    fn ids(events: &[RoomEvent]) -> Vec<&str> {
+        events.iter().map(|e| e.event_id.as_str()).collect()
+    }
+
+    fn edited(event: &RoomEvent) -> Option<String> {
+        let content: serde_json::Value =
+            serde_json::from_str(&event.edit.as_ref()?.content).unwrap();
+        Some(content["body"].as_str().unwrap().to_owned())
+    }
+
+    #[tokio::test]
+    async fn edits_and_reactions_are_folded_into_what_they_are_of() {
+        let db = Db::new();
+        db.sync_json(&[
+            text("$1", "@bob:x", "helo"),
+            edit("$2", "@bob:x", "$1", "hello"),
+            edit("$3", "@bob:x", "$1", "hello!"),
+            // Only its sender edits a message.
+            edit("$4", "@eve:x", "$1", "pwned"),
+            reaction("$5", "@eve:x", "$1", "👍"),
+            reaction("$6", ME, "$1", "👍"),
+            reaction("$7", "@eve:x", "$1", "👍"),
+            reaction("$8", ME, "$1", "🎉"),
+            // Of an event not stored: listed.
+            reaction("$9", ME, "$gone", "👍"),
+        ])
+        .await;
+        let timeline = db.timeline().await;
+        assert_eq!(ids(&timeline), ["$1", "$9"]);
+        let first = &timeline[0];
+        assert_eq!(edited(first).as_deref(), Some("hello!"));
+        let reactions: Vec<_> = first
+            .reactions
+            .iter()
+            .map(|r| {
+                let senders: Vec<_> = r.senders.iter().map(|s| s.sender.as_str()).collect();
+                (r.key.as_str(), senders)
+            })
+            .collect();
+        assert_eq!(
+            reactions,
+            [("👍", vec!["@eve:x", ME]), ("🎉", vec![ME])],
+            "each sender once, in order"
+        );
+        // Edits and reactions are not unread messages.
+        assert_eq!(db.room().await.unread, 1);
+
+        let room = db.room().await.id;
+        let ServerResponse::Edits { edits, .. } =
+            db.matrix.list_edits(room, first.id).await.unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(ids(&edits), ["$2", "$3"], "not another's");
+    }
+
+    #[tokio::test]
+    async fn redactions_redact_and_change_what_shows_them() {
+        let db = Db::new();
+        db.sync_json(&[
+            text("$1", "@bob:x", "secret"),
+            reaction("$2", ME, "$1", "👍"),
+            json!({ "type": "m.room.message", "event_id": "$3", "sender": "@eve:x",
+                    "content": { "msgtype": "m.text", "body": "what?",
+                                 "m.relates_to": { "m.in_reply_to": { "event_id": "$1" } } } }),
+            edit("$4", "@bob:x", "$1", "more secret"),
+        ])
+        .await;
+        let timeline = db.timeline().await;
+        assert_eq!(ids(&timeline), ["$1", "$3"]);
+        let replied = timeline[1].replied.as_ref().unwrap();
+        assert_eq!(
+            (replied.event_id.as_str(), replied.body.as_deref()),
+            ("$1", Some("more secret")),
+            "a reply shows what it answers as edited"
+        );
+        let [first, reply] = [timeline[0].id, timeline[1].id];
+        let room = db.room().await.id;
+
+        // Taking the reaction back.
+        let entry = db.sync_json(&[redaction("$5", ME, "$2")]).await;
+        assert!(db
+            .events_of(entry)
+            .contains(&ServerEvent::TimelineChanged(TimelineChanged {
+                room,
+                events: vec![first],
+            })));
+        let timeline = db.timeline().await;
+        assert_eq!(ids(&timeline), ["$1", "$3"], "folded still");
+        assert!(timeline[0].reactions.is_empty());
+
+        // Deleting the message: it and the reply change.
+        let entry = db.sync_json(&[redaction("$6", "@bob:x", "$1")]).await;
+        assert!(db
+            .events_of(entry)
+            .contains(&ServerEvent::TimelineChanged(TimelineChanged {
+                room,
+                events: vec![first, reply],
+            })));
+        let timeline = db.timeline().await;
+        let message = &timeline[0];
+        assert!(message.redacted);
+        assert_eq!(message.body, None);
+        let raw: serde_json::Value = serde_json::from_str(&message.raw).unwrap();
+        assert_eq!(raw["content"], json!({}));
+        assert_eq!(raw["unsigned"]["redacted_because"]["event_id"], "$6");
+        assert!(timeline[1].replied.as_ref().unwrap().redacted);
+        assert_eq!(db.room().await.unread, 1, "only the reply");
+
+        // Pages count only the events listed.
+        let ServerResponse::Timeline {
+            events,
+            more_before,
+            ..
+        } = db
+            .matrix
+            .list_timeline(room, TimelinePage::Latest, 1)
+            .await
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!((ids(&events), more_before), (vec!["$3"], true));
+        let ServerResponse::RoomEvents { events, .. } = db
+            .matrix
+            .list_room_events(room, vec![reply, first, RoomEventId(9999)])
+            .await
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(ids(&events), ["$1", "$3"]);
+    }
+
+    #[test]
+    fn redacting_follows_the_room_version_and_survives_non_canonical_json() {
+        use matrix_sdk::ruma::RoomVersionId;
+        let rules = RoomVersionId::V11.rules().unwrap().redaction;
+        let because = redaction("$r", "@a:x", "$m").to_string();
+        let member = json!({ "type": "m.room.member", "event_id": "$m", "sender": "@a:x",
+                             "state_key": "@a:x", "origin_server_ts": 1,
+                             "content": { "membership": "join", "displayname": "A" } });
+        let redacted: serde_json::Value = serde_json::from_str(
+            &crate::rooms::redacted_json(&member.to_string(), &because, &rules).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(redacted["content"], json!({ "membership": "join" }));
+        let float = r#"{"type":"m.room.message","event_id":"$m","sender":"@a:x",
+                        "origin_server_ts":1,"content":{"body":"x","n":1.5}}"#;
+        let redacted: serde_json::Value =
+            serde_json::from_str(&crate::rooms::redacted_json(float, &because, &rules).unwrap())
+                .unwrap();
+        assert_eq!(redacted["content"], json!({}));
+        assert_eq!(redacted["unsigned"]["redacted_because"]["event_id"], "$r");
     }
 }

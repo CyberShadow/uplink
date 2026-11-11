@@ -151,6 +151,49 @@ impl Matrix {
             .await
     }
 
+    pub async fn list_room_events(&self, room: RoomId, events: Vec<RoomEventId>) -> Response {
+        if events.len() > MAX_LIMIT as usize {
+            return Err(error(
+                ErrorCode::Invalid,
+                format!("at most {MAX_LIMIT} events at once"),
+            ));
+        }
+        self.reader
+            .read(move |conn| {
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
+                if rooms::room_account(&tx, room).map_err(internal)?.is_none() {
+                    return Err(no_room(room));
+                }
+                let events = rooms::listed_events(&tx, room, &events).map_err(internal)?;
+                Ok(ServerResponse::RoomEvents {
+                    as_of,
+                    room,
+                    events,
+                })
+            })
+            .await
+    }
+
+    pub async fn list_edits(&self, room: RoomId, event: RoomEventId) -> Response {
+        self.reader
+            .read(move |conn| {
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
+                if !rooms::event_in_room(&tx, room, event).map_err(internal)? {
+                    return Err(no_event(room, event));
+                }
+                let edits = rooms::edits(&tx, room, event).map_err(internal)?;
+                Ok(ServerResponse::Edits {
+                    as_of,
+                    room,
+                    event,
+                    edits,
+                })
+            })
+            .await
+    }
+
     /// The room's sends not yet reconciled, for the end of its timeline.
     pub async fn list_sends(&self, room: RoomId) -> Response {
         self.reader
@@ -249,10 +292,7 @@ impl Matrix {
                 if rooms::event_in_room(conn, room, event).map_err(internal)? {
                     Ok(())
                 } else {
-                    Err(error(
-                        ErrorCode::NotFound,
-                        format!("no event {} in room {}", event.0, room.0),
-                    ))
+                    Err(no_event(room, event))
                 }
             })
             .await?;
@@ -279,4 +319,11 @@ fn image_type(image: &[u8]) -> Option<&'static str> {
 
 fn no_room(room: RoomId) -> uplink_protocol::ServerError {
     error(ErrorCode::NotFound, format!("no room {}", room.0))
+}
+
+fn no_event(room: RoomId, event: RoomEventId) -> ServerError {
+    error(
+        ErrorCode::NotFound,
+        format!("no event {} in room {}", event.0, room.0),
+    )
 }

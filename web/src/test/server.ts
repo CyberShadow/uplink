@@ -234,6 +234,10 @@ export class FakeServer implements Requester, Blobs {
       body: null,
       raw: '{}',
       encryption: 'none',
+      redacted: false,
+      edit: null,
+      reactions: [],
+      replied: null,
       ...event,
     }
     this.events.get(room)!.push(full)
@@ -242,6 +246,12 @@ export class FakeServer implements Requester, Blobs {
       { type: 'rooms_changed', rooms: [room] },
     ])
     return full
+  }
+
+  /** Sync changes what an event of the room shows (an edit, a reaction). */
+  change(room: RoomId, event: RoomEvent, change: Partial<RoomEvent>) {
+    Object.assign(event, change)
+    this.observe('mx', [{ type: 'timeline_changed', room, events: [event.id] }])
   }
 
   /** The account's sync task reports what it has not pushed yet. */
@@ -548,6 +558,15 @@ export class FakeServer implements Requester, Blobs {
         }
       case 'list_timeline':
         return { type: 'timeline', as_of: this.head(), room: body.room, ...this.timeline(body.room, body.page, body.limit) }
+      case 'list_room_events':
+        return {
+          type: 'room_events',
+          as_of: this.head(),
+          room: body.room,
+          events: this.events.get(body.room)!.filter((e) => body.events.includes(e.id)),
+        }
+      case 'list_edits':
+        return { type: 'edits', as_of: this.head(), room: body.room, event: body.event, edits: [] }
       case 'list_matrix_sends':
         return {
           type: 'matrix_sends',

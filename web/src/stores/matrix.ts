@@ -13,6 +13,7 @@ import type {
   RoomEvent,
   RoomEventId,
   RoomId,
+  TxLogId,
 } from '../generated/protocol'
 import type { Requester } from '../connection'
 import type { Ops } from './ops'
@@ -54,6 +55,9 @@ export class MatrixStore {
         case 'timeline_added':
           this.timelines.get(event.room)?.added()
           break
+        case 'timeline_changed':
+          this.timelines.get(event.room)?.changed(event.events)
+          break
         case 'matrix_sends_changed':
           for (const room of event.rooms) this.timelines.get(room)?.sendsChanged()
           break
@@ -78,6 +82,7 @@ export class MatrixStore {
       timeline = new Timeline(
         room,
         (request) => this.query(request, 'timeline'),
+        (events) => this.query({ type: 'list_room_events', room, events }, 'room_events'),
         () => this.query({ type: 'list_matrix_sends', room }, 'matrix_sends'),
       )
       this.timelines.set(room, timeline)
@@ -107,7 +112,7 @@ export class MatrixStore {
     return this.ops.dispatch({ type: 'mark_room_read', room, event }, true)
   }
 
-  private async query<T extends Response<'rooms' | 'timeline' | 'matrix_sends'>['type']>(
+  private async query<T extends Response<'rooms' | 'timeline' | 'room_events' | 'matrix_sends'>['type']>(
     request: ClientRequest,
     type: T,
   ): Promise<Response<T> | null> {
@@ -132,6 +137,9 @@ export class Timeline {
   readonly sends = signal<readonly MatrixSend[] | null>(null)
 
   private newer = this.loader()
+  /** Of events loaded again as they changed, the log entry their load
+   * reflects. */
+  private loadedAt = new Map<RoomEventId, TxLogId>()
   private loadingEarlier = false
   private sendLoader = new Loader(async () => {
     const response = await this.loadSends()
@@ -141,6 +149,7 @@ export class Timeline {
   constructor(
     readonly room: RoomId,
     private readonly load: (request: ClientRequest) => Promise<Response<'timeline'> | null>,
+    private readonly loadEvents: (events: RoomEventId[]) => Promise<Response<'room_events'> | null>,
     private readonly loadSends: () => Promise<Response<'matrix_sends'> | null>,
   ) {
     this.newer.invalidate()
@@ -152,6 +161,25 @@ export class Timeline {
     this.newer.invalidate()
   }
 
+  /** What these events show changed: those loaded are loaded again. */
+  async changed(events: readonly RoomEventId[]) {
+    const loaded = new Set(this.events.value?.map((e) => e.id))
+    const ids = events.filter((id) => loaded.has(id))
+    if (ids.length === 0) return
+    const response = await this.loadEvents(ids)
+    if (!response) return
+    const fresh = new Map<RoomEventId, RoomEvent>()
+    for (const event of response.events) {
+      // Of loads in flight together, the one reflecting more of the log
+      // wins, whichever is answered last.
+      if ((this.loadedAt.get(event.id) ?? -1) > response.as_of) continue
+      this.loadedAt.set(event.id, response.as_of)
+      fresh.set(event.id, event)
+    }
+    const current = this.events.value
+    if (current && fresh.size > 0) this.events.value = current.map((e) => fresh.get(e.id) ?? e)
+  }
+
   sendsChanged() {
     this.sendLoader.invalidate()
   }
@@ -160,6 +188,7 @@ export class Timeline {
    * finds the events replaced, and drops what it loaded. */
   reset() {
     this.events.value = null
+    this.loadedAt.clear()
     this.newer = this.loader()
     this.newer.invalidate()
     this.sendLoader.invalidate()

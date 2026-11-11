@@ -41,6 +41,16 @@ describe('MatrixStore', () => {
     expect(timeline.moreBefore.value).toBe(false)
   })
 
+  it('loads again the events whose edits, reactions or redaction changed', async () => {
+    const room = server.addRoom('Lounge')
+    const first = server.receive(room.id, { body: 'first' })
+    server.receive(room.id, { body: 'second' })
+    await vi.waitFor(() => expect(bodies(room.id)).toEqual(['first', 'second']))
+    server.change(room.id, first, { redacted: true, body: null })
+    await vi.waitFor(() => expect(bodies(room.id)).toEqual([null, 'second']))
+    expect(server.requests.at(-1)).toEqual({ type: 'list_room_events', room: room.id, events: [first.id] })
+  })
+
   it('loads every page synced while it was away', async () => {
     const room = server.addRoom('Lounge')
     server.receive(room.id, { body: 'first' })
