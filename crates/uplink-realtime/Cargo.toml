@@ -9,6 +9,12 @@ uplink-protocol = { path = "../uplink-protocol" }
 
 anyhow = "1"
 axum = { version = "0.7", features = ["ws"] }
+futures-util = "0.3"
 serde_json = "1"
-tokio = { version = "1", features = ["sync", "time", "macros"] }
+tokio = { version = "1", features = ["sync", "time", "macros", "rt"] }
 tracing = "0.1"
+
+[dev-dependencies]
+axum = { version = "0.7", features = ["ws", "tokio", "http1"] }
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.24"

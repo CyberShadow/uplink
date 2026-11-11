@@ -36,7 +36,7 @@ use uplink_matrix::service::Matrix;
 use uplink_protocol::{
     mail::MailProvider, ClientRequest, ErrorCode, Notice, ServerError, ServerResponse, TxLogId,
 };
-use uplink_realtime::{Backend, Hub, Replay};
+use uplink_realtime::{Answer, Backend, Hub, Replay};
 use uplink_storage::seal::MasterKey;
 use uplink_todos::service::Todos;
 use uplink_tx_log::{Dispatcher, LogReader, Registry, UndoError};
@@ -889,33 +889,43 @@ async fn ws_handler(
         })
 }
 
+impl Services {
+    async fn history(
+        &self,
+        before: Option<TxLogId>,
+        limit: u32,
+    ) -> uplink_tx_log::answer::Response {
+        if !(1..=MAX_HISTORY).contains(&limit) {
+            return Err(ServerError {
+                code: ErrorCode::Invalid,
+                message: format!("limit must be between 1 and {MAX_HISTORY}"),
+            });
+        }
+        let (as_of, entries, more) = self
+            .reader
+            .history(before, limit)
+            .await
+            .map_err(uplink_tx_log::answer::internal)?;
+        Ok(ServerResponse::History {
+            as_of,
+            entries,
+            more,
+        })
+    }
+}
+
 impl Backend for Services {
-    async fn handle(&self, request: ClientRequest) -> Result<ServerResponse, ServerError> {
-        match request {
+    async fn handle(&self, request: ClientRequest) -> Answer {
+        // Those that wait on a homeserver return how they are answered:
+        // their remote part, later (SPEC §5.6).
+        let response = match request {
             ClientRequest::Undo { tx_log_id } => self
                 .dispatcher
                 .undo(tx_log_id)
                 .await
                 .map(|id| ServerResponse::Undone { tx_log_id: id })
                 .map_err(undo_error),
-            ClientRequest::ListHistory { before, limit } => {
-                if !(1..=MAX_HISTORY).contains(&limit) {
-                    return Err(ServerError {
-                        code: ErrorCode::Invalid,
-                        message: format!("limit must be between 1 and {MAX_HISTORY}"),
-                    });
-                }
-                let (as_of, entries, more) = self
-                    .reader
-                    .history(before, limit)
-                    .await
-                    .map_err(uplink_tx_log::answer::internal)?;
-                Ok(ServerResponse::History {
-                    as_of,
-                    entries,
-                    more,
-                })
-            }
+            ClientRequest::ListHistory { before, limit } => self.history(before, limit).await,
             ClientRequest::ListAccounts => self.mail.list_accounts().await,
             ClientRequest::ListHome { today, limit } => self.items.home(today, limit).await,
             ClientRequest::ListItems {
@@ -989,7 +999,7 @@ impl Backend for Services {
                 limit,
             } => self.matrix.search_room(room, query, before, limit).await,
             ClientRequest::PreviewUrl { room, event, url } => {
-                self.matrix.preview_url(room, event, url).await
+                return self.matrix.preview_url(room, event, url).await.into()
             }
             ClientRequest::ListMatrixSends { room } => self.matrix.list_sends(room).await,
             ClientRequest::SendMatrixMessage { room, content } => {
@@ -1000,43 +1010,55 @@ impl Backend for Services {
             ClientRequest::MarkRoomRead { room, event } => self.matrix.mark_read(room, event).await,
             ClientRequest::SetTyping { room, typing } => self.matrix.set_typing(room, typing).await,
             ClientRequest::ListReceipts { room } => self.matrix.list_receipts(room).await,
-            ClientRequest::ListMembers { room } => self.matrix.list_members(room).await,
+            ClientRequest::ListMembers { room } => {
+                return self.matrix.list_members(room).await.into()
+            }
             ClientRequest::CreateMatrixRoom { account, room } => {
-                self.matrix.create_room(&account, room).await
+                return self.matrix.create_room(&account, room).await.into()
             }
             ClientRequest::StartDirectChat { account, user } => {
-                self.matrix.start_direct_chat(&account, &user).await
+                return self.matrix.start_direct_chat(&account, &user).await.into()
             }
             ClientRequest::JoinMatrixRoom { account, room } => {
-                self.matrix.join_room(&account, &room).await
+                return self.matrix.join_room(&account, &room).await.into()
             }
-            ClientRequest::FillGap { room, gap } => self.matrix.fill_gap(room, gap).await,
+            ClientRequest::FillGap { room, gap } => {
+                return self.matrix.fill_gap(room, gap).await.into()
+            }
             ClientRequest::GetMatrixSecurity { account } => {
-                self.matrix.get_security(&account).await
+                return self.matrix.get_security(&account).await.into()
             }
             ClientRequest::VerifyMatrixDevice { account, device } => {
-                self.matrix.verify_device(&account, device.as_deref()).await
+                return self
+                    .matrix
+                    .verify_device(&account, device.as_deref())
+                    .await
+                    .into()
             }
             ClientRequest::AnswerVerification {
                 account,
                 flow_id,
                 answer,
             } => {
-                self.matrix
+                return self
+                    .matrix
                     .answer_verification(&account, &flow_id, answer)
                     .await
+                    .into()
             }
             ClientRequest::RecoverMatrix { account, recovery } => {
-                self.matrix.recover(&account, &recovery).await
+                return self.matrix.recover(&account, &recovery).await.into()
             }
             ClientRequest::ImportRoomKeys {
                 account,
                 blob,
                 passphrase,
             } => {
-                self.matrix
+                return self
+                    .matrix
                     .import_room_keys(&account, &blob, &passphrase)
                     .await
+                    .into()
             }
             ClientRequest::ChangeMembership { room, change } => {
                 self.matrix.change_membership(room, change).await
@@ -1055,7 +1077,8 @@ impl Backend for Services {
             } => self.todos.create(title, notes, due, message).await,
             ClientRequest::EditTodo { todo, edit } => self.todos.edit(todo, edit).await,
             ClientRequest::DeleteTodo { todo } => self.todos.delete(todo).await,
-        }
+        };
+        Answer::Now(response)
     }
 
     async fn replay(&self, since: Option<TxLogId>) -> Result<Replay> {

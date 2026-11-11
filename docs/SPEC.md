@@ -910,6 +910,33 @@ nothing, and queries of state not logged (`ListReceipts`, `ListMembers`) are not
 positioned in the log, so a client loads again after one in flight when
 told of a change meanwhile.
 
+### 5.6 Requests: local now, remote later
+
+A session handles its requests one at a time, in the order sent: each
+request's ops commit before the next is looked at, so ops sent without
+waiting for each other's answers (starring and unstarring, typing and
+stopping) take effect in that order. So that no request holds up those
+after it (nor the pings: a session waiting on one is not reading), what a
+request does at once is local only — the database, the clients' own
+stores — and never waits on anything remote. Ops are desired state
+(§6): they record what is wanted, and tasks of their own carry it out
+remotely, in order.
+
+A request that needs a homeserver's answer (`PreviewUrl`, `FillGap`,
+`ListMembers`, `GetMatrixSecurity` and the requests answered with the
+security state, `CreateMatrixRoom`, `StartDirectChat`, `JoinMatrixRoom`,
+`ImportRoomKeys`) does its local part (checks, reads) in turn, then
+hands what waits on the homeserver to a task of its own, and the session
+goes on; it answers when the task is done, as `Answer::Later`. Responses
+thus come in any order, as the client already takes them, by
+`request_id`; one to a request the client no longer cares for, it drops.
+The task runs to its end even if the session ends first, so that what it
+stores (a gap's events) is not lost: it reaches the client through the
+log, and a client that lost the connection asks again what it still
+wants (§12.3). What waits remotely and must keep its order is desired
+state instead (`SetTyping`, §9.5). A request answered later is still
+positioned in the log as one answered at once (§5.4).
+
 ## 6. Transaction log & undo
 
 ### 6.1 The dispatcher
@@ -2010,9 +2037,13 @@ which a verified device gives.
   the client knows, as members are lazily loaded) latest `m.read`
   receipt, unthreaded or else of the main timeline, for stored events.
   Clients show a member on the last listed event at or before it, as
-  Element does. `SetTyping` sends the account's typing notice, which
-  the SDK makes last 4 s: the web client renews it every 3 s while text
-  is typed, and stops it when the box is emptied or sent.
+  Element does. `SetTyping` records whether the account is typing in
+  the room, and answers at once; a task per room sends the homeserver
+  the latest wanted, each time it changes, so a stop never overtakes the
+  start before it (§5.6). A failure is logged, not answered: typing is of
+  the moment. The SDK makes the notice last 4 s: the web client renews it
+  every 3 s while text is typed, and stops it when the box is emptied or
+  sent.
 - `ListMembers` lists the room's members as the account's client has
   them (loading them all first, as sync loads them lazily): joined,
   invited, asking to join, left or banned, with their power levels (none

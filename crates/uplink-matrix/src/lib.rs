@@ -17,6 +17,7 @@ pub mod send;
 pub mod service;
 pub mod space_order;
 pub mod sync;
+pub mod typing;
 pub mod verification;
 
 #[cfg(test)]

@@ -1237,7 +1237,14 @@ async fn events_undecryptable_are_decrypted_once_their_keys_are_imported() {
     .await;
     assert_eq!(undecryptable.sender, "@bob:localhost");
 
-    let security = match uplink.matrix.get_security("mx").await.unwrap() {
+    let security = match uplink
+        .matrix
+        .get_security("mx")
+        .await
+        .answered()
+        .await
+        .unwrap()
+    {
         ServerResponse::MatrixSecurity { security } => security,
         other => panic!("unexpected {other:?}"),
     };
@@ -1264,10 +1271,14 @@ async fn events_undecryptable_are_decrypted_once_their_keys_are_imported() {
         .matrix
         .import_room_keys("mx", &blob, "wrong passphrase")
         .await
+        .answered()
+        .await
         .is_err());
     match uplink
         .matrix
         .import_room_keys("mx", &blob, "export passphrase")
+        .await
+        .answered()
         .await
         .unwrap()
     {
@@ -1348,14 +1359,14 @@ async fn verifying_with_another_device_by_emoji() {
     let security = |uplink: &Uplink| {
         let matrix = uplink.matrix.clone();
         async move {
-            match matrix.get_security("mx").await.unwrap() {
+            match matrix.get_security("mx").await.answered().await.unwrap() {
                 ServerResponse::MatrixSecurity { security } => security,
                 other => panic!("unexpected {other:?}"),
             }
         }
     };
     let unverified = eventually("uplink's client", || async {
-        match uplink.matrix.get_security("mx").await {
+        match uplink.matrix.get_security("mx").await.answered().await {
             Ok(ServerResponse::MatrixSecurity { security }) => Some(security),
             Ok(other) => panic!("unexpected {other:?}"),
             Err(_) => None,
@@ -1376,7 +1387,13 @@ async fn verifying_with_another_device_by_emoji() {
     .await;
     // Once uplink's client knows the account's cross-signing identity.
     let asked = eventually("uplink to ask to verify", || async {
-        match uplink.matrix.verify_device("mx", None).await {
+        match uplink
+            .matrix
+            .verify_device("mx", None)
+            .await
+            .answered()
+            .await
+        {
             Ok(ServerResponse::MatrixSecurity { security }) => Some(security),
             Ok(other) => panic!("unexpected {other:?}"),
             Err(_) => None,
@@ -1418,6 +1435,8 @@ async fn verifying_with_another_device_by_emoji() {
     uplink
         .matrix
         .answer_verification("mx", &flow_id, VerificationAnswer::Confirm)
+        .await
+        .answered()
         .await
         .unwrap();
     sas.confirm().await.unwrap();
@@ -1529,7 +1548,13 @@ async fn gaps_are_filled_from_the_homeserver() {
     loop {
         let (_, _, gaps) = page(&uplink, &room, TimelinePage::Latest).await;
         let Some(gap) = gaps.first() else { break };
-        uplink.matrix.fill_gap(room.id, gap.id).await.unwrap();
+        uplink
+            .matrix
+            .fill_gap(room.id, gap.id)
+            .await
+            .answered()
+            .await
+            .unwrap();
         fills += 1;
         assert!(fills < 20, "filling ends");
     }
@@ -1602,7 +1627,14 @@ async fn members_are_listed_and_managed_and_the_room_renamed() {
         .unwrap();
 
     let members = || async {
-        match uplink.matrix.list_members(room.id).await.unwrap() {
+        match uplink
+            .matrix
+            .list_members(room.id)
+            .await
+            .answered()
+            .await
+            .unwrap()
+        {
             ServerResponse::Members {
                 members, powers, ..
             } => (members, powers),
@@ -1729,7 +1761,7 @@ async fn rooms_are_created_direct_chats_started_and_rooms_joined_by_address() {
     let uplink = Uplink::new(&homeserver);
     let _sync = uplink.pair_and_sync().await;
     eventually("uplink to connect", || async {
-        uplink.matrix.get_security("mx").await.ok()
+        uplink.matrix.get_security("mx").await.answered().await.ok()
     })
     .await;
     let joined =
@@ -1763,6 +1795,8 @@ async fn rooms_are_created_direct_chats_started_and_rooms_joined_by_address() {
                     alias: None,
                 },
             )
+            .await
+            .answered()
             .await,
     );
     let room = listed(created.clone()).await;
@@ -1780,6 +1814,8 @@ async fn rooms_are_created_direct_chats_started_and_rooms_joined_by_address() {
         uplink
             .matrix
             .start_direct_chat("mx", "@bob:localhost")
+            .await
+            .answered()
             .await,
     );
     assert_ne!(direct, created);
@@ -1789,6 +1825,8 @@ async fn rooms_are_created_direct_chats_started_and_rooms_joined_by_address() {
             uplink
                 .matrix
                 .start_direct_chat("mx", "@bob:localhost")
+                .await
+                .answered()
                 .await,
         );
         (again == direct).then_some(())
@@ -1801,13 +1839,22 @@ async fn rooms_are_created_direct_chats_started_and_rooms_joined_by_address() {
     request.visibility = Visibility::Public;
     request.preset = Some(RoomPreset::PublicChat);
     let lobby = bob.create_room(request).await.unwrap();
-    let joined_lobby = joined(uplink.matrix.join_room("mx", "#lobby:localhost").await);
+    let joined_lobby = joined(
+        uplink
+            .matrix
+            .join_room("mx", "#lobby:localhost")
+            .await
+            .answered()
+            .await,
+    );
     assert_eq!(joined_lobby, lobby.room_id());
     listed(joined_lobby).await;
 
     let unknown = uplink
         .matrix
         .join_room("mx", "#nowhere:localhost")
+        .await
+        .answered()
         .await
         .unwrap_err();
     assert_eq!(
@@ -1819,6 +1866,19 @@ async fn rooms_are_created_direct_chats_started_and_rooms_joined_by_address() {
         .matrix
         .start_direct_chat("mx", "bob")
         .await
+        .answered()
+        .await
         .unwrap_err();
     assert_eq!(not_a_user.code, uplink_protocol::ErrorCode::Invalid);
+}
+
+/// A request's answer, as a client would wait for it.
+trait Answered {
+    async fn answered(self) -> uplink_tx_log::answer::Response;
+}
+
+impl Answered for uplink_matrix::service::Remote {
+    async fn answered(self) -> uplink_tx_log::answer::Response {
+        uplink_realtime::Answer::from(self).response().await
+    }
 }

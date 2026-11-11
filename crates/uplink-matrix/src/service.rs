@@ -11,6 +11,7 @@ use crate::{
     security,
     send::{self, CancelMessage, KeepSent, SendMessage},
     space_order::{self, OrderSpaces},
+    typing::Typing,
     verification,
 };
 use matrix_sdk::ruma::events::room::MediaSource as MatrixMediaSource;
@@ -24,6 +25,7 @@ use uplink_protocol::{
     },
     ErrorCode, ServerError, ServerResponse,
 };
+use uplink_realtime::Answer;
 use uplink_storage::{
     rusqlite::{params, Connection, OptionalExtension},
     store::{Store, VariantHash},
@@ -32,6 +34,10 @@ use uplink_tx_log::{
     answer::{error, internal, Reader, Response},
     Dispatcher,
 };
+
+/// How a request that waits on the homeserver is answered: later, by its
+/// remote part (SPEC §5.6), unless its local part refuses it.
+pub type Remote = Result<Answer, ServerError>;
 
 /// An event's media, as served.
 pub struct Media {
@@ -61,6 +67,7 @@ pub struct Matrix {
     clients: Clients,
     /// Files uploaded to send.
     blobs: Store,
+    typing: Typing,
 }
 
 impl Matrix {
@@ -78,6 +85,7 @@ impl Matrix {
             accounts: Arc::new(accounts),
             clients: Clients::default(),
             blobs,
+            typing: Typing::default(),
         }
     }
 
@@ -225,12 +233,14 @@ impl Matrix {
     }
 
     /// A preview of the page `url` that the room's message `event` links.
-    pub async fn preview_url(&self, room: RoomId, event: RoomEventId, url: String) -> Response {
+    pub async fn preview_url(&self, room: RoomId, event: RoomEventId, url: String) -> Remote {
         let client = self.previewed(room, event, url.clone()).await?;
-        let og = preview::fetch(&client, &url).await.map_err(internal)?;
-        Ok(ServerResponse::UrlPreview {
-            preview: preview::preview(&og),
-        })
+        Ok(Answer::later(async move {
+            let og = preview::fetch(&client, &url).await.map_err(internal)?;
+            Ok(ServerResponse::UrlPreview {
+                preview: preview::preview(&og),
+            })
+        }))
     }
 
     /// A thumbnail of the image `mxc` of the preview of `url`, which the
@@ -319,10 +329,17 @@ impl Matrix {
     }
 
     /// The account's device and its encryption (SPEC §9.4).
-    pub async fn get_security(&self, account: &str) -> Response {
+    pub async fn get_security(&self, account: &str) -> Remote {
         let client = self.client(account)?;
-        let verifications = self.clients.verifications(account);
-        let security = security::security(account, &client, &verifications)
+        Ok(Answer::later(
+            self.clone().security(account.to_owned(), client),
+        ))
+    }
+
+    /// The account's security, which lists its devices on the homeserver.
+    async fn security(self, account: String, client: matrix_sdk::Client) -> Response {
+        let verifications = self.clients.verifications(&account);
+        let security = security::security(&account, &client, &verifications)
             .await
             .map_err(internal)?;
         Ok(ServerResponse::MatrixSecurity { security })
@@ -330,43 +347,48 @@ impl Matrix {
 
     /// Asks to verify uplink's device with `device`, or with whichever of
     /// the account's answers first.
-    pub async fn verify_device(&self, account: &str, device: Option<&str>) -> Response {
+    pub async fn verify_device(&self, account: &str, device: Option<&str>) -> Remote {
         let client = self.client(account)?;
-        let encryption = client.encryption();
-        let own = client.user_id().expect("a restored client has its user");
-        let request = match device {
-            Some(device) => {
-                let device = <&matrix_sdk::ruma::DeviceId>::from(device);
-                encryption
-                    .get_device(own, device)
+        let (this, account, device) = (self.clone(), account.to_owned(), device.map(str::to_owned));
+        Ok(Answer::later(async move {
+            let encryption = client.encryption();
+            let own = client.user_id().expect("a restored client has its user");
+            let request = match device.as_deref() {
+                Some(device) => {
+                    let device = <&matrix_sdk::ruma::DeviceId>::from(device);
+                    encryption
+                        .get_device(own, device)
+                        .await
+                        .map_err(|e| internal(e.into()))?
+                        .ok_or_else(|| {
+                            error(
+                                ErrorCode::NotFound,
+                                format!("{account} has no device {device}"),
+                            )
+                        })?
+                        .request_verification_with_methods(verification::methods())
+                        .await
+                        .map_err(|e| internal(e.into()))?
+                }
+                None => encryption
+                    .get_user_identity(own)
                     .await
                     .map_err(|e| internal(e.into()))?
                     .ok_or_else(|| {
                         error(
-                            ErrorCode::NotFound,
-                            format!("{account} has no device {device}"),
+                            ErrorCode::Invalid,
+                            format!(
+                                "{account} has no cross-signing identity: verify with a device"
+                            ),
                         )
                     })?
                     .request_verification_with_methods(verification::methods())
                     .await
-                    .map_err(|e| internal(e.into()))?
-            }
-            None => encryption
-                .get_user_identity(own)
-                .await
-                .map_err(|e| internal(e.into()))?
-                .ok_or_else(|| {
-                    error(
-                        ErrorCode::Invalid,
-                        format!("{account} has no cross-signing identity: verify with a device"),
-                    )
-                })?
-                .request_verification_with_methods(verification::methods())
-                .await
-                .map_err(|e| internal(e.into()))?,
-        };
-        verification::track(&self.clients, &self.dispatcher, account, request);
-        self.get_security(account).await
+                    .map_err(|e| internal(e.into()))?,
+            };
+            verification::track(&this.clients, &this.dispatcher, &account, request);
+            this.security(account, client).await
+        }))
     }
 
     /// Answers the account's verification `flow_id`.
@@ -375,7 +397,8 @@ impl Matrix {
         account: &str,
         flow_id: &str,
         answer: VerificationAnswer,
-    ) -> Response {
+    ) -> Remote {
+        let client = self.client(account)?;
         let request = self
             .clients
             .verifications(account)
@@ -395,42 +418,48 @@ impl Matrix {
                 )
             })
         };
-        match answer {
-            VerificationAnswer::Accept => {
-                request.accept_with_methods(verification::methods()).await
+        let sas = match answer {
+            VerificationAnswer::Confirm | VerificationAnswer::Mismatch => Some(comparing()?),
+            VerificationAnswer::Accept | VerificationAnswer::Cancel => None,
+        };
+        let (this, account) = (self.clone(), account.to_owned());
+        Ok(Answer::later(async move {
+            match (answer, sas) {
+                (VerificationAnswer::Accept, None) => {
+                    request.accept_with_methods(verification::methods()).await
+                }
+                (VerificationAnswer::Confirm, Some(sas)) => sas.confirm().await,
+                (VerificationAnswer::Mismatch, Some(sas)) => sas.mismatch().await,
+                (VerificationAnswer::Cancel, None) => request.cancel().await,
+                _ => unreachable!("comparing only to confirm or not"),
             }
-            VerificationAnswer::Confirm => comparing()?.confirm().await,
-            VerificationAnswer::Mismatch => comparing()?.mismatch().await,
-            VerificationAnswer::Cancel => request.cancel().await,
-        }
-        .map_err(|e| internal(e.into()))?;
-        self.get_security(account).await
+            .map_err(|e| internal(e.into()))?;
+            this.security(account, client).await
+        }))
     }
 
     /// Unlocks Secret Storage with the recovery key or passphrase.
-    pub async fn recover(&self, account: &str, recovery: &str) -> Response {
+    pub async fn recover(&self, account: &str, recovery: &str) -> Remote {
         let client = self.client(account)?;
-        client
-            .encryption()
-            .recovery()
-            .recover(recovery)
-            .await
-            .map_err(|e| {
-                error(
-                    ErrorCode::Invalid,
-                    format!("could not unlock Secret Storage: {e}"),
-                )
-            })?;
-        self.get_security(account).await
+        let (this, account, recovery) = (self.clone(), account.to_owned(), recovery.to_owned());
+        Ok(Answer::later(async move {
+            client
+                .encryption()
+                .recovery()
+                .recover(&recovery)
+                .await
+                .map_err(|e| {
+                    error(
+                        ErrorCode::Invalid,
+                        format!("could not unlock Secret Storage: {e}"),
+                    )
+                })?;
+            this.security(account, client).await
+        }))
     }
 
     /// Imports room keys from the uploaded export `blob`.
-    pub async fn import_room_keys(
-        &self,
-        account: &str,
-        blob: &BlobId,
-        passphrase: &str,
-    ) -> Response {
+    pub async fn import_room_keys(&self, account: &str, blob: &BlobId, passphrase: &str) -> Remote {
         let client = self.client(account)?;
         let hash = VariantHash::parse(&blob.0)
             .ok_or_else(|| error(ErrorCode::Invalid, format!("not a blob: {:?}", blob.0)))?;
@@ -438,11 +467,16 @@ impl Matrix {
             return Err(error(ErrorCode::NotFound, format!("no blob {}", blob.0)));
         }
         let export = self.blobs.get(&hash).map_err(internal)?;
-        // A wrong passphrase, or a file not an export, is the request's.
-        let (imported, total) = security::import_room_keys(&client, &export, passphrase)
-            .await
-            .map_err(|e| error(ErrorCode::Invalid, format!("{e:#}")))?;
-        Ok(ServerResponse::RoomKeysImported { imported, total })
+        let passphrase = passphrase.to_owned();
+        // Decrypting many keys takes a while, and uploading them to the key
+        // backup waits on the homeserver.
+        Ok(Answer::later(async move {
+            // A wrong passphrase, or a file not an export, is the request's.
+            let (imported, total) = security::import_room_keys(&client, &export, &passphrase)
+                .await
+                .map_err(|e| error(ErrorCode::Invalid, format!("{e:#}")))?;
+            Ok(ServerResponse::RoomKeysImported { imported, total })
+        }))
     }
 
     /// The account's room keys, exported encrypted with `passphrase`.
@@ -459,7 +493,7 @@ impl Matrix {
 
     /// Fetches the homeserver's page of events before the room's gap
     /// `gap`, and stores them (SPEC §9.2).
-    pub async fn fill_gap(&self, room: RoomId, gap: GapId) -> Response {
+    pub async fn fill_gap(&self, room: RoomId, gap: GapId) -> Remote {
         let before: String = self
             .reader
             .read(move |conn| {
@@ -480,30 +514,37 @@ impl Matrix {
             })
             .await?;
         let (account, sdk_room) = self.sdk_room(room).await?;
-        let page = backfill::page(&sdk_room, &before).await.map_err(internal)?;
-        self.dispatcher
-            .observe(
-                account,
-                Filled {
-                    room,
-                    gap,
-                    version: page.version,
-                    events: page.events,
-                    start: page.start,
-                },
-            )
-            .await
-            .map_err(internal)?;
-        Ok(ServerResponse::Done)
+        let dispatcher = self.dispatcher.clone();
+        Ok(Answer::later(async move {
+            let page = backfill::page(&sdk_room, &before).await.map_err(internal)?;
+            dispatcher
+                .observe(
+                    account,
+                    Filled {
+                        room,
+                        gap,
+                        version: page.version,
+                        events: page.events,
+                        start: page.start,
+                    },
+                )
+                .await
+                .map_err(internal)?;
+            Ok(ServerResponse::Done)
+        }))
     }
 
-    /// Tells the room the account is typing, or has stopped.
+    /// The account is typing in the room, or has stopped: told the
+    /// homeserver in the background.
     pub async fn set_typing(&self, room: RoomId, typing: bool) -> Response {
-        let (_, sdk_room) = self.sdk_room(room).await?;
-        sdk_room
-            .typing_notice(typing)
-            .await
-            .map_err(|e| internal(e.into()))?;
+        let (account, sdk_room) = self.sdk_room(room).await?;
+        self.typing.set(
+            &self.clients,
+            account,
+            room,
+            sdk_room.room_id().to_owned(),
+            typing,
+        );
         Ok(ServerResponse::Done)
     }
 
@@ -564,60 +605,14 @@ impl Matrix {
 
     /// The room's members, as the account's client knows them (fetched
     /// first, as sync loads them lazily), and what the account may do.
-    pub async fn list_members(&self, room: RoomId) -> Response {
-        use matrix_sdk::ruma::events::room::member::MembershipState;
-        use matrix_sdk::ruma::events::{room::power_levels::UserPowerLevel, StateEventType};
+    pub async fn list_members(&self, room: RoomId) -> Remote {
         let (_, sdk_room) = self.sdk_room(room).await?;
-        let own = sdk_room.own_user_id().to_owned();
-        let levels = sdk_room
-            .power_levels()
-            .await
-            .map_err(|e| internal(e.into()))?;
-        let members = sdk_room
-            .members(matrix_sdk::RoomMemberships::empty())
-            .await
-            .map_err(|e| internal(e.into()))?;
-        let members = members
-            .iter()
-            .filter_map(|member| {
-                let membership = match member.membership() {
-                    MembershipState::Join => MemberState::Joined,
-                    MembershipState::Invite => MemberState::Invited,
-                    MembershipState::Knock => MemberState::Knocking,
-                    MembershipState::Leave => MemberState::Left,
-                    MembershipState::Ban => MemberState::Banned,
-                    // Not of the spec: not a member it can say anything of.
-                    _ => return None,
-                };
-                let user = member.user_id();
-                Some(MemberInfo {
-                    user: user.to_string(),
-                    name: member.display_name().map(str::to_owned),
-                    membership,
-                    power: match levels.for_user(user) {
-                        UserPowerLevel::Int(level) => Some(level.into()),
-                        // Infinite (the enum is non-exhaustive).
-                        _ => None,
-                    },
-                    kickable: levels.user_can_kick_user(&own, user),
-                    bannable: levels.user_can_ban_user(&own, user),
-                })
-            })
-            .collect();
-        Ok(ServerResponse::Members {
-            room,
-            members,
-            powers: RoomPowers {
-                invite: levels.user_can_invite(&own),
-                name: levels.user_can_send_state(&own, StateEventType::RoomName),
-                topic: levels.user_can_send_state(&own, StateEventType::RoomTopic),
-            },
-        })
+        Ok(Answer::later(members(room, sdk_room)))
     }
 
     /// Creates the room: named, with its topic, inviting users, maybe
     /// encrypted, private or else public under its address.
-    pub async fn create_room(&self, account: &str, room: NewRoom) -> Response {
+    pub async fn create_room(&self, account: &str, room: NewRoom) -> Remote {
         use matrix_sdk::ruma::{
             api::client::room::{
                 create_room::v3::{Request, RoomPreset},
@@ -664,15 +659,17 @@ impl Matrix {
             )
             .to_raw_any()];
         }
-        let created = client.create_room(request).await.map_err(refused)?;
-        Ok(ServerResponse::MatrixRoomJoined {
-            room_id: created.room_id().to_string(),
-        })
+        Ok(Answer::later(async move {
+            let created = client.create_room(request).await.map_err(refused)?;
+            Ok(ServerResponse::MatrixRoomJoined {
+                room_id: created.room_id().to_string(),
+            })
+        }))
     }
 
     /// The account's direct chat with `user` it has joined, else one
     /// created (encrypted), inviting them.
-    pub async fn start_direct_chat(&self, account: &str, user: &str) -> Response {
+    pub async fn start_direct_chat(&self, account: &str, user: &str) -> Remote {
         let client = self.client(account)?;
         let user = user_id(user)?;
         if client.user_id() == Some(&*user) {
@@ -681,17 +678,21 @@ impl Matrix {
                 "a direct chat is with someone else".into(),
             ));
         }
-        let room = match client.get_dm_room(&user) {
-            Some(room) => room,
-            None => client.create_dm(&user).await.map_err(refused)?,
-        };
-        Ok(ServerResponse::MatrixRoomJoined {
+        let joined = |room: matrix_sdk::Room| ServerResponse::MatrixRoomJoined {
             room_id: room.room_id().to_string(),
+        };
+        Ok(match client.get_dm_room(&user) {
+            Some(room) => Answer::Now(Ok(joined(room))),
+            None => {
+                Answer::later(
+                    async move { Ok(joined(client.create_dm(&user).await.map_err(refused)?)) },
+                )
+            }
         })
     }
 
     /// Joins the room by its address or id.
-    pub async fn join_room(&self, account: &str, room: &str) -> Response {
+    pub async fn join_room(&self, account: &str, room: &str) -> Remote {
         let client = self.client(account)?;
         let room = <&matrix_sdk::ruma::RoomOrAliasId>::try_from(room.trim()).map_err(|_| {
             error(
@@ -699,13 +700,16 @@ impl Matrix {
                 format!("not a room's address or id: {room:?}"),
             )
         })?;
-        let joined = client
-            .join_room_by_id_or_alias(room, &[])
-            .await
-            .map_err(refused)?;
-        Ok(ServerResponse::MatrixRoomJoined {
-            room_id: joined.room_id().to_string(),
-        })
+        let room = room.to_owned();
+        Ok(Answer::later(async move {
+            let joined = client
+                .join_room_by_id_or_alias(&room, &[])
+                .await
+                .map_err(refused)?;
+            Ok(ServerResponse::MatrixRoomJoined {
+                room_id: joined.room_id().to_string(),
+            })
+        }))
     }
 
     pub async fn list_rooms(&self) -> Response {
@@ -1252,4 +1256,56 @@ fn refused(e: matrix_sdk::Error) -> ServerError {
         ),
         None => internal(e.into()),
     }
+}
+
+/// The room's members, as the account's client knows them (fetched
+/// first, as sync loads them lazily), and what the account may do.
+async fn members(room: RoomId, sdk_room: matrix_sdk::Room) -> Response {
+    use matrix_sdk::ruma::events::room::member::MembershipState;
+    use matrix_sdk::ruma::events::{room::power_levels::UserPowerLevel, StateEventType};
+    let own = sdk_room.own_user_id().to_owned();
+    let levels = sdk_room
+        .power_levels()
+        .await
+        .map_err(|e| internal(e.into()))?;
+    let members = sdk_room
+        .members(matrix_sdk::RoomMemberships::empty())
+        .await
+        .map_err(|e| internal(e.into()))?;
+    let members = members
+        .iter()
+        .filter_map(|member| {
+            let membership = match member.membership() {
+                MembershipState::Join => MemberState::Joined,
+                MembershipState::Invite => MemberState::Invited,
+                MembershipState::Knock => MemberState::Knocking,
+                MembershipState::Leave => MemberState::Left,
+                MembershipState::Ban => MemberState::Banned,
+                // Not of the spec: not a member it can say anything of.
+                _ => return None,
+            };
+            let user = member.user_id();
+            Some(MemberInfo {
+                user: user.to_string(),
+                name: member.display_name().map(str::to_owned),
+                membership,
+                power: match levels.for_user(user) {
+                    UserPowerLevel::Int(level) => Some(level.into()),
+                    // Infinite (the enum is non-exhaustive).
+                    _ => None,
+                },
+                kickable: levels.user_can_kick_user(&own, user),
+                bannable: levels.user_can_ban_user(&own, user),
+            })
+        })
+        .collect();
+    Ok(ServerResponse::Members {
+        room,
+        members,
+        powers: RoomPowers {
+            invite: levels.user_can_invite(&own),
+            name: levels.user_can_send_state(&own, StateEventType::RoomName),
+            topic: levels.user_can_send_state(&own, StateEventType::RoomTopic),
+        },
+    })
 }

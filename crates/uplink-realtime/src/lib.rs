@@ -4,4 +4,4 @@ mod hub;
 mod session;
 
 pub use hub::Hub;
-pub use session::{run_session, Backend, Replay, PROTOCOL};
+pub use session::{run_session, Answer, Backend, Replay, Response, PROTOCOL};

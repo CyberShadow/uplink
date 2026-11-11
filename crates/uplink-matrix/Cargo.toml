@@ -5,6 +5,7 @@ edition = "2021"
 license.workspace = true
 
 [dependencies]
+uplink-realtime = { path = "../uplink-realtime" }
 ammonia = "4.2.4"
 uplink-config = { path = "../uplink-config" }
 uplink-protocol = { path = "../uplink-protocol" }
@@ -22,5 +23,4 @@ tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 tracing = "0.1"
 
 [dev-dependencies]
-uplink-realtime = { path = "../uplink-realtime" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process"] }

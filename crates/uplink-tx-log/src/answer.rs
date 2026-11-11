@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use uplink_protocol::{ErrorCode, ServerError, ServerResponse};
 use uplink_storage::rusqlite::Connection;
 
-pub type Response = Result<ServerResponse, ServerError>;
+pub use uplink_realtime::Response;
 
 pub fn error(code: ErrorCode, message: String) -> ServerError {
     ServerError { code, message }

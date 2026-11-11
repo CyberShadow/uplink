@@ -1,7 +1,12 @@
 use crate::hub::Hub;
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
+use futures_util::{stream::FuturesUnordered, StreamExt};
 use std::{convert::Infallible, future::Future, sync::Arc, time::Duration};
-use tokio::{sync::broadcast::error::RecvError, time::Instant};
+use tokio::{
+    sync::broadcast::{error::RecvError, Receiver},
+    task::JoinHandle,
+    time::Instant,
+};
 use uplink_protocol::{
     ClientRequest, LogEntry, ServerError, ServerResponse, TxLogId, WsClientMsg, WsServerMsg,
 };
@@ -25,15 +30,58 @@ const CLOSE_PROTOCOL_VERSION: u16 = 4002;
 
 /// What sessions need from the rest of the server.
 pub trait Backend: Send + Sync {
-    /// Executes a client request.
-    fn handle(
-        &self,
-        request: ClientRequest,
-    ) -> impl Future<Output = Result<ServerResponse, ServerError>> + Send;
+    /// Executes a client request (SPEC §5.6). A session handles its
+    /// requests one at a time, in order, so this must not wait on anything
+    /// remote: what does is answered [`Answer::later`].
+    fn handle(&self, request: ClientRequest) -> impl Future<Output = Answer> + Send;
 
     /// Reads the log for a client saying hello with `since`.
     fn replay(&self, since: Option<TxLogId>)
         -> impl Future<Output = anyhow::Result<Replay>> + Send;
+}
+
+pub type Response = Result<ServerResponse, ServerError>;
+
+/// How a request is answered. Short-lived, one per request: the size
+/// of a response held at once is no matter.
+#[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
+pub enum Answer {
+    /// Of what the server has: its database, its clients' stores.
+    Now(Response),
+    /// By work that waits on something remote (a homeserver), running on
+    /// its own: the session goes on to the next request meanwhile, and
+    /// answers when it is done. It is done even if the session ends first,
+    /// so that what it stores is not lost.
+    Later(JoinHandle<Response>),
+}
+
+impl Answer {
+    pub fn later(work: impl Future<Output = Response> + Send + 'static) -> Self {
+        Answer::Later(tokio::spawn(work))
+    }
+
+    /// The response, once there is one.
+    pub async fn response(self) -> Response {
+        match self {
+            Answer::Now(response) => response,
+            Answer::Later(work) => work.await.expect("a request's work panicked"),
+        }
+    }
+}
+
+impl From<Response> for Answer {
+    fn from(response: Response) -> Self {
+        Answer::Now(response)
+    }
+}
+
+/// A request whose remote part runs later, unless its local part refused
+/// it.
+impl From<Result<Answer, ServerError>> for Answer {
+    fn from(answer: Result<Answer, ServerError>) -> Self {
+        answer.unwrap_or_else(|error| Answer::Now(Err(error)))
+    }
 }
 
 pub struct Replay {
@@ -130,30 +178,26 @@ async fn session(
         send(socket, &WsServerMsg::Entry { entry }).await?;
     }
     let mut cursor = replay.head;
+    // Requests answered later, by their ids.
+    let mut answers = FuturesUnordered::new();
 
     loop {
         tokio::select! {
             msg = recv(socket, &mut deadline) => match msg? {
                 WsClientMsg::Ping { seq } => send(socket, &WsServerMsg::Pong { seq }).await?,
                 WsClientMsg::Hello { .. } => return Err(protocol_error("duplicate hello")),
-                WsClientMsg::Request { request_id, body } => {
-                    let reply = match backend.handle(body).await {
-                        Ok(body) => {
-                            // The entries a response reflects go out before
-                            // it, so every entry after it is news to the
-                            // client (SPEC §5.4).
-                            if let Some(position) = body.position() {
-                                while cursor < position {
-                                    forward(socket, live.recv().await, &mut cursor).await?;
-                                }
-                            }
-                            WsServerMsg::Response { request_id, body }
-                        }
-                        Err(error) => WsServerMsg::RequestFailed { request_id, error },
-                    };
-                    send(socket, &reply).await?;
-                }
+                WsClientMsg::Request { request_id, body } => match backend.handle(body).await {
+                    Answer::Now(response) => {
+                        respond(socket, &mut live, &mut cursor, request_id, response).await?;
+                    }
+                    later @ Answer::Later(_) => answers.push(async move {
+                        (request_id, later.response().await)
+                    }),
+                },
             },
+            Some((request_id, response)) = answers.next(), if !answers.is_empty() => {
+                respond(socket, &mut live, &mut cursor, request_id, response).await?;
+            }
             published = live.recv() => forward(socket, published, &mut cursor).await?,
             notice = notices.recv() => match notice {
                 Ok(notice) => send(socket, &WsServerMsg::Notice { notice: (*notice).clone() }).await?,
@@ -163,6 +207,30 @@ async fn session(
             },
         }
     }
+}
+
+/// Answers the request `request_id`. The entries a response reflects go
+/// out before it, so every entry after it is news to the client (SPEC
+/// §5.4).
+async fn respond(
+    socket: &mut WebSocket,
+    live: &mut Receiver<Arc<LogEntry>>,
+    cursor: &mut TxLogId,
+    request_id: u64,
+    response: Response,
+) -> Result<(), End> {
+    let reply = match response {
+        Ok(body) => {
+            if let Some(position) = body.position() {
+                while *cursor < position {
+                    forward(socket, live.recv().await, cursor).await?;
+                }
+            }
+            WsServerMsg::Response { request_id, body }
+        }
+        Err(error) => WsServerMsg::RequestFailed { request_id, error },
+    };
+    send(socket, &reply).await
 }
 
 /// Sends a live entry the client has not seen yet, advancing `cursor`.
