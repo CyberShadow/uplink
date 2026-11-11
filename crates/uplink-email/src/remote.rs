@@ -115,7 +115,11 @@ pub fn proxy_css(css: &str) -> String {
 /// A replacement of the source's bytes `start..end`.
 type Edit = (usize, usize, String);
 
-/// What a resource's URL becomes, as a quoted CSS string.
+/// What a resource's URL becomes, as a quoted CSS string. Its `<` are
+/// escaped: the URL is as cssparser read it, escapes undone, and a
+/// `data:` one written back as is could close the `<style>` element it is
+/// in (`url("data:\3C/style>…")`), its rest then read as HTML, never
+/// rewritten.
 fn replaced(url: &str) -> String {
     let url = match proxied(url) {
         Some(url) => url,
@@ -124,7 +128,7 @@ fn replaced(url: &str) -> String {
     };
     let mut quoted = String::new();
     cssparser::serialize_string(&url, &mut quoted).expect("writing to a String succeeds");
-    quoted
+    quoted.replace('<', "\\3c ")
 }
 
 /// Too deeply nested to read.
@@ -239,6 +243,9 @@ mod tests {
             ("i { background: url(data:image/png;base64,AA==) }", "i { background: url(\"data:image/png;base64,AA==\") }".into()),
             ("i { background: url(/api/remote-image?url=x) }", "i { background: url(\"\") }".into()),
             ("i { background: url(cid:a) }", "i { background: url(\"\") }".into()),
+            // Nor does `data:` close the `<style>` it is in, once its
+            // escapes are undone.
+            ("i { background: url('data:\\3C/style>') }", "i { background: url(\"data:\\3c /style>\") }".into()),
             // The rest is as written, comments and all.
             ("p { color: red } /* url(https://x) */", "p { color: red } /* url(https://x) */".into()),
         ] {

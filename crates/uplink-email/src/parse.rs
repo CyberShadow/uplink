@@ -239,6 +239,9 @@ pub fn truncate(text: &str, max_bytes: usize) -> &str {
 }
 
 #[cfg(test)]
+mod hostile;
+
+#[cfg(test)]
 pub(crate) mod tests {
     use super::*;
 

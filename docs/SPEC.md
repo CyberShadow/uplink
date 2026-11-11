@@ -1728,7 +1728,10 @@ browser would fetch images by are rewritten there, never in text:
 in `image-set(…)` and after `@import`), become
 `/api/remote-image?url=<URL>`. Other `<img>` sources go (but `cid:`, which
 sanitizing inlines); other CSS URLs become `""` (but `data:`): relative
-ones would load from uplink. CSS nested deeper than cssparser reads (75
+ones would load from uplink. The URLs are written back with their `<`
+escaped (`\3c `): read with their escapes undone, a `data:` one could
+otherwise close the `<style>` it is in, and what followed would be read
+as HTML that was never rewritten. CSS nested deeper than cssparser reads (75
 blocks) is dropped whole. Whatever the rewriting misses, the CSP blocks:
 a miss is an image not shown, never one fetched by the browser. Asked to show
 them, the client lets the frame load images from uplink's origin
