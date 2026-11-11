@@ -45,6 +45,7 @@ impl Db {
                 id: "mx".into(),
                 mxid: ME.into(),
             }],
+            uplink_storage::store::Store::blobs(dir.path()),
         );
         Self {
             _dir: dir,
@@ -179,12 +180,7 @@ impl Db {
 
     async fn send(&self, body: &str) -> TxLogId {
         let room = self.room().await;
-        match self
-            .matrix
-            .send_message(room.id, body.into())
-            .await
-            .unwrap()
-        {
+        match self.matrix.send_message(room.id, text(body)).await.unwrap() {
             ServerResponse::Dispatched { tx_log_id } => tx_log_id,
             other => panic!("unexpected {other:?}"),
         }
@@ -385,7 +381,7 @@ async fn messages_go_only_to_known_rooms() {
     let db = Db::new();
     let refused = db
         .matrix
-        .send_message(RoomId(1), "hi".into())
+        .send_message(RoomId(1), text("hi"))
         .await
         .unwrap_err();
     assert_eq!(refused.code, uplink_protocol::ErrorCode::NotFound);
@@ -393,7 +389,7 @@ async fn messages_go_only_to_known_rooms() {
     let room = db.room().await;
     let refused = db
         .matrix
-        .send_message(room.id, " ".into())
+        .send_message(room.id, text(" "))
         .await
         .unwrap_err();
     assert_eq!(refused.code, uplink_protocol::ErrorCode::Invalid);
@@ -797,5 +793,15 @@ mod relations {
                 .unwrap();
         assert_eq!(redacted["content"], json!({}));
         assert_eq!(redacted["unsigned"]["redacted_because"]["event_id"], "$r");
+    }
+}
+
+/// A plain message.
+fn text(body: &str) -> uplink_protocol::matrix::MatrixContent {
+    uplink_protocol::matrix::MatrixContent::Text {
+        body: body.into(),
+        emote: false,
+        reply_to: None,
+        replaces: None,
     }
 }

@@ -18,6 +18,7 @@ import styles from './Mail.module.css'
 import outgoing from './Outgoing.module.css'
 import { dateTime } from '../format'
 import { MatrixSendActions, matrixSendState } from './Room'
+import { sendSummary } from '../matrix'
 
 export function composePath(draft: string): string {
   return `/compose/${encodeURIComponent(draft)}`
@@ -159,7 +160,7 @@ function MatrixRows(props: { pending: Extract<Pending, { kind: 'matrix' }>; fail
           <Unused />
           <span class={styles.from}>{room(item.room)}</span>
           <span class={styles.summary}>
-            <span class={styles.subject}>{item.body}</span>
+            <span class={styles.subject}>{sendSummary(item.content)}</span>
             <span class={styles.snippet}>{matrixSendState(item)}</span>
           </span>
           <span />

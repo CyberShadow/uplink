@@ -6,6 +6,7 @@ import type {
   ClientRequest,
   LogEntry,
   MatrixAccount,
+  MatrixContent,
   MatrixSend,
   MatrixSendId,
   MembershipChange,
@@ -90,8 +91,8 @@ export class MatrixStore {
     return timeline
   }
 
-  send(room: RoomId, body: string) {
-    return this.ops.dispatch({ type: 'send_matrix_message', room, body })
+  send(room: RoomId, content: MatrixContent) {
+    return this.ops.dispatch({ type: 'send_matrix_message', room, content })
   }
 
   cancelSend(item: MatrixSendId) {

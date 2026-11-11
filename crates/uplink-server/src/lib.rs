@@ -251,6 +251,7 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
             dispatcher.clone(),
             uplink_storage::open_reader(root)?,
             matrix_accounts,
+            uplink_storage::store::Store::blobs(root),
         ),
         mail: Mail::new(
             dispatcher.clone(),
@@ -758,8 +759,8 @@ impl Backend for Services {
             }
             ClientRequest::ListEdits { room, event } => self.matrix.list_edits(room, event).await,
             ClientRequest::ListMatrixSends { room } => self.matrix.list_sends(room).await,
-            ClientRequest::SendMatrixMessage { room, body } => {
-                self.matrix.send_message(room, body).await
+            ClientRequest::SendMatrixMessage { room, content } => {
+                self.matrix.send_message(room, content).await
             }
             ClientRequest::CancelMatrixSend { item } => self.matrix.cancel_send(item).await,
             ClientRequest::KeepMatrixSent { item } => self.matrix.keep_sent(item).await,
@@ -918,7 +919,12 @@ mod tests {
                     vec![],
                     Duration::from_secs(10),
                 ),
-                matrix: Matrix::new(dispatcher.clone(), reader(), vec![]),
+                matrix: Matrix::new(
+                    dispatcher.clone(),
+                    reader(),
+                    vec![],
+                    uplink_storage::store::Store::blobs(dir.path()),
+                ),
                 outbox: Outbox::new(reader()),
                 todos: Todos::new(dispatcher.clone(), reader()),
                 calendar: Calendar::new(reader()),

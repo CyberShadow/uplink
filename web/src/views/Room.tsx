@@ -9,6 +9,7 @@ import { keepFocus, useKeymap } from '../keymap'
 import styles from './Room.module.css'
 import { RoomAvatar } from './RoomAvatar'
 import { dateTime } from '../format'
+import { sendSummary, text as message } from '../matrix'
 
 export function roomPath(room: number): string {
   return `/rooms/${room}`
@@ -180,7 +181,7 @@ function Pending(props: { item: MatrixSend }) {
     <li class={`${styles.event} ${styles.pending}`}>
       <span class={styles.muted}>{matrixSendState(item)}</span>
       <MatrixSendActions item={item} class={styles.cancel} />
-      <div class={styles.body}>{item.body}</div>
+      <div class={styles.body}>{sendSummary(item.content)}</div>
     </li>
   )
 }
@@ -225,7 +226,7 @@ function Composer(props: { room: Room; textarea: preact.RefObject<HTMLTextAreaEl
   const [text, setText] = useState('')
   const send = async () => {
     if (text.trim() === '') return
-    if (await matrix.send(props.room.id, text)) setText('')
+    if (await matrix.send(props.room.id, message(text))) setText('')
   }
   return (
     <form

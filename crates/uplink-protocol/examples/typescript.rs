@@ -92,6 +92,7 @@ fn main() {
         RepliedEvent,
         TimelinePage,
         MatrixSendState,
+        MatrixContent,
         MatrixSend,
         PendingMembership,
         RoomsChanged,

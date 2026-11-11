@@ -7,6 +7,7 @@ import { Client } from '../stores/client'
 import { conversationKey } from '../stores/mail'
 import { FakeServer, ME } from '../test/server'
 import { App } from './App'
+import { text } from '../matrix'
 
 let server: FakeServer
 let client: Client
@@ -924,7 +925,7 @@ describe('matrix', () => {
     expect(await screen.findByText('Waiting to send')).toBeTruthy()
     expect(screen.getByText('First line second line')).toBeTruthy()
     expect((box as HTMLTextAreaElement).value).toBe('')
-    expect(server.requests).toContainEqual({ type: 'send_matrix_message', room: room.id, body: 'First line\nsecond line' })
+    expect(server.requests).toContainEqual({ type: 'send_matrix_message', room: room.id, content: text('First line\nsecond line') })
 
     server.echo(server.matrixSends[0].id)
     await waitFor(() => expect(screen.queryByText('Waiting to send')).toBeNull())

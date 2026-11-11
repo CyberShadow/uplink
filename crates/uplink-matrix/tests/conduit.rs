@@ -138,6 +138,7 @@ impl Uplink {
                 id: account.id.clone(),
                 mxid: account.mxid.clone(),
             }],
+            uplink_storage::store::Store::blobs(dir.path()),
         );
         Self {
             dir,
@@ -299,7 +300,7 @@ async fn messages_both_ways_in_an_encrypted_room() {
     // From uplink to the other client.
     uplink
         .matrix
-        .send_message(room.id, "hello from uplink".into())
+        .send_message(room.id, text("hello from uplink"))
         .await
         .unwrap();
     let body = tokio::time::timeout(Duration::from_secs(30), async {
@@ -744,4 +745,144 @@ async fn spaces_list_their_rooms_and_avatars_are_served() {
         .await
         .unwrap_err();
     assert_eq!(other.code, uplink_protocol::ErrorCode::NotFound);
+}
+
+/// A plain message.
+fn text(body: &str) -> uplink_protocol::matrix::MatrixContent {
+    uplink_protocol::matrix::MatrixContent::Text {
+        body: body.into(),
+        emote: false,
+        reply_to: None,
+        replaces: None,
+    }
+}
+
+/// Replies, edits, reactions, redactions and files, sent by uplink to an
+/// encrypted room, come back folded into the events they are of.
+#[tokio::test(flavor = "multi_thread")]
+async fn replies_edits_reactions_redactions_and_files() {
+    use uplink_protocol::matrix::MatrixContent;
+    let dir = tempfile::tempdir().unwrap();
+    let homeserver = Homeserver::start(dir.path()).await;
+    let bob = homeserver.register(dir.path(), "bob").await;
+    let alice_phone = homeserver.register(dir.path(), "alice").await;
+    let _bob_received = sync_messages(&bob);
+    let uplink = Uplink::new(&homeserver);
+    let _sync = uplink.pair_and_sync().await;
+    let room_id = shared_room(&bob, &alice_phone).await;
+    let room = eventually("uplink to see the room", || async {
+        uplink
+            .room(&room_id)
+            .await
+            .filter(|r| r.membership == Membership::Joined && r.encrypted)
+    })
+    .await;
+    bob.get_room(&room_id)
+        .unwrap()
+        .send(matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain("hello"))
+        .await
+        .unwrap();
+    let hello = eventually("uplink to receive bob's message", || async {
+        uplink
+            .timeline(&room)
+            .await
+            .into_iter()
+            .find(|e| e.body.as_deref() == Some("hello"))
+    })
+    .await;
+
+    // Sends `content`, and waits for it to sync back; returns the event.
+    let send = |content: MatrixContent| {
+        let uplink = &uplink;
+        let room = &room;
+        async move {
+            uplink.matrix.send_message(room.id, content).await.unwrap();
+            eventually("the send to sync back", || async {
+                (uplink.sends(room).await == 0).then_some(())
+            })
+            .await;
+            uplink.timeline(room).await
+        }
+    };
+    let find = |timeline: &[RoomEvent], event_id: &str| {
+        timeline
+            .iter()
+            .find(|e| e.event_id == event_id)
+            .unwrap()
+            .clone()
+    };
+
+    // A reply, in Markdown.
+    let timeline = send(MatrixContent::Text {
+        body: "**hi** bob".into(),
+        emote: false,
+        reply_to: Some(hello.event_id.clone()),
+        replaces: None,
+    })
+    .await;
+    let reply = timeline.last().unwrap().clone();
+    assert_eq!(reply.body.as_deref(), Some("**hi** bob"));
+    assert_eq!(reply.replied.as_ref().unwrap().event_id, hello.event_id);
+    let raw: serde_json::Value = serde_json::from_str(&reply.raw).unwrap();
+    assert_eq!(raw["content"]["formatted_body"], "<strong>hi</strong> bob");
+
+    // Its edit.
+    let timeline = send(MatrixContent::Text {
+        body: "hi again".into(),
+        emote: false,
+        reply_to: None,
+        replaces: Some(reply.event_id.clone()),
+    })
+    .await;
+    let edited = find(&timeline, &reply.event_id);
+    let content: serde_json::Value =
+        serde_json::from_str(&edited.edit.as_ref().unwrap().content).unwrap();
+    assert_eq!(content["body"], "hi again");
+    assert_eq!(timeline.last().unwrap().event_id, reply.event_id, "folded");
+
+    // A reaction, and taking it back.
+    let timeline = send(MatrixContent::Reaction {
+        event: hello.event_id.clone(),
+        key: "👍".into(),
+    })
+    .await;
+    let reactions = find(&timeline, &hello.event_id).reactions;
+    assert_eq!(reactions.len(), 1);
+    assert_eq!(reactions[0].key, "👍");
+    let [reactor] = &reactions[0].senders[..] else {
+        panic!()
+    };
+    assert_eq!(reactor.sender, "@alice:localhost");
+    let timeline = send(MatrixContent::Redaction {
+        event: reactor.event_id.clone(),
+    })
+    .await;
+    assert!(find(&timeline, &hello.event_id).reactions.is_empty());
+
+    // A file, encrypted as the room is.
+    let png = b"\x89PNG\r\n\x1a\nnot really".to_vec();
+    let blob = uplink_storage::store::Store::blobs(uplink.dir.path())
+        .put(&png)
+        .unwrap();
+    let timeline = send(MatrixContent::File {
+        blob: uplink_protocol::compose::BlobId(blob.0),
+        name: "dot.png".into(),
+        mime: "image/png".into(),
+        reply_to: None,
+    })
+    .await;
+    let image = timeline.last().unwrap();
+    assert_eq!(image.msgtype.as_deref(), Some("m.image"));
+    assert_eq!(image.body.as_deref(), Some("dot.png"));
+    let raw: serde_json::Value = serde_json::from_str(&image.raw).unwrap();
+    assert!(raw["content"]["file"]["url"].is_string(), "{raw}");
+
+    // Deleting the reply.
+    let timeline = send(MatrixContent::Redaction {
+        event: reply.event_id.clone(),
+    })
+    .await;
+    let deleted = find(&timeline, &reply.event_id);
+    assert!(deleted.redacted);
+    assert_eq!(deleted.edit, None, "a redacted message shows no edit");
 }

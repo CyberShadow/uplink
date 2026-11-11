@@ -15,20 +15,27 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use matrix_sdk::{
+    attachment::AttachmentConfig,
     config::{SyncSettings, SyncToken},
     deserialized_responses::{RawAnySyncOrStrippedState, TimelineEvent, TimelineEventKind},
+    room::reply::{EnforceThread, Reply},
     ruma::{
         api::client::{
             filter::{FilterDefinition, RoomEventFilter},
             receipt::create_receipt::v3::ReceiptType,
             sync::sync_events::v3::Filter,
         },
-        events::{receipt::ReceiptThread, room::message::RoomMessageEventContent, StateEventType},
-        EventId, OwnedTransactionId, RoomId, UserId,
+        events::{
+            receipt::ReceiptThread,
+            room::message::{AddMentions, FormattedBody},
+            StateEventType,
+        },
+        EventId, OwnedEventId, OwnedTransactionId, RoomId, UserId,
     },
     sync::{State, SyncResponse},
     Client, Room,
 };
+use serde_json::json;
 use std::{
     collections::HashMap,
     path::Path,
@@ -38,10 +45,14 @@ use std::{
 use tokio::sync::broadcast::{self, error::RecvError};
 use uplink_config::MatrixAccountConfig;
 use uplink_protocol::{
-    matrix::{Encryption, Membership, MembershipChange},
+    matrix::{Encryption, MatrixContent, Membership, MembershipChange},
     LogEntry, Source,
 };
-use uplink_storage::{rusqlite::Connection, seal::MasterKey};
+use uplink_storage::{
+    rusqlite::Connection,
+    seal::MasterKey,
+    store::{Store, VariantHash},
+};
 use uplink_tx_log::{
     push::{self, PushFailing},
     Conflict, Dispatcher, Observation,
@@ -101,6 +112,7 @@ impl Sync {
         let sender = Sender {
             account: id.clone(),
             client: client.clone(),
+            blobs: Store::blobs(&self.data_root),
             dispatcher: self.dispatcher.clone(),
             reader: reader("sender"),
             wake: self.dispatcher.hub().subscribe(),
@@ -374,6 +386,8 @@ fn own_receipts(
 struct Sender {
     account: String,
     client: Client,
+    /// The files uploaded to send.
+    blobs: Store,
     dispatcher: Dispatcher,
     reader: Arc<Mutex<Connection>>,
     wake: broadcast::Receiver<Arc<LogEntry>>,
@@ -522,15 +536,12 @@ impl Sender {
                 continue;
             };
             let txn_id: OwnedTransactionId = send::transaction_id(item.item).into();
-            let sent = room
-                .send(RoomMessageEventContent::text_plain(&item.body))
-                .with_transaction_id(txn_id)
-                .await;
+            let sent = self.send(&room, &item.content, txn_id).await?;
             match sent {
-                Ok(result) => {
+                Ok(event_id) => {
                     self.observe(SendSucceeded {
                         item: item.item,
-                        event_id: result.response.event_id.to_string(),
+                        event_id: event_id.to_string(),
                     })
                     .await?
                 }
@@ -548,6 +559,79 @@ impl Sender {
             }
         }
         Ok(())
+    }
+
+    /// Sends `content` to the room as transaction `txn_id`; the event id
+    /// the homeserver gave it, or why it did not. Fails if the file to
+    /// send could not be read.
+    async fn send(
+        &self,
+        room: &Room,
+        content: &MatrixContent,
+        txn_id: OwnedTransactionId,
+    ) -> Result<Result<OwnedEventId, matrix_sdk::Error>> {
+        let sent = match content {
+            MatrixContent::Text {
+                body,
+                emote,
+                reply_to,
+                replaces,
+            } => {
+                let content = text_content(body, *emote, reply_to.as_deref(), replaces.as_deref());
+                room.send_raw("m.room.message", content)
+                    .with_transaction_id(&txn_id)
+                    .await
+                    .map(|sent| sent.response.event_id)
+            }
+            MatrixContent::Reaction { event, key } => room
+                .send_raw(
+                    "m.reaction",
+                    json!({ "m.relates_to": {
+                        "rel_type": "m.annotation", "event_id": event, "key": key,
+                    } }),
+                )
+                .with_transaction_id(&txn_id)
+                .await
+                .map(|sent| sent.response.event_id),
+            MatrixContent::Redaction { event } => room
+                .redact(<&EventId>::try_from(event.as_str())?, None, Some(txn_id))
+                .await
+                .map(|redacted| redacted.event_id)
+                .map_err(matrix_sdk::Error::from),
+            MatrixContent::File {
+                blob,
+                name,
+                mime,
+                reply_to,
+            } => {
+                let blobs = self.blobs.clone();
+                let hash = VariantHash(blob.0.clone());
+                let data = tokio::task::spawn_blocking(move || blobs.get(&hash))
+                    .await
+                    .expect("reading a blob does not panic")
+                    .with_context(|| format!("reading blob {}", blob.0))?;
+                let mime: mime::Mime = mime.parse().context("the send's MIME type")?;
+                let reply = reply_to
+                    .as_deref()
+                    .map(|event| -> Result<_> {
+                        Ok(Reply {
+                            event_id: <&EventId>::try_from(event)?.to_owned(),
+                            enforce_thread: EnforceThread::MaybeThreaded,
+                            add_mentions: AddMentions::Yes,
+                        })
+                    })
+                    .transpose()?;
+                room.send_attachment(
+                    name,
+                    &mime,
+                    data,
+                    AttachmentConfig::new().txn_id(txn_id).reply(reply),
+                )
+                .await
+                .map(|sent| sent.event_id)
+            }
+        };
+        Ok(sent)
     }
 
     /// Sends a read receipt for each joined room whose read marker moved
@@ -584,6 +668,46 @@ impl Sender {
             .observe(self.account.clone(), observation)
             .await
             .map(drop)
+    }
+}
+
+/// A message's content: `body` in Markdown, formatted as HTML if it has
+/// formatting (as Element does), replying to `reply_to` or replacing the
+/// account's own message `replaces`. Replies carry no fallback (the
+/// quote of what they answer), which the spec no longer asks for.
+pub fn text_content(
+    body: &str,
+    emote: bool,
+    reply_to: Option<&str>,
+    replaces: Option<&str>,
+) -> serde_json::Value {
+    let message = |body: &str| {
+        let mut content = json!({
+            "msgtype": if emote { "m.emote" } else { "m.text" },
+            "body": body,
+        });
+        if let Some(html) = FormattedBody::markdown(body) {
+            content["format"] = json!("org.matrix.custom.html");
+            content["formatted_body"] = json!(html.body);
+        }
+        content
+    };
+    match replaces {
+        // An edit: its own body, for clients that do not know edits, is the
+        // new one marked as such.
+        Some(replaces) => {
+            let mut content = message(&format!("* {body}"));
+            content["m.new_content"] = message(body);
+            content["m.relates_to"] = json!({ "rel_type": "m.replace", "event_id": replaces });
+            content
+        }
+        None => {
+            let mut content = message(body);
+            if let Some(reply_to) = reply_to {
+                content["m.relates_to"] = json!({ "m.in_reply_to": { "event_id": reply_to } });
+            }
+            content
+        }
     }
 }
 

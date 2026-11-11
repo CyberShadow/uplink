@@ -1643,8 +1643,30 @@ retrying them is deferred.
 
 ### 9.3 Sending
 
-`matrix.send` (`SendMatrixMessage`) queues a plain-text message in
-`matrix_send`, wanted (§6.7); the room's timeline shows it at the end,
+`matrix.send` (`SendMatrixMessage { room, content }`) queues a send in
+`matrix_send`, wanted (§6.7). Its content (`MatrixContent`, stored as
+JSON since V0026) is one of:
+
+- **text**, in Markdown: sent as `m.text` (or `m.emote`, for `/me`) with
+  the plain body, and, if Markdown formats it, `formatted_body` in HTML
+  (ruma's CommonMark, as Element does). It may reply to a stored event
+  (`m.in_reply_to`, without the fallback quote, which the spec no longer
+  asks for) or edit one of the account's own messages (`m.replace`,
+  with `m.new_content`, and `* ` before the body for clients that do not
+  know edits);
+- a **reaction** to a stored event (`m.reaction`, `m.annotation`);
+- a **redaction** of a stored event not yet redacted (deleting a
+  message, or taking a reaction back), through the redaction endpoint,
+  which is deduplicated by transaction id too;
+- a **file**, uploaded first to uplink's blob store (`POST /api/blobs`,
+  as drafts' are, §7.4) with its name and MIME type: the SDK's
+  `send_attachment` uploads it (encrypted, in an encrypted room) and
+  sends it as `m.image`, `m.video`, `m.audio` or `m.file`, by its type,
+  maybe as a reply. A retry uploads it again (only the event is
+  deduplicated), which leaves the earlier upload unused.
+
+Events are named by their Matrix ids, and must be stored in the room.
+The room's timeline shows it at the end,
 with its state (`ListMatrixSends`), until it is synced back, and the
 outbox lists it with the account's. Cancelling it (its undo, or
 `CancelMatrixSend`) drops it while queued or refused; once claimed, it

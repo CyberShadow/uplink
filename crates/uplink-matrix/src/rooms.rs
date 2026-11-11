@@ -748,6 +748,33 @@ pub fn room_account(conn: &Connection, room: RoomId) -> Result<Option<String>> {
         .optional()?)
 }
 
+/// What a send to the room needs to know of its event `event_id`.
+pub struct StoredEvent {
+    pub sender: String,
+    pub kind: String,
+    pub redacted: bool,
+}
+
+pub fn stored_event(
+    conn: &Connection,
+    room: RoomId,
+    event_id: &str,
+) -> Result<Option<StoredEvent>> {
+    Ok(conn
+        .query_row(
+            "SELECT sender, type, redacted FROM matrix_event WHERE room = ?1 AND event_id = ?2",
+            params![room.0, event_id],
+            |r| {
+                Ok(StoredEvent {
+                    sender: r.get(0)?,
+                    kind: r.get(1)?,
+                    redacted: r.get(2)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
 /// Whether `event` is of `room`.
 pub fn event_in_room(conn: &Connection, room: RoomId, event: RoomEventId) -> Result<bool> {
     Ok(conn
@@ -876,10 +903,10 @@ pub fn edits(tx: &Transaction, room: RoomId, event: RoomEventId) -> Result<Vec<R
 }
 
 /// Of an event `t`, whether `e` is a valid edit of it: a message replacing
-/// it, sent by its sender, with new content, and not redacted. An edit is
-/// not edited itself.
+/// it, sent by its sender, with new content, and neither redacted. An edit
+/// is not edited itself.
 const EDIT: &str = "e.rel_type = 'm.replace' AND e.type = 'm.room.message' AND NOT e.redacted
-    AND e.sender = t.sender AND coalesce(t.rel_type, '') != 'm.replace'
+    AND NOT t.redacted AND e.sender = t.sender AND coalesce(t.rel_type, '') != 'm.replace'
     AND json_type(e.raw_json, '$.content.\"m.new_content\"') = 'object'";
 
 /// The events `sql` selects, of [`COLUMNS`], with what relates to them.

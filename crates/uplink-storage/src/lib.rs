@@ -420,8 +420,8 @@ mod tests {
         // Ids go on from the old table's, past those deleted.
         let next: i64 = conn
             .query_row(
-                "INSERT INTO matrix_send (room, body, queued_at, wanted, desired_by, state, synced)
-                 VALUES (5, 'x', 0, 1, 1, 'queued', 0) RETURNING id",
+                "INSERT INTO matrix_send (room, content, queued_at, wanted, desired_by, state, synced)
+                 VALUES (5, '{}', 0, 1, 1, 'queued', 0) RETURNING id",
                 [],
                 |r| r.get(0),
             )
@@ -467,5 +467,63 @@ mod tests {
             rooms,
             [(5, Some(2), None), (6, None, None), (7, None, None)]
         );
+    }
+
+    /// Matrix sends' text becomes their content (V0026), and so do the
+    /// recorded ops that send it; ids go on past those deleted.
+    #[test]
+    fn matrix_sends_have_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = migrated_to(dir.path(), 25);
+        conn.execute_batch(
+            r#"INSERT INTO account (id, kind) VALUES ('mx', 'matrix');
+               INSERT INTO matrix_room (id, account_id, room_id, name, encrypted, membership)
+               VALUES (5, 'mx', '!r:x', 'Room', 0, 'joined');
+               INSERT INTO tx_log (id, ts, description, op_type, op_json, inverse_type,
+                                   inverse_json, events_json)
+               VALUES (1, 0, '', 'matrix.send', '{"room":5,"body":"hi"}',
+                       'matrix.cancel_send', '{"item":3}', '[]'),
+                      (2, 0, '', 'matrix.cancel_send', '{"item":3}',
+                       'matrix.send', '{"room":5,"body":"hi"}', '[]');
+               INSERT INTO matrix_send (id, room, body, queued_at, wanted, desired_by, state,
+                                        synced)
+               VALUES (3, 5, 'hi', 0, 1, 1, 'queued', 0), (4, 5, 'gone', 0, 1, 1, 'queued', 0);
+               DELETE FROM matrix_send WHERE id = 4;"#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open(dir.path()).unwrap();
+        let text = r#"{"type":"text","body":"hi","emote":false,"reply_to":null,"replaces":null}"#;
+        let content: String = conn
+            .query_row("SELECT content FROM matrix_send WHERE id = 3", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(content, text);
+        let ops: Vec<(String, String)> = conn
+            .prepare("SELECT op_json, inverse_json FROM tx_log ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let send = format!(r#"{{"room":5,"content":{text}}}"#);
+        assert_eq!(
+            ops,
+            [
+                (send.clone(), r#"{"item":3}"#.to_owned()),
+                (r#"{"item":3}"#.to_owned(), send),
+            ]
+        );
+        let next: i64 = conn
+            .query_row(
+                "INSERT INTO matrix_send (room, content, queued_at, wanted, desired_by, state, synced)
+                 VALUES (5, '{}', 0, 1, 1, 'queued', 0) RETURNING id",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(next, 5);
     }
 }

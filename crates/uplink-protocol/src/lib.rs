@@ -205,10 +205,10 @@ pub enum ClientRequest {
     ListMatrixSends {
         room: RoomId,
     },
-    /// Send a plain-text message to the room.
+    /// Send to the room: a message, a reaction, a redaction or a file.
     SendMatrixMessage {
         room: RoomId,
-        body: String,
+        content: matrix::MatrixContent,
     },
     /// Take a message being sent back: at once if it has not been handed
     /// to the homeserver, or if the homeserver refuses it; if it went out,

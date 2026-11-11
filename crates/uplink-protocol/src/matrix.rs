@@ -187,6 +187,35 @@ pub enum MatrixSendState {
     Refused,
 }
 
+/// What a send sends to a room (SPEC §9.3). Events it is of are named
+/// by their Matrix ids, which the homeserver knows them by.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MatrixContent {
+    /// A message, in Markdown (formatted, if it has formatting, as HTML).
+    Text {
+        body: String,
+        /// `m.emote` (`/me`) rather than `m.text`.
+        emote: bool,
+        /// The event it replies to.
+        reply_to: Option<String>,
+        /// The account's own message it edits (`m.replace`).
+        replaces: Option<String>,
+    },
+    /// Reacts to an event with `key`, usually an emoji.
+    Reaction { event: String, key: String },
+    /// Redacts an event: deletes a message, or takes a reaction back.
+    Redaction { event: String },
+    /// A file uploaded to uplink, sent as an image, a video, audio or a
+    /// file, by its type.
+    File {
+        blob: crate::compose::BlobId,
+        name: String,
+        mime: String,
+        reply_to: Option<String>,
+    },
+}
+
 /// A message being sent, sent and not yet synced back, or sent though
 /// cancelled (needing a decision).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -194,7 +223,7 @@ pub enum MatrixSendState {
 pub struct MatrixSend {
     pub id: MatrixSendId,
     pub room: RoomId,
-    pub body: String,
+    pub content: MatrixContent,
     pub state: MatrixSendState,
     /// Whether it is to be sent: `false` once cancelled while being
     /// sent. Sent, it needs a decision: keeping it sent.

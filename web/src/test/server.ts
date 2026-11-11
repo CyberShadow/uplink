@@ -42,6 +42,7 @@ import type {
 } from '../generated/protocol'
 import type { Client } from '../stores/client'
 import { apply } from '../compose/splice'
+import { sendSummary, text } from '../matrix'
 
 /** The Matrix account's user. */
 export const ME = '@me:example.org'
@@ -272,13 +273,13 @@ export class FakeServer implements Requester, Blobs {
   echo(item: number) {
     const index = this.matrixSends.findIndex((i) => i.id === item)
     const [sent] = this.matrixSends.splice(index, 1)
-    this.receive(sent.room, { sender: ME, sender_name: 'Me', body: sent.body })
+    this.receive(sent.room, { sender: ME, sender_name: 'Me', body: sendSummary(sent.content) })
     this.observe('mx', this.matrixSendsChanged(sent.room))
   }
 
   /** The homeserver took a message that was cancelled meanwhile. */
   sentThoughCancelledToRoom(room: RoomId, body: string) {
-    this.matrixSends.push({ id: this.nextOutbox++, room, body, state: 'sent', wanted: false, error: null, queued_at: 0 })
+    this.matrixSends.push({ id: this.nextOutbox++, room, content: text(body), state: 'sent', wanted: false, error: null, queued_at: 0 })
     this.observe('mx', this.matrixSendsChanged(room))
   }
 
@@ -579,13 +580,13 @@ export class FakeServer implements Requester, Blobs {
         this.matrixSends.push({
           id,
           room: body.room,
-          body: body.body,
+          content: body.content,
           state: 'queued',
           wanted: true,
           error: null,
           queued_at: Date.now(),
         })
-        const response = this.dispatched(`Sent '${body.body}'`, this.matrixSendsChanged(body.room))
+        const response = this.dispatched(`Sent '${sendSummary(body.content)}'`, this.matrixSendsChanged(body.room))
         this.undoable.set(this.head(), { revert: () => this.cancelMatrixSend(id, 'Undid it'), undone: false })
         return response
       }

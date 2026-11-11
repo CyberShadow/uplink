@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { FakeServer, ME } from '../test/server'
 import { Client } from './client'
 import { TIMELINE_PAGE } from './matrix'
+import { sendSummary, text } from '../matrix'
 
 let server: FakeServer
 let client: Client
@@ -78,12 +79,12 @@ describe('MatrixStore', () => {
     client.reset()
     const sends = () => client.matrix.timeline(room.id).sends.value
     await vi.waitFor(() => expect(sends()).toEqual([]))
-    const sent = await client.matrix.send(room.id, 'hi there')
-    await vi.waitFor(() => expect(sends()?.map((i) => i.body)).toEqual(['hi there']))
+    const sent = await client.matrix.send(room.id, text('hi there'))
+    await vi.waitFor(() => expect(sends()?.map((i) => sendSummary(i.content))).toEqual(['hi there']))
     await client.ops.undo(sent!.id)
     await vi.waitFor(() => expect(sends()).toEqual([]))
 
-    await client.matrix.send(room.id, 'again')
+    await client.matrix.send(room.id, text('again'))
     server.echo(server.matrixSends[0].id)
     await vi.waitFor(() => expect(sends()).toEqual([]))
     await vi.waitFor(() => expect(bodies(room.id)).toEqual(['again']))

@@ -17,7 +17,9 @@ use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use uplink_protocol::{
     compose::OutboxChanged,
-    matrix::{MatrixSend, MatrixSendId, MatrixSendState, MatrixSendsChanged, RoomId},
+    matrix::{
+        MatrixContent, MatrixSend, MatrixSendId, MatrixSendState, MatrixSendsChanged, RoomId,
+    },
     ServerEvent,
 };
 use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
@@ -40,7 +42,7 @@ pub fn transaction_id(item: MatrixSendId) -> String {
     format!("uplink-{}", item.0)
 }
 
-const COLUMNS: &str = "s.id, s.room, s.body, s.state, s.wanted, s.error, s.queued_at";
+const COLUMNS: &str = "s.id, s.room, s.content, s.state, s.wanted, s.error, s.queued_at";
 
 /// A send of [`COLUMNS`], from `offset` on.
 fn send_row_at(r: &Row, offset: usize) -> uplink_storage::rusqlite::Result<MatrixSend> {
@@ -48,7 +50,7 @@ fn send_row_at(r: &Row, offset: usize) -> uplink_storage::rusqlite::Result<Matri
     Ok(MatrixSend {
         id: MatrixSendId(r.get(offset)?),
         room: RoomId(r.get(offset + 1)?),
-        body: r.get(offset + 2)?,
+        content: content(&r.get::<_, String>(offset + 2)?),
         state: match state.as_str() {
             "queued" => MatrixSendState::Queued,
             "sending" => MatrixSendState::Sending,
@@ -60,6 +62,11 @@ fn send_row_at(r: &Row, offset: usize) -> uplink_storage::rusqlite::Result<Matri
         error: r.get(offset + 5)?,
         queued_at: r.get(offset + 6)?,
     })
+}
+
+/// A send's stored content.
+fn content(json: &str) -> MatrixContent {
+    serde_json::from_str(json).expect("sends store their content as written")
 }
 
 fn send_row(r: &Row) -> uplink_storage::rusqlite::Result<MatrixSend> {
@@ -127,12 +134,64 @@ fn quote(body: &str) -> String {
     }
 }
 
-/// Queues a message to the room.
+/// How a send's content is named in descriptions.
+fn named(content: &MatrixContent) -> String {
+    match content {
+        MatrixContent::Text {
+            body,
+            replaces: Some(_),
+            ..
+        } => format!("the edit {}", quote(body)),
+        MatrixContent::Text { body, .. } => quote(body),
+        MatrixContent::Reaction { key, .. } => format!("the reaction {key}"),
+        MatrixContent::Redaction { .. } => "the deletion".to_owned(),
+        MatrixContent::File { name, .. } => quote(name),
+    }
+}
+
+/// What sending `content` to the room does, in words.
+fn described(tx: &Transaction, room: RoomId, content: &MatrixContent) -> Result<String> {
+    Ok(match content {
+        MatrixContent::Text {
+            body,
+            replaces: Some(_),
+            ..
+        } => format!("Edited a message to {}", quote(body)),
+        MatrixContent::Text {
+            body,
+            reply_to: Some(_),
+            ..
+        } => format!("Replied {}", quote(body)),
+        MatrixContent::Text { body, .. } => format!("Sent {}", quote(body)),
+        MatrixContent::Reaction { key, .. } => format!("Reacted with {key}"),
+        MatrixContent::Redaction { event } => {
+            let redacted: Option<(String, Option<String>, Option<String>)> = tx
+                .query_row(
+                    "SELECT type, body,
+                            json_extract(raw_json, '$.content.\"m.relates_to\".key')
+                     FROM matrix_event WHERE room = ?1 AND event_id = ?2",
+                    params![room.0, event],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?;
+            match redacted {
+                Some((kind, _, Some(key))) if kind == "m.reaction" => {
+                    format!("Took back the reaction {key}")
+                }
+                Some((_, Some(body), _)) => format!("Deleted {}", quote(&body)),
+                _ => "Deleted an event".to_owned(),
+            }
+        }
+        MatrixContent::File { name, .. } => format!("Sent {}", quote(name)),
+    })
+}
+
+/// Queues `content` to the room.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SendMessage {
     pub room: RoomId,
-    pub body: String,
+    pub content: MatrixContent,
 }
 
 impl Op for SendMessage {
@@ -140,13 +199,18 @@ impl Op for SendMessage {
 
     fn apply(self, tx: &Transaction) -> Result<Applied> {
         let id = MatrixSendId(tx.query_row(
-            "INSERT INTO matrix_send (room, body, queued_at, wanted, desired_by, state, synced)
+            "INSERT INTO matrix_send (room, content, queued_at, wanted, desired_by, state, synced)
              VALUES (?1, ?2, ?3, 1, ?4, 'queued', 0) RETURNING id",
-            params![self.room.0, self.body, now_ms(), this_entry(tx)?.0],
+            params![
+                self.room.0,
+                serde_json::to_string(&self.content)?,
+                now_ms(),
+                this_entry(tx)?.0
+            ],
             |r| r.get(0),
         )?);
         Ok(Applied {
-            description: format!("Sent {}", quote(&self.body)),
+            description: described(tx, self.room, &self.content)?,
             inverse: Inverse::of(&CancelMessage { item: id }),
             events: changed(tx, self.room)?,
         })
@@ -177,10 +241,10 @@ impl Op for CancelMessage {
             MatrixSendState::Queued | MatrixSendState::Refused => {
                 tx.execute("DELETE FROM matrix_send WHERE id = ?1", [self.item.0])?;
                 Ok(Applied {
-                    description: format!("Cancelled sending {}", quote(&item.body)),
+                    description: format!("Cancelled sending {}", named(&item.content)),
                     inverse: Inverse::of(&SendMessage {
                         room: item.room,
-                        body: item.body,
+                        content: item.content,
                     }),
                     events,
                 })
@@ -190,7 +254,7 @@ impl Op for CancelMessage {
                 Ok(Applied {
                     description: format!(
                         "Cancelled sending {}, which may have gone out",
-                        quote(&item.body)
+                        named(&item.content)
                     ),
                     inverse: Inverse::of(&KeepSent { item: self.item }),
                     events,
@@ -217,7 +281,7 @@ impl Op for KeepSent {
             .ok_or_else(|| Conflict("sending it is no longer being cancelled".into()))?;
         set_wanted(tx, self.item, true)?;
         Ok(Applied {
-            description: format!("Kept {} sent", quote(&item.body)),
+            description: format!("Kept {} sent", named(&item.content)),
             inverse: Inverse::of(&CancelMessage { item: self.item }),
             events: changed(tx, item.room)?,
         })
@@ -229,21 +293,21 @@ impl Op for KeepSent {
 pub struct Due {
     pub item: MatrixSendId,
     pub room_id: String,
-    pub body: String,
+    pub content: MatrixContent,
 }
 
 /// The account's queued messages, in the order they were queued.
 pub fn due(conn: &Connection, account: &str) -> Result<Vec<Due>> {
     Ok(conn
         .prepare(
-            "SELECT s.id, r.room_id, s.body FROM matrix_send s JOIN matrix_room r ON r.id = s.room
+            "SELECT s.id, r.room_id, s.content FROM matrix_send s JOIN matrix_room r ON r.id = s.room
              WHERE r.account_id = ?1 AND s.state = 'queued' ORDER BY s.id",
         )?
         .query_map([account], |r| {
             Ok(Due {
                 item: MatrixSendId(r.get(0)?),
                 room_id: r.get(1)?,
-                body: r.get(2)?,
+                content: content(&r.get::<_, String>(2)?),
             })
         })?
         .collect::<Result<_, _>>()?)
@@ -292,7 +356,7 @@ impl Observation for SendStarted {
             [self.item.0],
         )?;
         Ok(Observed {
-            description: format!("Sending {}", quote(&item.body)),
+            description: format!("Sending {}", named(&item.content)),
             events: changed(tx, item.room)?,
         })
     }
@@ -318,11 +382,11 @@ impl Observation for SendSucceeded {
         sends_synced(tx, item.room)?;
         Ok(Observed {
             description: if item.wanted {
-                format!("Sent {}", quote(&item.body))
+                format!("Sent {}", named(&item.content))
             } else {
                 format!(
                     "Sent {} before the cancel could take it back",
-                    quote(&item.body)
+                    named(&item.content)
                 )
             },
             events: changed(tx, item.room)?,
@@ -345,7 +409,7 @@ impl Observation for SendFailed {
 
     fn apply(self, _account: &str, tx: &Transaction) -> Result<Observed> {
         let item = sending(tx, self.item)?;
-        let body = quote(&item.body);
+        let body = named(&item.content);
         let description = match (&self.refused, item.wanted) {
             (_, false) => {
                 tx.execute("DELETE FROM matrix_send WHERE id = ?1", [self.item.0])?;

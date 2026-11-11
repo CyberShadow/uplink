@@ -9,12 +9,15 @@ use crate::{
 use std::sync::Arc;
 use uplink_protocol::{
     matrix::{
-        MatrixAccount, MatrixSendId, Membership, MembershipChange, RoomEventId, RoomId,
-        TimelinePage,
+        MatrixAccount, MatrixContent, MatrixSendId, Membership, MembershipChange, RoomEventId,
+        RoomId, TimelinePage,
     },
     ErrorCode, ServerError, ServerResponse,
 };
-use uplink_storage::rusqlite::Connection;
+use uplink_storage::{
+    rusqlite::Connection,
+    store::{Store, VariantHash},
+};
 use uplink_tx_log::{
     answer::{error, internal, Reader, Response},
     Dispatcher,
@@ -36,21 +39,25 @@ pub struct Matrix {
     reader: Reader,
     accounts: Arc<Vec<ConfiguredAccount>>,
     clients: Clients,
+    /// Files uploaded to send.
+    blobs: Store,
 }
 
 impl Matrix {
     /// `reader` is a read-only connection to the database `dispatcher`
-    /// writes.
+    /// writes; `blobs`, the files uploaded to send.
     pub fn new(
         dispatcher: Dispatcher,
         reader: Connection,
         accounts: Vec<ConfiguredAccount>,
+        blobs: Store,
     ) -> Self {
         Self {
             dispatcher,
             reader: Reader::new(reader),
             accounts: Arc::new(accounts),
             clients: Clients::default(),
+            blobs,
         }
     }
 
@@ -209,12 +216,40 @@ impl Matrix {
             .await
     }
 
-    /// Only to joined rooms of configured accounts.
-    pub async fn send_message(&self, room: RoomId, body: String) -> Response {
-        if body.trim().is_empty() {
-            return Err(error(ErrorCode::Invalid, "the message is empty".into()));
+    /// Only to joined rooms of configured accounts, and of events stored
+    /// in the room: replying to one, editing one of the account's own
+    /// messages, reacting to one or redacting one; files only as uploaded.
+    pub async fn send_message(&self, room: RoomId, content: MatrixContent) -> Response {
+        let invalid = |message: String| Err(error(ErrorCode::Invalid, message));
+        match &content {
+            MatrixContent::Text { body, .. } if body.trim().is_empty() => {
+                return invalid("the message is empty".into());
+            }
+            MatrixContent::Reaction { key, .. } if key.is_empty() => {
+                return invalid("the reaction is empty".into());
+            }
+            MatrixContent::File {
+                blob, name, mime, ..
+            } => {
+                if name.trim().is_empty() || name.contains(char::is_control) {
+                    return invalid(format!("not a file name: {name:?}"));
+                }
+                if mime.parse::<mime::Mime>().is_err() {
+                    return invalid(format!("not a MIME type: {mime:?}"));
+                }
+                let hash = VariantHash::parse(&blob.0).ok_or_else(|| {
+                    error(ErrorCode::Invalid, format!("not a blob: {:?}", blob.0))
+                })?;
+                if self.blobs.size(&hash).map_err(internal)?.is_none() {
+                    return Err(error(ErrorCode::NotFound, format!("no blob {}", blob.0)));
+                }
+            }
+            MatrixContent::Text { .. }
+            | MatrixContent::Reaction { .. }
+            | MatrixContent::Redaction { .. } => {}
         }
         let accounts = self.accounts.clone();
+        let checked = content.clone();
         self.reader
             .read(move |conn| {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
@@ -226,7 +261,7 @@ impl Matrix {
                     .map_err(internal)?
                     .into_iter()
                     .any(|r| r.id == room && r.membership == Membership::Joined);
-                if configured.is_none() || !joined {
+                let Some(configured) = configured.filter(|_| joined) else {
                     return Err(error(
                         ErrorCode::Invalid,
                         format!(
@@ -234,11 +269,58 @@ impl Matrix {
                             room.0
                         ),
                     ));
+                };
+                let event = |event_id: &str| {
+                    rooms::stored_event(&tx, room, event_id)
+                        .map_err(internal)?
+                        .ok_or_else(|| {
+                            error(
+                                ErrorCode::NotFound,
+                                format!("no event {event_id} in room {}", room.0),
+                            )
+                        })
+                };
+                match &checked {
+                    MatrixContent::Text {
+                        reply_to, replaces, ..
+                    } => {
+                        if let Some(reply_to) = reply_to {
+                            event(reply_to)?;
+                        }
+                        if let Some(replaces) = replaces {
+                            let edited = event(replaces)?;
+                            if edited.sender != configured.mxid
+                                || edited.kind != "m.room.message"
+                                || edited.redacted
+                            {
+                                return Err(error(
+                                    ErrorCode::Invalid,
+                                    format!("{replaces} is not a message of the account's to edit"),
+                                ));
+                            }
+                        }
+                    }
+                    MatrixContent::Reaction { event: of, .. } => {
+                        event(of)?;
+                    }
+                    MatrixContent::Redaction { event: of } => {
+                        if event(of)?.redacted {
+                            return Err(error(
+                                ErrorCode::Conflict,
+                                format!("{of} is redacted already"),
+                            ));
+                        }
+                    }
+                    MatrixContent::File { reply_to, .. } => {
+                        if let Some(reply_to) = reply_to {
+                            event(reply_to)?;
+                        }
+                    }
                 }
                 Ok(())
             })
             .await?;
-        self.dispatcher.answer(SendMessage { room, body }).await
+        self.dispatcher.answer(SendMessage { room, content }).await
     }
 
     pub async fn cancel_send(&self, item: MatrixSendId) -> Response {
