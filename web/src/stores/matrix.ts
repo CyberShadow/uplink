@@ -41,6 +41,7 @@ export class MatrixStore {
 
   private timelines = new Map<RoomId, Timeline>()
   private securities = new Map<string, Security>()
+  private memberLists = new Map<RoomId, Members>()
   private roomLoader = new Loader(async () => {
     const response = await this.query({ type: 'list_rooms' }, 'rooms')
     if (!response) return
@@ -57,6 +58,7 @@ export class MatrixStore {
     this.roomLoader.invalidate()
     for (const timeline of this.timelines.values()) timeline.reset()
     for (const security of this.securities.values()) security.changed()
+    for (const members of this.memberLists.values()) members.changed()
   }
 
   apply(entry: LogEntry) {
@@ -67,6 +69,8 @@ export class MatrixStore {
           break
         case 'timeline_added':
           this.timelines.get(event.room)?.added()
+          // Of the events, some may change members, or their power.
+          this.memberLists.get(event.room)?.changed()
           break
         case 'timeline_filled':
           this.timelines.get(event.room)?.filled(event)
@@ -125,6 +129,16 @@ export class MatrixStore {
       this.securities.set(account, security)
     }
     return security
+  }
+
+  /** The room's members, loaded on first use. */
+  members(room: RoomId): Members {
+    let members = this.memberLists.get(room)
+    if (!members) {
+      members = new Members(room, this.server)
+      this.memberLists.set(room, members)
+    }
+    return members
   }
 
   /** The room's timeline, loaded from its latest events on first use. */
@@ -209,15 +223,15 @@ export class MatrixStore {
   }
 }
 
-/** A room's timeline from some point to its end, oldest first, and the
- * messages being sent to it, which follow. New events are loaded as they
- * are synced; earlier ones on request. */
 /** `events` with `added`, in timeline order, each once. */
 function merged(events: readonly RoomEvent[], added: readonly RoomEvent[]): RoomEvent[] {
   const known = new Set(events.map((e) => e.id))
   return [...events, ...added.filter((e) => !known.has(e.id))].sort((a, b) => a.pos - b.pos)
 }
 
+/** A room's timeline from some point to its end, oldest first, and the
+ * messages being sent to it, which follow. New events are loaded as they
+ * are synced; earlier ones on request. */
 export class Timeline {
   /** `null` until loaded. */
   readonly events = signal<readonly RoomEvent[] | null>(null)
@@ -384,6 +398,33 @@ export class Timeline {
     } finally {
       this.loadingEarlier = false
     }
+  }
+}
+
+/** A room's members, and what the account may do in it, as its client
+ * has them: not logged, so loaded again as events arrive. */
+export class Members {
+  /** `null` until loaded. */
+  readonly state = signal<Response<'members'> | null>(null)
+  readonly error = signal<string | null>(null)
+  private loader = new Loader(async () => {
+    try {
+      this.state.value = await query(this.server, { type: 'list_members', room: this.room }, 'members')
+      this.error.value = null
+    } catch (error) {
+      this.error.value = (error as Error).message
+    }
+  }, false)
+
+  constructor(
+    readonly room: RoomId,
+    private readonly server: Requester,
+  ) {
+    this.loader.invalidate()
+  }
+
+  changed() {
+    this.loader.invalidate()
   }
 }
 

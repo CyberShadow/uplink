@@ -24,6 +24,7 @@ import { date } from '../format'
 import { TEXT, displayName, sendSummary, shown } from '../matrix'
 import { EventRow, MembershipRun, type Overlay } from './RoomEvent'
 import { Composer, type Mode } from './RoomComposer'
+import { RoomInfo } from './RoomInfo'
 
 export function roomPath(room: number): string {
   return `/rooms/${room}`
@@ -51,6 +52,7 @@ function Timeline(props: { room: Room }) {
   // the marker, but not the line, while it is on show.
   const [readUpTo] = useState(room.read_up_to)
   const [files, setFiles] = useState<File[]>([])
+  const [info, setInfo] = useState(false)
   useKeymap({ reply: () => composer.current?.focus() })
   useMarkRead(room, events)
 
@@ -72,117 +74,128 @@ function Timeline(props: { room: Room }) {
   }
 
   return (
-    <section
-      class={styles.room}
-      aria-label={room.name}
-      onDragOver={(event) => {
-        if (room.membership === 'joined' && event.dataTransfer?.types.includes('Files')) event.preventDefault()
-      }}
-      onDrop={(event) => {
-        if (room.membership !== 'joined' || !event.dataTransfer?.files.length) return
-        event.preventDefault()
-        setFiles([...files, ...event.dataTransfer.files])
-      }}
-    >
-      <header class={styles.header}>
-        <RoomAvatar room={room} class={styles.avatar} />
-        <div class={styles.title}>
-          <h1>{room.name}</h1>
-          {room.topic !== null && (
-            <p class={styles.topic} title={room.topic}>
-              {room.topic}
-            </p>
-          )}
-        </div>
-        <span class={styles.muted}>
-          {room.joined_members === 1 ? '1 member' : `${room.joined_members} members`}
-          {room.encrypted && ' · encrypted'}
-        </span>
-        <MembershipControls room={room} />
-      </header>
-      {room.membership_error !== null && (
-        <p class={styles.error} role="alert">
-          The homeserver refused: {room.membership_error}. <a href="/outbox">Undo the change</a> to keep the room
-          as it is.
-        </p>
-      )}
-      {/* Reversed, so that it stays scrolled to the latest event. */}
-      <div class={styles.scroller}>
-        <ol class={styles.events} aria-label="Timeline">
-          {timeline.moreBefore.value && (
-            <li class={styles.earlier}>
-              <button type="button" onMouseDown={keepFocus} onClick={() => timeline.loadEarlier()}>
-                Load earlier events
-              </button>
-            </li>
-          )}
-          {events === null && <li class={styles.muted}>Loading…</li>}
-          {list.map((row) => {
-            switch (row.type) {
-              case 'day':
-                return (
-                  <li key={row.key} class={styles.day} role="separator">
-                    <span>{row.date}</span>
-                  </li>
-                )
-              case 'unread':
-                return (
-                  <li key={row.key} class={styles.unread} role="separator" aria-label="New messages">
-                    <span>New</span>
-                  </li>
-                )
-              case 'members':
-                return <MembershipRun key={row.key} room={room} events={row.events} />
-              case 'gap': {
-                const filling = timeline.filling.value.has(row.gap)
-                return (
-                  <li key={row.key} class={styles.gap} role="separator" aria-label="Events missing">
-                    <span>Earlier events are missing here.</span>
-                    <button
-                      type="button"
-                      disabled={filling}
-                      onMouseDown={keepFocus}
-                      onClick={() => timeline.fill(row.gap)}
-                    >
-                      {filling ? 'Fetching…' : 'Fetch them'}
-                    </button>
-                  </li>
-                )
+    <div class={styles.split}>
+      <section
+        class={styles.room}
+        aria-label={room.name}
+        onDragOver={(event) => {
+          if (room.membership === 'joined' && event.dataTransfer?.types.includes('Files')) event.preventDefault()
+        }}
+        onDrop={(event) => {
+          if (room.membership !== 'joined' || !event.dataTransfer?.files.length) return
+          event.preventDefault()
+          setFiles([...files, ...event.dataTransfer.files])
+        }}
+      >
+        <header class={styles.header}>
+          <RoomAvatar room={room} class={styles.avatar} />
+          <div class={styles.title}>
+            <h1>{room.name}</h1>
+            {room.topic !== null && (
+              <p class={styles.topic} title={room.topic}>
+                {room.topic}
+              </p>
+            )}
+          </div>
+          <span class={styles.muted}>
+            <button
+              type="button"
+              class={styles.link}
+              aria-expanded={info}
+              onMouseDown={keepFocus}
+              onClick={() => setInfo(!info)}
+            >
+              {room.joined_members === 1 ? '1 member' : `${room.joined_members} members`}
+            </button>
+            {room.encrypted && ' · encrypted'}
+          </span>
+          <MembershipControls room={room} />
+        </header>
+        {room.membership_error !== null && (
+          <p class={styles.error} role="alert">
+            The homeserver refused: {room.membership_error}. <a href="/outbox">Undo the change</a> to keep the room
+            as it is.
+          </p>
+        )}
+        {/* Reversed, so that it stays scrolled to the latest event. */}
+        <div class={styles.scroller}>
+          <ol class={styles.events} aria-label="Timeline">
+            {timeline.moreBefore.value && (
+              <li class={styles.earlier}>
+                <button type="button" onMouseDown={keepFocus} onClick={() => timeline.loadEarlier()}>
+                  Load earlier events
+                </button>
+              </li>
+            )}
+            {events === null && <li class={styles.muted}>Loading…</li>}
+            {list.map((row) => {
+              switch (row.type) {
+                case 'day':
+                  return (
+                    <li key={row.key} class={styles.day} role="separator">
+                      <span>{row.date}</span>
+                    </li>
+                  )
+                case 'unread':
+                  return (
+                    <li key={row.key} class={styles.unread} role="separator" aria-label="New messages">
+                      <span>New</span>
+                    </li>
+                  )
+                case 'members':
+                  return <MembershipRun key={row.key} room={room} events={row.events} />
+                case 'gap': {
+                  const filling = timeline.filling.value.has(row.gap)
+                  return (
+                    <li key={row.key} class={styles.gap} role="separator" aria-label="Events missing">
+                      <span>Earlier events are missing here.</span>
+                      <button
+                        type="button"
+                        disabled={filling}
+                        onMouseDown={keepFocus}
+                        onClick={() => timeline.fill(row.gap)}
+                      >
+                        {filling ? 'Fetching…' : 'Fetch them'}
+                      </button>
+                    </li>
+                  )
+                }
+                case 'event':
+                  return (
+                    <EventRow
+                      key={row.key}
+                      room={room}
+                      event={row.event}
+                      me={me}
+                      overlay={overlay.get(row.event.event_id)}
+                      readers={readers.get(row.event.id) ?? NO_READERS}
+                      pendingRedactions={overlay.redacted}
+                      reply={() => act({ type: 'reply', event: row.event })}
+                      edit={() => act({ type: 'edit', event: row.event })}
+                    />
+                  )
               }
-              case 'event':
-                return (
-                  <EventRow
-                    key={row.key}
-                    room={room}
-                    event={row.event}
-                    me={me}
-                    overlay={overlay.get(row.event.event_id)}
-                    readers={readers.get(row.event.id) ?? NO_READERS}
-                    pendingRedactions={overlay.redacted}
-                    reply={() => act({ type: 'reply', event: row.event })}
-                    edit={() => act({ type: 'edit', event: row.event })}
-                  />
-                )
-            }
-          })}
-          {outgoing.map((item) => (
-            <Pending key={item.id} item={item} />
-          ))}
-        </ol>
-      </div>
-      <Typing users={timeline.typing.value} />
-      {room.membership === 'joined' && (
-        <Composer
-          room={room}
-          textarea={composer}
-          mode={mode}
-          setMode={setMode}
-          lastOwn={lastOwn}
-          files={files}
-          setFiles={setFiles}
-        />
-      )}
-    </section>
+            })}
+            {outgoing.map((item) => (
+              <Pending key={item.id} item={item} />
+            ))}
+          </ol>
+        </div>
+        <Typing users={timeline.typing.value} />
+        {room.membership === 'joined' && (
+          <Composer
+            room={room}
+            textarea={composer}
+            mode={mode}
+            setMode={setMode}
+            lastOwn={lastOwn}
+            files={files}
+            setFiles={setFiles}
+          />
+        )}
+      </section>
+      {info && <RoomInfo room={room} close={() => setInfo(false)} />}
+    </div>
   )
 }
 

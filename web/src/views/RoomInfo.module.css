@@ -1,0 +1,158 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  gap: 12px;
+  width: 300px;
+  padding: 8px 12px;
+  overflow: auto;
+  border-left: 1px solid var(--line);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.header h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.header button {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.panel h3 {
+  margin: 4px 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.muted {
+  color: var(--muted);
+  font-weight: normal;
+}
+
+.error {
+  margin: 0;
+  color: var(--error-fg);
+}
+
+.topic {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.settings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.panel input,
+.panel textarea {
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+}
+
+.panel textarea {
+  resize: vertical;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.invite,
+.reason {
+  display: flex;
+  gap: 6px;
+}
+
+.invite input,
+.reason input {
+  flex: 1;
+  min-width: 0;
+}
+
+.reason {
+  margin: 4px 0 4px 32px;
+}
+
+.members {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.member {
+  padding: 3px 0;
+}
+
+.line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.avatar {
+  width: 24px;
+  height: 24px;
+  font-size: 12px;
+  line-height: 24px;
+}
+
+.who {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.name,
+.user {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.user {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.role {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.small {
+  padding: 1px 6px;
+  font-size: 12px;
+}
+
+.reason button {
+  padding: 1px 6px;
+  font-size: 12px;
+}

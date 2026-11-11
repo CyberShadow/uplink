@@ -183,19 +183,21 @@ function Sender(props: { room: Room; user: string; name: string | null; emote: b
  * lines do not ask again. */
 const noAvatar = new Set<string>()
 
-function MemberAvatar(props: { room: Room; user: string; name: string }) {
+/** The member's avatar in the room, or their initial; `class` sizes it. */
+export function MemberAvatar(props: { room: Room; user: string; name: string; class?: string }) {
+  const cls = props.class ? `${styles.memberAvatar} ${props.class}` : styles.memberAvatar
   const key = `${props.room.id} ${props.user}`
   const [failed, setFailed] = useState(noAvatar.has(key))
   if (failed) {
     return (
-      <span class={styles.memberAvatar} style={{ background: senderColor(props.user) }} aria-hidden="true">
+      <span class={cls} style={{ background: senderColor(props.user) }} aria-hidden="true">
         {(props.name.match(/\p{L}|\p{N}/u)?.[0] ?? '?').toUpperCase()}
       </span>
     )
   }
   return (
     <img
-      class={styles.memberAvatar}
+      class={cls}
       src={`/api/rooms/${props.room.id}/members/${encodeURIComponent(props.user)}/avatar`}
       alt=""
       loading="lazy"

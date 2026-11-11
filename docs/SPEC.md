@@ -507,7 +507,7 @@ CREATE TABLE matrix_send (     -- (V0023: was matrix_outbox)
   desired_by   INTEGER NOT NULL REFERENCES tx_log(id),
   state        TEXT NOT NULL,        -- 'queued' | 'sending' | 'sent' | 'refused'
   error        TEXT,                 -- set iff refused
-  event_id     TEXT,                 -- set iff sent
+  event_id     TEXT,                 -- set if sent, but of a member's change (V0029)
   synced       INTEGER NOT NULL      -- the event is synced: out of the outbox
 );
 -- Full-text search of Matrix messages is deferred.
@@ -860,7 +860,7 @@ live only, never replayed. A session that falls behind the notices skips
 those it missed. A client that reconnects forgets what notices told it
 (no one is typing) and loads again what they invalidate. Requests of the
 moment (`SetTyping`) are not ops either: they answer `Done` and log
-nothing, and queries of state not logged (`ListReceipts`) are not
+nothing, and queries of state not logged (`ListReceipts`, `ListMembers`) are not
 positioned in the log, so a client loads again after one in flight when
 told of a change meanwhile.
 
@@ -1718,7 +1718,20 @@ JSON since V0026) is one of:
   `send_attachment` uploads it (encrypted, in an encrypted room) and
   sends it as `m.image`, `m.video`, `m.audio` or `m.file`, by its type,
   maybe as a reply. A retry uploads it again (only the event is
-  deduplicated), which leaves the earlier upload unused.
+  deduplicated), which leaves the earlier upload unused;
+- the room's **name** or **topic** (`m.room.name`, `m.room.topic`; empty
+  takes it away), as state events. Setting state is idempotent, so a
+  retry is safe;
+- a change to a **member**: inviting, kicking (of one invited, revoking
+  the invitation), banning or unbanning a user, with a reason (but an
+  invitation), through the membership endpoints. These say no event id:
+  sent, the send is synced at once (V0029 allows a sent send without
+  one), and the membership event shows when synced. They have no
+  transaction id, so after an interrupted send that went out, the retry
+  may be refused as made already.
+
+Whether the account may make a change to the room is the homeserver's to
+say: a refusal needs a decision, as any.
 
 Events are named by their Matrix ids, and must be stored in the room.
 The room's timeline shows it at the end,
@@ -1830,6 +1843,14 @@ which a verified device gives.
   Element does. `SetTyping` sends the account's typing notice, which
   the SDK makes last 4 s: the web client renews it every 3 s while text
   is typed, and stops it when the box is emptied or sent.
+- `ListMembers` lists the room's members as the account's client has
+  them (loading them all first, as sync loads them lazily): joined,
+  invited, asking to join, left or banned, with their power levels (none
+  for a creator of a room of version 12, above any), whether the
+  account may kick and ban each (its power is above theirs, and the
+  room's levels allow), and whether it may invite and change the name
+  and the topic. It is not logged; clients load it again as events
+  arrive.
 - A room is recorded when a sync brings state changes too, not only
   timeline events, so that a name, avatar or space's children changed in
   a gappy sync are seen.
@@ -2276,6 +2297,15 @@ the membership's buttons.
 - **Gaps**, where events are missing (§9.2), are rows ("Earlier events
   are missing here") with a button that fetches them; they fill in
   place, merged by position, and a gap left shows where they end.
+- **Room info**, a panel beside the timeline that the member count in
+  the header opens, as Element's right panel: the name and topic, a form
+  if the account may change either; a box to invite a user by id; and
+  the members (`ListMembers`) by membership (joined, invited, asking to
+  join, banned; not those who left), each by power then name, with
+  their role (Owner, a creator of a room of version 12; Admin, 100;
+  Moderator, 50; else the level, if above 0), and buttons to remove
+  (revoke an invitation), ban or unban those the account may, which ask
+  a reason first. Each change is a send (§9.3), so undoable.
 - **Who is typing** shows above the composer; who has read how far, as
   up to three avatars (and how many more) at the end of a line.
 - **The composer** sends Markdown with Enter (Shift+Enter for a new

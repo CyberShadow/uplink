@@ -15,8 +15,9 @@ use std::sync::Arc;
 use uplink_protocol::{
     compose::BlobId,
     matrix::{
-        GapId, MatrixAccount, MatrixContent, MatrixSendId, MemberReceipt, Membership,
-        MembershipChange, RoomEventId, RoomId, RoomMember, TimelinePage, VerificationAnswer,
+        GapId, MatrixAccount, MatrixContent, MatrixSendId, MemberAction, MemberInfo, MemberReceipt,
+        MemberState, Membership, MembershipChange, RoomEventId, RoomId, RoomMember, RoomPowers,
+        TimelinePage, VerificationAnswer,
     },
     ErrorCode, ServerError, ServerResponse,
 };
@@ -476,6 +477,59 @@ impl Matrix {
             .await
     }
 
+    /// The room's members, as the account's client knows them (fetched
+    /// first, as sync loads them lazily), and what the account may do.
+    pub async fn list_members(&self, room: RoomId) -> Response {
+        use matrix_sdk::ruma::events::room::member::MembershipState;
+        use matrix_sdk::ruma::events::{room::power_levels::UserPowerLevel, StateEventType};
+        let (_, sdk_room) = self.sdk_room(room).await?;
+        let own = sdk_room.own_user_id().to_owned();
+        let levels = sdk_room
+            .power_levels()
+            .await
+            .map_err(|e| internal(e.into()))?;
+        let members = sdk_room
+            .members(matrix_sdk::RoomMemberships::empty())
+            .await
+            .map_err(|e| internal(e.into()))?;
+        let members = members
+            .iter()
+            .filter_map(|member| {
+                let membership = match member.membership() {
+                    MembershipState::Join => MemberState::Joined,
+                    MembershipState::Invite => MemberState::Invited,
+                    MembershipState::Knock => MemberState::Knocking,
+                    MembershipState::Leave => MemberState::Left,
+                    MembershipState::Ban => MemberState::Banned,
+                    // Not of the spec: not a member it can say anything of.
+                    _ => return None,
+                };
+                let user = member.user_id();
+                Some(MemberInfo {
+                    user: user.to_string(),
+                    name: member.display_name().map(str::to_owned),
+                    membership,
+                    power: match levels.for_user(user) {
+                        UserPowerLevel::Int(level) => Some(level.into()),
+                        // Infinite (the enum is non-exhaustive).
+                        _ => None,
+                    },
+                    kickable: levels.user_can_kick_user(&own, user),
+                    bannable: levels.user_can_ban_user(&own, user),
+                })
+            })
+            .collect();
+        Ok(ServerResponse::Members {
+            room,
+            members,
+            powers: RoomPowers {
+                invite: levels.user_can_invite(&own),
+                name: levels.user_can_send_state(&own, StateEventType::RoomName),
+                topic: levels.user_can_send_state(&own, StateEventType::RoomTopic),
+            },
+        })
+    }
+
     pub async fn list_rooms(&self) -> Response {
         let configured = self.accounts.clone();
         self.reader
@@ -616,9 +670,24 @@ impl Matrix {
                     return Err(error(ErrorCode::NotFound, format!("no blob {}", blob.0)));
                 }
             }
+            MatrixContent::Member {
+                user,
+                action,
+                reason,
+            } => {
+                if <&matrix_sdk::ruma::UserId>::try_from(user.as_str()).is_err() {
+                    return invalid(format!("not a Matrix user id: {user:?}"));
+                }
+                // The homeserver's API takes none.
+                if *action == MemberAction::Invite && reason.is_some() {
+                    return invalid("an invitation has no reason".into());
+                }
+            }
             MatrixContent::Text { .. }
             | MatrixContent::Reaction { .. }
-            | MatrixContent::Redaction { .. } => {}
+            | MatrixContent::Redaction { .. }
+            | MatrixContent::Name { .. }
+            | MatrixContent::Topic { .. } => {}
         }
         let accounts = self.accounts.clone();
         let checked = content.clone();
@@ -688,6 +757,10 @@ impl Matrix {
                             event(reply_to)?;
                         }
                     }
+                    // Whether the account may is the homeserver's to say.
+                    MatrixContent::Name { .. }
+                    | MatrixContent::Topic { .. }
+                    | MatrixContent::Member { .. } => {}
                 }
                 Ok(())
             })

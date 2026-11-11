@@ -54,8 +54,8 @@ use tokio::sync::{
 use uplink_config::MatrixAccountConfig;
 use uplink_protocol::{
     matrix::{
-        Encryption, MatrixContent, Membership, MembershipChange, ReceiptsChanged, RoomMember,
-        SecurityChanged, Typing,
+        Encryption, MatrixContent, MemberAction, Membership, MembershipChange, ReceiptsChanged,
+        RoomMember, SecurityChanged, Typing,
     },
     LogEntry, Notice, Source,
 };
@@ -871,7 +871,7 @@ impl Sender {
                 Ok(event_id) => {
                     self.observe(SendSucceeded {
                         item: item.item,
-                        event_id: event_id.to_string(),
+                        event_id: event_id.map(|id| id.to_string()),
                     })
                     .await?
                 }
@@ -892,14 +892,15 @@ impl Sender {
     }
 
     /// Sends `content` to the room as transaction `txn_id`; the event id
-    /// the homeserver gave it, or why it did not. Fails if the file to
+    /// the homeserver gave it (but for changes to members, of which the
+    /// homeserver says none), or why it did not. Fails if the file to
     /// send could not be read.
     async fn send(
         &self,
         room: &Room,
         content: &MatrixContent,
         txn_id: OwnedTransactionId,
-    ) -> Result<Result<OwnedEventId, matrix_sdk::Error>> {
+    ) -> Result<Result<Option<OwnedEventId>, matrix_sdk::Error>> {
         let sent = match content {
             MatrixContent::Text {
                 body,
@@ -960,8 +961,34 @@ impl Sender {
                 .await
                 .map(|sent| sent.event_id)
             }
+            MatrixContent::Name { name } => room
+                .send_state_event_raw("m.room.name", "", json!({ "name": name }))
+                .await
+                .map(|sent| sent.event_id),
+            MatrixContent::Topic { topic } => room
+                .send_state_event_raw("m.room.topic", "", json!({ "topic": topic }))
+                .await
+                .map(|sent| sent.event_id),
+            MatrixContent::Member {
+                user,
+                action,
+                reason,
+            } => {
+                // Unlike events, these have no transaction id: sent again
+                // after an interrupted send that went out, the homeserver
+                // may refuse them as made already.
+                let user = <&UserId>::try_from(user.as_str())?;
+                let reason = reason.as_deref();
+                return Ok(match action {
+                    MemberAction::Invite => room.invite_user_by_id(user).await,
+                    MemberAction::Kick => room.kick_user(user, reason).await,
+                    MemberAction::Ban => room.ban_user(user, reason).await,
+                    MemberAction::Unban => room.unban_user(user, reason).await,
+                }
+                .map(|()| None));
+            }
         };
-        Ok(sent)
+        Ok(sent.map(Some))
     }
 
     /// Sends a read receipt for each joined room whose read marker moved

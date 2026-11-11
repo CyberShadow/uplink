@@ -1,6 +1,6 @@
 // What Matrix events and sends say, as the views show it (SPEC §9).
 
-import type { MatrixContent, RoomEvent, RoomId } from './generated/protocol'
+import type { MatrixContent, MemberAction, RoomEvent, RoomId } from './generated/protocol'
 
 /** Message types of text: shown as such, and edited. */
 export const TEXT = new Set(['m.text', 'm.notice', 'm.emote'])
@@ -30,7 +30,21 @@ export function sendSummary(content: MatrixContent): string {
       return 'Deletion'
     case 'file':
       return content.name
+    case 'name':
+      return content.name === '' ? 'Name taken away' : `Name: ${content.name}`
+    case 'topic':
+      return content.topic === '' ? 'Topic taken away' : `Topic: ${content.topic}`
+    case 'member':
+      return `${MEMBER_ACTIONS[content.action]} ${content.user}`
   }
+}
+
+/** A change to a member, in a word. */
+export const MEMBER_ACTIONS: Record<MemberAction, string> = {
+  invite: 'Invite',
+  kick: 'Remove',
+  ban: 'Ban',
+  unban: 'Unban',
 }
 
 /** An event's JSON, as far as the views read it. */

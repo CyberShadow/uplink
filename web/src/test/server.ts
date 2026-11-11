@@ -29,6 +29,8 @@ import type {
   MatrixSecurity,
   MatrixSend,
   MatrixVerification,
+  MemberInfo,
+  RoomPowers,
   GapId,
   ReadMarker,
   RoomEventId,
@@ -68,6 +70,8 @@ interface Undoable {
   undone: boolean
 }
 
+const NO_POWERS: RoomPowers = { invite: false, name: false, topic: false }
+
 export class FakeServer implements Requester, Blobs {
   readonly requests: ClientRequest[] = []
   private client!: Client
@@ -100,6 +104,8 @@ export class FakeServer implements Requester, Blobs {
   readonly events = new Map<RoomId, RoomEvent[]>()
   /** Of Matrix accounts, their security: unverified until recovered. */
   readonly security = new Map<string, MatrixSecurity>()
+  /** Of rooms, their members, and what the account may do there. */
+  readonly members = new Map<RoomId, { members: MemberInfo[]; powers: RoomPowers }>()
   /** Of rooms, their gaps, with the events missing there. */
   private readonly gaps = new Map<RoomId, { id: GapId; before: RoomEventId; missing: RoomEvent[] }[]>()
   private nextGap = 1
@@ -719,6 +725,10 @@ export class FakeServer implements Requester, Blobs {
       }
       case 'list_receipts':
         return { type: 'receipts', room: body.room, receipts: this.receipts.get(body.room) ?? [] }
+      case 'list_members': {
+        const { members, powers } = this.members.get(body.room) ?? { members: [], powers: NO_POWERS }
+        return { type: 'members', room: body.room, members, powers }
+      }
       case 'set_typing':
         return { type: 'done' }
       case 'get_matrix_security':

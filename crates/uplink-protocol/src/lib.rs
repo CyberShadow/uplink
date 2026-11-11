@@ -259,6 +259,10 @@ pub enum ClientRequest {
     ListReceipts {
         room: RoomId,
     },
+    /// The room's members, and what the account may do in it.
+    ListMembers {
+        room: RoomId,
+    },
     /// The account's device, its trust, key backup and recovery, and the
     /// account's other devices (SPEC §9.4).
     GetMatrixSecurity {
@@ -407,6 +411,12 @@ pub enum ServerResponse {
         room: RoomId,
         receipts: Vec<matrix::MemberReceipt>,
     },
+    /// Of `ListMembers`: as the account's client knows them, not logged.
+    Members {
+        room: RoomId,
+        members: Vec<matrix::MemberInfo>,
+        powers: matrix::RoomPowers,
+    },
     Todos {
         as_of: TxLogId,
         todos: Vec<todos::Todo>,
@@ -447,6 +457,7 @@ impl ServerResponse {
             Self::Message { .. }
             | Self::Done
             | Self::Receipts { .. }
+            | Self::Members { .. }
             | Self::MatrixSecurity { .. }
             | Self::RoomKeysImported { .. } => None,
         }

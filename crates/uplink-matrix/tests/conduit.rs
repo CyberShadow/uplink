@@ -1353,3 +1353,132 @@ async fn gaps_are_filled_from_the_homeserver() {
     assert_eq!(earlier.len(), middle);
     assert_eq!(earlier.last().unwrap().id, events[middle - 1].id);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn members_are_listed_and_managed_and_the_room_renamed() {
+    use matrix_sdk::ruma::{api::client::room::create_room::v3::Request as CreateRoom, user_id};
+    use uplink_protocol::matrix::{
+        MatrixContent, MatrixSendState, MemberAction, MemberInfo, MemberState, MembershipChange,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let homeserver = Homeserver::start(dir.path()).await;
+    let bob = homeserver.register(dir.path(), "bob").await;
+    homeserver.register(dir.path(), "alice").await;
+    let carol = homeserver.register(dir.path(), "carol").await;
+    homeserver.register(dir.path(), "dave").await;
+    let _bob_received = sync_messages(&bob);
+    let uplink = Uplink::new(&homeserver);
+    let _sync = uplink.pair_and_sync().await;
+    let alice = user_id!("@alice:localhost");
+    let carol_id = user_id!("@carol:localhost");
+    let mut request = CreateRoom::new();
+    request.invite = vec![alice.to_owned(), carol_id.to_owned()];
+    let bob_room = bob.create_room(request).await.unwrap();
+    carol.sync_once(SyncSettings::default()).await.unwrap();
+    carol.join_room_by_id(bob_room.room_id()).await.unwrap();
+    let room = eventually("uplink to be invited", || async {
+        uplink.room(bob_room.room_id()).await
+    })
+    .await;
+    uplink
+        .matrix
+        .change_membership(room.id, MembershipChange::Join)
+        .await
+        .unwrap();
+    eventually("bob to see alice join", || async {
+        (bob_room.joined_members_count() == 3).then_some(())
+    })
+    .await;
+    // A moderator: of more power than carol, and less than bob.
+    bob_room
+        .update_power_levels(vec![(alice, 50.into())])
+        .await
+        .unwrap();
+
+    let members = || async {
+        match uplink.matrix.list_members(room.id).await.unwrap() {
+            ServerResponse::Members {
+                members, powers, ..
+            } => (members, powers),
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+    let member =
+        |members: &[MemberInfo], user: &str| members.iter().find(|m| m.user == user).cloned();
+    let (listed, powers) = eventually("alice to be a moderator", || async {
+        let (members, powers) = members().await;
+        (member(&members, alice.as_str())?.power == Some(50)).then_some((members, powers))
+    })
+    .await;
+    assert!(powers.invite && powers.name && powers.topic);
+    let bob_listed = member(&listed, "@bob:localhost").unwrap();
+    // The room's creator, of a room of version 12: above any power.
+    assert_eq!((bob_listed.power, bob_listed.kickable), (None, false));
+    let carol_listed = member(&listed, carol_id.as_str()).unwrap();
+    assert_eq!(carol_listed.membership, MemberState::Joined);
+    assert!(carol_listed.kickable && carol_listed.bannable);
+
+    let send = |content: MatrixContent| {
+        let uplink = &uplink;
+        let room = &room;
+        async move {
+            uplink.matrix.send_message(room.id, content).await.unwrap();
+            eventually("the send to go", || async {
+                (uplink.sends(room).await == 0).then_some(())
+            })
+            .await;
+        }
+    };
+    send(MatrixContent::Name {
+        name: "Renamed".into(),
+    })
+    .await;
+    send(MatrixContent::Topic {
+        topic: "Of things".into(),
+    })
+    .await;
+    eventually("the name and topic", || async {
+        let room = uplink.room(bob_room.room_id()).await?;
+        (room.name == "Renamed" && room.topic.as_deref() == Some("Of things")).then_some(())
+    })
+    .await;
+
+    let membership_of = |user: &'static str, wanted: MemberState| {
+        let members = &members;
+        async move {
+            eventually(&format!("{user} to be {wanted:?}"), || async {
+                (member(&members().await.0, user)?.membership == wanted).then_some(())
+            })
+            .await
+        }
+    };
+    let change = |action, user: &str, reason: Option<&str>| MatrixContent::Member {
+        user: user.into(),
+        action,
+        reason: reason.map(Into::into),
+    };
+    send(change(MemberAction::Kick, carol_id.as_str(), Some("noisy"))).await;
+    membership_of("@carol:localhost", MemberState::Left).await;
+    send(change(MemberAction::Ban, carol_id.as_str(), None)).await;
+    membership_of("@carol:localhost", MemberState::Banned).await;
+    send(change(MemberAction::Unban, carol_id.as_str(), None)).await;
+    membership_of("@carol:localhost", MemberState::Left).await;
+    send(change(MemberAction::Invite, "@dave:localhost", None)).await;
+    membership_of("@dave:localhost", MemberState::Invited).await;
+    // Kicking bob, of more power, is refused: the send needs a decision.
+    uplink
+        .matrix
+        .send_message(room.id, change(MemberAction::Kick, "@bob:localhost", None))
+        .await
+        .unwrap();
+    eventually("the kick to be refused", || async {
+        match uplink.matrix.list_sends(room.id).await.unwrap() {
+            ServerResponse::MatrixSends { sends, .. } => sends
+                .first()
+                .filter(|s| s.state == MatrixSendState::Refused)
+                .map(|_| ()),
+            other => panic!("unexpected {other:?}"),
+        }
+    })
+    .await;
+}

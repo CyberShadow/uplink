@@ -311,7 +311,7 @@ async fn sent_messages_are_reconciled_once_synced() {
     let first = start(&db).await;
     db.observe(SendSucceeded {
         item: first,
-        event_id: "$first".into(),
+        event_id: Some("$first".into()),
     })
     .await
     .unwrap();
@@ -333,7 +333,7 @@ async fn sent_messages_are_reconciled_once_synced() {
     db.sync(&[("$second", ME)], &[]).await;
     db.observe(SendSucceeded {
         item: second,
-        event_id: "$second".into(),
+        event_id: Some("$second".into()),
     })
     .await
     .unwrap();

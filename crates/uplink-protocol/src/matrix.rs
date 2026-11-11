@@ -226,6 +226,26 @@ pub enum MatrixContent {
         mime: String,
         reply_to: Option<String>,
     },
+    /// Names the room (`m.room.name`); empty takes the name away.
+    Name { name: String },
+    /// Sets the room's topic (`m.room.topic`); empty takes it away.
+    Topic { topic: String },
+    /// Invites, kicks, bans or unbans `user`, a Matrix user id.
+    Member {
+        user: String,
+        action: MemberAction,
+        reason: Option<String>,
+    },
+}
+
+/// What a send does to a member of the room.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberAction {
+    Invite,
+    Kick,
+    Ban,
+    Unban,
 }
 
 /// A message being sent, sent and not yet synced back, or sent though
@@ -475,6 +495,42 @@ pub struct MatrixDevice {
     pub verified: bool,
     /// Whether it is uplink's.
     pub current: bool,
+}
+
+/// A member of the room: joined, invited, left or banned.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MemberInfo {
+    pub user: String,
+    /// Their display name in the room, if they have one.
+    pub name: Option<String>,
+    pub membership: MemberState,
+    /// Their power level in the room; `None` for a creator of a room of
+    /// version 12 or later, whose power is above any.
+    pub power: Option<i64>,
+    /// Whether the account may kick them, and ban them (unbanning needs
+    /// both), as its power is above theirs and the room's levels say.
+    pub kickable: bool,
+    pub bannable: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberState {
+    Joined,
+    Invited,
+    Knocking,
+    Left,
+    Banned,
+}
+
+/// What the account may do in the room, as its power levels say.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RoomPowers {
+    pub invite: bool,
+    pub name: bool,
+    pub topic: bool,
 }
 
 /// How far a member of the room (not the account) has read.

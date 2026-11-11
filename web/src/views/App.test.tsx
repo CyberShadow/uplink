@@ -2,7 +2,7 @@ import { signal } from '@preact/signals'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/preact'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Entry } from '../generated/protocol'
+import type { Entry, MemberState } from '../generated/protocol'
 import { Client } from '../stores/client'
 import { conversationKey } from '../stores/mail'
 import { FakeServer, ME, RECOVERY_KEY } from '../test/server'
@@ -1167,6 +1167,71 @@ describe('room timeline', () => {
     })
     await waitFor(() => expect(within(timeline()).queryByText(/Unable to decrypt/)).toBeNull())
     within(line('Hello')).getByRole('button', { name: /👍/ })
+  })
+
+  it('lists members by power, and changes them, and the name, from the room info', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    room.joined_members = 3
+    const member = (user: string, name: string | null, power: number | null, membership: MemberState = 'joined') => ({
+      user,
+      name,
+      power,
+      membership,
+      kickable: power !== null && power < 50,
+      bannable: power !== null && power < 50,
+    })
+    server.members.set(room.id, {
+      members: [
+        member('@carol:example.org', 'Carol', 0),
+        member(ME, 'Me', 50),
+        member('@bob:example.org', 'Bob', null),
+        member('@dave:example.org', null, 0, 'invited'),
+        member('@eve:example.org', 'Eve', 0, 'banned'),
+        member('@gone:example.org', 'Gone', 0, 'left'),
+      ],
+      powers: { invite: true, name: true, topic: false },
+    })
+    const user = await start(`/rooms/${room.id}`)
+    await user.click(await screen.findByRole('button', { name: '3 members' }))
+    const info = await screen.findByRole('complementary', { name: 'Room info' })
+    const joined = await within(info).findByRole('region', { name: 'Joined' })
+    expect(within(joined).getAllByRole('listitem').map((li) => li.getAttribute('aria-label'))).toEqual([
+      'Bob',
+      'Me',
+      'Carol',
+    ])
+    expect(within(within(joined).getByRole('listitem', { name: 'Bob' })).getByText('Owner')).toBeTruthy()
+    expect(within(within(joined).getByRole('listitem', { name: 'Bob' })).queryByRole('button')).toBeNull()
+    expect(within(info).queryByText('Gone')).toBeNull()
+
+    // Removing, with a reason.
+    await user.click(within(within(joined).getByRole('listitem', { name: 'Carol' })).getByRole('button', { name: 'Remove' }))
+    await user.type(within(info).getByLabelText('Reason'), 'noisy{Enter}')
+    const invited = within(info).getByRole('region', { name: 'Invited' })
+    await user.click(within(invited).getByRole('button', { name: 'Revoke invitation' }))
+    await user.click(within(invited).getByRole('button', { name: 'Revoke invitation' }))
+    const banned = within(info).getByRole('region', { name: 'Banned' })
+    await user.click(within(banned).getByRole('button', { name: 'Unban' }))
+    await user.click(within(banned).getByRole('button', { name: 'Unban' }))
+    await user.type(within(info).getByLabelText('User to invite'), '@frank:example.org{Enter}')
+    // The topic is not the account's to change; the name is.
+    expect(within(info).getByLabelText('Topic')).toHaveProperty('disabled', true)
+    const name = within(info).getByLabelText('Name')
+    await user.clear(name)
+    await user.type(name, 'Parlour')
+    await user.click(within(info).getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(server.requests.filter((r) => r.type === 'send_matrix_message').map((r) => r.content)).toEqual([
+        { type: 'member', user: '@carol:example.org', action: 'kick', reason: 'noisy' },
+        { type: 'member', user: '@dave:example.org', action: 'kick', reason: null },
+        { type: 'member', user: '@eve:example.org', action: 'unban', reason: null },
+        { type: 'member', user: '@frank:example.org', action: 'invite', reason: null },
+        { type: 'name', name: 'Parlour' },
+      ]),
+    )
+    await user.click(within(info).getByRole('button', { name: 'Close room info' }))
+    expect(screen.queryByRole('complementary', { name: 'Room info' })).toBeNull()
   })
 
   it('fetches events missing where a gap is, in place', async () => {

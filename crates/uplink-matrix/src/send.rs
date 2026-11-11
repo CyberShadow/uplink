@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use uplink_protocol::{
     compose::OutboxChanged,
     matrix::{
-        MatrixContent, MatrixSend, MatrixSendId, MatrixSendState, MatrixSendsChanged, RoomId,
+        MatrixContent, MatrixSend, MatrixSendId, MatrixSendState, MatrixSendsChanged, MemberAction,
+        RoomId,
     },
     ServerEvent,
 };
@@ -146,6 +147,17 @@ fn named(content: &MatrixContent) -> String {
         MatrixContent::Reaction { key, .. } => format!("the reaction {key}"),
         MatrixContent::Redaction { .. } => "the deletion".to_owned(),
         MatrixContent::File { name, .. } => quote(name),
+        MatrixContent::Name { name } => format!("the name {}", quote(name)),
+        MatrixContent::Topic { topic } => format!("the topic {}", quote(topic)),
+        MatrixContent::Member { user, action, .. } => format!(
+            "the {} of {user}",
+            match action {
+                MemberAction::Invite => "invitation",
+                MemberAction::Kick => "removal",
+                MemberAction::Ban => "ban",
+                MemberAction::Unban => "unban",
+            }
+        ),
     }
 }
 
@@ -183,6 +195,21 @@ fn described(tx: &Transaction, room: RoomId, content: &MatrixContent) -> Result<
             }
         }
         MatrixContent::File { name, .. } => format!("Sent {}", quote(name)),
+        MatrixContent::Name { name } if name.is_empty() => "Took the room's name away".to_owned(),
+        MatrixContent::Name { name } => format!("Named the room {}", quote(name)),
+        MatrixContent::Topic { topic } if topic.is_empty() => {
+            "Took the room's topic away".to_owned()
+        }
+        MatrixContent::Topic { topic } => format!("Set the topic to {}", quote(topic)),
+        MatrixContent::Member { user, action, .. } => format!(
+            "{} {user}",
+            match action {
+                MemberAction::Invite => "Invited",
+                MemberAction::Kick => "Removed",
+                MemberAction::Ban => "Banned",
+                MemberAction::Unban => "Unbanned",
+            }
+        ),
     })
 }
 
@@ -363,11 +390,12 @@ impl Observation for SendStarted {
 }
 
 /// The homeserver accepted a message as event `event_id`; if sync
-/// delivered the event already, the send is synced.
+/// delivered the event already, the send is synced. Of a change to a
+/// member, the homeserver gives no event id: it is synced at once.
 #[derive(Debug, Serialize)]
 pub struct SendSucceeded {
     pub item: MatrixSendId,
-    pub event_id: String,
+    pub event_id: Option<String>,
 }
 
 impl Observation for SendSucceeded {
@@ -376,7 +404,8 @@ impl Observation for SendSucceeded {
     fn apply(self, _account: &str, tx: &Transaction) -> Result<Observed> {
         let item = sending(tx, self.item)?;
         tx.execute(
-            "UPDATE matrix_send SET state = 'sent', event_id = ?1 WHERE id = ?2",
+            "UPDATE matrix_send SET state = 'sent', event_id = ?1, synced = ?1 IS NULL
+             WHERE id = ?2",
             params![self.event_id, self.item.0],
         )?;
         sends_synced(tx, item.room)?;
