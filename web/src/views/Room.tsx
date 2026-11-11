@@ -749,16 +749,17 @@ export function matrixSendState(item: MatrixSend): string {
       return item.wanted ? 'Sending…' : 'Sending; cancelling if it does not go out'
     case 'sent':
       if (item.wanted) return 'Sent'
-      if (item.error !== null) return `Sent; could not take it back: ${item.error}`
-      return item.retractable ? 'Taking back…' : 'Sent before the cancel could take it back'
+      if (item.error !== null) return `Could not undo: ${item.error}`
+      return item.retractable ? 'Undoing…' : 'Cannot undo (already sent)'
     case 'refused':
       return `Not sent: ${item.error}`
     case 'taking_back':
-      return 'Taking back…'
+      return 'Undoing…'
   }
 }
 
-/** Cancelling a message being sent, or keeping one sent though cancelled. */
+/** Cancelling a message being sent, or accepting that one sent could not
+ * be undone (keeping it sent). */
 export function MatrixSendActions(props: { item: MatrixSend; class?: string }) {
   const { item } = props
   const { matrix } = useServices()
@@ -769,10 +770,10 @@ export function MatrixSendActions(props: { item: MatrixSend; class?: string }) {
       </button>
     )
   }
-  if (!item.wanted && item.state === 'sent') {
+  if (!item.wanted && item.state === 'sent' && (!item.retractable || item.error !== null)) {
     return (
       <button type="button" class={props.class} onMouseDown={keepFocus} onClick={() => matrix.keepSent(item.id)}>
-        Keep it sent
+        OK
       </button>
     )
   }

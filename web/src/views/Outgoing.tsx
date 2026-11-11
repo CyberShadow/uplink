@@ -244,7 +244,7 @@ function MailRows(props: {
               )}
               {!item.wanted && item.state === 'sent' && (
                 <button type="button" onMouseDown={keepFocus} onClick={() => drafts.keepSent(item.id)}>
-                  Keep it sent
+                  OK
                 </button>
               )}
             </span>
@@ -325,7 +325,7 @@ function state(item: OutboxItem): string {
     case 'unknown':
       return `may have been sent (${item.error}); checking${item.wanted ? '' : ', cancelling if it was not'}`
     case 'sent':
-      return item.wanted ? 'sent; waiting for its copy' : 'sent before the cancel could take it back'
+      return item.wanted ? 'sent; waiting for its copy' : 'cannot undo (already sent)'
     case 'refused':
       return `not sent: ${item.error}`
   }

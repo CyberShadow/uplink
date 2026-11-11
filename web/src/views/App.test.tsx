@@ -998,12 +998,12 @@ describe('outbox', () => {
     const [row] = within(section).getAllByRole('listitem')
     expect(row.querySelector('[class*=from]')!.textContent).toBe('Lounge')
     expect(row.querySelector('[class*=summary]')!.textContent).toBe(
-      'Topic: oopsSent before the cancel could take it back',
+      'Topic: oopsCannot undo (already sent)',
     )
     expect(within(screen.getByRole('link', { name: /Outbox/ })).getByText('1').title).toBe(
       'Something needs your attention',
     )
-    await user.click(within(row).getByRole('button', { name: 'Keep it sent' }))
+    await user.click(within(row).getByRole('button', { name: 'OK' }))
     await screen.findByText('The outbox is empty: everything you did is at the providers.')
   })
 
@@ -1014,7 +1014,8 @@ describe('outbox', () => {
     server.sentThoughCancelledToRoom(room.id, text('oops'))
     const section = await screen.findByRole('region', { name: 'mx' })
     const [row] = within(section).getAllByRole('listitem')
-    expect(row.querySelector('[class*=summary]')!.textContent).toBe('oopsTaking back…')
+    expect(row.querySelector('[class*=summary]')!.textContent).toBe('oopsUndoing…')
+    expect(within(row).queryByRole('button')).toBeNull()
     expect(within(screen.getByRole('link', { name: /Outbox/ })).getByText('1').title).not.toBe(
       'Something needs your attention',
     )
@@ -1024,10 +1025,10 @@ describe('outbox', () => {
     const user = await start('/outbox')
     server.sentThoughCancelled('work', 'Lunch')
     const section = await screen.findByRole('region', { name: 'work' })
-    expect(within(section).getByText('sent before the cancel could take it back')).toBeTruthy()
+    expect(within(section).getByText('cannot undo (already sent)')).toBeTruthy()
     const count = within(screen.getByRole('link', { name: /Outbox/ })).getByText('1')
     expect(count.title).toBe('Something needs your attention')
-    await user.click(within(section).getByRole('button', { name: 'Keep it sent' }))
+    await user.click(within(section).getByRole('button', { name: 'OK' }))
     await screen.findByText('The outbox is empty: everything you did is at the providers.')
   })
 })
