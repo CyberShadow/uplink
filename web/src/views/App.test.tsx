@@ -1,11 +1,11 @@
 import { signal } from '@preact/signals'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/preact'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Entry } from '../generated/protocol'
 import { Client } from '../stores/client'
 import { conversationKey } from '../stores/mail'
-import { FakeServer, ME } from '../test/server'
+import { FakeServer, ME, RECOVERY_KEY } from '../test/server'
 import { App } from './App'
 import { text } from '../matrix'
 
@@ -30,6 +30,7 @@ async function start(path = '/') {
   else if (path === '/todos') await screen.findByRole('region', { name: 'To-dos' })
   else if (path === '/history') await screen.findByRole('list', { name: 'History' })
   else if (path === '/outbox') await screen.findByText(/^The outbox is empty/)
+  else if (path.startsWith('/matrix/')) await screen.findByRole('heading', { name: /^Security of/ })
   else await screen.findByRole('list', { name: 'Messages' })
   return userEvent.setup()
 }
@@ -1150,6 +1151,24 @@ describe('room timeline', () => {
     expect(server.requests).toContainEqual({ type: 'set_typing', room: room.id, typing: false })
   })
 
+  it('shows events decrypted late, and drops those that turn out reactions', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge', true)
+    const hello = server.receive(room.id, { body: 'Hello' })
+    const secret = server.receive(room.id, { kind: 'm.room.encrypted', msgtype: null, encryption: 'undecryptable' })
+    const reaction = server.receive(room.id, { kind: 'm.room.encrypted', msgtype: null, encryption: 'undecryptable' })
+    await start(`/rooms/${room.id}`)
+    await waitFor(() => expect(within(timeline()).getAllByText(/Unable to decrypt/)).toHaveLength(2))
+
+    server.change(room.id, secret, { kind: 'm.room.message', msgtype: 'm.text', body: 'Secret', encryption: 'decrypted' })
+    await within(timeline()).findByText('Secret')
+    server.relation(room.id, reaction, hello, {
+      reactions: [{ key: '👍', senders: [{ sender: '@bob:example.org', sender_name: 'Bob', event_id: reaction.event_id }] }],
+    })
+    await waitFor(() => expect(within(timeline()).queryByText(/Unable to decrypt/)).toBeNull())
+    within(line('Hello')).getByRole('button', { name: /👍/ })
+  })
+
   it('sends files attached, with the message', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')
@@ -1315,5 +1334,61 @@ describe('history', () => {
     expect(items()[1].textContent).toContain('undone')
     await user.keyboard('gi')
     await waitFor(() => expect(subjects()).toEqual(['First', 'Second', 'Third']))
+  })
+})
+
+describe('matrix security', () => {
+  beforeEach(() => server.addMatrixAccount())
+
+  it('shows the device and its trust, and recovers with the recovery key', async () => {
+    const user = await start('/matrix/mx/security')
+    const page = await screen.findByRole('region', { name: 'This device' })
+    await within(page).findByText(/Not verified/)
+    const devices = screen.getByRole('region', { name: 'Devices' })
+    within(devices).getByText('Element Android')
+    within(within(devices).getByText('uplink (mx)').closest('tr')!).getByText('Not verified')
+
+    const recover = screen.getByRole('region', { name: 'Recover' })
+    await user.type(within(recover).getByLabelText('Recovery key or passphrase'), 'wrong')
+    await user.click(within(recover).getByRole('button', { name: 'Recover' }))
+    await screen.findByRole('alert')
+    expect(screen.getByRole('alert').textContent).toContain('wrong key')
+
+    await user.clear(within(recover).getByLabelText('Recovery key or passphrase'))
+    await user.type(within(recover).getByLabelText('Recovery key or passphrase'), RECOVERY_KEY)
+    await user.click(within(recover).getByRole('button', { name: 'Recover' }))
+    await within(page).findByText(/Verified by the account/)
+    expect(screen.queryByRole('region', { name: 'Recover' })).toBeNull()
+    within(page).getByText('In use')
+  })
+
+  it('imports and exports room keys', async () => {
+    const user = await start('/matrix/mx/security')
+    const importing = await screen.findByRole('form', { name: 'Import room keys' })
+    await user.upload(within(importing).getByLabelText('Exported keys'), new File(['keys'], 'element-keys.txt'))
+    await user.type(within(importing).getByLabelText('Import passphrase'), 'export passphrase')
+    await user.click(within(importing).getByRole('button', { name: 'Import' }))
+    await within(importing).findByText('Imported 3 new keys of 5.')
+
+    const exporting = screen.getByRole('form', { name: 'Export room keys' })
+    const button = within(exporting).getByRole('button', { name: 'Export' })
+    await user.type(within(exporting).getByLabelText('Export passphrase'), 'secret')
+    expect(button).toHaveProperty('disabled', true)
+    await user.type(within(exporting).getByLabelText('Export passphrase again'), 'secret')
+    const clicked = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    await user.click(button)
+    await waitFor(() => expect(clicked).toHaveBeenCalled())
+    expect((clicked.mock.contexts[0] as HTMLAnchorElement).download).toBe('element-keys-mx.txt')
+  })
+
+  it('loads again when the client says it changed', async () => {
+    await start('/matrix/mx/security')
+    await screen.findByText('Element Android')
+    const security = server.security.get('mx')!
+    server.securityChanged('mx', {
+      ...security,
+      devices: [...security.devices, { ...security.devices[1]!, device_id: 'LAPTOP', name: 'Element Desktop' }],
+    })
+    await screen.findByText('Element Desktop')
   })
 })

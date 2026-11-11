@@ -7,11 +7,22 @@ export interface Blobs {
   upload(file: Blob): Promise<UploadedBlob>
   /** Stores attachment `index` of `message` as a blob, to forward it. */
   copyAttachment(message: MessageId, index: number): Promise<UploadedBlob>
+  /** The Matrix account's room keys, exported encrypted with `passphrase`
+   * (SPEC §9.4). */
+  exportRoomKeys(account: string, passphrase: string): Promise<Blob>
 }
 
 export const httpBlobs: Blobs = {
   upload: (file) => post('/api/blobs', file),
   copyAttachment: (message, index) => post(`/api/messages/${message}/attachments/${index}/blob`, null),
+  exportRoomKeys: async (account, passphrase) => {
+    const response = await fetch(`/api/matrix/${encodeURIComponent(account)}/room-keys`, {
+      method: 'POST',
+      body: passphrase,
+    })
+    if (!response.ok) throw new Error(`Exporting the room keys failed: ${await response.text()}`)
+    return await response.blob()
+  },
 }
 
 async function post(path: string, body: Blob | null): Promise<UploadedBlob> {

@@ -1,0 +1,109 @@
+.page {
+  flex: 1;
+  max-width: 760px;
+  padding: 16px 24px;
+  overflow: auto;
+}
+
+.page h1 {
+  margin: 0 0 12px;
+  font-size: 20px;
+  font-weight: 500;
+}
+
+.page h2 {
+  margin: 20px 0 8px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 0;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+}
+
+.help {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.form input[type='password'] {
+  min-width: 14em;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+}
+
+.verified {
+  color: var(--ok);
+}
+
+.unverified {
+  color: var(--error-fg);
+}
+
+.devices {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.devices th {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: normal;
+  text-align: left;
+}
+
+.devices :is(th, td) {
+  padding: 6px 8px 6px 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.tag {
+  margin-left: 6px;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.error {
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  background: var(--error-bg);
+  color: var(--error-fg);
+}
+
+.placeholder {
+  padding: 16px;
+  color: var(--muted);
+}

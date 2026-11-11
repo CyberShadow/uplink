@@ -7,6 +7,7 @@ pub mod media;
 pub mod membership;
 pub mod outbox;
 pub mod rooms;
+pub mod security;
 pub mod send;
 pub mod service;
 pub mod sync;

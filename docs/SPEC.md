@@ -848,14 +848,15 @@ session only ever waits for entries already committed.)
 ### 5.5 Notices
 
 What is only of the moment — who is typing, that members sent read
-receipts — is not logged: the server pushes it to the sessions connected
-as `Notice { notice }`, live only, never replayed. A session that falls
-behind the notices skips those it missed. A client that reconnects
-forgets what notices told it (no one is typing) and loads again what
-they invalidate. Requests of the moment (`SetTyping`) are not ops either:
-they answer `Done` and log nothing, and queries of state not logged
-(`ListReceipts`) are not positioned in the log, so a client loads again
-after one in flight when told of a change meanwhile.
+receipts, that the account's devices or keys changed — is not logged:
+the server pushes it to the sessions connected as `Notice { notice }`,
+live only, never replayed. A session that falls behind the notices skips
+those it missed. A client that reconnects forgets what notices told it
+(no one is typing) and loads again what they invalidate. Requests of the
+moment (`SetTyping`) are not ops either: they answer `Done` and log
+nothing, and queries of state not logged (`ListReceipts`) are not
+positioned in the log, so a client loads again after one in flight when
+told of a change meanwhile.
 
 ## 6. Transaction log & undo
 
@@ -1660,8 +1661,18 @@ serves them (§9.8); nothing remote loads.
 The timeline is ordered by sync arrival. uplink only syncs forward, so
 the first sync brings the latest events of each room, and a gappy
 (`limited`) sync leaves a gap; backfilling with `/messages` is deferred.
-Events that arrive undecryptable stay so, even if the key arrives later;
-retrying them is deferred.
+Events that arrive undecryptable are decrypted once their keys come
+(the observation `matrix.decrypted`, which updates the stored event in
+place, logging a `TimelineChanged` of it and of what it relates to, as
+it may turn out an edit or a reaction, no longer listed). A task by the
+sync task's side retries: the events of a Megolm session when the SDK
+receives its key (from another device, an import or the key backup);
+every event stored undecryptable on start, when the key backup becomes
+usable (as on recovering, §9.4), and when the SDK's key stream lags;
+and the events a sync records undecryptable, as soon as it is
+recorded. A failed decryption has the SDK look in the key backup
+(`BackupDownloadStrategy::AfterDecryptionFailure`), if the device has
+the backup's key. Events redacted meanwhile stay as they are.
 
 ### 9.3 Sending
 
@@ -1726,8 +1737,20 @@ the paired account up within a minute (its sync task retries restoring
 the session with backoff). To pair again, delete the account's state
 directory: its stores belong to the old device.
 
-This is a CLI flow and not a SPA flow because cross-signing setup is
-done once per device, ever; device verification UI is out of scope.
+Pairing is a CLI flow because it creates the device, once. What follows
+is the SPA's, on an account's Security page (§12.12), answered by the
+account's client and not logged (they are the account's state, not
+uplink's): `GetMatrixSecurity` (uplink's device, whether the account's
+cross-signing signed it, whether it has the cross-signing keys, the key
+backup's and recovery's state, and the account's devices with their
+trust); `RecoverMatrix`, which unlocks Secret Storage as pairing does,
+for a device paired without; `ImportRoomKeys` of an export (an uploaded
+blob) another client made, with its passphrase, answering how many
+keys were new; and exporting the device's room keys, encrypted with a
+passphrase, over HTTP (`POST /api/matrix/:account/room-keys`, the
+passphrase as the body, as a download: a POST, as it reads a secret).
+The sync task watches the backup's, recovery's, devices' and
+identities' streams, and pushes `SecurityChanged` notices (§5.5).
 
 ### 9.5 Rooms list / unread counts
 
@@ -1780,8 +1803,11 @@ done once per device, ever; device verification UI is out of scope.
 - No room creation, no inviting others, and no joining rooms one is not
   invited to (by id or alias); invitations are joined or declined, and
   rooms left (§9.7).
-- No backfill and no retrying undecryptable events (§9.2).
-- No SPA-side device management or verification UI.
+- No backfill (§9.2).
+- No interactive verification of devices (§9.4): a device verifies
+  itself with the recovery key. No setting up cross-signing, Secret
+  Storage or a key backup, nor renaming or signing out devices: another
+  client does.
 - No moderation UI (kick/ban, deleting others' messages): one deletes
   one's own messages only.
 
@@ -1980,6 +2006,7 @@ src/views/
 ├── Room.tsx               # a Matrix room: its timeline (§12.11)
 ├── RoomEvent.tsx          # an event of the timeline, on a line
 ├── RoomComposer.tsx       # the box to write to a room
+├── Security.tsx           # a Matrix account's device and keys (§12.12)
 ├── Todos.tsx              # the to-do list
 ├── History.tsx            # the user's ops, with Undo
 ├── Calendar.tsx           # week and agenda (§10.2)
@@ -2221,6 +2248,20 @@ the membership's buttons.
   the room are listed above the box, to remove or send with the
   message, as files after it (the first answering what it replies to if
   there is no text).
+
+### 12.12 Matrix security
+
+Each Matrix account lists a Security page under its header in the nav
+(`/matrix/:account/security`): uplink's device, whether it is verified
+(and if not, that others may not trust it and that it cannot read what
+was sent before it), whether it has the cross-signing keys, the key
+backup's and recovery's state; a form to recover with the recovery key
+or passphrase, shown while the device is unverified or lacks the
+secrets; room keys' import (a file and its passphrase, saying how many
+keys were new) and export (a passphrase typed twice, downloaded as
+`element-keys-<account>.txt`); and the account's devices, most
+recently seen first, with when and where from, and whether each is
+verified. It loads again on `SecurityChanged` notices and on reconnect.
 
 ## 13. Authentication & secrets
 

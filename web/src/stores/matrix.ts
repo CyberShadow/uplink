@@ -6,6 +6,7 @@ import type {
   ClientRequest,
   LogEntry,
   MatrixAccount,
+  MatrixSecurity,
   MemberReceipt,
   Notice,
   RoomMember,
@@ -17,6 +18,7 @@ import type {
   RoomEvent,
   RoomEventId,
   RoomId,
+  ServerResponse,
   TxLogId,
 } from '../generated/protocol'
 import type { Blobs } from '../blobs'
@@ -34,6 +36,7 @@ export class MatrixStore {
   readonly error = signal<string | null>(null)
 
   private timelines = new Map<RoomId, Timeline>()
+  private securities = new Map<string, Security>()
   private roomLoader = new Loader(async () => {
     const response = await this.query({ type: 'list_rooms' }, 'rooms')
     if (!response) return
@@ -49,6 +52,7 @@ export class MatrixStore {
   reset() {
     this.roomLoader.invalidate()
     for (const timeline of this.timelines.values()) timeline.reset()
+    for (const security of this.securities.values()) security.changed()
   }
 
   apply(entry: LogEntry) {
@@ -80,7 +84,11 @@ export class MatrixStore {
     }
   }
 
-  notice(notice: Extract<Notice, { type: 'typing' | 'receipts_changed' }>) {
+  notice(notice: Extract<Notice, { type: 'typing' | 'receipts_changed' | 'security_changed' }>) {
+    if (notice.type === 'security_changed') {
+      this.securities.get(notice.account)?.changed()
+      return
+    }
     const timeline = this.timelines.get(notice.room)
     if (!timeline) return
     switch (notice.type) {
@@ -100,6 +108,16 @@ export class MatrixStore {
     } catch (error) {
       this.error.value = (error as Error).message
     }
+  }
+
+  /** The account's device and its encryption, loaded on first use. */
+  security(account: string): Security {
+    let security = this.securities.get(account)
+    if (!security) {
+      security = new Security(account, this.server)
+      this.securities.set(account, security)
+    }
+    return security
   }
 
   /** The room's timeline, loaded from its latest events on first use. */
@@ -234,16 +252,23 @@ export class Timeline {
     if (ids.length === 0) return
     const response = await this.loadEvents(ids)
     if (!response) return
-    const fresh = new Map<RoomEventId, RoomEvent>()
-    for (const event of response.events) {
+    // Those not answered are no longer listed (one decrypted late may be
+    // a reaction).
+    const fresh = new Map<RoomEventId, RoomEvent | null>(ids.map((id) => [id, null]))
+    for (const event of response.events) fresh.set(event.id, event)
+    for (const id of fresh.keys()) {
       // Of loads in flight together, the one reflecting more of the log
       // wins, whichever is answered last.
-      if ((this.loadedAt.get(event.id) ?? -1) > response.as_of) continue
-      this.loadedAt.set(event.id, response.as_of)
-      fresh.set(event.id, event)
+      if ((this.loadedAt.get(id) ?? -1) > response.as_of) fresh.delete(id)
+      else this.loadedAt.set(id, response.as_of)
     }
     const current = this.events.value
-    if (current && fresh.size > 0) this.events.value = current.map((e) => fresh.get(e.id) ?? e)
+    if (current && fresh.size > 0) {
+      this.events.value = current.flatMap((e) => {
+        const now = fresh.get(e.id)
+        return now === undefined ? [e] : now === null ? [] : [now]
+      })
+    }
   }
 
   sendsChanged() {
@@ -303,6 +328,72 @@ export class Timeline {
       }
     } finally {
       this.loadingEarlier = false
+    }
+  }
+}
+
+/** An account's device and its encryption (SPEC §9.4), as its client
+ * has it: not logged, so loaded again when a notice says it changed. */
+export class Security {
+  /** `null` until loaded. */
+  readonly state = signal<MatrixSecurity | null>(null)
+  readonly error = signal<string | null>(null)
+  private loader = new Loader(async () => {
+    const response = await this.request({ type: 'get_matrix_security', account: this.account }, 'matrix_security')
+    if (response) this.state.value = response.security
+  }, false)
+
+  constructor(
+    readonly account: string,
+    private readonly server: Requester & Blobs,
+  ) {
+    this.loader.invalidate()
+  }
+
+  changed() {
+    this.loader.invalidate()
+  }
+
+  /** Unlocks Secret Storage with the recovery key or passphrase; returns
+   * whether it did. */
+  async recover(recovery: string): Promise<boolean> {
+    const response = await this.request({ type: 'recover_matrix', account: this.account, recovery }, 'matrix_security')
+    if (response) this.state.value = response.security
+    return response !== null
+  }
+
+  /** Imports the room keys exported to `file`; returns how many were new,
+   * of how many, or `null` if it failed. */
+  async importKeys(file: File, passphrase: string): Promise<Response<'room_keys_imported'> | null> {
+    this.error.value = null
+    let blob
+    try {
+      blob = (await this.server.upload(file)).blob
+    } catch (error) {
+      this.error.value = (error as Error).message
+      return null
+    }
+    return this.request({ type: 'import_room_keys', account: this.account, blob, passphrase }, 'room_keys_imported')
+  }
+
+  /** The account's room keys, exported encrypted with `passphrase`. */
+  async exportKeys(passphrase: string): Promise<Blob | null> {
+    this.error.value = null
+    try {
+      return await this.server.exportRoomKeys(this.account, passphrase)
+    } catch (error) {
+      this.error.value = (error as Error).message
+      return null
+    }
+  }
+
+  private async request<T extends ServerResponse['type']>(request: ClientRequest, type: T): Promise<Response<T> | null> {
+    this.error.value = null
+    try {
+      return await query(this.server, request, type)
+    } catch (error) {
+      this.error.value = (error as Error).message
+      return null
     }
   }
 }

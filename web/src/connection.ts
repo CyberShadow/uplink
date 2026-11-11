@@ -72,6 +72,7 @@ function isResendable(body: ClientRequest): boolean {
     case 'list_edits':
     case 'list_receipts':
     case 'set_typing':
+    case 'get_matrix_security':
     case 'list_matrix_sends':
     case 'list_message_entries':
     case 'list_conversation':
@@ -94,6 +95,8 @@ function isResendable(body: ClientRequest): boolean {
     case 'cancel_matrix_send':
     case 'keep_matrix_sent':
     case 'mark_room_read':
+    case 'recover_matrix':
+    case 'import_room_keys':
     case 'change_membership':
     case 'create_todo':
     case 'edit_todo':

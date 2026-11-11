@@ -89,6 +89,8 @@ pub enum WsServerMsg {
 pub enum Notice {
     Typing(matrix::Typing),
     ReceiptsChanged(matrix::ReceiptsChanged),
+    /// The account's devices, their trust or its key backup changed.
+    SecurityChanged(matrix::SecurityChanged),
 }
 
 // ── requests ──────────────────────────────────────────────────────────────
@@ -250,6 +252,25 @@ pub enum ClientRequest {
     ListReceipts {
         room: RoomId,
     },
+    /// The account's device, its trust, key backup and recovery, and the
+    /// account's other devices (SPEC §9.4).
+    GetMatrixSecurity {
+        account: String,
+    },
+    /// Unlock Secret Storage with the recovery key or passphrase: the
+    /// device then has the cross-signing keys, and so is verified, and the
+    /// key backup's key. Not an op: it is the account's, not uplink's.
+    RecoverMatrix {
+        account: String,
+        recovery: String,
+    },
+    /// Import room keys from an export (an uploaded blob), as another
+    /// client makes it, encrypted with `passphrase`.
+    ImportRoomKeys {
+        account: String,
+        blob: compose::BlobId,
+        passphrase: String,
+    },
     /// Join a room one is invited to, or leave or decline one (SPEC §9.7).
     ChangeMembership {
         room: RoomId,
@@ -292,6 +313,16 @@ pub enum ServerResponse {
     },
     /// Done, and nothing logged: of what is of the moment.
     Done,
+    /// Of `GetMatrixSecurity` and `RecoverMatrix`: as the client has it
+    /// now, not logged.
+    MatrixSecurity {
+        security: matrix::MatrixSecurity,
+    },
+    /// Of `ImportRoomKeys`: how many of the keys exported were new.
+    RoomKeysImported {
+        imported: u64,
+        total: u64,
+    },
     /// Query results reflect the log up to and including entry `as_of`;
     /// events of later entries apply on top.
     Accounts {
@@ -390,7 +421,11 @@ impl ServerResponse {
             | Self::Events { as_of, .. }
             | Self::History { as_of, .. } => Some(*as_of),
             // Message content does not change; the rest is not logged.
-            Self::Message { .. } | Self::Done | Self::Receipts { .. } => None,
+            Self::Message { .. }
+            | Self::Done
+            | Self::Receipts { .. }
+            | Self::MatrixSecurity { .. }
+            | Self::RoomKeysImported { .. } => None,
         }
     }
 }

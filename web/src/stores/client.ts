@@ -54,6 +54,7 @@ export class Client {
     switch (notice.type) {
       case 'typing':
       case 'receipts_changed':
+      case 'security_changed':
         this.matrix.notice(notice)
         break
     }

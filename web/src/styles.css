@@ -16,6 +16,7 @@
   --unread-bg: #fff;
   --error-bg: #fce8e6;
   --error-fg: #a50e0e;
+  --ok: #1e8e3e;
   /* Gmail's: narrower than most systems' own. */
   font: 14px/1.4 'Google Sans', Roboto, RobotoDraft, Helvetica, Arial, sans-serif;
   color: var(--fg);
@@ -40,6 +41,7 @@
     --unread-bg: #202424;
     --error-bg: #5c1c1c;
     --error-fg: #f6aea9;
+    --ok: #81c995;
   }
 }
 

@@ -5,11 +5,13 @@ use crate::{
     media,
     membership::ChangeMembership,
     rooms::{self, MarkRead},
+    security,
     send::{self, CancelMessage, KeepSent, SendMessage},
 };
 use matrix_sdk::ruma::events::room::MediaSource as MatrixMediaSource;
 use std::sync::Arc;
 use uplink_protocol::{
+    compose::BlobId,
     matrix::{
         MatrixAccount, MatrixContent, MatrixSendId, MemberReceipt, Membership, MembershipChange,
         RoomEventId, RoomId, RoomMember, TimelinePage,
@@ -226,6 +228,65 @@ impl Matrix {
                 )
             })?;
         Ok((account, sdk_room))
+    }
+
+    /// The account's device and its encryption (SPEC §9.4).
+    pub async fn get_security(&self, account: &str) -> Response {
+        let client = self.client(account)?;
+        let security = security::security(account, &client)
+            .await
+            .map_err(internal)?;
+        Ok(ServerResponse::MatrixSecurity { security })
+    }
+
+    /// Unlocks Secret Storage with the recovery key or passphrase.
+    pub async fn recover(&self, account: &str, recovery: &str) -> Response {
+        let client = self.client(account)?;
+        client
+            .encryption()
+            .recovery()
+            .recover(recovery)
+            .await
+            .map_err(|e| {
+                error(
+                    ErrorCode::Invalid,
+                    format!("could not unlock Secret Storage: {e}"),
+                )
+            })?;
+        self.get_security(account).await
+    }
+
+    /// Imports room keys from the uploaded export `blob`.
+    pub async fn import_room_keys(
+        &self,
+        account: &str,
+        blob: &BlobId,
+        passphrase: &str,
+    ) -> Response {
+        let client = self.client(account)?;
+        let hash = VariantHash::parse(&blob.0)
+            .ok_or_else(|| error(ErrorCode::Invalid, format!("not a blob: {:?}", blob.0)))?;
+        if self.blobs.size(&hash).map_err(internal)?.is_none() {
+            return Err(error(ErrorCode::NotFound, format!("no blob {}", blob.0)));
+        }
+        let export = self.blobs.get(&hash).map_err(internal)?;
+        // A wrong passphrase, or a file not an export, is the request's.
+        let (imported, total) = security::import_room_keys(&client, &export, passphrase)
+            .await
+            .map_err(|e| error(ErrorCode::Invalid, format!("{e:#}")))?;
+        Ok(ServerResponse::RoomKeysImported { imported, total })
+    }
+
+    /// The account's room keys, exported encrypted with `passphrase`.
+    pub async fn export_room_keys(
+        &self,
+        account: &str,
+        passphrase: &str,
+    ) -> Result<Vec<u8>, ServerError> {
+        let client = self.client(account)?;
+        security::export_room_keys(&client, passphrase)
+            .await
+            .map_err(internal)
     }
 
     /// Tells the room the account is typing, or has stopped.

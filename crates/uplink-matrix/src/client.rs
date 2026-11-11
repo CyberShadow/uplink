@@ -11,6 +11,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use matrix_sdk::{
     authentication::matrix::MatrixSession,
     config::SyncSettings,
+    encryption::{BackupDownloadStrategy, EncryptionSettings},
     media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings},
     ruma::{
         api::client::{
@@ -132,6 +133,12 @@ async fn build(account: &MatrixAccountConfig, key: &MasterKey) -> Result<Client>
     Client::builder()
         .homeserver_url(&account.homeserver)
         .sqlite_store(&account.state_dir, Some(&passphrase))
+        // Keys missing are looked for in the key backup, if the device has
+        // its key (SPEC §9.4).
+        .with_encryption_settings(EncryptionSettings {
+            backup_download_strategy: BackupDownloadStrategy::AfterDecryptionFailure,
+            ..EncryptionSettings::default()
+        })
         .build()
         .await
         .with_context(|| format!("opening the Matrix client of {}", account.id))

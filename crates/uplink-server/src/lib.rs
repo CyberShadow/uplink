@@ -472,6 +472,7 @@ fn build_app(state: AppState) -> Router {
             "/api/rooms/:room/members/:user/avatar",
             get(member_avatar_handler),
         )
+        .route("/api/matrix/:account/room-keys", post(room_keys_handler))
         .route(
             uplink_email::remote::REMOTE_IMAGE_PATH,
             get(remote_image_handler),
@@ -639,6 +640,42 @@ async fn member_avatar_handler(
             (StatusCode::NOT_FOUND, e.message).into_response()
         }
         Err(e) => (StatusCode::BAD_GATEWAY, e.message).into_response(),
+    }
+}
+
+/// The account's room keys, exported encrypted with the passphrase the
+/// body is (SPEC §9.4), as a download. A POST: it reads a secret.
+async fn room_keys_handler(
+    State(state): State<AppState>,
+    extract::Path(account): extract::Path<String>,
+    passphrase: String,
+) -> Response {
+    if passphrase.is_empty() {
+        return (StatusCode::BAD_REQUEST, "the passphrase is empty").into_response();
+    }
+    match state
+        .services
+        .matrix
+        .export_room_keys(&account, &passphrase)
+        .await
+    {
+        Ok(export) => (
+            [
+                (header::CONTENT_TYPE, "text/plain; charset=utf-8".to_owned()),
+                (
+                    header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"element-keys-{account}.txt\""),
+                ),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
+                (header::CACHE_CONTROL, "no-store".to_owned()),
+            ],
+            export,
+        )
+            .into_response(),
+        Err(e) if e.code == ErrorCode::NotFound => {
+            (StatusCode::NOT_FOUND, e.message).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.message).into_response(),
     }
 }
 
@@ -859,6 +896,21 @@ impl Backend for Services {
             ClientRequest::MarkRoomRead { room, event } => self.matrix.mark_read(room, event).await,
             ClientRequest::SetTyping { room, typing } => self.matrix.set_typing(room, typing).await,
             ClientRequest::ListReceipts { room } => self.matrix.list_receipts(room).await,
+            ClientRequest::GetMatrixSecurity { account } => {
+                self.matrix.get_security(&account).await
+            }
+            ClientRequest::RecoverMatrix { account, recovery } => {
+                self.matrix.recover(&account, &recovery).await
+            }
+            ClientRequest::ImportRoomKeys {
+                account,
+                blob,
+                passphrase,
+            } => {
+                self.matrix
+                    .import_room_keys(&account, &blob, &passphrase)
+                    .await
+            }
             ClientRequest::ChangeMembership { room, change } => {
                 self.matrix.change_membership(room, change).await
             }

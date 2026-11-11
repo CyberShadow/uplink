@@ -998,3 +998,99 @@ async fn typing_and_receipts_are_noticed() {
     assert_eq!(bob_read.event, sent.id);
     assert!(receipts.iter().all(|r| r.member.user != "@alice:localhost"));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn events_undecryptable_are_decrypted_once_their_keys_are_imported() {
+    let dir = tempfile::tempdir().unwrap();
+    let homeserver = Homeserver::start(dir.path()).await;
+    let bob = homeserver.register(dir.path(), "bob").await;
+    let alice_phone = homeserver.register(dir.path(), "alice").await;
+    let _bob_received = sync_messages(&bob);
+    let room_id = shared_room(&bob, &alice_phone).await;
+    // Before uplink's device exists: it gets no key.
+    bob.get_room(&room_id)
+        .unwrap()
+        .send(
+            matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(
+                "before uplink",
+            ),
+        )
+        .await
+        .unwrap();
+
+    let uplink = Uplink::new(&homeserver);
+    let _sync = uplink.pair_and_sync().await;
+    let room = eventually("uplink to see the room", || async {
+        uplink
+            .room(&room_id)
+            .await
+            .filter(|r| r.membership == Membership::Joined)
+    })
+    .await;
+    let undecryptable = eventually("the message, undecryptable", || async {
+        uplink
+            .timeline(&room)
+            .await
+            .into_iter()
+            .find(|e| e.encryption == Encryption::Undecryptable)
+    })
+    .await;
+    assert_eq!(undecryptable.sender, "@bob:localhost");
+
+    let security = match uplink.matrix.get_security("mx").await.unwrap() {
+        ServerResponse::MatrixSecurity { security } => security,
+        other => panic!("unexpected {other:?}"),
+    };
+    let current: Vec<_> = security.devices.iter().filter(|d| d.current).collect();
+    assert_eq!(current.len(), 1);
+    assert_eq!(current[0].device_id, security.device_id);
+    assert_eq!(security.devices.len(), 2, "uplink's and the phone's");
+
+    // The phone has the key: it exports it, and uplink imports it.
+    let mut phone_received = sync_messages(&alice_phone);
+    assert_eq!(phone_received.recv().await.unwrap(), "before uplink");
+    let keys = dir.path().join("keys.txt");
+    alice_phone
+        .encryption()
+        .export_room_keys(keys.clone(), "export passphrase", |_| true)
+        .await
+        .unwrap();
+    let export = std::fs::read(dir.path().join("keys.txt")).unwrap();
+    let blob = uplink_storage::store::Store::blobs(uplink.dir.path())
+        .put(&export)
+        .unwrap();
+    let blob = uplink_protocol::compose::BlobId(blob.0);
+    assert!(uplink
+        .matrix
+        .import_room_keys("mx", &blob, "wrong passphrase")
+        .await
+        .is_err());
+    match uplink
+        .matrix
+        .import_room_keys("mx", &blob, "export passphrase")
+        .await
+        .unwrap()
+    {
+        ServerResponse::RoomKeysImported { imported, total } => {
+            assert!(imported >= 1);
+            assert!(total >= imported);
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    let decrypted = eventually("the message, decrypted", || async {
+        uplink
+            .timeline(&room)
+            .await
+            .into_iter()
+            .find(|e| e.id == undecryptable.id && e.encryption == Encryption::Decrypted)
+    })
+    .await;
+    assert_eq!(decrypted.body.as_deref(), Some("before uplink"));
+    assert_eq!(decrypted.kind, "m.room.message");
+
+    // And uplink exports what it has.
+    let export = uplink.matrix.export_room_keys("mx", "again").await.unwrap();
+    assert!(String::from_utf8(export)
+        .unwrap()
+        .starts_with("-----BEGIN MEGOLM SESSION DATA-----"));
+}

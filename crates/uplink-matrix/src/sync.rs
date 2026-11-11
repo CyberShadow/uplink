@@ -10,10 +10,13 @@
 use crate::{
     client,
     membership::{self, MembershipChanged},
-    rooms::{self, ObservedEvent, ObservedRoom, ReceiptSent, SpaceChild, Synced},
+    rooms::{self, Decrypted, ObservedEvent, ObservedRoom, ReceiptSent, SpaceChild, Synced},
     send::{self, SendFailed, SendStarted, SendSucceeded},
 };
 use anyhow::{Context, Result};
+use matrix_sdk::encryption::backups::BackupState;
+use matrix_sdk::ruma::{events::room::encrypted::OriginalSyncRoomEncryptedEvent, serde::Raw};
+use matrix_sdk::stream::StreamExt;
 use matrix_sdk::{
     attachment::AttachmentConfig,
     config::{SyncSettings, SyncToken},
@@ -42,12 +45,15 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::sync::broadcast::{self, error::RecvError};
+use tokio::sync::{
+    broadcast::{self, error::RecvError},
+    mpsc,
+};
 use uplink_config::MatrixAccountConfig;
 use uplink_protocol::{
     matrix::{
         Encryption, MatrixContent, Membership, MembershipChange, ReceiptsChanged, RoomMember,
-        Typing,
+        SecurityChanged, Typing,
     },
     LogEntry, Notice, Source,
 };
@@ -120,13 +126,25 @@ impl Sync {
             reader: reader("sender"),
             wake: self.dispatcher.hub().subscribe(),
         };
+        let (undecryptable, received) = mpsc::unbounded_channel();
+        let (id_for_security, client_for_security) = (id.clone(), client.clone());
+        let dispatcher = self.dispatcher.clone();
+        let redecryptor = Redecryptor {
+            account: id.clone(),
+            client: client.clone(),
+            dispatcher: self.dispatcher.clone(),
+            reader: reader("redecryptor"),
+            undecryptable: received,
+        };
         let syncer = Syncer {
             account: id,
             client,
             dispatcher: self.dispatcher,
             reader: reader("sync"),
+            undecryptable,
         };
-        tokio::join!(sender.run(), syncer.run());
+        let security = watch_security(id_for_security, client_for_security, dispatcher);
+        tokio::join!(sender.run(), syncer.run(), redecryptor.run(), security);
     }
 }
 
@@ -167,6 +185,8 @@ struct Syncer {
     client: Client,
     dispatcher: Dispatcher,
     reader: Arc<Mutex<Connection>>,
+    /// Where events recorded undecryptable go, to be decrypted later.
+    undecryptable: mpsc::UnboundedSender<Vec<(String, String)>>,
 }
 
 impl Syncer {
@@ -200,6 +220,15 @@ impl Syncer {
         let next_batch = response.next_batch.clone();
         let moment = self.moment(&response).await?;
         let rooms = self.observe(response, first).await?;
+        let undecryptable: Vec<(String, String)> = rooms
+            .iter()
+            .flat_map(|room| {
+                room.events
+                    .iter()
+                    .filter(|e| e.encryption == Encryption::Undecryptable)
+                    .map(|e| (room.room_id.clone(), e.raw.clone()))
+            })
+            .collect();
         if first || !rooms.is_empty() {
             self.dispatcher
                 .observe(
@@ -212,6 +241,11 @@ impl Syncer {
                 .await?;
         }
         self.notify(moment).await?;
+        if !undecryptable.is_empty() {
+            self.undecryptable
+                .send(undecryptable)
+                .expect("the redecryptor runs as long as the syncer");
+        }
         Ok(next_batch)
     }
 
@@ -494,6 +528,152 @@ fn own_receipts(
         }
     }
     Ok(events)
+}
+
+// ── decrypting late ───────────────────────────────────────────────────────
+
+/// Decrypts events recorded undecryptable once their keys come: from
+/// another device, from the key backup (which a failed decryption asks,
+/// if the device has the backup's key), or imported (SPEC §9.2).
+struct Redecryptor {
+    account: String,
+    client: Client,
+    dispatcher: Dispatcher,
+    reader: Arc<Mutex<Connection>>,
+    /// Events the syncer recorded undecryptable, by room id, as JSON.
+    undecryptable: mpsc::UnboundedReceiver<Vec<(String, String)>>,
+}
+
+impl Redecryptor {
+    async fn run(mut self) {
+        let mut keys = self
+            .client
+            .encryption()
+            .room_keys_received_stream()
+            .await
+            .expect("a restored client has its crypto store");
+        let mut backup = self.client.encryption().backups().state_stream();
+        // Keys may have come while uplink was not running.
+        retry(&self.account, "decrypting stored events", || {
+            self.decrypt_stored(None)
+        })
+        .await;
+        loop {
+            tokio::select! {
+                received = keys.next() => match received {
+                    Some(Ok(keys)) => {
+                        for key in keys {
+                            let session = (key.room_id.to_string(), key.session_id);
+                            retry(&self.account, "decrypting stored events", || {
+                                self.decrypt_stored(Some(session.clone()))
+                            })
+                            .await;
+                        }
+                    }
+                    // Some went by unseen: try them all.
+                    Some(Err(_lagged)) => {
+                        retry(&self.account, "decrypting stored events", || {
+                            self.decrypt_stored(None)
+                        })
+                        .await;
+                    }
+                    None => panic!("the room key stream ends with the client"),
+                },
+                // A backup usable now (as on recovering) has keys of
+                // events stored: trying them asks it for those.
+                state = backup.next() => match state {
+                    Some(Ok(BackupState::Enabled)) | Some(Err(_)) => {
+                        retry(&self.account, "decrypting stored events", || {
+                            self.decrypt_stored(None)
+                        })
+                        .await;
+                    }
+                    Some(Ok(_)) => {}
+                    None => panic!("the backup state stream ends with the client"),
+                },
+                recorded = self.undecryptable.recv() => {
+                    let recorded: Vec<(String, String)> = recorded.expect("the syncer runs as long as the redecryptor");
+                    // Trying asks the key backup for their keys.
+                    retry(&self.account, "decrypting new events", || {
+                        self.decrypt(recorded.clone())
+                    })
+                    .await;
+                }
+            }
+        }
+    }
+
+    /// Decrypts the stored events still undecryptable, of a session only,
+    /// if given: a room's Matrix id and a Megolm session id.
+    async fn decrypt_stored(&self, session: Option<(String, String)>) -> Result<()> {
+        let account = self.account.clone();
+        let stored = read(&self.reader, move |conn| {
+            rooms::undecryptable(
+                conn,
+                &account,
+                session.as_ref().map(|(r, s)| (r.as_str(), s.as_str())),
+            )
+        })
+        .await?;
+        self.decrypt(stored).await
+    }
+
+    /// Decrypts `events` (by room id, as JSON), recording those it can.
+    async fn decrypt(&self, events: Vec<(String, String)>) -> Result<()> {
+        let mut decrypted: Vec<(String, Vec<ObservedEvent>)> = vec![];
+        for (room_id, raw) in events {
+            let Some(room) = self.client.get_room(<&RoomId>::try_from(room_id.as_str())?) else {
+                continue;
+            };
+            let encrypted: Raw<OriginalSyncRoomEncryptedEvent> = serde_json::from_str(&raw)?;
+            let event = room.decrypt_event(&encrypted, None).await?;
+            if !matches!(event.kind, TimelineEventKind::Decrypted(_)) {
+                continue;
+            }
+            let event =
+                ObservedEvent::parse(event.raw().json().get(), None, Encryption::Decrypted)?;
+            match decrypted.last_mut() {
+                Some((last, events)) if *last == room_id => events.push(event),
+                _ => decrypted.push((room_id, vec![event])),
+            }
+        }
+        for (room_id, events) in decrypted {
+            self.dispatcher
+                .observe(self.account.clone(), Decrypted { room_id, events })
+                .await?;
+        }
+        Ok(())
+    }
+}
+
+/// Tells connected clients when the account's devices, their trust, its
+/// key backup or recovery change (SPEC §9.4).
+async fn watch_security(account: String, client: Client, dispatcher: Dispatcher) {
+    let encryption = client.encryption();
+    let mut backup = encryption.backups().state_stream();
+    let mut recovery = encryption.recovery().state_stream();
+    let mut devices = encryption
+        .devices_stream()
+        .await
+        .expect("a restored client has its crypto store");
+    let mut identities = encryption
+        .user_identities_stream()
+        .await
+        .expect("a restored client has its crypto store");
+    loop {
+        tokio::select! {
+            changed = backup.next() => changed.map(drop),
+            changed = recovery.next() => changed.map(drop),
+            changed = devices.next() => changed.map(drop),
+            changed = identities.next() => changed.map(drop),
+        }
+        .expect("the client's streams end with it");
+        dispatcher
+            .hub()
+            .notify(Notice::SecurityChanged(SecurityChanged {
+                account: account.clone(),
+            }));
+    }
 }
 
 // ── sending ───────────────────────────────────────────────────────────────

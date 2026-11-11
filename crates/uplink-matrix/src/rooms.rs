@@ -586,6 +586,111 @@ fn observe_receipts(tx: &Transaction, room: RoomId, receipts: &[String]) -> Resu
     )? > 0)
 }
 
+// ── decrypting late ───────────────────────────────────────────────────────
+
+/// Events of the room stored undecryptable that the client has decrypted
+/// since: their keys came later, from another device, the key backup or
+/// an import (SPEC §9.2).
+#[derive(Debug, Serialize)]
+pub struct Decrypted {
+    pub room_id: String,
+    /// Not in the log: they are stored.
+    #[serde(skip)]
+    pub events: Vec<ObservedEvent>,
+}
+
+impl Observation for Decrypted {
+    const KIND: &'static str = "matrix.decrypted";
+
+    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
+        let room: RoomId = tx
+            .query_row(
+                "SELECT id FROM matrix_room WHERE account_id = ?1 AND room_id = ?2",
+                [account, &self.room_id],
+                |r| Ok(RoomId(r.get(0)?)),
+            )
+            .with_context(|| format!("no room {} of {account}", self.room_id))?;
+        // Those redacted meanwhile have no content left to show.
+        let mut update = tx.prepare(
+            "UPDATE matrix_event
+             SET type = ?3, msgtype = ?4, body = ?5, raw_json = ?6, encryption = 'decrypted',
+                 rel_type = ?7, relates_to = ?8, reply_to = ?9, redacts = ?10
+             WHERE room = ?1 AND event_id = ?2 AND encryption = 'undecryptable' AND NOT redacted
+             RETURNING id",
+        )?;
+        let mut decrypted = vec![];
+        for e in &self.events {
+            let r = &e.relation;
+            let id = update
+                .query_row(
+                    params![
+                        room.0,
+                        e.event_id,
+                        e.kind,
+                        e.msgtype,
+                        e.body,
+                        e.raw,
+                        r.rel_type,
+                        r.relates_to,
+                        r.reply_to,
+                        r.redacts,
+                    ],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            decrypted.extend(id.map(RoomEventId));
+        }
+        // Edits and reactions now known change what they are of; the
+        // events decrypted change themselves, and may now be relations no
+        // longer listed.
+        let mut changed: std::collections::BTreeSet<RoomEventId> =
+            touched(tx, &decrypted, &[])?.into_iter().collect();
+        changed.extend(&decrypted);
+        let events = if decrypted.is_empty() {
+            vec![]
+        } else {
+            vec![
+                ServerEvent::TimelineChanged(TimelineChanged {
+                    room,
+                    events: changed.into_iter().collect(),
+                }),
+                // Its unread count, of messages.
+                ServerEvent::RoomsChanged(RoomsChanged { rooms: vec![room] }),
+            ]
+        };
+        Ok(Observed {
+            description: match decrypted.len() {
+                1 => "Decrypted 1 event".to_owned(),
+                n => format!("Decrypted {n} events"),
+            },
+            events,
+        })
+    }
+}
+
+/// The account's events stored undecryptable (and not redacted), by
+/// their room's Matrix id, with their encrypted JSON; of the session
+/// `session` (a room's Matrix id and a Megolm session id) only, if given.
+pub fn undecryptable(
+    conn: &Connection,
+    account: &str,
+    session: Option<(&str, &str)>,
+) -> Result<Vec<(String, String)>> {
+    let (room_id, session_id) = session.unzip();
+    Ok(conn
+        .prepare(
+            "SELECT r.room_id, e.raw_json FROM matrix_event e JOIN matrix_room r ON r.id = e.room
+             WHERE r.account_id = ?1 AND e.encryption = 'undecryptable' AND NOT e.redacted
+               AND (?2 IS NULL OR (r.room_id = ?2
+                    AND json_extract(e.raw_json, '$.content.session_id') = ?3))
+             ORDER BY e.id",
+        )?
+        .query_map(params![account, room_id, session_id], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?
+        .collect::<Result<_, _>>()?)
+}
+
 // ── the read marker ───────────────────────────────────────────────────────
 
 /// Sets the room's read marker; `None` is before the first event.

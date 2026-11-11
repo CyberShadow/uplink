@@ -26,6 +26,7 @@ import type {
   MailProvider,
   LogEntry,
   MatrixAccount,
+  MatrixSecurity,
   MatrixSend,
   Membership,
   Room,
@@ -48,6 +49,8 @@ import { sendSummary, text } from '../matrix'
 
 /** The Matrix account's user. */
 export const ME = '@me:example.org'
+/** The Matrix account's recovery key. */
+export const RECOVERY_KEY = 'EsTc 1234 5678'
 
 const SYSTEM = ['INBOX', 'UNREAD', 'STARRED', 'IMPORTANT', 'SENT', 'DRAFT', 'TRASH', 'SPAM']
 /** Microsoft 365's well-known folders, by the ids uplink gives them. */
@@ -90,6 +93,8 @@ export class FakeServer implements Requester, Blobs {
   /** The op that asked for each room's pending membership. */
   private readonly membershipBy = new Map<RoomId, number>()
   readonly events = new Map<RoomId, RoomEvent[]>()
+  /** Of Matrix accounts, their security: unverified until recovered. */
+  readonly security = new Map<string, MatrixSecurity>()
   /** Of rooms, how far their members have read. */
   readonly receipts = new Map<RoomId, MemberReceipt[]>()
   /** Of events edited, their edits, oldest first. */
@@ -201,6 +206,38 @@ export class FakeServer implements Requester, Blobs {
   /** Configures the Matrix account `mx`, of user {@link ME}. */
   addMatrixAccount() {
     this.matrixAccounts.push({ id: 'mx', mxid: ME, synced: true })
+    this.security.set('mx', {
+      account: 'mx',
+      device_id: 'UPLINK',
+      verified: false,
+      cross_signing: false,
+      backup: 'unknown',
+      recovery: 'incomplete',
+      devices: [
+        {
+          device_id: 'UPLINK',
+          name: 'uplink (mx)',
+          last_seen_ts: Date.UTC(2026, 10, 10, 12),
+          last_seen_ip: '10.0.0.1',
+          verified: false,
+          current: true,
+        },
+        {
+          device_id: 'PHONE',
+          name: 'Element Android',
+          last_seen_ts: Date.UTC(2026, 10, 9, 8),
+          last_seen_ip: null,
+          verified: true,
+          current: false,
+        },
+      ],
+    })
+  }
+
+  /** What the account's client has changed, as its streams say. */
+  securityChanged(account: string, security: MatrixSecurity) {
+    this.security.set(account, security)
+    this.client.notice({ type: 'security_changed', account })
   }
 
   /** Adds a joined room of the Matrix account, as syncing would. */
@@ -262,6 +299,15 @@ export class FakeServer implements Requester, Blobs {
   change(room: RoomId, event: RoomEvent, change: Partial<RoomEvent>) {
     Object.assign(event, change)
     this.observe('mx', [{ type: 'timeline_changed', room, events: [event.id] }])
+  }
+
+  /** An event decrypted late turned out a relation (a reaction, an
+   * edit): it is no longer listed, and what it is of changed. */
+  relation(room: RoomId, event: RoomEvent, of: RoomEvent, change: Partial<RoomEvent>) {
+    const events = this.events.get(room)!
+    events.splice(events.indexOf(event), 1)
+    Object.assign(of, change)
+    this.observe('mx', [{ type: 'timeline_changed', room, events: [event.id, of.id] }])
   }
 
   /** The account's sync task reports what it has not pushed yet. */
@@ -354,6 +400,10 @@ export class FakeServer implements Requester, Blobs {
   async copyAttachment(message: MessageId, index: number): Promise<UploadedBlob> {
     const attachment = this.attachments.get(message)![index]
     return this.storeBlob(`attachment:${message}:${index}`, attachment.size)
+  }
+
+  async exportRoomKeys(account: string, passphrase: string): Promise<Blob> {
+    return new Blob([`-----BEGIN MEGOLM SESSION DATA-----\n${account}:${passphrase}\n`])
   }
 
   private storeBlob(blob: string, size: number): UploadedBlob {
@@ -598,6 +648,30 @@ export class FakeServer implements Requester, Blobs {
         return { type: 'receipts', room: body.room, receipts: this.receipts.get(body.room) ?? [] }
       case 'set_typing':
         return { type: 'done' }
+      case 'get_matrix_security':
+        return { type: 'matrix_security', security: this.security.get(body.account)! }
+      case 'recover_matrix': {
+        if (body.recovery !== RECOVERY_KEY) {
+          throw new RequestError({ code: 'invalid', message: 'could not unlock Secret Storage: wrong key' })
+        }
+        const security = this.security.get(body.account)!
+        const recovered: MatrixSecurity = {
+          ...security,
+          verified: true,
+          cross_signing: true,
+          backup: 'enabled',
+          recovery: 'enabled',
+          devices: security.devices.map((d) => (d.current ? { ...d, verified: true } : d)),
+        }
+        this.security.set(body.account, recovered)
+        return { type: 'matrix_security', security: recovered }
+      }
+      case 'import_room_keys':
+        if (!this.blobs.has(body.blob)) throw new Error(`no blob ${body.blob}`)
+        if (body.passphrase !== 'export passphrase') {
+          throw new RequestError({ code: 'invalid', message: 'importing the room keys: wrong passphrase' })
+        }
+        return { type: 'room_keys_imported', imported: 3, total: 5 }
       case 'list_matrix_sends':
         return {
           type: 'matrix_sends',

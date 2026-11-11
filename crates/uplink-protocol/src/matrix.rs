@@ -305,6 +305,79 @@ pub struct ReceiptsChanged {
     pub room: RoomId,
 }
 
+/// The account's devices, their trust or its key backup changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SecurityChanged {
+    pub account: String,
+}
+
+/// The account's device and its encryption, as its client has them
+/// (SPEC §9.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MatrixSecurity {
+    pub account: String,
+    /// uplink's device.
+    pub device_id: String,
+    /// Whether the account's cross-signing has signed uplink's device:
+    /// others then trust it.
+    pub verified: bool,
+    /// Whether the device has the account's cross-signing keys (all
+    /// three), and so can verify others.
+    pub cross_signing: bool,
+    pub backup: KeyBackup,
+    pub recovery: Recovery,
+    /// The account's devices, uplink's among them, most recently seen
+    /// first.
+    pub devices: Vec<MatrixDevice>,
+}
+
+/// The state of the key backup, which keeps room keys on the homeserver
+/// for the account's devices (as the SDK's `BackupState`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyBackup {
+    /// Not used by this device: there is none, or it lacks its key.
+    Unknown,
+    Creating,
+    Enabling,
+    Resuming,
+    Enabled,
+    /// Downloading the backup's keys, after enabling it.
+    Downloading,
+    Disabling,
+}
+
+/// Whether the account's secrets are kept in Secret Storage, for devices
+/// to recover them (as the SDK's `RecoveryState`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum Recovery {
+    Unknown,
+    /// All are, and this device has them.
+    Enabled,
+    Disabled,
+    /// Some are, or this device lacks them: recover with the key.
+    Incomplete,
+}
+
+/// A device of the account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MatrixDevice {
+    pub device_id: String,
+    pub name: Option<String>,
+    /// When it was last seen, ms since the Unix epoch, and where from.
+    pub last_seen_ts: Option<i64>,
+    pub last_seen_ip: Option<String>,
+    /// Whether uplink's device trusts it: the account's cross-signing
+    /// signed it.
+    pub verified: bool,
+    /// Whether it is uplink's.
+    pub current: bool,
+}
+
 /// How far a member of the room (not the account) has read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]

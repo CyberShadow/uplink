@@ -18,6 +18,7 @@ import { NoticeBar } from './NoticeBar'
 import { RoomView } from './Room'
 import { composePath, Drafts, Outbox } from './Outgoing'
 import { SearchBox } from './SearchBox'
+import { SecurityView } from './Security'
 import { RecordVisits, Switcher } from './Switcher'
 import { Todos } from './Todos'
 import styles from './App.module.css'
@@ -123,6 +124,7 @@ function Shell() {
           <Route path="/drafts" component={Drafts} />
           <Route path="/outbox" component={Outbox} />
           <Route path="/rooms/:room" component={RoomView} />
+          <Route path="/matrix/:account/security" component={SecurityView} />
           <Route default component={Home} />
         </Router>
       </main>

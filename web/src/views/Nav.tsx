@@ -8,6 +8,7 @@ import { useServices } from '../context'
 import { outboxCount, outboxNeedsAttention } from '../stores/drafts'
 import { allMailPath, inboxPath, mailPath } from './App'
 import { roomPath } from './Room'
+import { securityPath } from './Security'
 import styles from './Nav.module.css'
 import { Icon, type IconName } from './Icon'
 import { RoomAvatar } from './RoomAvatar'
@@ -384,6 +385,7 @@ export function Nav(props: { open: boolean }) {
             status={!account.synced && <span class={styles.syncing}> (syncing)</span>}
             unread={rooms.reduce((unread, room) => unread + room.unread, 0)}
           >
+            {item(securityPath(account.id), 'shield', 'Security', 0)}
             {roomTree(rooms).map((node) => roomNode(node, 0))}
           </Section>
         )
