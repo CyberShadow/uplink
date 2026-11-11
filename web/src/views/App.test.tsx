@@ -757,11 +757,14 @@ describe('mail', () => {
     expect(within(here).getByText('Archive')).toBeTruthy()
     expect(within(here).queryByText('Today (in the calendar)')).toBeNull()
     expect(within(within(help).getByRole('region', { name: 'Elsewhere' })).getByText('Today (in the calendar)')).toBeTruthy()
-    // Keys reach nothing behind it; ? again closes it.
+    // Focused, it scrolls by keys; they reach nothing behind it, and ?
+    // again closes it.
+    expect(document.activeElement).toBe(help)
     await user.keyboard('j')
     expect(focusedSubject()).toBe('First')
     await user.keyboard('?')
     expect(screen.queryByRole('dialog')).toBeNull()
+    expect(document.activeElement).toBe(document.body)
     await user.keyboard('?{Escape}')
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(location.pathname).toBe('/mail/work/INBOX')

@@ -1,9 +1,13 @@
-import { useEffect, useState } from 'preact/hooks'
-import { ALT, type Binding, boundActions, KEYMAP, MOD, pendingSequence } from '../keymap'
+import { useEffect, useRef, useState } from 'preact/hooks'
+import { ALT, type Binding, boundActions, KEYMAP, MOD, pendingSequence, useTakeFocus } from '../keymap'
 import styles from './Overlay.module.css'
 
 export function Help({ close }: { close: () => void }) {
   // Keys reach nothing behind it; Esc, or ? again, close it.
+  // Focused, it scrolls by the keys that scroll (arrows, pages, Space),
+  // which go on to it; once closed, the focus is back where it was.
+  const dialog = useRef<HTMLDivElement>(null)
+  useTakeFocus(dialog)
   useEffect(() => {
     const keys = (event: KeyboardEvent) => {
       event.stopPropagation()
@@ -32,7 +36,14 @@ export function Help({ close }: { close: () => void }) {
   )
   return (
     <div class={styles.backdrop} onClick={close}>
-      <div class={styles.dialog} role="dialog" aria-label="Keyboard shortcuts" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={dialog}
+        class={styles.dialog}
+        role="dialog"
+        aria-label="Keyboard shortcuts"
+        tabIndex={-1}
+        onClick={(e) => e.stopPropagation()}
+      >
         <h2>Keyboard shortcuts</h2>
         <p class={styles.about}>
           Keys act on what is on show while nothing is being typed. A box being typed in keeps them, but for

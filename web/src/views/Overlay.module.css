@@ -22,6 +22,11 @@
   box-shadow: 0 4px 24px rgb(0 0 0 / 0.3);
 }
 
+/* Focused to scroll by keys (the help), it shows no ring. */
+.dialog:focus {
+  outline: none;
+}
+
 .dialog h2 {
   margin: 0 0 8px;
   font-size: 16px;
