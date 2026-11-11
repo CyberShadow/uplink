@@ -17,7 +17,10 @@ def label_ids():
 
 
 def entries(label):
-    page = ws({"type": "list_entries", "list": {"type": "label", "label": label}, "after": None, "limit": 100})
+    """The latest messages, by subject, of the label's (by id) conversations."""
+    [name] = [l["name"] for l in account()["labels"] if l["id"] == label]
+    query = f"label:{json.dumps(name, ensure_ascii=False)}"
+    page = ws({"type": "list_entries", "query": query, "after": None, "limit": 100})
     return {c["latest"]["subject"]: c["latest"] for c in page["conversations"]}
 
 
@@ -74,7 +77,7 @@ with subtest("search covers subject, body and sender"):
         ("quixot", {"Lunch on Friday"}),
         ("bob@example.org", {"Quarterly report", "Lunch on Friday"}),
     ]:
-        found = {c["latest"]["subject"] for c in ws({"type": "search", "query": query, "limit": 10})["conversations"]}
+        found = {c["latest"]["subject"] for c in ws({"type": "list_entries", "query": query, "after": None, "limit": 10})["conversations"]}
         assert found == expected, (query, found)
 
 with subtest("a restart loses nothing and resumes from the stored historyId"):

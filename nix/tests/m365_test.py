@@ -117,7 +117,10 @@ def labels():
 
 
 def entries(label):
-    page = ws({"type": "list_entries", "list": {"type": "label", "label": label}, "after": None, "limit": 100})
+    """The latest messages, by subject, of the label's (by id) conversations."""
+    [name] = [l["name"] for l in account()["labels"] if l["id"] == label]
+    query = f"label:{json.dumps(name, ensure_ascii=False)}"
+    page = ws({"type": "list_entries", "query": query, "after": None, "limit": 100})
     return {c["latest"]["subject"]: c["latest"] for c in page["conversations"]}
 
 
