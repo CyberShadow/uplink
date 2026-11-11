@@ -497,6 +497,21 @@ pub struct MatrixDevice {
     pub current: bool,
 }
 
+/// A room to create (SPEC §9.7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct NewRoom {
+    /// Empty: none.
+    pub name: String,
+    pub topic: Option<String>,
+    /// Matrix user ids to invite.
+    pub invite: Vec<String>,
+    pub encrypted: bool,
+    /// The localpart of the address it is published under, as a public
+    /// room anyone may join; else it is private, by invitation.
+    pub alias: Option<String>,
+}
+
 /// A member of the room: joined, invited, left or banned.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]

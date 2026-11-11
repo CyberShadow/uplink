@@ -1,6 +1,8 @@
 .backdrop {
   position: fixed;
   inset: 0;
+  /* Above what follows it, as the content does the nav. */
+  z-index: 10;
   display: flex;
   align-items: flex-start;
   justify-content: center;

@@ -201,6 +201,15 @@ export class MatrixStore {
     return this.ops.dispatch({ type: 'keep_matrix_sent', item })
   }
 
+  /** Creates a room, starts a direct chat or joins a room: the Matrix id
+   * of the room joined, once the homeserver has, which sync then lists.
+   * Throws the server's refusal. */
+  async join(
+    request: Extract<ClientRequest, { type: 'create_matrix_room' | 'start_direct_chat' | 'join_matrix_room' }>,
+  ): Promise<string> {
+    return (await query(this.server, request, 'matrix_room_joined')).room_id
+  }
+
   changeMembership(room: RoomId, change: MembershipChange) {
     return this.ops.dispatch({ type: 'change_membership', room, change })
   }

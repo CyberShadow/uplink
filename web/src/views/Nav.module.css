@@ -31,7 +31,8 @@
 }
 
 .nav a,
-.parent {
+.parent,
+.action {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -40,7 +41,8 @@
   margin-right: 8px;
 }
 
-.nav a svg {
+.nav a svg,
+.action svg {
   flex: none;
   color: var(--muted);
 }
@@ -49,7 +51,8 @@
   color: inherit;
 }
 
-.nav a:hover {
+.nav a:hover,
+.action:hover {
   background: var(--hover);
 }
 
@@ -153,4 +156,16 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* A row that acts, rather than leads somewhere. */
+.action {
+  box-sizing: border-box;
+  width: calc(100% - 8px);
+  border: none;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }

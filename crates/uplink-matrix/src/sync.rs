@@ -1070,7 +1070,7 @@ pub fn text_content(
 
 /// The homeserver's reason, if it refused the request (a 4xx other than
 /// rate limiting); `None` if the failure may pass.
-fn refusal(error: &matrix_sdk::Error) -> Option<String> {
+pub(crate) fn refusal(error: &matrix_sdk::Error) -> Option<String> {
     let api = error.as_client_api_error()?;
     let status = api.status_code.as_u16();
     ((400..500).contains(&status) && status != 429).then(|| api.to_string())

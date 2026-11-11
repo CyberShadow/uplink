@@ -1482,3 +1482,112 @@ async fn members_are_listed_and_managed_and_the_room_renamed() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rooms_are_created_direct_chats_started_and_rooms_joined_by_address() {
+    use matrix_sdk::ruma::api::client::room::{
+        create_room::v3::{Request as CreateRoom, RoomPreset},
+        Visibility,
+    };
+    use uplink_protocol::matrix::NewRoom;
+    let dir = tempfile::tempdir().unwrap();
+    let homeserver = Homeserver::start(dir.path()).await;
+    let bob = homeserver.register(dir.path(), "bob").await;
+    homeserver.register(dir.path(), "alice").await;
+    let _bob_received = sync_messages(&bob);
+    let uplink = Uplink::new(&homeserver);
+    let _sync = uplink.pair_and_sync().await;
+    eventually("uplink to connect", || async {
+        uplink.matrix.get_security("mx").await.ok()
+    })
+    .await;
+    let joined =
+        |response: Result<ServerResponse, uplink_protocol::ServerError>| match response.unwrap() {
+            ServerResponse::MatrixRoomJoined { room_id } => OwnedRoomId::try_from(room_id).unwrap(),
+            other => panic!("unexpected {other:?}"),
+        };
+    let listed = |room_id: OwnedRoomId| {
+        let uplink = &uplink;
+        async move {
+            eventually("uplink to list the room joined", || async {
+                uplink
+                    .room(&room_id)
+                    .await
+                    .filter(|r| r.membership == Membership::Joined)
+            })
+            .await
+        }
+    };
+
+    let created = joined(
+        uplink
+            .matrix
+            .create_room(
+                "mx",
+                NewRoom {
+                    name: " Plans ".into(),
+                    topic: Some("For later".into()),
+                    invite: vec!["@bob:localhost".into()],
+                    encrypted: true,
+                    alias: None,
+                },
+            )
+            .await,
+    );
+    let room = listed(created.clone()).await;
+    assert_eq!(room.name, "Plans");
+    assert_eq!(room.topic.as_deref(), Some("For later"));
+    assert!(room.encrypted);
+    eventually("bob to be invited", || async {
+        bob.get_room(&created)
+            .filter(|r| r.state() == matrix_sdk::RoomState::Invited)
+    })
+    .await;
+
+    // A direct chat; started again, the same.
+    let direct = joined(
+        uplink
+            .matrix
+            .start_direct_chat("mx", "@bob:localhost")
+            .await,
+    );
+    assert_ne!(direct, created);
+    listed(direct.clone()).await;
+    eventually("the direct chat to be known as one", || async {
+        let again = joined(
+            uplink
+                .matrix
+                .start_direct_chat("mx", "@bob:localhost")
+                .await,
+        );
+        (again == direct).then_some(())
+    })
+    .await;
+
+    // Bob's public room, by its address.
+    let mut request = CreateRoom::new();
+    request.room_alias_name = Some("lobby".into());
+    request.visibility = Visibility::Public;
+    request.preset = Some(RoomPreset::PublicChat);
+    let lobby = bob.create_room(request).await.unwrap();
+    let joined_lobby = joined(uplink.matrix.join_room("mx", "#lobby:localhost").await);
+    assert_eq!(joined_lobby, lobby.room_id());
+    listed(joined_lobby).await;
+
+    let unknown = uplink
+        .matrix
+        .join_room("mx", "#nowhere:localhost")
+        .await
+        .unwrap_err();
+    assert_eq!(
+        unknown.code,
+        uplink_protocol::ErrorCode::Invalid,
+        "{unknown:?}"
+    );
+    let not_a_user = uplink
+        .matrix
+        .start_direct_chat("mx", "bob")
+        .await
+        .unwrap_err();
+    assert_eq!(not_a_user.code, uplink_protocol::ErrorCode::Invalid);
+}

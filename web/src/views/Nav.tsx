@@ -1,4 +1,5 @@
 import { signal } from '@preact/signals'
+import { useState } from 'preact/hooks'
 import type { ComponentChildren } from 'preact'
 import { useLocation } from 'preact-iso'
 import { duration } from '../format'
@@ -12,6 +13,7 @@ import { awaitsUser, securityPath } from './Security'
 import styles from './Nav.module.css'
 import { Icon, type IconName } from './Icon'
 import { RoomAvatar } from './RoomAvatar'
+import { RoomStarter } from './RoomStarter'
 
 /** The system labels worth a place in the nav, in Gmail's order; Microsoft
  * 365's well-known folders have the ids of the Gmail labels that mean the
@@ -216,6 +218,8 @@ function unreadIn(node: RoomNode, seen = new Set<string>()): number {
 export function Nav(props: { open: boolean }) {
   const { mail, drafts, matrix, todos } = useServices()
   const { path } = useLocation()
+  // The Matrix account a conversation is being started with.
+  const [starting, setStarting] = useState<string | null>(null)
   const link = (href: string, lead: ComponentChildren, name: string, count: number, depth = 0, alert = false) => {
     const current = shows(path, href)
     return (
@@ -392,10 +396,17 @@ export function Nav(props: { open: boolean }) {
             unread={rooms.reduce((unread, room) => unread + room.unread, 0)}
           >
             {securityItem(account.id)}
+            <li>
+              <button type="button" class={styles.action} onClick={() => setStarting(account.id)}>
+                <Icon name="plus" />
+                <span class={styles.name}>Start a conversation</span>
+              </button>
+            </li>
             {roomTree(rooms).map((node) => roomNode(node, 0))}
           </Section>
         )
       })}
+      {starting !== null && <RoomStarter account={starting} close={() => setStarting(null)} />}
     </nav>
   )
 }

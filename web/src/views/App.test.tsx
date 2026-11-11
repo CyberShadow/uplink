@@ -1169,6 +1169,41 @@ describe('room timeline', () => {
     within(line('Hello')).getByRole('button', { name: /👍/ })
   })
 
+  it('creates rooms, starts direct chats and joins rooms, opening them', async () => {
+    server.addMatrixAccount()
+    server.addRoom('Lobby', false, 'left')
+    const user = await start('/')
+    const starter = async () => {
+      await user.click(await screen.findByRole('button', { name: 'Start a conversation' }))
+      return screen.getByRole('dialog', { name: 'Start a conversation' })
+    }
+    let dialog = await starter()
+    await user.type(within(dialog).getByLabelText('Name'), 'Plans')
+    await user.type(within(dialog).getByLabelText('Invite'), '@bob:example.org, @carol:example.org')
+    await user.click(within(dialog).getByRole('button', { name: 'Create room' }))
+    expect(await screen.findByRole('heading', { name: 'Plans' })).toBeTruthy()
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(server.requests.find((r) => r.type === 'create_matrix_room')).toEqual({
+      type: 'create_matrix_room',
+      account: 'mx',
+      room: { name: 'Plans', topic: null, invite: ['@bob:example.org', '@carol:example.org'], encrypted: true, alias: null },
+    })
+
+    dialog = await starter()
+    await user.click(within(dialog).getByRole('tab', { name: 'Direct chat' }))
+    await user.type(within(dialog).getByLabelText('User'), 'bob{Enter}')
+    expect(await within(dialog).findByRole('alert')).toHaveProperty('textContent', 'not a Matrix user id: "bob"')
+    await user.type(within(dialog).getByLabelText('User'), ':example.org')
+    await user.clear(within(dialog).getByLabelText('User'))
+    await user.type(within(dialog).getByLabelText('User'), '@bob:example.org{Enter}')
+    expect(await screen.findByRole('heading', { name: 'bob' })).toBeTruthy()
+
+    dialog = await starter()
+    await user.click(within(dialog).getByRole('tab', { name: 'Join a room' }))
+    await user.type(within(dialog).getByLabelText('Address or id'), '#lobby:example.org{Enter}')
+    expect(await screen.findByRole('heading', { name: 'Lobby' })).toBeTruthy()
+  })
+
   it('lists members by power, and changes them, and the name, from the room info', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')

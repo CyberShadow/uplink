@@ -16,8 +16,8 @@ use uplink_protocol::{
     compose::BlobId,
     matrix::{
         GapId, MatrixAccount, MatrixContent, MatrixSendId, MemberAction, MemberInfo, MemberReceipt,
-        MemberState, Membership, MembershipChange, RoomEventId, RoomId, RoomMember, RoomPowers,
-        TimelinePage, VerificationAnswer,
+        MemberState, Membership, MembershipChange, NewRoom, RoomEventId, RoomId, RoomMember,
+        RoomPowers, TimelinePage, VerificationAnswer,
     },
     ErrorCode, ServerError, ServerResponse,
 };
@@ -530,6 +530,99 @@ impl Matrix {
         })
     }
 
+    /// Creates the room: named, with its topic, inviting users, maybe
+    /// encrypted, private or else public under its address.
+    pub async fn create_room(&self, account: &str, room: NewRoom) -> Response {
+        use matrix_sdk::ruma::{
+            api::client::room::{
+                create_room::v3::{Request, RoomPreset},
+                Visibility,
+            },
+            events::{room::encryption::RoomEncryptionEventContent, InitialStateEvent},
+        };
+        let client = self.client(account)?;
+        let invite = room
+            .invite
+            .iter()
+            .map(|user| user_id(user))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut request = Request::new();
+        let name = room.name.trim();
+        request.name = (!name.is_empty()).then(|| name.to_owned());
+        request.topic = room
+            .topic
+            .as_deref()
+            .map(str::trim)
+            .filter(|topic| !topic.is_empty())
+            .map(str::to_owned);
+        request.invite = invite;
+        match room.alias {
+            Some(alias) => {
+                if alias.is_empty()
+                    || alias.contains([':', '#'])
+                    || alias.contains(char::is_whitespace)
+                {
+                    return Err(error(
+                        ErrorCode::Invalid,
+                        format!("not an address's localpart: {alias:?}"),
+                    ));
+                }
+                request.room_alias_name = Some(alias);
+                request.visibility = Visibility::Public;
+                request.preset = Some(RoomPreset::PublicChat);
+            }
+            None => request.preset = Some(RoomPreset::PrivateChat),
+        }
+        if room.encrypted {
+            request.initial_state = vec![InitialStateEvent::with_empty_state_key(
+                RoomEncryptionEventContent::with_recommended_defaults(),
+            )
+            .to_raw_any()];
+        }
+        let created = client.create_room(request).await.map_err(refused)?;
+        Ok(ServerResponse::MatrixRoomJoined {
+            room_id: created.room_id().to_string(),
+        })
+    }
+
+    /// The account's direct chat with `user` it has joined, else one
+    /// created (encrypted), inviting them.
+    pub async fn start_direct_chat(&self, account: &str, user: &str) -> Response {
+        let client = self.client(account)?;
+        let user = user_id(user)?;
+        if client.user_id() == Some(&*user) {
+            return Err(error(
+                ErrorCode::Invalid,
+                "a direct chat is with someone else".into(),
+            ));
+        }
+        let room = match client.get_dm_room(&user) {
+            Some(room) => room,
+            None => client.create_dm(&user).await.map_err(refused)?,
+        };
+        Ok(ServerResponse::MatrixRoomJoined {
+            room_id: room.room_id().to_string(),
+        })
+    }
+
+    /// Joins the room by its address or id.
+    pub async fn join_room(&self, account: &str, room: &str) -> Response {
+        let client = self.client(account)?;
+        let room = <&matrix_sdk::ruma::RoomOrAliasId>::try_from(room.trim()).map_err(|_| {
+            error(
+                ErrorCode::Invalid,
+                format!("not a room's address or id: {room:?}"),
+            )
+        })?;
+        let joined = client
+            .join_room_by_id_or_alias(room, &[])
+            .await
+            .map_err(refused)?;
+        Ok(ServerResponse::MatrixRoomJoined {
+            room_id: joined.room_id().to_string(),
+        })
+    }
+
     pub async fn list_rooms(&self) -> Response {
         let configured = self.accounts.clone();
         self.reader
@@ -841,4 +934,26 @@ fn no_event(room: RoomId, event: RoomEventId) -> ServerError {
         ErrorCode::NotFound,
         format!("no event {} in room {}", event.0, room.0),
     )
+}
+
+/// A Matrix user id, or else the client's mistake.
+fn user_id(user: &str) -> Result<matrix_sdk::ruma::OwnedUserId, ServerError> {
+    matrix_sdk::ruma::UserId::parse(user.trim()).map_err(|_| {
+        error(
+            ErrorCode::Invalid,
+            format!("not a Matrix user id: {user:?}"),
+        )
+    })
+}
+
+/// What the homeserver said of a request: its refusal is the user's to
+/// know (as an address that does not exist), anything else the server's.
+fn refused(e: matrix_sdk::Error) -> ServerError {
+    match crate::sync::refusal(&e) {
+        Some(reason) => error(
+            ErrorCode::Invalid,
+            format!("the homeserver refused: {reason}"),
+        ),
+        None => internal(e.into()),
+    }
 }

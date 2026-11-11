@@ -34,6 +34,7 @@ fn main() {
         ReceiptsChanged,
         MemberReceipt,
         MemberInfo,
+        NewRoom,
         MemberState,
         RoomPowers,
         MemberAction,

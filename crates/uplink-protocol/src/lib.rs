@@ -263,6 +263,23 @@ pub enum ClientRequest {
     ListMembers {
         room: RoomId,
     },
+    /// Creates a room, which the account joins. Answered once the
+    /// homeserver has; sync then brings it.
+    CreateMatrixRoom {
+        account: String,
+        room: matrix::NewRoom,
+    },
+    /// Opens a direct chat with `user`: the account's joined one, or one
+    /// created, inviting them.
+    StartDirectChat {
+        account: String,
+        user: String,
+    },
+    /// Joins a room by its address (`#alias:server`) or id.
+    JoinMatrixRoom {
+        account: String,
+        room: String,
+    },
     /// The account's device, its trust, key backup and recovery, and the
     /// account's other devices (SPEC §9.4).
     GetMatrixSecurity {
@@ -411,6 +428,11 @@ pub enum ServerResponse {
         room: RoomId,
         receipts: Vec<matrix::MemberReceipt>,
     },
+    /// Of `CreateMatrixRoom`, `StartDirectChat` and `JoinMatrixRoom`: the
+    /// room joined, by its Matrix id, which sync lists soon if not yet.
+    MatrixRoomJoined {
+        room_id: String,
+    },
     /// Of `ListMembers`: as the account's client knows them, not logged.
     Members {
         room: RoomId,
@@ -458,6 +480,7 @@ impl ServerResponse {
             | Self::Done
             | Self::Receipts { .. }
             | Self::Members { .. }
+            | Self::MatrixRoomJoined { .. }
             | Self::MatrixSecurity { .. }
             | Self::RoomKeysImported { .. } => None,
         }

@@ -1889,6 +1889,18 @@ when it is known, and is refused if the membership changed otherwise;
 its own inverse redoes. `tests/conduit.rs` joins an invitation, undoes
 (leaves) and redoes (joins again), and declines another.
 
+Rooms new to uplink are joined at once, as requests of the moment (they
+log nothing; sync records the room, and leaving it is the op above):
+`CreateMatrixRoom` creates one (named, with a topic, inviting users,
+encrypted or not; private, or public under an address), `StartDirectChat`
+opens the account's joined direct chat with a user, or creates one
+(encrypted, marked direct in `m.direct`), and `JoinMatrixRoom` joins by
+address or id. Each answers `MatrixRoomJoined` with the room's Matrix id
+once the homeserver has; its refusal (as of an address that does not
+exist) is `Invalid`, with its reason. The client opens the room once
+sync lists it. Creating a room and starting a chat are not sent again on
+a new connection (a second would be made); joining is.
+
 ### 9.8 Media
 
 The server serves the media events name, fetched by the account's
@@ -2297,6 +2309,12 @@ the membership's buttons.
 - **Gaps**, where events are missing (§9.2), are rows ("Earlier events
   are missing here") with a button that fetches them; they fill in
   place, merged by position, and a gap left shows where they end.
+- **Starting a conversation**, from each Matrix account's "Start a
+  conversation" in the navigation, as Element's "+": a dialog of three
+  tabs, a new room (name, topic, users to invite, public with its
+  address, encrypted — by default unless public, as Element), a direct
+  chat with a user, or joining a room by address or id (§9.7). It says
+  the server's refusal, and opens the room once listed.
 - **Room info**, a panel beside the timeline that the member count in
   the header opens, as Element's right panel: the name and topic, a form
   if the account may change either; a box to invite a user by id; and

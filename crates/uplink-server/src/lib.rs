@@ -897,6 +897,15 @@ impl Backend for Services {
             ClientRequest::SetTyping { room, typing } => self.matrix.set_typing(room, typing).await,
             ClientRequest::ListReceipts { room } => self.matrix.list_receipts(room).await,
             ClientRequest::ListMembers { room } => self.matrix.list_members(room).await,
+            ClientRequest::CreateMatrixRoom { account, room } => {
+                self.matrix.create_room(&account, room).await
+            }
+            ClientRequest::StartDirectChat { account, user } => {
+                self.matrix.start_direct_chat(&account, &user).await
+            }
+            ClientRequest::JoinMatrixRoom { account, room } => {
+                self.matrix.join_room(&account, &room).await
+            }
             ClientRequest::FillGap { room, gap } => self.matrix.fill_gap(room, gap).await,
             ClientRequest::GetMatrixSecurity { account } => {
                 self.matrix.get_security(&account).await

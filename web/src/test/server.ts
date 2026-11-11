@@ -725,6 +725,24 @@ export class FakeServer implements Requester, Blobs {
       }
       case 'list_receipts':
         return { type: 'receipts', room: body.room, receipts: this.receipts.get(body.room) ?? [] }
+      case 'create_matrix_room': {
+        const room = this.addRoom(body.room.name, body.room.encrypted)
+        room.topic = body.room.topic
+        return { type: 'matrix_room_joined', room_id: room.room_id }
+      }
+      case 'start_direct_chat': {
+        const name = /^@([^:]+)/.exec(body.user)?.[1]
+        if (!name) throw new RequestError({ code: 'invalid', message: `not a Matrix user id: "${body.user}"` })
+        const room = this.rooms.find((r) => r.name === name) ?? this.addRoom(name, true)
+        return { type: 'matrix_room_joined', room_id: room.room_id }
+      }
+      case 'join_matrix_room': {
+        const room = this.rooms.find((r) => r.room_id === body.room || `#${r.name.toLowerCase()}:example.org` === body.room)
+        if (!room) throw new RequestError({ code: 'invalid', message: 'the homeserver refused: no such room' })
+        room.membership = 'joined'
+        this.observe('mx', [{ type: 'rooms_changed', rooms: [room.id] }])
+        return { type: 'matrix_room_joined', room_id: room.room_id }
+      }
       case 'list_members': {
         const { members, powers } = this.members.get(body.room) ?? { members: [], powers: NO_POWERS }
         return { type: 'members', room: body.room, members, powers }
