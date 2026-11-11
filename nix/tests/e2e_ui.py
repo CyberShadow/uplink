@@ -126,7 +126,8 @@ def matrix(page):
     timeline = page.get_by_role("list", name="Timeline")
     expect(timeline).to_contain_text("Hi from Bob")
     expect(timeline).to_contain_text("org.example.custom")
-    page.keyboard.press("r")
+    # Joined, the room's box has the focus.
+    expect(page.get_by_role("textbox", name="Message Planning")).to_be_focused()
     page.keyboard.type("Hello from uplink")
     page.keyboard.press("Enter")
     expect(page.get_by_role("status")).to_contain_text("Sent 'Hello from uplink'")
