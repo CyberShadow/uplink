@@ -2464,7 +2464,11 @@ pending sequence (`web/src/keymap.ts`), on tinykeys' key parsing and
 matching. A first press (`g`) thus keeps a binding of the second (`s`,
 star) from firing too, and a sequence that just fired leaves nothing
 half-matched behind (tinykeys' own handler does, so `*r` then `*u`
-typed within a second lost the second). A held key repeats only `j` and
+typed within a second lost the second). A sequence begun that waits half a second shows what may follow (a key
+each, and what it does) at the foot of the window, as Emacs' which-key
+does; shown, it waits for the press as long as it takes, rather than the
+second it otherwise does, and Esc (or typing in a field) gives it up.
+A held key repeats only `j` and
 `k`: other actions, repeated, would act on more than meant (holding `e`
 a moment too long would archive several messages).
 

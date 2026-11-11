@@ -3,6 +3,7 @@
 // the whole map.
 
 import { type RefObject } from 'preact'
+import { signal } from '@preact/signals'
 import { useEffect, useLayoutEffect, useRef } from 'preact/hooks'
 import {
   matchKeybindingPress,
@@ -264,6 +265,8 @@ export function useKeymap(actions: Actions, where?: Where) {
     const bindings: Bound[] = KEYMAP.filter((b) => b.action in current.current).flatMap((b) =>
       b.keys.map((keys) => ({
         presses: parseKeybinding(keys),
+        shown: keys.split(' ').map((press) => press.replace('[Shift]+', '')),
+        help: b.help,
         repeats: b.repeats === true && !keys.includes(' '),
         scope,
         fire: (event: KeyboardEvent) => {
@@ -280,6 +283,7 @@ export function useKeymap(actions: Actions, where?: Where) {
     }
     const handler = sequences(
       () => [bindings],
+      null,
       (event) => event.isComposing,
     )
     const element = within.current!
@@ -291,6 +295,9 @@ export function useKeymap(actions: Actions, where?: Where) {
 /** A binding's keys, parsed, as bound by a component. */
 interface Bound {
   presses: KeybindingPress[]
+  /** The presses, as shown while a sequence waits for one. */
+  shown: string[]
+  help: string
   /** Fires on a held key's repeats; a single press. */
   repeats: boolean
   /** Counts only while the focus is within it. */
@@ -310,6 +317,7 @@ const typed = (event: KeyboardEvent) =>
 // tinykeys' own ignores fields, and repeats: those, `sequences` handles.
 const windowKeys = sequences(
   () => windowBindings,
+  (pending) => (pendingSequence.value = pending),
   (event) =>
     event.isComposing ||
     typed(event) ||
@@ -331,8 +339,19 @@ window.addEventListener('keydown', (event) => {
 
 const ACTIVATE = ['Enter', ' ']
 
-/** How long a sequence waits for its next press. */
+/** How long a sequence waits for its next press; on the window, until
+ * what may follow is shown, after which it waits as long as it takes. */
 const SEQUENCE_MS = 1000
+const WHICH_MS = 500
+
+/** The presses of a window's sequence begun, once it has waited a while,
+ * and what may follow: shown (`WhichKey`), as Emacs' which-key does. */
+export const pendingSequence = signal<Pending | null>(null)
+
+export interface Pending {
+  typed: string
+  next: Array<{ key: string; help: string }>
+}
 
 const MODIFIERS = ['Shift', 'Control', 'Alt', 'Meta', 'AltGraph']
 
@@ -344,10 +363,19 @@ const MODIFIERS = ['Shift', 'Control', 'Alt', 'Meta', 'AltGraph']
  * else, the latest component's. */
 function sequences(
   components: () => Bound[][],
+  /** Shows a sequence begun, or none. */
+  show: ((pending: Pending | null) => void) | null,
   ignore: (event: KeyboardEvent) => boolean,
 ): (event: KeyboardEvent) => void {
   let typed: KeyboardEvent[] = []
   let timer: ReturnType<typeof setTimeout> | undefined
+  let which: ReturnType<typeof setTimeout> | undefined
+  const reset = () => {
+    typed = []
+    clearTimeout(timer)
+    clearTimeout(which)
+    show?.(null)
+  }
   /** The bindings that count where the focus is. */
   const live = () =>
     components()
@@ -361,26 +389,43 @@ function sequences(
   const nearest = (bindings: Bound[]) => bindings.findLast((b) => b.scope !== null) ?? bindings.at(-1)
   return (event) => {
     // Choosing an autocompletion sends a keydown that is a plain Event.
-    if (!(event instanceof KeyboardEvent) || ignore(event) || MODIFIERS.includes(event.key)) return
+    if (!(event instanceof KeyboardEvent) || MODIFIERS.includes(event.key)) return
+    // Typing in a field gives up a sequence begun, too.
+    if (ignore(event)) {
+      reset()
+      return
+    }
     if (event.repeat) {
       nearest(live().filter((b) => b.repeats && matchKeybindingPress(event, b.presses[0])))?.fire(event)
       return
     }
-    clearTimeout(timer)
+    // Esc gives up a sequence begun.
+    if (typed.length > 0 && event.key === 'Escape') {
+      reset()
+      event.preventDefault()
+      return
+    }
+    const before = typed
+    reset()
     // The sequence so far, continued; or else, a new one.
-    for (const events of [[...typed, event], [event]]) {
+    for (const events of [[...before, event], [event]]) {
       const candidates = matching(events)
       if (candidates.length === 0) continue
       const complete = nearest(candidates.filter((b) => b.presses.length === events.length))
       if (complete) {
-        typed = []
         complete.fire(event)
-      } else {
-        typed = events
-        timer = setTimeout(() => (typed = []), SEQUENCE_MS)
+        return
+      }
+      typed = events
+      timer = setTimeout(reset, SEQUENCE_MS)
+      if (show) {
+        which = setTimeout(() => {
+          clearTimeout(timer)
+          const next = new Map(candidates.map((b) => [`${b.shown[events.length]} ${b.help}`, { key: b.shown[events.length], help: b.help }]))
+          show({ typed: events.map((e) => e.key).join(' '), next: [...next.values()] })
+        }, WHICH_MS)
       }
       return
     }
-    typed = []
   }
 }

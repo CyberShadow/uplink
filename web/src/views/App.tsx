@@ -8,7 +8,7 @@ import { ServicesContext, useServices } from '../context'
 import { keepFocus, useKeymap } from '../keymap'
 import type { Client } from '../stores/client'
 import { Calendar, calendarPath, today } from './Calendar'
-import { Help } from './Help'
+import { Help, WhichKey } from './Help'
 import { Icon } from './Icon'
 import { History } from './History'
 import { Home } from './Home'
@@ -153,6 +153,7 @@ function Shell() {
       <NoticeBar />
       <RecordVisits />
       {help && <Help close={() => setHelp(false)} />}
+      <WhichKey />
       {switching && <Switcher close={() => setSwitching(false)} />}
       {goingToLabel && (
         <GoToLabel

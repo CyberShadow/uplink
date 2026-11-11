@@ -277,6 +277,26 @@ describe('mail', () => {
     expect(document.activeElement).toBe(document.body)
   })
 
+  it('shows what may follow a sequence begun, which then waits for it, or Esc', async () => {
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('g')
+    const which = await screen.findByRole('dialog', { name: 'Keys after g' })
+    expect(within(which).getByText('Go to Inbox').previousSibling!.textContent).toBe('g i')
+    // Past the second a sequence otherwise waits.
+    await new Promise((resolve) => setTimeout(resolve, 1100))
+    await user.keyboard('k')
+    expect(location.pathname).toBe('/todos')
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    await user.keyboard('g')
+    await screen.findByRole('dialog', { name: 'Keys after g' })
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    // Given up: k is k alone, and Esc did not go up.
+    await user.keyboard('k')
+    expect(location.pathname).toBe('/todos')
+  })
+
   it('goes up by Esc: from a conversation to its list, selects none, then home', async () => {
     const user = await start('/mail/work/INBOX')
     await user.keyboard('j{Enter}')
