@@ -170,3 +170,12 @@
     grid-column: 2 / -1;
   }
 }
+
+.bucket h2 a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.bucket h2 a:hover {
+  text-decoration: underline;
+}

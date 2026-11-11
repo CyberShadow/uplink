@@ -2,10 +2,11 @@
 // agenda, of now through tomorrow; queried while on show, and again when
 // a log entry may change what they list.
 
-import { signal } from '@preact/signals'
-import type { CalendarEvent, HomeBucket, LogEntry, ServerEvent } from '../generated/protocol'
+import { batch, computed, signal } from '@preact/signals'
+import type { CalendarEvent, Conversation, HomeBucket, LogEntry, Room, ServerEvent, Todo } from '../generated/protocol'
 import type { Requester } from '../connection'
 import { date } from '../format'
+import { conversationKey } from './mail'
 import { Loader, query } from './query'
 
 /** Rows a bucket shows at most, and so conversations it asks for; the
@@ -30,9 +31,56 @@ export interface Home {
   agenda: CalendarEvent[]
 }
 
+export type Row =
+  | { kind: 'todo'; key: string; todo: Todo }
+  | { kind: 'event'; key: string; event: CalendarEvent }
+  | { kind: 'mail'; key: string; conversation: Conversation; query: string }
+  | { kind: 'room'; key: string; room: Room }
+
+/** A bucket's rows: to-dos (as listed, by due date), events, then mail
+ * and rooms, the most recently active first. */
+export function rowsOf(bucket: HomeBucket): Row[] {
+  const active = (row: Row) =>
+    row.kind === 'mail' ? row.conversation.latest.received_at : row.kind === 'room' ? (row.room.last_event_ts ?? 0) : 0
+  const mixed: Row[] = [
+    ...bucket.conversations.map((conversation): Row => ({
+      kind: 'mail',
+      key: `mail:${conversationKey(conversation)}`,
+      conversation,
+      query: bucket.query,
+    })),
+    ...bucket.rooms.map((room): Row => ({ kind: 'room', key: `room:${room.id}`, room })),
+  ].sort((a, b) => active(b) - active(a))
+  return [
+    ...bucket.todos.map((todo): Row => ({ kind: 'todo', key: `todo:${todo.id}`, todo })),
+    ...bucket.events.map((event): Row => ({ kind: 'event', key: `event:${event.id}`, event })),
+    ...mixed,
+  ]
+}
+
+export interface Bucket {
+  bucket: HomeBucket
+  rows: Row[]
+  /** Those shown: up to `BUCKET_LIMIT`. */
+  visible: Row[]
+}
+
+function bucketsOf(home: Home | null): Bucket[] {
+  return (home?.buckets ?? []).map((bucket) => {
+    const rows = rowsOf(bucket)
+    return { bucket, rows, visible: rows.slice(0, BUCKET_LIMIT) }
+  })
+}
+
 export class HomeStore {
   /** `null` until loaded. */
   readonly home = signal<Home | null>(null)
+  readonly buckets = computed(() => bucketsOf(this.home.value))
+  /** The rows shown, of every bucket, in order. */
+  readonly rows = computed(() => this.buckets.value.flatMap((b) => b.visible))
+  /** The key of the row the keys act on. It stays while home is not on
+   * show; a row that leaves gives it to the next one still shown. */
+  readonly focus = signal<string | null>(null)
   readonly error = signal<string | null>(null)
   /** Views showing it: while none is, it goes stale unqueried, and is
    * queried afresh once one is. */
@@ -47,7 +95,11 @@ export class HomeStore {
         query(this.server, { type: 'list_home', today: date(now), limit: BUCKET_LIMIT }, 'home'),
         query(this.server, { type: 'list_events', from: now.getTime(), to: end }, 'events'),
       ])
-      this.home.value = { buckets: home.buckets, agenda: events.events }
+      const before = this.rows.value
+      batch(() => {
+        this.home.value = { buckets: home.buckets, agenda: events.events }
+        this.keepFocus(before, this.rows.value)
+      })
     } catch (error) {
       this.error.value = (error as Error).message
     }
@@ -75,6 +127,27 @@ export class HomeStore {
   /** The buckets were configured anew. */
   changed() {
     this.invalidate()
+  }
+
+  /** Moves the focus `by` rows. */
+  moveFocus(by: number) {
+    const rows = this.rows.value
+    if (rows.length === 0) return
+    const index = rows.findIndex((r) => r.key === this.focus.value)
+    this.focus.value = rows[Math.min(Math.max(index + by, 0), rows.length - 1)].key
+  }
+
+  private keepFocus(before: Row[], after: Row[]) {
+    const keys = new Set(after.map((r) => r.key))
+    const focus = this.focus.value
+    if (focus === null) {
+      this.focus.value = after[0]?.key ?? null
+    } else if (!keys.has(focus)) {
+      // The first row after the old focus that is still shown.
+      const index = before.findIndex((r) => r.key === focus)
+      const next = before.slice(index + 1).find((r) => keys.has(r.key))
+      this.focus.value = (next ?? after.at(-1))?.key ?? null
+    }
   }
 
   private invalidate() {

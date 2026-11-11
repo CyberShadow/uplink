@@ -2672,10 +2672,12 @@ labels and Element's tags, which some accounts lack. A bucket's rows are
 its to-dos (by due date), its events, then its mail and rooms, the most
 recently active first; it shows 20 at most (the client's `limit`), its
 count saying `20+` when there may be more mail, with a link "Show all"
-to the bucket's query as a search. Mail opens within that search, so `j`
+to the bucket's query as a search; its heading links there too, however
+many it shows, to work through the bucket as a list. Mail opens within that search, so `j`
 and `k` go through the bucket's mail; a room opens itself, a to-do its
 message or the to-dos, an event its day. The keys act on any row: `j`/`k`
-move, `o`/Enter open, `e` is done with it (archives mail, marks a room
+move the cursor, which stays on its row while home is left and comes
+back (a row that goes gives it to the next one shown, or else the last), `o`/Enter open, `e` is done with it (archives mail, marks a room
 read up to its latest event, `Room.latest`, or finishes a to-do), `s`
 stars mail or favourites a room, and `l` labels mail or tags a room.
 Rooms show what is unread, mentions, or an invitation; to-dos past due

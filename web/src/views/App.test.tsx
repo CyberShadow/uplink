@@ -1902,6 +1902,9 @@ describe('home', () => {
     // To-dos come first.
     await waitFor(() => expect(bucketRows('Now')).toEqual(['Pay rent', 'Lobby']))
     const focused = () => screen.getByRole('region', { name: 'Home' }).querySelector('[aria-current=true] [class*=title]')!.textContent
+    // The cursor stays on its row as another comes before it.
+    expect(focused()).toBe('Lobby')
+    await user.keyboard('k')
     expect(focused()).toBe('Pay rent')
     await user.keyboard('e')
     await waitFor(() => expect(bucketRows('Now')).toEqual(['Lobby']))
@@ -1914,11 +1917,36 @@ describe('home', () => {
     expect(focused()).toBe(bucketRows('Inbox')[0])
     await user.keyboard('e')
     await waitFor(() => expect(bucketRows('Inbox')).toHaveLength(2))
-    // Opening mail opens it in a list of the bucket's.
+    // A heading opens its bucket as a list.
+    const inbox = screen.getByRole('region', { name: 'Inbox' })
+    expect(decodeURIComponent(within(inbox).getByRole('link', { name: /^Inbox/ }).getAttribute('href')!)).toBe(
+      '/search/in:inbox',
+    )
+    // Opening mail opens it in a list of the bucket's; back home, the
+    // cursor is where it was.
+    const subject = () =>
+      screen.getByRole('region', { name: 'Home' }).querySelector('[aria-current=true] [class*=subject]')!.textContent
+    const [first, second] = [...inbox.querySelectorAll('[class*=subject]')].map((s) => s.textContent)
+    await user.keyboard('j')
+    expect(subject()).toBe(second)
     await user.keyboard('gh')
     await screen.findByRole('region', { name: 'Home' })
     await user.keyboard('{Enter}')
-    expect(decodeURIComponent(location.pathname)).toMatch(/^\/search\/in:inbox -\(is:unread is:room OR is:todo\)\/\d+$/)
+    expect(decodeURIComponent(location.pathname)).toMatch(/^\/search\/in:inbox\/\d+$/)
+    await screen.findByRole('heading', { name: new RegExp(second!) })
+    await user.keyboard('gh')
+    await screen.findByRole('region', { name: 'Home' })
+    expect(subject()).toBe(second)
+    // Its row gone, the cursor goes to the next, or else the last.
+    await user.keyboard('k')
+    expect(subject()).toBe(first)
+    await user.keyboard('{Enter}')
+    await screen.findByRole('heading', { name: new RegExp(first!) })
+    await user.keyboard('e')
+    await user.keyboard('gh')
+    await screen.findByRole('region', { name: 'Home' })
+    await waitFor(() => expect(bucketRows('Inbox')).toHaveLength(1))
+    expect(subject()).toBe(second)
   })
 
   it('shows the agenda of today and tomorrow', async () => {

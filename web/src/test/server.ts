@@ -582,7 +582,7 @@ export class FakeServer implements Requester, Blobs {
             {
               ...empty,
               name: 'Inbox',
-              query: 'in:inbox -(is:unread is:room OR is:todo)',
+              query: 'in:inbox',
               conversations: conversations.slice(0, body.limit),
               more: conversations.length > body.limit,
             },

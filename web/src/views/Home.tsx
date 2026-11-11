@@ -6,10 +6,10 @@
 
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
-import type { CalendarEvent, Conversation, HomeBucket, Room, Todo } from '../generated/protocol'
+import type { CalendarEvent, HomeBucket } from '../generated/protocol'
 import { useServices } from '../context'
 import { useKeymap } from '../keymap'
-import { BUCKET_LIMIT } from '../stores/home'
+import type { Row } from '../stores/home'
 import { conversationKey, threadOf } from '../stores/mail'
 import { brief, date, time } from '../format'
 import { searchPath } from './App'
@@ -24,33 +24,6 @@ import { messagePath } from './Todos'
 import { FAVOURITE } from '../roomTags'
 import styles from './Home.module.css'
 
-type Row =
-  | { kind: 'todo'; key: string; todo: Todo }
-  | { kind: 'event'; key: string; event: CalendarEvent }
-  | { kind: 'mail'; key: string; conversation: Conversation; query: string }
-  | { kind: 'room'; key: string; room: Room }
-
-/** A bucket's rows: to-dos (as listed, by due date), events, then mail
- * and rooms, the most recently active first. */
-export function rowsOf(bucket: HomeBucket): Row[] {
-  const active = (row: Row) =>
-    row.kind === 'mail' ? row.conversation.latest.received_at : row.kind === 'room' ? (row.room.last_event_ts ?? 0) : 0
-  const mixed: Row[] = [
-    ...bucket.conversations.map((conversation): Row => ({
-      kind: 'mail',
-      key: `mail:${conversationKey(conversation)}`,
-      conversation,
-      query: bucket.query,
-    })),
-    ...bucket.rooms.map((room): Row => ({ kind: 'room', key: `room:${room.id}`, room })),
-  ].sort((a, b) => active(b) - active(a))
-  return [
-    ...bucket.todos.map((todo): Row => ({ kind: 'todo', key: `todo:${todo.id}`, todo })),
-    ...bucket.events.map((event): Row => ({ kind: 'event', key: `event:${event.id}`, event })),
-    ...mixed,
-  ]
-}
-
 /** How many a bucket lists: `20+` if there may be more mail. */
 function count(bucket: HomeBucket, rows: number): string {
   return `${rows}${bucket.more ? '+' : ''}`
@@ -60,22 +33,16 @@ export function Home() {
   const { home, mail, matrix, todos } = useServices()
   const { route } = useLocation()
   useEffect(() => home.show(), [home])
-  const [focus, setFocus] = useState(0)
   const [picking, setPicking] = useState<Row | null>(null)
   const focused = useRef<HTMLLIElement>(null)
+  const focus = home.focus.value
   useEffect(() => {
     focused.current?.scrollIntoView({ block: 'nearest' })
   }, [focus])
 
   const shown = home.home.value
-  const buckets = (shown?.buckets ?? []).map((bucket) => {
-    const rows = rowsOf(bucket)
-    return { bucket, rows, visible: rows.slice(0, BUCKET_LIMIT) }
-  })
-  const flat = buckets.flatMap((b) => b.visible)
-  // Keep the focus within the rows as they go.
-  useEffect(() => setFocus((f) => Math.max(0, Math.min(f, flat.length - 1))), [flat.length])
-  const current = flat[focus] as Row | undefined
+  const buckets = home.buckets.value
+  const current = home.rows.value.find((row) => row.key === focus)
 
   const open = (row: Row) => {
     switch (row.kind) {
@@ -117,8 +84,8 @@ export function Home() {
     }
   }
   useKeymap({
-    next: () => setFocus((f) => Math.min(f + 1, flat.length - 1)),
-    previous: () => setFocus((f) => Math.max(f - 1, 0)),
+    next: () => home.moveFocus(1),
+    previous: () => home.moveFocus(-1),
     open: () => current && open(current),
     done: () => current && done(current),
     star: () => current && star(current),
@@ -144,15 +111,18 @@ export function Home() {
       <div class={styles.buckets}>
         {buckets.map(({ bucket, rows, visible }) => (
           <section key={bucket.name} id={id(bucket)} class={styles.bucket} aria-label={bucket.name}>
+            {/* The bucket as a list of its own, to work through. */}
             <h2>
-              {bucket.name} <span class={styles.count}>{count(bucket, rows.length)}</span>
+              <a href={searchPath(bucket.query)}>
+                {bucket.name} <span class={styles.count}>{count(bucket, rows.length)}</span>
+              </a>
             </h2>
             {visible.length === 0 ? (
               <p class={styles.empty}>Nothing.</p>
             ) : (
               <ul class={styles.rows}>
                 {visible.map((row) => {
-                  const isFocused = row === current
+                  const isFocused = row.key === focus
                   return (
                     <li
                       key={row.key}
@@ -160,7 +130,7 @@ export function Home() {
                       class={[styles.row, isFocused && styles.focused, unread(row) && styles.unread].filter(Boolean).join(' ')}
                       aria-current={isFocused || undefined}
                       onClick={() => {
-                        setFocus(flat.indexOf(row))
+                        home.focus.value = row.key
                         open(row)
                       }}
                     >
