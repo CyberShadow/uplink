@@ -231,56 +231,91 @@ event("Incident review", monday + timedelta(days=2, hours=16), 45)
 machine.wait_for_unit("conduit.service")
 machine.wait_for_open_port(6167)
 register("admin", "Admin")  # Conduit makes its first user admin.
+# Alice's colleagues are on Matrix itself; everyone else is on another
+# network, bridged in as bridges do (mautrix's): each bridge's bot makes a
+# space of its chats, whose members are puppets of the other network's.
 users = {
     user: register(user, name)
-    for user, name in [("alice", "Alice"), ("maya", "Maya Chen"), ("tom", "Tom Becker"),
-                       ("daniel", "Daniel Okafor"), ("sofia", "Sofia Marquez")]
+    for user, name in [
+        ("alice", "Alice"), ("daniel", "Daniel Okafor"), ("sofia", "Sofia Marquez"),
+        ("whatsappbot", "WhatsApp bridge bot"), ("whatsapp_mom", "Mom"), ("whatsapp_dad", "Dad"),
+        ("whatsapp_lena", "Lena"), ("whatsapp_maya", "Maya Chen"),
+        ("telegrambot", "Telegram bridge bot"), ("telegram_maya", "Maya Chen"), ("telegram_tom", "Tom Becker"),
+        ("signalbot", "Signal bridge bot"), ("signal_priya", "Priya Raman"), ("signal_noor", "Noor Haddad"),
+        ("messengerbot", "Messenger bridge bot"), ("messenger_ines", "Inês Costa"),
+        ("messenger_jonas", "Jonas Weber"),
+    ]
 }
-acme = room("alice", "Acme", ["daniel", "sofia"], space=True)
+
+
+def space(creator, name, members, children, topic=None):
+    space_id = room(creator, name, members, topic=topic, space=True)
+    for child in children:
+        matrix(users[creator], "PUT", f"/rooms/{space_id}/state/m.space.child/{child}", {"via": ["example.org"]})
+
+
 platform = room("alice", "Platform", ["daniel", "sofia"], topic="Deploys, incidents and infrastructure")
 design = room("alice", "Design", ["sofia"], topic="Critiques and prototypes")
-for child in [platform, design]:
-    matrix(users["alice"], "PUT", f"/rooms/{acme}/state/m.space.child/{child}", {"via": ["example.org"]})
-hiking = room("maya", "Hiking club", ["alice", "tom"], topic="Weekend trails")
-direct = room("maya", "", ["alice"], direct=True)
-matrix(users["alice"], "PUT", "/user/@alice:example.org/account_data/m.direct", {"@maya:example.org": [direct]})
+space("alice", "Acme", ["daniel", "sofia"], [platform, design])
+family = room("whatsappbot", "Family chat", ["alice", "whatsapp_mom", "whatsapp_dad", "whatsapp_lena"])
+maya = room("whatsapp_maya", "", ["alice"], direct=True)
+space("whatsappbot", "WhatsApp", ["alice"], [family, maya], topic="Your WhatsApp bridged chats")
+hiking = room("telegrambot", "Hiking club", ["alice", "telegram_maya", "telegram_tom"], topic="Weekend trails")
+space("telegrambot", "Telegram", ["alice"], [hiking], topic="Your Telegram bridged chats")
+books = room("signalbot", "Book club", ["alice", "signal_priya", "signal_noor"])
+space("signalbot", "Signal", ["alice"], [books], topic="Your Signal bridged chats")
+lisbon = room("messengerbot", "Lisbon trip", ["alice", "messenger_ines", "messenger_jonas"])
+space("messengerbot", "Messenger", ["alice"], [lisbon], topic="Your Messenger bridged chats")
+matrix(users["alice"], "PUT", "/user/@alice:example.org/account_data/m.direct", {"@whatsapp_maya:example.org": [maya]})
 
 for user, body in [
-    ("daniel", "Morning! Release 4.2 is tagged, the changelog is in the usual place"),
+    ("daniel", "Release 4.2 is tagged, the changelog is in the usual place"),
     ("sofia", "I'll keep an eye on the checkout dashboards while it rolls out"),
-    ("alice", "Thanks both. Anything blocking?"),
-    ("daniel", "Only the migration for the order history index, and it ran fine on staging"),
-    ("daniel", "It takes about four minutes on a copy of production"),
-    ("sofia", "Fine by me, traffic is low until noon"),
-    ("alice", "Go for it 👍"),
-    ("daniel", "Migration done ✅"),
 ]:
     say(user, platform, body)
 release = say("daniel", platform, "Release 4.2 is rolling out to production now 🚀")
 send("sofia", platform, {"m.relates_to": {"rel_type": "m.annotation", "event_id": release, "key": "🎉"}}, "m.reaction")
-send("alice", platform, {"m.relates_to": {"rel_type": "m.annotation", "event_id": release, "key": "🎉"}}, "m.reaction")
-p99 = say("sofia", platform, "Checkout p99 is down to 180 ms since the rollout",
-          html="Checkout p99 is down to <strong>180 ms</strong> since the rollout")
-say("daniel", platform, "That's the connection pooling change paying off.",
-    **{"m.relates_to": {"m.in_reply_to": {"event_id": p99}}})
 say("daniel", platform, "If anything looks off, roll back with: deploy rollback --to 4.1.3",
     html="If anything looks off, roll back with:<pre><code>deploy rollback --to 4.1.3</code></pre>")
-say("alice", platform, "Great work, both of you. I'll update the status page.")
 say("sofia", design, "New onboarding prototype is up, three steps instead of seven. Feedback welcome!")
+
 for user, body in [
-    ("maya", "Who's in for the ridge trail this weekend?"),
-    ("tom", "Me! Saturday works better than Sunday"),
+    ("whatsapp_mom", "Is everyone coming on Sunday?"),
+    ("whatsapp_lena", "Yes! I'm bringing dessert 🍰"),
+    ("whatsapp_dad", "I'll pick your aunt up from the station at 4"),
+    ("alice", "Wouldn't miss it. Should I bring anything?"),
+]:
+    say(user, family, body)
+wine = say("whatsapp_mom", family, "Just yourselves. And maybe some wine 🍷")
+send("whatsapp_dad", family, {"m.relates_to": {"rel_type": "m.annotation", "event_id": wine, "key": "😂"}}, "m.reaction")
+say("whatsapp_dad", family, "I'm doing the roast this time, so expect it to be *excellent*",
+    html="I'm doing the roast this time, so expect it to be <em>excellent</em>",
+    **{"m.relates_to": {"m.in_reply_to": {"event_id": wine}}})
+train = say("whatsapp_lena", family, "My train gets in at 17:40, can someone pick me up?")
+lift = say("alice", family, "I can, I'll be driving past anyway",
+           **{"m.relates_to": {"m.in_reply_to": {"event_id": train}}})
+for user in ["whatsapp_lena", "whatsapp_mom"]:
+    send(user, family, {"m.relates_to": {"rel_type": "m.annotation", "event_id": lift, "key": "❤️"}}, "m.reaction")
+say("whatsapp_lena", family, "You're the best 🙏")
+
+for user, body in [
+    ("telegram_maya", "Who's in for the ridge trail this weekend?"),
+    ("telegram_tom", "Me! Saturday works better than Sunday"),
     ("alice", "Saturday's good for me too"),
-    ("maya", "Saturday it is. It's about 14 km, with the climb in the first half"),
-    ("tom", "Is the hut at the top open this time of year?"),
-    ("maya", "Only on Sundays, so bring lunch"),
+    ("telegram_maya", "Saturday it is. It's about 14 km, with the climb in the first half"),
+    ("telegram_tom", "Is the hut at the top open this time of year?"),
+    ("telegram_maya", "Only on Sundays, so bring lunch"),
     ("alice", "I'll bring the good thermos ☕"),
+    ("telegram_maya", "Trailhead at 8 on Saturday. Bring layers, it's cold up top ⛰️"),
+    ("telegram_tom", "I'm bringing Biscuit 🐕"),
+    ("telegram_maya", "Of course you are 😄"),
 ]:
     say(user, hiking, body)
-say("maya", hiking, "Trailhead at 8 on Saturday. Bring layers, it's cold up top ⛰️")
-say("tom", hiking, "I'm bringing Biscuit 🐕")
-say("maya", hiking, "Of course you are 😄")
-say("maya", direct, "Did you see the forecast? Clear skies all weekend ☀️")
+say("signal_priya", books, "Halfway through The Dispossessed and I already want to argue about Anarres")
+say("signal_noor", books, "No spoilers, I'm only on chapter 3!")
+say("messenger_ines", lisbon, "Found a great place for dinner in Alfama, booking for Friday at 8?")
+say("messenger_jonas", lisbon, "Yes please! 🇵🇹")
+say("whatsapp_maya", maya, "Did you see the forecast? Clear skies all weekend ☀️")
 
 machine.succeed(
     "printf 'matrix-password\n\n' | runuser -u uplink -- "
@@ -295,7 +330,7 @@ def count(query):
 
 eventually("the mail to be synced", lambda: count("SELECT count(*) FROM message") >= 12, timeout=120)
 eventually("the calendar to be synced", lambda: count("SELECT count(*) FROM calendar_event") >= 6, timeout=120)
-eventually("the rooms to be synced", lambda: count("SELECT count(*) FROM matrix_room") >= 5, timeout=120)
+eventually("the rooms to be synced", lambda: count("SELECT count(*) FROM matrix_room") >= 12, timeout=120)
 
 machine.succeed("uplink-shots >&2")
 machine.copy_from_vm("/tmp/screenshots", "docs")

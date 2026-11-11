@@ -44,6 +44,8 @@ def reply(page):
 
 
 def shoot(page, name, theme):
+    # No hover toolbar left on what was clicked or tapped last.
+    page.mouse.move(0, 0)
     page.wait_for_timeout(500)
     page.screenshot(path=f"{SHOTS}/{name}-{theme}.png")
 
@@ -108,8 +110,8 @@ def views(page, theme):
     shoot(page, "search", theme)
 
     inbox(page)
-    page.get_by_role("navigation").get_by_role("link", name="Platform").click()
-    expect(page.get_by_role("list", name="Timeline")).to_contain_text("status page", timeout=15000)
+    page.get_by_role("navigation").get_by_role("link", name="Family chat").click()
+    expect(page.get_by_role("list", name="Timeline")).to_contain_text("You're the best", timeout=15000)
     shoot(page, "room", theme)
 
     page.goto(URL + "/calendar")

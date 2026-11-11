@@ -15,27 +15,25 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/uplink/docs/screenshots/inbox-dark.png">
     <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/uplink/docs/screenshots/inbox-light.png">
-    <img alt="All inboxes: personal Gmail and work Microsoft 365 mail in one list" src="https://files.cy.md/uplink/docs/screenshots/inbox-light.png" width="800">
+    <img alt="All inboxes: personal and work mail in one list" src="https://files.cy.md/uplink/docs/screenshots/inbox-light.png" width="800">
   </picture>
 </p>
 
 ## What is this?
 
-uplink is a web client for the places your messages live: **Gmail**,
-**Microsoft 365** (mail and calendar) and **Matrix**, plus a to-do list of
-its own. It runs on your own server, for one person: you. You open it in
-a browser, on your desktop or your phone, and everything you do in one
-tab shows up in every other at once.
+uplink is one web app for your **mail**, your **chats** and your
+**calendar**, plus a to-do list of its own. It runs on your own server,
+for one person: you. You open it in a browser, on your desktop or your
+phone, and everything you do in one tab shows up in every other at once.
 
 It is built for people who live in their inbox and want it fast:
 
 - **One inbox for all your mail.**
-  Personal Gmail and work Microsoft 365 side by side, or one at a time.
-  Each message says whose it is; replies go out from the right account.
-  Labels, Microsoft 365 folders and categories, stars, read and unread,
-  archive, trash and spam all work as they do at the provider, and
-  changes on either side show up on the other within seconds (half a
-  minute for Microsoft 365).
+  Your personal and work accounts side by side, or one at a time. Each
+  message says whose it is; replies go out from the right account.
+  Labels, folders and categories, stars, read and unread, archive, trash
+  and spam all work as they do at your provider, and changes made
+  elsewhere show up without a reload.
 
 - **Gmail's keyboard shortcuts, everywhere.**
   `j`/`k` to move, `e` to archive, `r` to reply, `l` to label, `g i` to go
@@ -47,7 +45,7 @@ It is built for people who live in their inbox and want it fast:
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/uplink/docs/screenshots/conversation-dark.png">
     <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/uplink/docs/screenshots/conversation-light.png">
-    <img alt="A conversation, as Gmail groups it" src="https://files.cy.md/uplink/docs/screenshots/conversation-light.png" width="800">
+    <img alt="A conversation" src="https://files.cy.md/uplink/docs/screenshots/conversation-light.png" width="800">
   </picture>
 </p>
 
@@ -93,25 +91,26 @@ It is built for people who live in their inbox and want it fast:
   </picture>
 </p>
 
-- **A Matrix client beside your mail.**
-  Rooms and direct chats, nested in their spaces, with end-to-end
-  encryption (device verification by emoji, key backup and recovery),
-  replies, threads, reactions, edits, files, link previews, pinned
-  messages, mentions and notifications, and search, encrypted rooms
-  included. Bridges bring other chat networks into Matrix, and so into
-  uplink.
+- **All your chats, through Matrix.**
+  uplink is a full [Matrix](https://matrix.org/) client: rooms and direct
+  chats, nested in their spaces, with end-to-end encryption (device
+  verification by emoji, key backup and recovery), replies, threads,
+  reactions, edits, files, link previews, pinned messages, mentions and
+  notifications, and search, encrypted rooms included. With
+  [bridges](https://matrix.org/ecosystem/bridges/) on your homeserver,
+  your WhatsApp, Telegram, Signal and Messenger chats are Matrix rooms
+  too, so they are all here, in one place, beside your mail.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/uplink/docs/screenshots/room-dark.png">
     <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/uplink/docs/screenshots/room-light.png">
-    <img alt="A Matrix room in a space" src="https://files.cy.md/uplink/docs/screenshots/room-light.png" width="800">
+    <img alt="A WhatsApp group, bridged to Matrix, among the other networks' chats" src="https://files.cy.md/uplink/docs/screenshots/room-light.png" width="800">
   </picture>
 </p>
 
 - **Your calendar, at a glance.**
-  Microsoft 365 calendars by week or as an agenda, recurring meetings
-  and all (read-only for now).
+  By week or as an agenda, recurring meetings and all.
 
 <p align="center">
   <picture>
@@ -140,7 +139,7 @@ It is built for people who live in their inbox and want it fast:
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/uplink/docs/screenshots/mobile-room-dark.png">
     <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/uplink/docs/screenshots/mobile-room-light.png">
-    <img alt="A Matrix room on a phone" src="https://files.cy.md/uplink/docs/screenshots/mobile-room-light.png" height="400">
+    <img alt="A Telegram group, bridged to Matrix, on a phone" src="https://files.cy.md/uplink/docs/screenshots/mobile-room-light.png" height="400">
   </picture>
 </p>
 
@@ -153,16 +152,19 @@ It is built for people who live in their inbox and want it fast:
 
 ## Status
 
-uplink is young. Some things to know:
+uplink is young. What it connects to so far:
 
-- **Microsoft 365** has so far been tested against an emulator of
-  Microsoft Graph, not a real tenant; reports are welcome. Its calendar
-  is read-only.
-- **One user per server**, by design. Signing in is HTTP basic
-  authentication, so put uplink behind TLS (or keep it on loopback).
-- **Matrix** is the only chat protocol; others come through Matrix bridges.
-- Planned: an Android app, push for Microsoft 365 (it polls every 30 s
-  for now), and more; see [`docs/ROADMAP.md`](docs/ROADMAP.md).
+|          | Supported                                   | Planned                                    |
+|----------|---------------------------------------------|--------------------------------------------|
+| Mail     | Gmail, Microsoft 365                        | Any IMAP/SMTP server, JMAP                 |
+| Calendar | Microsoft 365 (viewing)                     | Editing; Google Calendar, CalDAV, iCalendar feeds |
+| Chat     | Matrix, and every network bridged to it     |                                            |
+| To-dos   | uplink's own                                | Google Tasks, Microsoft To Do, CalDAV      |
+
+It is for **one user per server**, by design. Signing in is HTTP basic
+authentication, so put uplink behind TLS (or keep it on loopback). An
+Android app is planned too; see [`docs/ROADMAP.md`](docs/ROADMAP.md) for
+the rest.
 
 ## Getting started
 
