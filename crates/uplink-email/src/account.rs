@@ -11,7 +11,7 @@
 use crate::{
     compose::{
         self, build_message, now_ms, Due, File, ReplyContext, SendFailed, SendNotFound,
-        SendOutcome, SendStarted, SendSucceeded,
+        SendOutcome, SendStarted, SendSucceeded, SentCopy,
     },
     parse::{parse, Parsed},
 };
@@ -49,10 +49,12 @@ pub trait Provider: Send + Sync + 'static {
     const KIND: &'static str;
 
     /// Whether the provider files its copy of a message in Sent as it
-    /// accepts it, so that a sync not finding the copy shows a send of
-    /// unknown outcome did not go out, and it is sent again (SPEC §6.7).
-    /// Otherwise such a send stays unknown until its copy turns up, or the
-    /// user decides.
+    /// accepts it, so that a send of unknown outcome is sent again once a
+    /// sync has not found the copy (SPEC §6.7): which shows it did not go
+    /// out, where the copy keeps our Message-ID; where it does not
+    /// (Gmail), sending again sends once only, but one no longer wanted
+    /// is taken back as if it had not gone out. Otherwise such a send stays
+    /// unknown until its copy turns up, or the user decides.
     const FILES_SENT: bool;
 
     /// Records the mailbox's changes since the last sync (all of it, the
@@ -65,12 +67,13 @@ pub trait Provider: Send + Sync + 'static {
     /// ([`Account::pending`]), and records them as pushed.
     fn push(&self, account: &Account) -> impl Future<Output = Result<()>> + Send;
 
-    /// Hands the message to the provider to send.
+    /// Hands the message to the provider to send; which of its messages
+    /// is its copy.
     fn send(
         &self,
         account: &Account,
         mail: Outgoing<'_>,
-    ) -> impl Future<Output = Result<(), SendError>> + Send;
+    ) -> impl Future<Output = Result<SentCopy, SendError>> + Send;
 
     /// Resolves when the provider tells of a change, so that the task
     /// syncs before the poll interval passes; or, for a provider that only
@@ -87,11 +90,15 @@ pub struct Outgoing<'a> {
     /// RFC 5322, as built.
     pub raw: &'a [u8],
     pub message_id: &'a str,
+    /// When it was due (unix ms): it went out no earlier.
+    pub not_before: i64,
     /// The provider's thread of the message it replies to.
     pub thread: Option<&'a str>,
-    /// The provider's draft it is sent as, if an earlier attempt made it
+    /// The provider's draft it is sent as, and the draft's thread (Gmail),
+    /// if an earlier attempt made it
     /// ([`SendDrafted`](crate::compose::SendDrafted)).
     pub provider_draft: Option<&'a str>,
+    pub provider_thread: Option<&'a str>,
 }
 
 /// Why sending did not succeed.
@@ -449,13 +456,14 @@ impl<P: Provider> SyncTask<P> {
             }
             let item = due.item;
             match self.send(due).await {
-                Ok((variant, parsed, size_bytes)) => {
+                Ok((variant, parsed, size_bytes, copy)) => {
                     self.account
                         .observe(SendSucceeded {
                             item,
                             variant,
                             size_bytes,
                             parsed,
+                            copy,
                         })
                         .await?
                 }
@@ -490,7 +498,7 @@ impl<P: Provider> SyncTask<P> {
     }
 
     /// Sends a claimed item, and stores the message as sent.
-    async fn send(&self, due: Due) -> Result<(VariantHash, Parsed, i64), SendError> {
+    async fn send(&self, due: Due) -> Result<(VariantHash, Parsed, i64, SentCopy), SendError> {
         let account = self.account.id.clone();
         let store = self.account.store.clone();
         let blobs = self.account.blobs.clone();
@@ -529,23 +537,28 @@ impl<P: Provider> SyncTask<P> {
             now_ms() / 1000,
         )
         .map_err(|e| SendError::Rejected(format!("{e:#}")))?;
-        self.provider
+        let copy = self
+            .provider
             .send(
                 &self.account,
                 Outgoing {
                     item: due.item,
                     raw: &raw,
                     message_id: &due.message_id,
+                    not_before: due.not_before,
                     thread: thread.as_deref(),
                     provider_draft: due.provider_draft.as_deref(),
+                    provider_thread: due.provider_thread.as_deref(),
                 },
             )
             .await?;
-        self.account
+        let (variant, parsed, size_bytes) = self
+            .account
             .store_raw(raw)
             .await
             // Sent, but the copy could not be stored: the provider's copy
             // will be, once synced.
-            .map_err(|e| SendError::Unknown(e.context("storing sent mail")))
+            .map_err(|e| SendError::Unknown(e.context("storing sent mail")))?;
+        Ok((variant, parsed, size_bytes, copy))
     }
 }

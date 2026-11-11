@@ -624,10 +624,13 @@ CREATE TABLE mail_send (
   desired_by     INTEGER NOT NULL REFERENCES tx_log(id), -- the op that set `wanted`
   state          TEXT NOT NULL,             -- 'queued' | 'sending' | 'unknown' | 'sent' | 'refused'
   attempted_at   INTEGER,                   -- unix ms: when the last attempt began
-  provider_draft TEXT,                      -- M365: the draft it is sent as (§8.4)
+  provider_draft TEXT,                      -- Gmail, M365: the draft it is sent as (§8.2, §8.4)
+  provider_thread TEXT,                     -- Gmail: that draft's thread
+  provider_copy  TEXT,                      -- Gmail: its copy's message id, as Gmail told
   error          TEXT,                      -- set iff refused or unknown: why
   message        INTEGER REFERENCES message(id), -- set iff sent: the local copy
-  synced         INTEGER NOT NULL           -- the provider's copy is observed: out of the outbox
+  synced         INTEGER NOT NULL           -- the provider's copy is observed, or can't be told
+                                            -- (§8.2): out of the outbox
 );
 
 -- ── the log ─────────────────────────────────────────────────────────
@@ -1100,7 +1103,7 @@ provider made of a push):
 
 Each account runs a reconciler (its sync task) that, after every commit
 touching its state, pushes the differences — Gmail `messages.batchModify`
-and `messages.send`; Graph `PATCH`, `move` and draft `send`; Matrix sends,
+and draft `send`; Graph `PATCH`, `move` and draft `send`; Matrix sends,
 joins, leaves, receipts and space orders. The UI shows desired state
 immediately, so actions feel instant and survive a provider outage.
 
@@ -1191,12 +1194,15 @@ that a cancel knows whether it can still be fulfilled locally. Then:
 - not sent for a passing reason: back to `queued`, retried with backoff;
 - outcome unknown (a timeout; the process stopped while `sending`):
   `unknown`, until the provider is observed:
-  - Gmail files the sent copy in accepting `messages.send`, so a sync
-    that recorded all there was tells, if it began long enough
-    (5 minutes) after the attempt that the provider is done with the
-    request: the Message-ID's copy in Sent means `sent`; none means it
-    did not go out, and it is queued again (or, no longer wanted, the
-    draft is back);
+  - Gmail files the sent copy in accepting a send, but under a
+    Message-ID of its own (§8.2), so sync can't tell by ours. It sends
+    a draft created first, by its id, so sending it again is safe
+    regardless: once a sync has run long enough (5 minutes) after the
+    attempt that Gmail is done with the request, the send is queued
+    again, and a draft already sent is gone, so it is not sent twice.
+    Open: one no longer wanted is taken back then, its draft back,
+    though it may have gone out; asking Gmail about its draft (gone
+    means sent) would tell;
   - Graph the same way, its copy filed in Sent Items. As Graph sends a
     draft created first, by its id (§8.4), sending it again is safe
     regardless: a draft already sent is not sent twice.
@@ -1208,6 +1214,7 @@ that a cancel knows whether it can still be fulfilled locally. Then:
 SMTP and Gmail's `messages.send` take no idempotency key (RFC 1047
 describes the duplicate a lost acknowledgement causes); observing the
 outcome, by the Message-ID or the draft, is what makes a retry safe.
+Gmail doesn't deduplicate by Message-ID either, as it replaces it.
 
 Matrix messages (§9.3) differ in three ways. They have no send delay,
 since chat expects immediacy: a cancel is fulfilled at once only until
@@ -1408,12 +1415,33 @@ IMAP's per-folder copies, and a REST fake is practical to test against
 
 ### 8.2 Gmail — send
 
-- **Transport**: Gmail API `users.messages.send`. Build RFC 5322 message
-  in-memory and POST it as a multipart upload
-  (`/upload/...?uploadType=multipart`: JSON metadata with the `threadId`,
-  then the message as `message/rfc822`), which takes messages of up to
-  35 MB; a JSON body with the message inlined as base64url is limited to
-  5 MB, too little for attachments.
+- **Transport**: in two steps, as M365's (§8.4). First the RFC 5322
+  message we built becomes a draft, `users.drafts.create`, POSTed as a
+  multipart upload (`/upload/...?uploadType=multipart`: JSON metadata
+  with the message's `threadId`, then the message as `message/rfc822`),
+  which takes messages of up to 35 MB; a JSON body with the message
+  inlined as base64url is limited to 5 MB, too little for attachments.
+  The draft's id and thread are recorded on the send (`provider_draft`,
+  `provider_thread`, by `mail.send_drafted`). This sends nothing, so
+  whatever its outcome it counts as not sent; one whose answer was lost
+  leaves a draft behind in Gmail's Drafts. Then `users.drafts.send`
+  sends the draft by its id.
+- **Gmail's copy**: Gmail sends mail under a Message-ID and a `Date:` of
+  its own, whatever ours were (from `messages.send` and `drafts.send`
+  alike; SMTP would keep them, but doesn't file the copy in Sent). So
+  its copy in Sent is not found by our Message-ID, and it is no variant
+  of the same logical message by §4.4's rules. Instead `drafts.send`
+  answers with the copy's message id, recorded on the send
+  (`provider_copy`), and once the copy is synced the message as sent
+  joins its logical message (§8.6). A draft sent is a new message of
+  the draft's thread, and the draft is gone: sending it again answers
+  404 and sends nothing. So the copy of a send whose answer was lost
+  is looked for in the draft's thread: the message in Sent there, from
+  no earlier than the send was due (less a minute, for clock skew), and
+  no other send's copy. With one, it is the copy; with none, the draft
+  was deleted at Gmail, which refuses the send (the user decides); with
+  several, which is the copy can't be told, and the send is left
+  synced, its message as sent apart.
 - **Why API not SMTP**: avoids "Sent" folder synchronization mismatch
   (Gmail SMTP doesn't append to Sent; the API does).
 - **Library**: hand-rolled HTTPS+JSON via `reqwest`. No SDK; Gmail send is
@@ -1549,9 +1577,16 @@ Next sync pass, the provider's Sent copy is observed. It has the same
 Message-ID but different bytes (the provider adds headers), so it is
 stored as a second variant of the same message, and the message gains its
 `mail_entry` for the account; the send is then `synced`, and leaves the
-outbox. (emulate stores the bytes as sent, so there it is the same
-variant.) The same observation settles a send whose outcome was unknown
+outbox. The same observation settles a send whose outcome was unknown
 (§6.7): its Message-ID's copy in Sent means it went out.
+
+Gmail's copy has a Message-ID of its own (§8.2), so it is stored as a
+logical message of its own; the provider told which it is, and once both
+are recorded (in either order), the message as sent joins it: its
+variant, and whatever referred to it, move to the copy's message, under
+Gmail's Message-ID, which is the one replies will refer to. The copy's
+variant stays the preferred one, having been stored as the message's
+first.
 
 ### 8.7 Body extraction & FTS
 
@@ -3447,7 +3482,8 @@ as label, membership and receipt changes. Undoing a send is never
 refused: before the send is claimed it takes the mail back; afterwards,
 if it went out, it is irreconcilable and the user keeps it sent. A retry
 after an unknown outcome is made safe by observing the Message-ID in
-Sent, not by refusing to retry. (Before: the outbox held sends only,
+Sent, or by sending a draft (Gmail, Graph), which sends once only, not by
+refusing to retry. (Before: the outbox held sends only,
 label changes were pushed unseen, and undo refused a sent mail.)
 A Matrix send that went out is taken back by redacting it (§9.3), though
 that is best-effort at most (recipients may already have the plaintext,
@@ -3517,7 +3553,10 @@ request).
   match a registered one on any port, as Google does for installed apps
   (RFC 8252 §7.3), so `uplink oauth init` can listen on an ephemeral port;
   `0003` accepts multipart uploads (`multipart/related`: JSON metadata,
-  then the message), as uplink sends mail (§8.2).
+  then the message), as uplink sends mail (§8.2); `0007` sends as Gmail
+  does, under a Message-ID and a Date of its own, a draft as a new
+  message of its thread (the draft then gone), and takes a draft's
+  multipart upload as its message.
   uplink's Google endpoints (auth, token, API base) are configurable,
   defaulting to Google's.
 - **Real accounts.** A fake can diverge from the real service in
@@ -3643,7 +3682,11 @@ is a configuration step, as it is for Gmail.
 Gmail is verified against a real account only as far as Google let a
 throwaway one sign in, which it did not (automated sign-in is refused);
 `UPLINK_TEST_GMAIL_CONFIG` runs the Gmail tests against an account
-authorized by hand.
+authorized by hand. The user's own account showed (2026-11-11) that
+Gmail replaces the Message-ID and Date of mail it sends, which emulate
+now does too (§8.2); that a draft sent is a new message, the draft then
+404 to sending again, is from others' reports against the real API,
+emulated likewise, but not yet seen on a real account.
 
 ## 16. UI shell
 

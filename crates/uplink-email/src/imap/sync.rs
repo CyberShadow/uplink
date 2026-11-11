@@ -23,6 +23,7 @@ use super::{
 };
 use crate::{
     account::{Account, Outgoing, Pending, Provider, SendError, SyncTask},
+    compose::SentCopy,
     mail_server::{
         self,
         sign_in::{self, SignIn},
@@ -241,7 +242,7 @@ impl Provider for ImapSync {
 
     /// Submits the message by SMTP, then files it in Sent; the copy there
     /// becomes its entry when synced.
-    async fn send(&self, _account: &Account, mail: Outgoing<'_>) -> Result<(), SendError> {
+    async fn send(&self, _account: &Account, mail: Outgoing<'_>) -> Result<SentCopy, SendError> {
         smtp::send(self.config.login(), &self.sign_in, &self.tls, mail.raw).await?;
         // Sent: if it cannot be filed, it stays listed as waiting for its
         // copy, which is so.
@@ -252,7 +253,7 @@ impl Provider for ImapSync {
                 mail.message_id
             );
         }
-        Ok(())
+        Ok(SentCopy::OurMessageId)
     }
 
     /// What IDLE tells of the Inbox, watched from the first wait on.

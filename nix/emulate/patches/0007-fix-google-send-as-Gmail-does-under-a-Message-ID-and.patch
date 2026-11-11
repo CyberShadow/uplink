@@ -1,0 +1,189 @@
+From 496f620f5a796428b5beef749901941ed2e42a9c Mon Sep 17 00:00:00 2001
+From: Vladimir Panteleev <git@cy.md>
+Date: Wed, 11 Nov 2026 18:57:47 +0000
+Subject: [PATCH] fix(google): send as Gmail does: under a Message-ID and Date
+ of its own, a draft as a new message
+
+Gmail replaces the Message-ID and Date of mail sent by messages.send or
+drafts.send, and sends a draft as a new message of its thread, the draft
+then gone (so sending it again is 404). Drafts also take a multipart
+upload's media as their raw message.
+---
+ .../google/src/__tests__/google.test.ts       | 58 ++++++++++++++++++-
+ packages/@emulators/google/src/helpers.ts     | 32 ++++++++--
+ .../@emulators/google/src/routes/drafts.ts    |  3 +-
+ .../@emulators/google/src/routes/messages.ts  |  4 ++
+ 4 files changed, 89 insertions(+), 8 deletions(-)
+
+diff --git a/packages/@emulators/google/src/__tests__/google.test.ts b/packages/@emulators/google/src/__tests__/google.test.ts
+index 5c2c326..dc7083a 100644
+--- a/packages/@emulators/google/src/__tests__/google.test.ts
++++ b/packages/@emulators/google/src/__tests__/google.test.ts
+@@ -453,7 +453,8 @@ describe("Google plugin integration", () => {
+     });
+     expect(sendRes.status).toBe(200);
+     const sent = (await sendRes.json()) as { id: string; threadId: string; labelIds: string[] };
+-    expect(sent.id).toBe(created.message.id);
++    // Sent as a new message of the draft's thread, as Gmail does.
++    expect(sent.id).not.toBe(created.message.id);
+     expect(sent.threadId).toBe("thread_support");
+     expect(sent.labelIds).toContain("SENT");
+     expect(sent.labelIds).not.toContain("DRAFT");
+@@ -462,6 +463,17 @@ describe("Google plugin integration", () => {
+       headers: authHeaders(),
+     });
+     expect(missingDraftRes.status).toBe(404);
++    const draftMessageRes = await app.request(`${base}/gmail/v1/users/me/messages/${created.message.id}`, {
++      headers: authHeaders(),
++    });
++    expect(draftMessageRes.status).toBe(404);
++
++    // Sending it again sends nothing.
++    const resendRes = await jsonRequest(app, "/gmail/v1/users/me/drafts/send", {
++      method: "POST",
++      body: { id: created.id },
++    });
++    expect(resendRes.status).toBe(404);
+ 
+     const deleteRaw = buildRawMessage({
+       from: "testuser@example.com",
+@@ -845,6 +857,50 @@ describe("Google plugin integration", () => {
+       headers: authHeaders(),
+     });
+     const fetched = (await rawRes.json()) as { raw: string };
++    // Gmail sends it under a Message-ID and a Date of its own.
++    const stored = Buffer.from(fetched.raw, "base64url").toString("utf8");
++    const withoutIdAndDate = (raw: string) => raw.replace(/^(Message-ID|Date): .*\r?\n/gim, "");
++    expect(withoutIdAndDate(stored)).toBe(withoutIdAndDate(mime));
++    expect(stored).toMatch(/^Message-ID: <[0-9a-f]{32}@mail\.gmail\.com>$/m);
++  });
++
++  it("accepts drafts as multipart uploads", async () => {
++    const mime = Buffer.from(
++      buildRawMessage({
++        from: "testuser@example.com",
++        to: "Support <support@example.com>",
++        subject: "Uploaded draft",
++        body_text: "Drafted by upload.",
++        message_id: "<draft-upload@example.com>",
++      }),
++      "base64url",
++    ).toString("utf8");
++    const body = [
++      "--b0undary",
++      "Content-Type: application/json; charset=UTF-8",
++      "",
++      JSON.stringify({ message: { threadId: "thread_support" } }),
++      "--b0undary",
++      "Content-Type: message/rfc822",
++      "",
++      mime,
++      "--b0undary--",
++      "",
++    ].join("\r\n");
++
++    const createRes = await app.request(`${base}/upload/gmail/v1/users/me/drafts?uploadType=multipart`, {
++      method: "POST",
++      headers: authHeaders({ "Content-Type": 'multipart/related; boundary="b0undary"' }),
++      body,
++    });
++
++    expect(createRes.status).toBe(200);
++    const created = (await createRes.json()) as { id: string; message: { id: string; threadId: string } };
++    expect(created.message.threadId).toBe("thread_support");
++    const rawRes = await app.request(`${base}/gmail/v1/users/me/messages/${created.message.id}?format=raw`, {
++      headers: authHeaders(),
++    });
++    const fetched = (await rawRes.json()) as { raw: string };
+     expect(Buffer.from(fetched.raw, "base64url").toString("utf8")).toBe(mime);
+   });
+ 
+diff --git a/packages/@emulators/google/src/helpers.ts b/packages/@emulators/google/src/helpers.ts
+index b7f21ad..0161606 100644
+--- a/packages/@emulators/google/src/helpers.ts
++++ b/packages/@emulators/google/src/helpers.ts
+@@ -691,19 +691,39 @@ export function updateDraftMessage(
+   return { draft: syncDraftState(gs, updated, draft.gmail_id) ?? draft, message: updated };
+ }
+ 
++/**
++ * The raw message (base64url) as Gmail sends it: under a Message-ID and a
++ * Date of its own, whatever the sender gave.
++ */
++export function asSentByGmail(raw: string, at: Date): string {
++  const text = decodeBase64Like(raw).toString("latin1");
++  const end = text.search(/\r?\n\r?\n/);
++  const head = end === -1 ? text : text.slice(0, end);
++  const body = end === -1 ? "" : text.slice(end);
++  const fields = head.split(/\r?\n(?![ \t])/).filter((field) => !/^(message-id|date)\s*:/i.test(field));
++  fields.push(`Message-ID: <${randomBytes(16).toString("hex")}@mail.gmail.com>`, `Date: ${at.toUTCString()}`);
++  return Buffer.from(fields.join("\r\n") + body, "latin1").toString("base64url");
++}
++
++/**
++ * Sends the draft as Gmail does: as a new message of the draft's thread,
++ * with an id and a Message-ID of its own; the draft is gone.
++ */
+ export function sendDraftMessage(gs: GoogleStore, draft: GoogleDraft): GoogleMessage | null {
+   const message = getDraftMessage(gs, draft);
+   if (!message) {
+     gs.drafts.delete(draft.id);
+     return null;
+   }
++  if (message.raw === null) throw new Error(`draft ${draft.gmail_id} has no raw message`);
+ 
+-  const sent = markMessageModified(
+-    gs,
+-    message,
+-    message.label_ids.filter((labelId) => labelId !== "DRAFT").concat("SENT"),
+-  );
+-  clearDraftRecordsForMessage(gs, message.user_email, message.gmail_id);
++  const sent = createStoredMessage(gs, {
++    user_email: message.user_email,
++    raw: asSentByGmail(message.raw, new Date()),
++    thread_id: message.thread_id,
++    label_ids: message.label_ids.filter((labelId) => labelId !== "DRAFT").concat("SENT"),
++  });
++  deleteMessage(gs, message);
+   return sent;
+ }
+ 
+diff --git a/packages/@emulators/google/src/routes/drafts.ts b/packages/@emulators/google/src/routes/drafts.ts
+index 0700022..d338319 100644
+--- a/packages/@emulators/google/src/routes/drafts.ts
++++ b/packages/@emulators/google/src/routes/drafts.ts
+@@ -31,7 +31,8 @@ export function draftRoutes({ app, store }: RouteContext): void {
+     if (authEmail instanceof Response) return authEmail;
+ 
+     const body = await parseGoogleBody(c);
+-    const messageBody = getRecord(body, "message") ?? body;
++    // A multipart upload's media is the message's raw form.
++    const messageBody = { raw: body.raw, ...(getRecord(body, "message") ?? body) };
+ 
+     try {
+       const { draft } = createDraftMessage(gs, {
+diff --git a/packages/@emulators/google/src/routes/messages.ts b/packages/@emulators/google/src/routes/messages.ts
+index fe9bed8..e317b6a 100644
+--- a/packages/@emulators/google/src/routes/messages.ts
++++ b/packages/@emulators/google/src/routes/messages.ts
+@@ -1,6 +1,7 @@
+ import type { RouteContext } from "@emulators/core";
+ import type { Context } from "@emulators/core";
+ import {
++  asSentByGmail,
+   applyLabelMutation,
+   createStoredMessage,
+   deleteMessage,
+@@ -54,6 +55,9 @@ export function messageRoutes({ app, store }: RouteContext): void {
+     const messageInput = parseMessageInputFromBody(body, {
+       from: mode === "send" ? authEmail : undefined,
+     });
++    if (mode === "send" && messageInput.raw) {
++      messageInput.raw = asSentByGmail(messageInput.raw, new Date());
++    }
+     if (!messageInput.raw && (!messageInput.from || !messageInput.to)) {
+       return googleApiError(
+         c,
+-- 
+2.55.0
+

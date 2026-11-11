@@ -2362,7 +2362,7 @@ impl crate::account::Provider for Stepping {
         &self,
         _: &crate::account::Account,
         _: crate::account::Outgoing<'_>,
-    ) -> Result<(), crate::account::SendError> {
+    ) -> Result<crate::compose::SentCopy, crate::account::SendError> {
         unreachable!("nothing is queued")
     }
 }
@@ -2432,7 +2432,7 @@ impl crate::account::Provider for Failing {
         &self,
         _: &crate::account::Account,
         _: crate::account::Outgoing<'_>,
-    ) -> Result<(), crate::account::SendError> {
+    ) -> Result<crate::compose::SentCopy, crate::account::SendError> {
         unreachable!("nothing is queued")
     }
 }

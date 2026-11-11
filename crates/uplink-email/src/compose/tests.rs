@@ -392,6 +392,7 @@ async fn sent_mail_joins_its_provider_copy() {
                 variant: store.put(&raw_sent).unwrap(),
                 size_bytes: raw_sent.len() as i64,
                 parsed: parse(&raw_sent),
+                copy: SentCopy::OurMessageId,
             },
         )
         .await
@@ -422,6 +423,85 @@ async fn sent_mail_joins_its_provider_copy() {
     assert_eq!(shown(&db), [(SendState::Sent, false)]);
     db.dispatcher.undo(cancel).await.unwrap();
     assert!(db.outbox().is_empty());
+}
+
+/// The message as sent, as Gmail sends it: under a Message-ID and a Date
+/// of its own (SPEC §8.2).
+fn as_gmail_sends(raw_sent: &[u8]) -> Vec<u8> {
+    let raw = String::from_utf8(raw_sent.to_vec()).unwrap();
+    let (head, body) = raw.split_once("\r\n\r\n").unwrap();
+    let mut head: Vec<&str> = head
+        .split("\r\n")
+        .filter(|h| !h.starts_with("Message-ID:") && !h.starts_with("Date:"))
+        .collect();
+    head.extend([
+        "Message-ID: <CAgmail@mail.gmail.com>",
+        "Date: Fri, 15 Jan 2027 08:00:02 +0000",
+    ]);
+    format!("{}\r\n\r\n{body}", head.join("\r\n")).into_bytes()
+}
+
+/// Sends the queued item, as accepted with `copy`.
+async fn succeed(db: &Db, item: OutboxId, raw_sent: &[u8], copy: SentCopy) {
+    db.dispatcher
+        .observe(
+            "a".into(),
+            SendSucceeded {
+                item,
+                variant: db.store().put(raw_sent).unwrap(),
+                size_bytes: raw_sent.len() as i64,
+                parsed: parse(raw_sent),
+                copy,
+            },
+        )
+        .await
+        .unwrap();
+}
+
+/// The copy Gmail told of has a Message-ID of its own: the message as
+/// sent joins it, as a variant, whether it was synced before or after.
+#[tokio::test]
+async fn sent_mail_joins_the_copy_the_provider_told() {
+    for synced_first in [false, true] {
+        let db = Db::new();
+        let (_, item) = queue(&db).await;
+        let message_id: Vec<String> = db.query("SELECT message_id FROM mail_send");
+        start(&db, item).await;
+        let raw_sent = built(&message_id[0]);
+        let copy = new_entry(&db.store(), "g1", &["SENT"], &as_gmail_sends(&raw_sent));
+        let sync = observed(labels(&["SENT"]), vec![copy], vec![], &[]);
+        if synced_first {
+            db.observe("a", sync).await;
+            succeed(&db, item, &raw_sent, SentCopy::Id("g1".into())).await;
+        } else {
+            succeed(&db, item, &raw_sent, SentCopy::Id("g1".into())).await;
+            assert_eq!(shown(&db), [(SendState::Sent, true)]);
+            db.observe("a", sync).await;
+        }
+        assert!(db.outbox().is_empty(), "synced first: {synced_first}");
+        let messages: Vec<String> = db.query("SELECT message_id FROM message");
+        assert_eq!(messages, ["CAgmail@mail.gmail.com"]);
+        let joined: Vec<String> = db.query(
+            "SELECT count(*) || ' ' || (SELECT count(*) FROM message_fts)
+             || ' ' || (SELECT message FROM mail_send) FROM message_variant
+             WHERE message = (SELECT id FROM message)",
+        );
+        let message: Vec<i64> = db.query("SELECT id FROM message");
+        assert_eq!(joined, [format!("2 1 {}", message[0])]);
+    }
+}
+
+/// A copy Gmail could not tell apart leaves nothing to reconcile.
+#[tokio::test]
+async fn a_copy_that_cannot_be_told_settles_the_send() {
+    let db = Db::new();
+    let (_, item) = queue(&db).await;
+    let message_id: Vec<String> = db.query("SELECT message_id FROM mail_send");
+    start(&db, item).await;
+    succeed(&db, item, &built(&message_id[0]), SentCopy::Untold).await;
+    assert!(db.outbox().is_empty());
+    let settled: Vec<String> = db.query("SELECT state || ' ' || synced FROM mail_send");
+    assert_eq!(settled, ["sent 1"]);
 }
 
 /// A send whose outcome is unknown is sent if its copy turns up in Sent.

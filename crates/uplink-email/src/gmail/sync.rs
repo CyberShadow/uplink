@@ -7,6 +7,7 @@ use super::{
 };
 use crate::{
     account::{Account, Outgoing, Provider, SendError, SyncTask},
+    compose::{self, SendDrafted, SentCopy},
     mailbox::{
         EntryLabels, LabelChange, LabelsPushed, LabelsRefused, MailboxObserved, NewEntry,
         ObservedLabel, SyncState,
@@ -37,6 +38,9 @@ const CONCURRENT_FETCHES: usize = 8;
 const STORE_EVERY: usize = 50;
 /// Gmail's limit for `batchModify`.
 const BATCH_MODIFY_MAX: usize = 1000;
+/// How far Gmail's clock may be behind ours, in ms: its time for a send
+/// may be that much before ours.
+const CLOCK_SKEW_MS: i64 = 60 * 1000;
 
 /// `account.sync_state` of a Gmail account.
 #[derive(Debug, Serialize, Deserialize)]
@@ -154,12 +158,76 @@ impl Provider for GmailSync {
         self.push_labels(account).await
     }
 
-    async fn send(&self, _: &Account, mail: Outgoing<'_>) -> Result<(), SendError> {
-        self.gmail.send_message(mail.raw, mail.thread).await
+    /// In two steps (SPEC §8.2): the message is made a draft, recorded,
+    /// then sent by its id, which Gmail answers with its copy's. Sending a
+    /// draft again sends nothing, as it is gone once sent.
+    async fn send(&self, account: &Account, mail: Outgoing<'_>) -> Result<SentCopy, SendError> {
+        let (draft, thread) = match (mail.provider_draft, mail.provider_thread) {
+            (Some(draft), Some(thread)) => (draft.to_owned(), thread.to_owned()),
+            (None, None) => {
+                let drafted = self.gmail.create_draft(mail.raw, mail.thread).await?;
+                account
+                    .observe(SendDrafted {
+                        item: mail.item,
+                        provider_draft: drafted.id.clone(),
+                        provider_thread: Some(drafted.thread.clone()),
+                    })
+                    .await
+                    .map_err(SendError::NotSent)?;
+                (drafted.id, drafted.thread)
+            }
+            drafted => unreachable!("Gmail drafts are recorded with their thread: {drafted:?}"),
+        };
+        match self.gmail.send_draft(&draft).await? {
+            Some(copy) => Ok(SentCopy::Id(copy)),
+            None => self.find_copy(account, &thread, mail.not_before).await,
+        }
     }
 }
 
 impl GmailSync {
+    /// The copy of a send whose draft is gone: sent by an earlier attempt
+    /// whose answer was lost, or deleted at Gmail. A copy is in the draft's
+    /// thread, in Sent, from no earlier than the send was due, and no other
+    /// send's; with none, it is not known to have gone out, and with
+    /// several, which it is cannot be told.
+    async fn find_copy(
+        &self,
+        account: &Account,
+        thread: &str,
+        not_before: i64,
+    ) -> Result<SentCopy, SendError> {
+        let messages = self
+            .gmail
+            .thread(thread)
+            .await
+            .map_err(SendError::Unknown)?
+            .unwrap_or_default();
+        let id = account.id.clone();
+        let told = account
+            .read(move |conn| compose::told_copies(conn, &id))
+            .await
+            .map_err(SendError::Unknown)?;
+        let mut copies = vec![];
+        for message in messages {
+            let since_due =
+                message.internal_date().map_err(SendError::Unknown)? >= not_before - CLOCK_SKEW_MS;
+            if since_due
+                && message.label_ids.iter().any(|l| l == "SENT")
+                && !told.contains(&message.id)
+            {
+                copies.push(message.id);
+            }
+        }
+        match <[String; 1]>::try_from(copies) {
+            Ok([copy]) => Ok(SentCopy::Id(copy)),
+            Err(copies) if copies.is_empty() => {
+                Err(SendError::Rejected("its draft is gone from Gmail".into()))
+            }
+            Err(_) => Ok(SentCopy::Untold),
+        }
+    }
+
     /// Records changes since `from`; `false` if history from there is no
     /// longer available.
     async fn poll(&self, account: &Account, from: &str) -> Result<bool> {

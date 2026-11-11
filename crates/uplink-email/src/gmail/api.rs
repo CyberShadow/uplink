@@ -45,7 +45,10 @@ mod cost {
     pub const MESSAGE_RAW: u32 = 60;
     pub const HISTORY: u32 = 2;
     pub const BATCH_MODIFY: u32 = 50;
-    pub const SEND: u32 = 100;
+    pub const DRAFTS_CREATE: u32 = 10;
+    pub const DRAFTS_SEND: u32 = 100;
+    /// `threads.get`.
+    pub const THREAD: u32 = 10;
 }
 
 /// One account's client. Its clones share the account's quota.
@@ -148,6 +151,14 @@ pub struct Label {
 #[serde(rename_all = "camelCase")]
 pub struct MessageRef {
     pub id: String,
+}
+
+/// A draft just made.
+#[derive(Debug)]
+pub struct Drafted {
+    pub id: String,
+    /// The thread it is in, which it is sent in.
+    pub thread: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -302,17 +313,39 @@ impl Gmail {
         Ok(Ok(()))
     }
 
-    /// Sends the RFC 5322 message `raw`, in thread `thread_id` if given.
-    /// Sends `raw` as a multipart upload, which takes messages of up to
+    /// Makes the RFC 5322 message `raw` a draft, in thread `thread_id` if
+    /// given. This sends nothing, so whatever its outcome it counts as not
+    /// sent. Uploads `raw` as multipart, which takes messages of up to
     /// 35 MB; a JSON body with the message inline is limited to 5 MB.
-    pub async fn send_message(&self, raw: &[u8], thread_id: Option<&str>) -> Result<(), SendError> {
+    pub async fn create_draft(
+        &self,
+        raw: &[u8],
+        thread_id: Option<&str>,
+    ) -> Result<Drafted, SendError> {
+        #[derive(Serialize)]
+        struct Metadata<'a> {
+            message: MessageMetadata<'a>,
+        }
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
-        struct Metadata<'a> {
+        struct MessageMetadata<'a> {
             #[serde(skip_serializing_if = "Option::is_none")]
             thread_id: Option<&'a str>,
         }
-        let metadata = serde_json::to_string(&Metadata { thread_id }).expect("serializes");
+        #[derive(Deserialize)]
+        struct Draft {
+            id: String,
+            message: DraftMessage,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct DraftMessage {
+            thread_id: String,
+        }
+        let metadata = serde_json::to_string(&Metadata {
+            message: MessageMetadata { thread_id },
+        })
+        .expect("serializes");
         // Random, so not in the message.
         let boundary: String = rand::random::<[u8; 16]>()
             .iter()
@@ -328,10 +361,88 @@ impl Gmail {
             format!("\r\n--{boundary}--\r\n").as_bytes(),
         ]
         .concat();
+        let url = format!("{}/drafts?uploadType=multipart", self.upload);
         let content_type = format!("multipart/related; boundary={boundary}");
-        let url = format!("{}/messages/send?uploadType=multipart", self.upload);
+        let reply = match self
+            .post(&url, &content_type, body, cost::DRAFTS_CREATE)
+            .await
+        {
+            Err(SendError::Unknown(e)) => return Err(SendError::NotSent(e)),
+            reply => reply?,
+        };
+        let draft: Draft = reply
+            .context("Gmail answered 404 to creating a draft")
+            .and_then(|body| {
+                serde_json::from_slice(&body).with_context(|| {
+                    format!("decoding the draft: {}", String::from_utf8_lossy(&body))
+                })
+            })
+            .map_err(SendError::NotSent)?;
+        Ok(Drafted {
+            id: draft.id,
+            thread: draft.message.thread_id,
+        })
+    }
+
+    /// Sends the draft `id`, as a new message (SPEC §8.2); that message's
+    /// id. `None` if there is no such draft: one sent is gone, so sending
+    /// it again sends nothing.
+    pub async fn send_draft(&self, id: &str) -> Result<Option<String>, SendError> {
+        #[derive(Serialize)]
+        struct Request<'a> {
+            id: &'a str,
+        }
+        let url = format!("{}/drafts/send", self.base);
+        let body = serde_json::to_vec(&Request { id }).expect("serializes");
+        let Some(body) = self
+            .post(&url, "application/json", body, cost::DRAFTS_SEND)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let sent: MessageRef = serde_json::from_slice(&body)
+            .with_context(|| {
+                format!(
+                    "decoding the sent message: {}",
+                    String::from_utf8_lossy(&body)
+                )
+            })
+            .map_err(SendError::Unknown)?;
+        Ok(Some(sent.id))
+    }
+
+    /// The messages of thread `id`, as `format=minimal` gives them; `None`
+    /// if there is no such thread.
+    pub async fn thread(&self, id: &str) -> Result<Option<Vec<Message>>> {
+        #[derive(Deserialize)]
+        struct Thread {
+            #[serde(default)]
+            messages: Vec<Message>,
+        }
+        let thread: Option<Thread> = self
+            .get(
+                &format!("/threads/{id}"),
+                &[("format", "minimal")],
+                cost::THREAD,
+            )
+            .await?;
+        Ok(thread.map(|t| t.messages))
+    }
+
+    /// POSTs `body`, a request that may send mail, refreshing the access
+    /// token once if it is refused; the answer's body, or `None` on 404.
+    /// Fails as a send does: before the request went out, or for a passing
+    /// reason, [`SendError::NotSent`]; refused for what it asks,
+    /// [`SendError::Rejected`]; otherwise [`SendError::Unknown`].
+    async fn post(
+        &self,
+        url: &str,
+        content_type: &str,
+        body: Vec<u8>,
+        cost: u32,
+    ) -> Result<Option<Vec<u8>>, SendError> {
         for retry in [false, true] {
-            self.pace.spend(cost::SEND).await;
+            self.pace.spend(cost).await;
             let token = self
                 .credentials
                 .access_token()
@@ -339,9 +450,9 @@ impl Gmail {
                 .map_err(SendError::NotSent)?;
             let response = match self
                 .http
-                .post(&url)
+                .post(url)
                 .bearer_auth(token)
-                .header(reqwest::header::CONTENT_TYPE, &content_type)
+                .header(reqwest::header::CONTENT_TYPE, content_type)
                 .body(body.clone())
                 .send()
                 .await
@@ -352,7 +463,14 @@ impl Gmail {
             };
             let status = response.status();
             if status.is_success() {
-                return Ok(());
+                return response
+                    .bytes()
+                    .await
+                    .map(|body| Some(body.into()))
+                    .map_err(|e| SendError::Unknown(e.into()));
+            }
+            if status == StatusCode::NOT_FOUND {
+                return Ok(None);
             }
             if status == StatusCode::UNAUTHORIZED && !retry {
                 self.credentials.invalidate().await;

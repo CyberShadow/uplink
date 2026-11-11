@@ -13,7 +13,6 @@ use uplink_email::{
     oauth::Credentials,
 };
 use uplink_protocol::{compose::SendState, mail::MailProvider, ServerResponse};
-use uplink_storage::rusqlite::OptionalExtension;
 
 /// Gmail's sync task, polling quickly.
 fn start_sync(uplink: &Uplink, provider: &Provider) -> tokio::task::JoinHandle<()> {
@@ -289,20 +288,32 @@ async fn sends_mail_after_the_delay_unless_undone() {
         [(_, SendState::Queued)]
     ));
     let reply_entry = uplink.arrived("reply").await;
-    let (_, reply_message_id, reply_thread) = uplink.message_of(reply_entry);
+    let (reply_message, reply_message_id, reply_thread) = uplink.message_of(reply_entry);
     provider.clean_up_later(uplink.external_id(reply_entry));
     assert_eq!(reply_thread, original_thread);
-    let outbox_message_id: Option<String> = uplink
-        .reader()
-        .query_row("SELECT message_id FROM mail_send", [], |r| r.get(0))
-        .optional()
-        .unwrap();
-    // The send and its copy are the same message.
-    assert_eq!(outbox_message_id, Some(reply_message_id));
     eventually("the outbox to empty", || async {
         uplink.outbox().await.is_empty().then_some(())
     })
     .await;
+    // The send and its copy are the same message, under the Message-ID
+    // Gmail gave it: the message as sent is a variant of it.
+    let (sent_message, our_message_id, copy, variants): (i64, String, String, i64) = uplink
+        .reader()
+        .query_row(
+            "SELECT message, message_id, provider_copy,
+                    (SELECT count(*) FROM message_variant v WHERE v.message = s.message)
+             FROM mail_send s",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(sent_message, reply_message.0);
+    assert_eq!(copy, uplink.external_id(reply_entry));
+    assert_ne!(
+        reply_message_id, our_message_id,
+        "Gmail gives sent mail its own"
+    );
+    assert_eq!(variants, 2);
     let labels = uplink.labels(reply_entry);
     assert!(label_set(&labels).contains(&"SENT"), "{labels:?}");
 
@@ -321,6 +332,43 @@ async fn sends_mail_after_the_delay_unless_undone() {
     tokio::time::sleep(common::uplink::SEND_DELAY * 3).await;
     assert!(uplink.outbox().await.is_empty());
     assert!(uplink.entry("undone").is_none());
+
+    sync.abort();
+    provider.clean_up().await;
+}
+
+/// A send whose draft Gmail already sent, as an attempt whose answer was
+/// lost did, is not sent again: its copy is found in the draft's thread.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_draft_sent_already_is_not_sent_again() {
+    let uplink = Uplink::new(MailProvider::Gmail);
+    let provider = Provider::start(uplink.dir.path(), None).await;
+    let me = provider.account.address.clone();
+    let sync = start_sync(&uplink, &provider);
+    uplink.settled().await;
+
+    // Queued, then made to look drafted and sent by an earlier attempt,
+    // before it is due.
+    let (draft, thread, copy) = provider.send_as_draft(&message("lost", "sent once")).await;
+    uplink.send(&me, "lost", None).await;
+    uplink_storage::rusqlite::Connection::open(uplink_storage::db_path(uplink.dir.path()))
+        .unwrap()
+        .execute(
+            "UPDATE mail_send SET provider_draft = ?1, provider_thread = ?2",
+            [&draft, &thread],
+        )
+        .unwrap();
+
+    eventually("the outbox to empty", || async {
+        uplink.outbox().await.is_empty().then_some(())
+    })
+    .await;
+    let told: String = uplink
+        .reader()
+        .query_row("SELECT provider_copy FROM mail_send", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(told, copy);
+    assert_eq!(provider.sent_in_thread(&thread).await, [copy]);
 
     sync.abort();
     provider.clean_up().await;

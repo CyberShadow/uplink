@@ -7,7 +7,7 @@
 use super::client::{self, Client};
 use crate::{
     account::{Account, Outgoing, Provider, SendError, SyncTask},
-    compose::now_ms,
+    compose::{now_ms, SentCopy},
     mail_server::{
         self,
         sign_in::{self, SignIn},
@@ -167,7 +167,7 @@ impl Provider for Pop3Sync {
     }
 
     /// Submits the message by SMTP, then files it in Sent.
-    async fn send(&self, account: &Account, mail: Outgoing<'_>) -> Result<(), SendError> {
+    async fn send(&self, account: &Account, mail: Outgoing<'_>) -> Result<SentCopy, SendError> {
         smtp::send(self.config.login(), &self.sign_in, &self.tls, mail.raw).await?;
         // If it cannot be filed, it stays listed as waiting for its copy,
         // which is so.
@@ -178,7 +178,7 @@ impl Provider for Pop3Sync {
                 mail.message_id
             );
         }
-        Ok(())
+        Ok(SentCopy::OurMessageId)
     }
 }
 

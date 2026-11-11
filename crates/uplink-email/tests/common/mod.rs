@@ -201,6 +201,76 @@ impl Provider {
             .await;
     }
 
+    /// Makes `raw` a draft and sends it, as an attempt whose answer was
+    /// lost would have; returns the draft's id and thread, and the id of
+    /// the message sent.
+    pub async fn send_as_draft(&self, raw: &[u8]) -> (String, String, String) {
+        #[derive(Deserialize)]
+        struct Draft {
+            id: String,
+            message: Sent,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Sent {
+            id: String,
+            thread_id: String,
+        }
+        let draft: Draft = self
+            .call(
+                reqwest::Method::POST,
+                "/drafts",
+                Some(json!({ "message": { "raw": URL_SAFE_NO_PAD.encode(raw) } })),
+            )
+            .await
+            .json()
+            .await
+            .unwrap();
+        let sent: Sent = self
+            .call(
+                reqwest::Method::POST,
+                "/drafts/send",
+                Some(json!({ "id": draft.id })),
+            )
+            .await
+            .json()
+            .await
+            .unwrap();
+        self.delivered.lock().unwrap().push(sent.id.clone());
+        (draft.id, draft.message.thread_id, sent.id)
+    }
+
+    /// The ids of the messages of `thread` that are in Sent.
+    pub async fn sent_in_thread(&self, thread: &str) -> Vec<String> {
+        #[derive(Deserialize)]
+        struct Thread {
+            messages: Vec<Minimal>,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Minimal {
+            id: String,
+            #[serde(default)]
+            label_ids: Vec<String>,
+        }
+        let thread: Thread = self
+            .call(
+                reqwest::Method::GET,
+                &format!("/threads/{thread}?format=minimal"),
+                None,
+            )
+            .await
+            .json()
+            .await
+            .unwrap();
+        thread
+            .messages
+            .into_iter()
+            .filter(|m| m.label_ids.iter().any(|l| l == "SENT"))
+            .map(|m| m.id)
+            .collect()
+    }
+
     /// The status of `history.list` from `start`.
     pub async fn history_status(&self, start: &str) -> reqwest::StatusCode {
         let url = format!(

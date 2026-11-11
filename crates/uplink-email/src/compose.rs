@@ -22,7 +22,10 @@ use mail_builder::{
 };
 use mail_parser::{HeaderName, MessageParser};
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    collections::HashSet,
+    time::{SystemTime, UNIX_EPOCH},
+};
 use uplink_protocol::{
     compose::{
         BlobId, Draft, DraftAttachment, DraftAttachmentId, DraftContent, DraftEdited, DraftField,
@@ -647,8 +650,12 @@ pub struct Due {
     pub item: OutboxId,
     pub draft: Draft,
     pub message_id: String,
-    /// The provider's draft it is sent as, once made (SPEC §8.4).
+    /// When it was due (unix ms): it went out no earlier.
+    pub not_before: i64,
+    /// The provider's draft it is sent as, once made (SPEC §8.2, §8.4).
     pub provider_draft: Option<String>,
+    /// Gmail: the thread of that draft.
+    pub provider_thread: Option<String>,
 }
 
 /// The account's queued sends whose time has come, and when the next
@@ -660,7 +667,8 @@ pub(crate) fn due(
 ) -> Result<(Vec<Due>, Option<i64>)> {
     let due = conn
         .prepare(
-            "SELECT id, draft, message_id, provider_draft FROM mail_send
+            "SELECT id, draft, message_id, not_before, provider_draft, provider_thread
+             FROM mail_send
              WHERE account_id = ?1 AND state = 'queued' AND not_before <= ?2
              ORDER BY not_before, id",
         )?
@@ -670,7 +678,9 @@ pub(crate) fn due(
                 item: OutboxId(r.get(0)?),
                 draft: serde_json::from_str(&draft).expect("sent drafts deserialize"),
                 message_id: r.get(2)?,
-                provider_draft: r.get(3)?,
+                not_before: r.get(3)?,
+                provider_draft: r.get(4)?,
+                provider_thread: r.get(5)?,
             })
         })?
         .collect::<Result<_, _>>()?;
@@ -739,11 +749,13 @@ impl Observation for SendStarted {
 
 /// The provider made a send being sent into a draft of its own, which it
 /// is then sent as, by its id: sending it again sends it once only
-/// (SPEC §8.4).
+/// (SPEC §8.2, §8.4).
 #[derive(Debug, Serialize)]
 pub struct SendDrafted {
     pub item: OutboxId,
     pub provider_draft: String,
+    /// Gmail: the draft's thread, where its copy is once sent.
+    pub provider_thread: Option<String>,
 }
 
 impl Observation for SendDrafted {
@@ -757,8 +769,8 @@ impl Observation for SendDrafted {
             self.item
         );
         tx.execute(
-            "UPDATE mail_send SET provider_draft = ?1 WHERE id = ?2",
-            params![self.provider_draft, self.item.0],
+            "UPDATE mail_send SET provider_draft = ?1, provider_thread = ?2 WHERE id = ?3",
+            params![self.provider_draft, self.provider_thread, self.item.0],
         )?;
         Ok(Observed {
             description: format!("Drafted {} at the provider", title(&item.draft.content)),
@@ -777,6 +789,20 @@ pub struct SendSucceeded {
     pub size_bytes: i64,
     #[serde(skip)]
     pub parsed: Parsed,
+    pub copy: SentCopy,
+}
+
+/// Which of the provider's messages is its copy of a send it accepted.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub enum SentCopy {
+    /// The one with the send's Message-ID, which the provider keeps.
+    OurMessageId,
+    /// The provider's message of this id, under a Message-ID of the
+    /// provider's own (Gmail, SPEC §8.2).
+    Id(String),
+    /// One under a Message-ID of the provider's own, but which cannot be
+    /// told: the send is as synced as it can be.
+    Untold,
 }
 
 impl Observation for SendSucceeded {
@@ -800,9 +826,15 @@ impl Observation for SendSucceeded {
             Some(message) => MessageId(message),
             None => insert_variant(tx, account, &self.variant, self.size_bytes, &self.parsed)?,
         };
+        let (provider_copy, synced) = match &self.copy {
+            SentCopy::OurMessageId => (None, false),
+            SentCopy::Id(id) => (Some(id), false),
+            SentCopy::Untold => (None, true),
+        };
         tx.execute(
-            "UPDATE mail_send SET state = 'sent', message = ?1 WHERE id = ?2",
-            params![message.0, self.item.0],
+            "UPDATE mail_send SET state = 'sent', message = ?1, provider_copy = ?2, synced = ?3
+             WHERE id = ?4",
+            params![message.0, provider_copy, synced, self.item.0],
         )?;
         // The provider's copy may have been synced already.
         sends_synced(tx, account)?;
@@ -926,10 +958,32 @@ fn set_state(tx: &Transaction, item: OutboxId, state: &str, error: Option<&str>)
     Ok(())
 }
 
-/// Records the account's sends whose copy the provider has, in Sent, as
-/// synced: sent, whatever was known of them, and reconciled if wanted.
-/// Returns whether there were any.
+/// Records the account's sends whose copy the provider has as synced:
+/// sent, whatever was known of them, and reconciled if wanted. A copy
+/// under the send's Message-ID, in Sent, is a variant of the send's
+/// message; one the provider told is of its own Message-ID, so the send's
+/// message joins it (SPEC §8.6). Returns whether there were any.
 pub(crate) fn sends_synced(tx: &Transaction, account: &str) -> Result<bool> {
+    let told: Vec<(OutboxId, MessageId, MessageId)> = tx
+        .prepare(
+            "SELECT s.id, s.message, e.message FROM mail_send s
+             JOIN mail_entry e ON e.account_id = s.account_id AND e.external_id = s.provider_copy
+             WHERE s.account_id = ?1 AND NOT s.synced",
+        )?
+        .query_map([account], |r| {
+            Ok((
+                OutboxId(r.get(0)?),
+                MessageId(r.get(1)?),
+                MessageId(r.get(2)?),
+            ))
+        })?
+        .collect::<Result<_, _>>()?;
+    for &(item, sent, copy) in &told {
+        if sent != copy {
+            fold_message(tx, sent, copy)?;
+        }
+        tx.execute("UPDATE mail_send SET synced = 1 WHERE id = ?1", [item.0])?;
+    }
     let synced = tx.execute(
         "UPDATE mail_send
          SET state = 'sent', error = NULL, synced = 1,
@@ -943,7 +997,38 @@ pub(crate) fn sends_synced(tx: &Transaction, account: &str) -> Result<bool> {
              WHERE m.message_id = mail_send.message_id)",
         [account],
     )?;
-    Ok(synced > 0)
+    Ok(!told.is_empty() || synced > 0)
+}
+
+/// Makes the logical message `from` part of `into`: its variants, and
+/// all that refers to it.
+fn fold_message(tx: &Transaction, from: MessageId, into: MessageId) -> Result<()> {
+    for (table, column) in [
+        ("message_variant", "message"),
+        ("mail_entry", "message"),
+        ("mail_send", "message"),
+        ("todo", "message"),
+        ("draft", "in_reply_to"),
+    ] {
+        tx.execute(
+            &format!("UPDATE {table} SET {column} = ?1 WHERE {column} = ?2"),
+            [into.0, from.0],
+        )?;
+    }
+    tx.execute("DELETE FROM message_fts WHERE rowid = ?1", [from.0])?;
+    tx.execute("DELETE FROM message WHERE id = ?1", [from.0])?;
+    Ok(())
+}
+
+/// The account's messages that the provider told are copies of sends.
+pub(crate) fn told_copies(
+    conn: &uplink_storage::rusqlite::Connection,
+    account: &str,
+) -> Result<HashSet<String>> {
+    Ok(conn
+        .prepare("SELECT provider_copy FROM mail_send WHERE account_id = ?1 AND provider_copy IS NOT NULL")?
+        .query_map([account], |r| r.get(0))?
+        .collect::<Result<_, _>>()?)
 }
 
 // ── outgoing messages ─────────────────────────────────────────────────────

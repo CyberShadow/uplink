@@ -10,7 +10,7 @@
 use super::api::{Changed, Delta, Flag, FlagStatus, Graph, Importance, Message, MessageUpdate};
 use crate::{
     account::{Account, Outgoing, Pending, Provider, SendError, SyncTask},
-    compose::SendDrafted,
+    compose::{SendDrafted, SentCopy},
     mailbox::{
         self, EntryLabels, LabelChange, LabelsPushed, LabelsRefused, MailboxObserved, NewEntry,
         ObservedLabel,
@@ -261,7 +261,7 @@ impl Provider for M365Sync {
 
     /// In two steps (SPEC §8.4): the message is made a draft, recorded,
     /// then sent by its id. Graph threads it by its headers.
-    async fn send(&self, account: &Account, mail: Outgoing<'_>) -> Result<(), SendError> {
+    async fn send(&self, account: &Account, mail: Outgoing<'_>) -> Result<SentCopy, SendError> {
         let draft = match mail.provider_draft {
             Some(draft) => draft.to_owned(),
             None => {
@@ -279,13 +279,16 @@ impl Provider for M365Sync {
                     .observe(SendDrafted {
                         item: mail.item,
                         provider_draft: draft.clone(),
+                        provider_thread: None,
                     })
                     .await
                     .map_err(SendError::NotSent)?;
                 draft
             }
         };
-        self.graph.send_draft(&draft).await
+        self.graph.send_draft(&draft).await?;
+        // Graph keeps our Message-ID (SPEC §8.4).
+        Ok(SentCopy::OurMessageId)
     }
 }
 
