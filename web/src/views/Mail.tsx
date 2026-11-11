@@ -579,7 +579,6 @@ function ConversationView(props: {
   return (
     <article class={styles.message}>
       <h1 class={styles.messageSubject}>
-        <Star mail={mail} thread={thread} />
         {latest.subject ?? '(no subject)'}{' '}
         {thread.entries.some((e) => todos.flagged.value.has(e.message)) && <Flag />}
         <LabelChips mail={mail} thread={thread} />
