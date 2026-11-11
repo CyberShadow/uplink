@@ -44,6 +44,7 @@ export type Action =
   | 'forward'
   | 'send'
   | 'close'
+  | 'goHome'
   | 'goInbox'
   | 'goStarred'
   | 'goSent'
@@ -106,6 +107,7 @@ export const KEYMAP: Binding[] = [
   { action: 'forward', keys: ['f'], label: 'f', help: 'Forward' },
   { action: 'send', keys: ['$mod+Enter'], label: 'Ctrl+Enter', help: 'Send (in compose)' },
   { action: 'close', keys: ['Escape'], label: 'Esc', help: 'Close compose (the draft is kept)' },
+  { action: 'goHome', keys: ['g h'], label: 'g h', help: 'Go home' },
   { action: 'goInbox', keys: ['g i'], label: 'g i', help: 'Go to Inbox' },
   { action: 'goStarred', keys: ['g s'], label: 'g s', help: 'Go to Starred' },
   { action: 'goSent', keys: ['g t'], label: 'g t', help: 'Go to Sent' },
@@ -113,7 +115,7 @@ export const KEYMAP: Binding[] = [
   { action: 'goAll', keys: ['g a'], label: 'g a', help: 'Go to All Mail' },
   { action: 'goLabel', keys: ['g l'], label: 'g l', help: 'Go to a label' },
   { action: 'goTodos', keys: ['g k'], label: 'g k', help: 'Go to To-dos' },
-  { action: 'goHistory', keys: ['g h'], label: 'g h', help: 'Go to History (undo anything)' },
+  { action: 'goHistory', keys: ['g z'], label: 'g z', help: 'Go to History (undo anything)' },
   { action: 'goCalendar', keys: ['g c'], label: 'g c', help: 'Go to the calendar' },
   { action: 'today', keys: ['t'], label: 't', help: 'Today (in the calendar)' },
   { action: 'weekView', keys: ['w'], label: 'w', help: 'Week view (in the calendar)' },

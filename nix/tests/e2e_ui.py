@@ -165,7 +165,7 @@ def todos(page):
 def history(page):
     """Lists what was done, then undoes the latest with z."""
     page.keyboard.press("g")
-    page.keyboard.press("h")
+    page.keyboard.press("z")
     items = page.get_by_role("list", name="History").get_by_role("listitem")
     expect(items).not_to_have_count(0)
     before = items.count()

@@ -1843,6 +1843,8 @@ describe('home', () => {
     await user.keyboard('e')
     await waitFor(() => expect(bucketRows('Inbox')).toHaveLength(2))
     // Opening mail opens it in a list of the bucket's.
+    await user.keyboard('gh')
+    await screen.findByRole('region', { name: 'Home' })
     await user.keyboard('{Enter}')
     expect(decodeURIComponent(location.pathname)).toMatch(/^\/search\/in:inbox -\(is:unread is:room OR is:todo\)\/\d+$/)
   })
@@ -1945,7 +1947,7 @@ describe('history', () => {
     const user = await start('/mail/work/INBOX')
     await user.keyboard('e')
     await waitFor(() => expect(subjects()).toEqual(['Second', 'Third']))
-    await user.keyboard('gh')
+    await user.keyboard('gz')
     await screen.findByRole('list', { name: 'History' })
     expect(items().map((i) => i.querySelector('[class*=description]')!.textContent)).toEqual([
       server.lastDescription(),

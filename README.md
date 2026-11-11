@@ -50,7 +50,7 @@ It is built for people who live in their inbox and want it fast:
 </p>
 
 - **Undo anything.**
-  Every change you make is recorded, and the History (`g h`) undoes any of
+  Every change you make is recorded, and the History (`g z`) undoes any of
   it, not just the last: an archive from yesterday, a label applied to
   fifty conversations, a room you left. Sent mail waits a few seconds in
   the outbox, so sending can be undone too.

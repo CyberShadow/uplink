@@ -75,6 +75,7 @@ function Shell() {
     goLabel: () => setGoingToLabel(account() !== undefined),
     goDrafts: () => route('/drafts'),
     goTodos: () => route('/todos'),
+    goHome: () => route('/'),
     goHistory: () => route('/history'),
     goCalendar: () => route(calendarPath('week', today())),
     compose: async () => {

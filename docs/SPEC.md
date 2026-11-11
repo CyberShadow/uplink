@@ -2618,8 +2618,8 @@ account's security is loaded for it.
 
 ### 12.13 Home
 
-`/` is home: everything at a glance, of every kind. `g i` still goes to
-the Inbox. Above, the agenda: the events of now through tomorrow, from
+`/` is home: everything at a glance, of every kind; `g h` goes there
+(and `g z` to the history, §6.3). `g i` still goes to the Inbox. Above, the agenda: the events of now through tomorrow, from
 `ListEvents`, each a link to its day. Below, a row of the buckets'
 names and counts, which scroll to them, and the buckets, configured in
 `home` (§3.2), in order. `ListHome { today, limit }` lists them, in one
