@@ -763,7 +763,9 @@ than it buffers is closed; the client reconnects and resumes.
 - **Mail**: `EntriesAdded`, `EntriesRemoved`, `LabelsChanged` (desired
   and observed membership per entry and label), `LabelListChanged`.
   Events carry ids, not content, since they are stored in the log;
-  clients query what they display.
+  clients query what they display. As the log is replayed, a change to
+  an event's shape migrates the recorded ones too (V0022 did, for
+  `OutboxChanged`).
 - **Matrix**: `RoomsChanged { rooms }` (appeared, or name, membership,
   unread count or read marker changed), `TimelineAdded { room, events }`
   (appended to the timeline), `MatrixSendsChanged { sends }`.

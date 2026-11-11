@@ -296,4 +296,68 @@ mod tests {
         conn.execute_batch(populate).unwrap();
         assert_eq!(kept(&conn), counted(&conn));
     }
+
+    /// A database migrated as far as `version`, as an older uplink left it.
+    fn migrated_to(data_root: &Path, version: i32) -> Connection {
+        let path = db_path(data_root);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut conn = Connection::open(&path).unwrap();
+        embedded::migrations::runner()
+            .set_target(refinery::Target::Version(version))
+            .run(&mut conn)
+            .unwrap();
+        conn
+    }
+
+    /// Recorded `outbox_changed` events take the shape that names
+    /// accounts (V0022), as replay deserializes them.
+    #[test]
+    fn outbox_changed_events_name_accounts() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = migrated_to(dir.path(), 21);
+        let log = |id: i64, account: Option<&str>, events: &str| {
+            let inverse = account.is_none().then_some("{}");
+            conn.execute(
+                "INSERT INTO tx_log (id, ts, account_id, description, op_type, op_json,
+                                     inverse_type, inverse_json, events_json)
+                 VALUES (?1, 0, ?2, '', 'x', '{}', ?3, ?3, ?4)",
+                params![id, account, inverse.map(|_| "y"), events],
+            )
+            .unwrap();
+        };
+        log(
+            1,
+            None,
+            r#"[{"type":"drafts_changed","drafts":["d"]},{"type":"outbox_changed","items":[7]}]"#,
+        );
+        log(2, Some("b"), r#"[{"type":"outbox_changed","items":[9]}]"#);
+        log(3, None, r#"[{"type":"outbox_changed","items":[42]}]"#);
+        log(4, None, r#"[{"type":"outbox_changed","accounts":["a"]}]"#);
+        conn.execute(
+            "INSERT INTO mail_send (id, account_id, draft, message_id, delay_ms, not_before,
+                                    wanted, desired_by, state, synced)
+             VALUES (7, 'a', '{}', 'm', 0, 0, 1, 1, 'queued', 0)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open(dir.path()).unwrap();
+        let events: Vec<String> = conn
+            .prepare("SELECT events_json FROM tx_log ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            events,
+            [
+                r#"[{"type":"drafts_changed","drafts":["d"]},{"type":"outbox_changed","accounts":["a"]}]"#,
+                r#"[{"type":"outbox_changed","accounts":["b"]}]"#,
+                r#"[{"type":"outbox_changed","accounts":[]}]"#,
+                r#"[{"type":"outbox_changed","accounts":["a"]}]"#,
+            ]
+        );
+    }
 }
