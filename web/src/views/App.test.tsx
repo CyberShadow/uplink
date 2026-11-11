@@ -922,6 +922,28 @@ describe('switcher', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
+  it('moves a page at a time, keeping one option of the last page in view', async () => {
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('{Control>}k{/Control}')
+    // jsdom does no layout: a list showing four options.
+    const list = screen.getByRole('listbox', { name: 'Views' })
+    Object.defineProperty(list, 'clientHeight', { value: 100 })
+    for (const option of list.children) Object.defineProperty(option, 'offsetHeight', { value: 25 })
+    const highlighted = () => within(list).getAllByRole('option').findIndex((o) => o.getAttribute('aria-selected') === 'true')
+    const last = within(list).getAllByRole('option').length - 1
+    expect(last).toBeGreaterThan(6)
+    await user.keyboard('{PageDown}')
+    expect(highlighted()).toBe(3)
+    await user.keyboard('{PageDown}')
+    expect(highlighted()).toBe(6)
+    await user.keyboard('{PageUp}')
+    expect(highlighted()).toBe(3)
+    await user.keyboard('{PageDown}'.repeat(last))
+    expect(highlighted()).toBe(last)
+    await user.keyboard('{PageUp}'.repeat(last))
+    expect(highlighted()).toBe(0)
+  })
+
   it('filters by every word typed, of the name or the account', async () => {
     server.addAccount('home', ['Projects'])
     const user = await start('/mail/work/INBOX')

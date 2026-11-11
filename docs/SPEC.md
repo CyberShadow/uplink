@@ -1904,6 +1904,9 @@ the one on show last, so that `Ctrl+K Enter` goes back to the one
 before. The filter matches every word typed, in the name or the
 account's address. It works from within fields too: window bindings
 ignore what is typed into a field, but not presses with Ctrl or Cmd held.
+In the pickers (`l`, `v`, `gl`, `Ctrl+K`), `Up`/`Down` move by one
+option and `PageUp`/`PageDown` by a page (the options in view, less one,
+as a native list does), `Enter` chooses and `Esc` closes.
 
 - **No global `z` for undo.** Undo lives in the history view and in the
   notice shown after each op. A global `z` would have to mean "undo the

@@ -46,6 +46,13 @@ export function Picker<T>(props: {
     props.choose(item)
     props.close()
   }
+  const move = (by: number) => setHighlight((h) => Math.max(0, Math.min(h + by, items.length - 1)))
+  /** The options a page of the list shows, less one, which stays in view
+   * after a page's move, as in a native list. */
+  const page = () => {
+    const option = list.current!.children[0] as HTMLElement
+    return Math.max(1, Math.floor(list.current!.clientHeight / option.offsetHeight) - 1)
+  }
   const { check } = props
 
   return (
@@ -68,8 +75,10 @@ export function Picker<T>(props: {
           }}
           onKeyDown={(event) => {
             if (event.key === 'Escape') props.close()
-            else if (event.key === 'ArrowDown') setHighlight((h) => Math.min(h + 1, items.length - 1))
-            else if (event.key === 'ArrowUp') setHighlight((h) => Math.max(h - 1, 0))
+            else if (event.key === 'ArrowDown') move(1)
+            else if (event.key === 'ArrowUp') move(-1)
+            else if (event.key === 'PageDown') move(page())
+            else if (event.key === 'PageUp') move(-page())
             else if (event.key === 'Enter' && items[highlight]) choose(items[highlight])
             else return
             event.preventDefault()
