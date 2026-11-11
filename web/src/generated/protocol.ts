@@ -543,7 +543,12 @@ reactions: Array<Reaction>,
 /**
  * Of a reply (`m.in_reply_to`), the event it answers, if stored.
  */
-replied: RepliedEvent | null, };
+replied: RepliedEvent | null, 
+/**
+ * Of a message with an HTML `formatted_body`, that, sanitized
+ * (SPEC §9.2).
+ */
+html: string | null, };
 
 /**
  * An edit (`m.replace`) of a message.
@@ -556,7 +561,11 @@ ts: number,
 /**
  * The message's content as edited (`m.new_content`), as JSON.
  */
-content: string, };
+content: string, 
+/**
+ * Its HTML `formatted_body`, if it has one, sanitized (SPEC §9.2).
+ */
+html: string | null, };
 
 export type Reaction = { 
 /**

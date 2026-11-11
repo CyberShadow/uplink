@@ -32,6 +32,7 @@ use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Row, Trans
 use uplink_tx_log::{Applied, Inverse, Observation, Observed, Op};
 
 use crate::{
+    html,
     membership::{parse_desired, parse_membership},
     outbox, send,
 };
@@ -895,6 +896,7 @@ fn room_event(r: &Row) -> uplink_storage::rusqlite::Result<(RoomEvent, Option<St
             edit: None,
             reactions: vec![],
             replied: None,
+            html: None,
         },
         r.get(11)?,
     ))
@@ -1024,9 +1026,16 @@ fn query_events(
                     event_id: r.get(0)?,
                     ts: r.get(1)?,
                     content: r.get(2)?,
+                    html: None,
                 })
             })
             .optional()?;
+        if let Some(edit) = &mut event.edit {
+            let content: serde_json::Value = serde_json::from_str(&edit.content)?;
+            edit.html = html::sanitized(room, event.id, &content);
+        }
+        let raw: serde_json::Value = serde_json::from_str(&event.raw)?;
+        event.html = html::sanitized(room, event.id, &raw["content"]);
         for row in reactions.query_map([event.id.0], |r| {
             Ok((
                 r.get::<_, String>(0)?,

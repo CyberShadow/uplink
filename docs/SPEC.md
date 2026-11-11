@@ -1635,6 +1635,14 @@ events listed; so does the unread count, which skips redacted messages
 too. Threads (`m.thread`) are listed in the room's timeline, as replies
 to their root.
 
+**HTML.** A message's HTML `formatted_body` (and its latest edit's) is
+listed sanitized, as mail's is (§8.9), by the server: the tags and
+attributes the Matrix spec suggests clients show, and no others; links
+open in a new tab; a code block keeps only its `language-*` class; a
+reply's fallback (`mx-reply`) is dropped, as the client shows the reply
+itself. Images show the homeserver's media only (`mxc:`), as the server
+serves them (§9.8); nothing remote loads.
+
 The timeline is ordered by sync arrival. uplink only syncs forward, so
 the first sync brings the latest events of each room, and a gappy
 (`limited`) sync leaves a gap; backfilling with `/messages` is deferred.
@@ -1746,14 +1754,14 @@ done once per device, ever; device verification UI is out of scope.
 
 ### 9.6 What we deliberately don't do
 
-- No formatted_body rendering. ROADMAP item, deferred.
 - No thread view: threads are listed in the room's timeline (§9.2).
 - No room creation, no inviting others, and no joining rooms one is not
   invited to (by id or alias); invitations are joined or declined, and
   rooms left (§9.7).
 - No backfill and no retrying undecryptable events (§9.2).
 - No SPA-side device management or verification UI.
-- No moderation UI (kick/ban/redact).
+- No moderation UI (kick/ban, deleting others' messages): one deletes
+  one's own messages only.
 
 ### 9.7 Joining and leaving
 

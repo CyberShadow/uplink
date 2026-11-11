@@ -241,6 +241,7 @@ export class FakeServer implements Requester, Blobs {
       edit: null,
       reactions: [],
       replied: null,
+      html: null,
       ...event,
     }
     this.events.get(room)!.push(full)

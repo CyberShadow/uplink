@@ -116,6 +116,9 @@ pub struct RoomEvent {
     pub reactions: Vec<Reaction>,
     /// Of a reply (`m.in_reply_to`), the event it answers, if stored.
     pub replied: Option<RepliedEvent>,
+    /// Of a message with an HTML `formatted_body`, that, sanitized
+    /// (SPEC §9.2).
+    pub html: Option<String>,
 }
 
 /// An edit (`m.replace`) of a message.
@@ -127,6 +130,8 @@ pub struct EventEdit {
     pub ts: i64,
     /// The message's content as edited (`m.new_content`), as JSON.
     pub content: String,
+    /// Its HTML `formatted_body`, if it has one, sanitized (SPEC §9.2).
+    pub html: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
