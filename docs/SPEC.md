@@ -1764,7 +1764,11 @@ fit uplink better (§8.1, §8.3).
   the rest is new; flags are fetched for all, or with CONDSTORE those
   changed since the recorded mod-sequence, and recorded where they
   differ from what is observed. A UIDVALIDITY changed makes the folder's
-  entries gone (and, by Message-ID, re-keyed to the new UIDs). New mail
+  entries gone (and, by Message-ID, re-keyed to the new UIDs). Folders
+  are looked at one by one, so a move made meanwhile could be seen half
+  (gone from one, not yet in the other): a step that saw messages come
+  or go takes every `STATUS` again, and if any changed, records nothing
+  and is taken again. New mail
   is fetched (`BODY.PEEK[]`, so not marked read; `INTERNALDATE` is when
   it was received) 50 at a time, Inbox first and newest first, each
   step one log entry, so a first sync goes in steps between which the

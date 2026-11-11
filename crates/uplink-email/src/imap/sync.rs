@@ -370,6 +370,20 @@ impl ImapSync {
         // Of folders gone.
         vanished.extend(by_folder.into_values().flatten());
 
+        // Folders are looked at one by one, so a message moved meanwhile
+        // may be seen gone from one but not yet in the other, or the
+        // other way round, which would be its removal and another's
+        // addition rather than its move. So a step that saw messages come
+        // or go stands only if no folder changed while it looked; else it
+        // is taken again.
+        if !vanished.is_empty() || !new.is_empty() {
+            for (name, seen) in &states {
+                if status(c, name).await? != *seen {
+                    return Ok(true);
+                }
+            }
+        }
+
         // A message gone from one folder and of its Message-ID new in
         // another moved.
         let mut rekeyed = vec![];
