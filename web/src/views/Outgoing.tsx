@@ -14,7 +14,7 @@ import type {
   PendingChanges,
 } from '../generated/protocol'
 import { useServices } from '../context'
-import { keepFocus, useKeymap } from '../keymap'
+import { keepFocus, lines, useKeymap } from '../keymap'
 import styles from './Mail.module.css'
 import outgoing from './Outgoing.module.css'
 import { dateTime } from '../format'
@@ -38,8 +38,10 @@ export function Drafts() {
 
   const open = (draft: Draft | undefined) => draft && route(composePath(draft.id))
   useKeymap({
-    next: () => setFocus((f) => Math.min(f + 1, list.length - 1)),
-    previous: () => setFocus((f) => Math.max(f - 1, 0)),
+    ...lines(
+      () => setFocus((f) => Math.min(f + 1, list.length - 1)),
+      () => setFocus((f) => Math.max(f - 1, 0)),
+    ),
     open: () => open(list[focus]),
   })
 

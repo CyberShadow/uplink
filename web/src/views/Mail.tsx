@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import type { Conversation, Entry, EntryId, Label, MessageContent, Sender } from '../generated/protocol'
 import { useServices } from '../context'
-import { keepFocus, useKeymap } from '../keymap'
+import { keepFocus, lines, useKeymap } from '../keymap'
 import { conversationKey, hasEntry, inScope, threadOf, type MailStore, type Thread, type View } from '../stores/mail'
 import { respond, type Response } from '../compose/reply'
 import { allMailPath, inboxPath, mailPath, searchPath } from './App'
@@ -154,8 +154,10 @@ export function Mail(props: Props) {
     openId === null
       ? {
           ...common,
-          next: () => mail.moveFocus(1),
-          previous: () => mail.moveFocus(-1),
+          ...lines(
+            () => mail.moveFocus(1),
+            () => mail.moveFocus(-1),
+          ),
           open: () => {
             const focused = conversations.find((c) => conversationKey(c) === mail.focus.value)
             if (focused) open(focused)

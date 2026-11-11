@@ -14,6 +14,8 @@ import {
 export type Action =
   | 'next'
   | 'previous'
+  | 'lineDown'
+  | 'lineUp'
   | 'pageUp'
   | 'pageDown'
   | 'open'
@@ -116,6 +118,8 @@ function nav(action: Action, key: string, label: string, help: string): Binding 
 export const KEYMAP: Binding[] = [
   { action: 'next', keys: ['j'], label: 'j', help: 'Next conversation (in a room: the newer message; in the calendar: the next week or agenda)', repeats: true },
   { action: 'previous', keys: ['k'], label: 'k', help: 'Previous conversation (in a room: the older message; in the calendar: the previous week or agenda)', repeats: true },
+  { action: 'lineDown', keys: ['ArrowDown'], label: '↓', help: 'Down a line, as j (in a list)', repeats: true },
+  { action: 'lineUp', keys: ['ArrowUp'], label: '↑', help: 'Up a line, as k (in a list)', repeats: true },
   { action: 'pageUp', keys: ['PageUp'], label: 'PgUp', help: "Scroll up a page (in a room, its box's too)", repeats: true },
   { action: 'pageDown', keys: ['PageDown'], label: 'PgDn', help: "Scroll down a page (in a room, its box's too)", repeats: true },
   { action: 'open', keys: ['o', 'Enter'], label: 'o, Enter', help: 'Open conversation' },
@@ -228,6 +232,13 @@ export function useEscape(close: (() => void) | null) {
     window.addEventListener('keydown', escape, true)
     return () => window.removeEventListener('keydown', escape, true)
   }, [close])
+}
+
+/** A list's moves to the next and previous of it: by j/k, and by the
+ * arrows, as Slack's and Discord's lists move (not where an arrow
+ * scrolls, as in an open conversation). */
+export function lines(next: () => void, previous: () => void): Actions {
+  return { next, previous, lineDown: next, lineUp: previous }
 }
 
 /** Scrolls `scroller` by a page, as the browser's page keys do: by what

@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import type { CalendarEvent, HomeBucket } from '../generated/protocol'
 import { useServices } from '../context'
-import { useKeymap } from '../keymap'
+import { lines, useKeymap } from '../keymap'
 import type { Row } from '../stores/home'
 import { conversationKey, threadOf } from '../stores/mail'
 import { brief, date, time } from '../format'
@@ -84,8 +84,10 @@ export function Home() {
     }
   }
   useKeymap({
-    next: () => home.moveFocus(1),
-    previous: () => home.moveFocus(-1),
+    ...lines(
+      () => home.moveFocus(1),
+      () => home.moveFocus(-1),
+    ),
     open: () => current && open(current),
     done: () => current && done(current),
     star: () => current && star(current),

@@ -265,6 +265,10 @@ describe('mail', () => {
     expect(focusedSubject()).toBe('Second')
     await user.keyboard('jxk')
     expect(focusedSubject()).toBe('Second')
+    await user.keyboard('{ArrowDown}')
+    expect(focusedSubject()).toBe('Third')
+    await user.keyboard('{ArrowUp}')
+    expect(focusedSubject()).toBe('Second')
 
     await user.keyboard('e')
     expect(await screen.findByRole('status')).toBeTruthy()
@@ -1332,6 +1336,11 @@ describe('matrix', () => {
     await user.keyboard('kk')
     expect(document.activeElement).toBe(lineOf(theirs))
     await user.keyboard('jj')
+    expect(document.activeElement).toBe(lineOf(mine))
+    // As do the arrows.
+    await user.keyboard('{ArrowUp}')
+    expect(document.activeElement).toBe(lineOf(theirs))
+    await user.keyboard('{ArrowDown}')
     expect(document.activeElement).toBe(lineOf(mine))
 
     // e edits one's own; r replies, both in the box.

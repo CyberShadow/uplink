@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import type { Todo } from '../generated/protocol'
 import { useServices } from '../context'
-import { keepFocus, useKeymap } from '../keymap'
+import { keepFocus, lines, useKeymap } from '../keymap'
 import styles from './Todos.module.css'
 
 export function messagePath(message: number): string {
@@ -29,8 +29,10 @@ export function Todos() {
 
   const current = list?.[focus]
   useKeymap({
-    next: () => setFocus((f) => Math.min(f + 1, count - 1)),
-    previous: () => setFocus((f) => Math.max(f - 1, 0)),
+    ...lines(
+      () => setFocus((f) => Math.min(f + 1, count - 1)),
+      () => setFocus((f) => Math.max(f - 1, 0)),
+    ),
     // A flagged message's to-do is about the message: opening it opens that.
     open: () => {
       if (!current) return

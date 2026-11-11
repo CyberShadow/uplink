@@ -27,7 +27,7 @@ export function ThreadPanel(props: {
   const sends = matrix.timeline(room.id).sends.value
   const composer = useRef<HTMLTextAreaElement>(null)
   const scroller = useRef<HTMLDivElement>(null)
-  const lines = useRef<HTMLOListElement>(null)
+  const listed = useRef<HTMLOListElement>(null)
   const [mode, setMode] = useState<Mode>({ type: 'new' })
   const events = useMemo(() => (state ? [state.root, ...state.replies] : []), [state])
   const rootId = state?.root.event_id ?? null
@@ -58,10 +58,10 @@ export function ThreadPanel(props: {
         </p>
       )}
       <div ref={scroller} class={styles.scroller}>
-        <ol ref={lines} class={styles.events} aria-label="Thread messages">
+        <ol ref={listed} class={styles.events} aria-label="Thread messages">
           {state === null && <li class={styles.muted}>Loading…</li>}
           <Events
-            list={lines}
+            list={listed}
             room={room}
             me={me}
             rows={list}

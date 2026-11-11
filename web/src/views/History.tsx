@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import type { HistoryEntry } from '../generated/protocol'
 import { useServices } from '../context'
-import { keepFocus, useKeymap } from '../keymap'
+import { keepFocus, lines, useKeymap } from '../keymap'
 import styles from './History.module.css'
 import { dateTime } from '../format'
 
@@ -20,11 +20,13 @@ export function History() {
 
   const current = entries?.[focus]
   useKeymap({
-    next: () => {
-      setFocus((f) => Math.min(f + 1, count - 1))
-      if (focus >= count - 10) history.loadMore()
-    },
-    previous: () => setFocus((f) => Math.max(f - 1, 0)),
+    ...lines(
+      () => {
+        setFocus((f) => Math.min(f + 1, count - 1))
+        if (focus >= count - 10) history.loadMore()
+      },
+      () => setFocus((f) => Math.max(f - 1, 0)),
+    ),
     undo: () => current && current.undone_by === null && ops.undo(current.entry.id),
   })
 

@@ -2623,6 +2623,10 @@ as a native list does), `Enter` chooses and `Esc` closes.
   actions" menu. No `n`/`p` (a conversation's next or previous message)
   yet.
 
+- **The arrows move in lists as `j`/`k`**, as Slack's and Discord's do:
+  `↓`/`↑` in the mail list, a room's timeline, home, the to-dos, the
+  history and the outbox; not in an open conversation or the calendar,
+  where they scroll.
 - **`?` shows the shortcuts**: how keys work (what a box keeps, `Esc`,
   sequences), then those the view on show binds ("Here"), then the rest
   ("Elsewhere"), each with the platform's modifiers. Keys reach nothing

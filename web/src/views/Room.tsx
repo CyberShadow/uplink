@@ -20,7 +20,7 @@ import type {
   TimelineGap,
 } from '../generated/protocol'
 import { useServices } from '../context'
-import { focusShown, keepFocus, pages, useKeymap } from '../keymap'
+import { focusShown, keepFocus, lines, pages, useKeymap } from '../keymap'
 import styles from './Room.module.css'
 import { RoomAvatar } from './RoomAvatar'
 import { date } from '../format'
@@ -83,15 +83,14 @@ function Timeline(props: { room: Room; words: string | null }) {
   const openMember = (user: string) => setPanel({ type: 'member', user, back: false })
   const scroller = useRef<HTMLDivElement>(null)
   const scrolling = pages(scroller)
-  const lines = useRef<HTMLOListElement>(null)
+  const listed = useRef<HTMLOListElement>(null)
   // From no line (those of a list have its own), to the latest.
-  const toLatest = () => moveLine(lines.current!, -1)
+  const toLatest = () => moveLine(listed.current!, -1)
   useKeymap({
     reply: write,
     write,
     label: () => setTagging(true),
-    next: toLatest,
-    previous: toLatest,
+    ...lines(toLatest, toLatest),
     ...scrolling,
     // Else, home (`Shell`).
     ...(panel && { up: () => setPanel(null) }),
@@ -178,7 +177,7 @@ function Timeline(props: { room: Room; words: string | null }) {
         {/* Reversed, so that it stays scrolled to the latest event. */}
         <div ref={scroller} class={styles.scroller}>
           <ol
-            ref={lines}
+            ref={listed}
             class={styles.events}
             aria-label="Timeline"
             // Open, a message's details show the line that has the focus.
@@ -190,7 +189,7 @@ function Timeline(props: { room: Room; words: string | null }) {
             {timeline.moreBefore.value && <Earlier room={room} />}
             {events === null && <li class={styles.muted}>Loading…</li>}
             <Events
-              list={lines}
+              list={listed}
               room={room}
               me={me}
               rows={list}
@@ -347,8 +346,10 @@ export function Events(props: {
   }
   useKeymap(
     {
-      next: () => moveLine(props.list.current!, 1),
-      previous: () => moveLine(props.list.current!, -1),
+      ...lines(
+        () => moveLine(props.list.current!, 1),
+        () => moveLine(props.list.current!, -1),
+      ),
       reply: () => focused().reply?.(),
       edit: () => focused().edit?.(),
       thread: () => {
