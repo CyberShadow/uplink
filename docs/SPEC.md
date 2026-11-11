@@ -2548,8 +2548,9 @@ and `r` go back to it. Out of the box, `j`/`k` move to a line (from none, to the
 thread's list, within it), as the mail list's, and keys act on its
 message, as Slack's do on the one it focuses: `r` replies, `e` edits
 one's own, `t` opens its thread or replies in one, `+` opens its
-reactions (with the focus in the box to type one, and back on the line
-once closed), `p` pins or unpins it and `#` deletes one's own; what its
+reactions (at the first: `←`/`→` move along them, `Enter` takes one,
+other keys type one into their box; the focus leaving closes them, and
+closed, the line has it back), `p` pins or unpins it and `#` deletes one's own; what its
 buttons do, but by keys. `o`/`Enter` (of the main timeline) open its
 details beside the timeline: who sent it and when, its type, event id
 and encryption, who has read up to it, its reactions, its edits and its

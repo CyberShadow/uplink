@@ -1356,16 +1356,25 @@ describe('matrix', () => {
     expect(document.activeElement).toBe(lineOf(theirs))
     expect(sent()).toEqual([])
 
-    // + opens the reactions, to type one; then the line has the focus back.
+    // + opens the reactions, at the first: the arrows move along them,
+    // Enter takes one, and other keys type one; then the line has the
+    // focus back.
     await user.keyboard('+')
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'React with 👍' }))
+    await user.keyboard('{ArrowRight}{ArrowRight}{ArrowLeft}')
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'React with 👎' }))
+    await user.keyboard('{Enter}')
+    expect(document.activeElement).toBe(lineOf(theirs))
+    await user.keyboard('+🎉')
     expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Reaction' }))
-    await user.keyboard('🎉{Enter}')
+    await user.keyboard('{Enter}')
     expect(document.activeElement).toBe(lineOf(theirs))
     await user.keyboard('+{Escape}')
     expect(document.activeElement).toBe(lineOf(theirs))
     await user.keyboard('p')
     await user.keyboard('j#')
     expect(sent()).toEqual([
+      { type: 'reaction', event: theirs.event_id, key: '👎' },
       { type: 'reaction', event: theirs.event_id, key: '🎉' },
       { type: 'pin', event: theirs.event_id, pinned: true },
       { type: 'redaction', event: mine.event_id },

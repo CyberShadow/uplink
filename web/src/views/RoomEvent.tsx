@@ -641,7 +641,9 @@ function Reactions(props: {
 }
 
 /** Whether a line's reaction picker is open: by the pointer, or by a
- * key (`+`), which gives it the focus, and has it back once closed. */
+ * key (`+`), which gives it the focus (its first reaction; the arrows
+ * move along it, and other keys type into its box), and has it back
+ * once closed. */
 export type Reacting = null | 'pointer' | 'key'
 
 /** The button offering reactions: the quick ones, or any typed. */
@@ -654,13 +656,14 @@ function ReactButton(props: {
   const [typed, setTyped] = useState('')
   const root = useRef<HTMLSpanElement>(null)
   const input = useRef<HTMLInputElement>(null)
+  const picker = useRef<HTMLDivElement>(null)
   const close = () => {
     setOpen(null)
     setTyped('')
     if (open === 'key') root.current!.closest<HTMLElement>('[data-event]')!.focus()
   }
   useLayoutEffect(() => {
-    if (open === 'key') input.current!.focus()
+    if (open === 'key') picker.current!.querySelector('button')!.focus()
   }, [open])
   useEscape(open !== null ? close : null)
   useEffect(() => {
@@ -688,7 +691,31 @@ function ReactButton(props: {
         <Icon name="smile-plus" />
       </button>
       {open !== null && (
-        <div class={styles.picker} role="dialog" aria-label="React">
+        <div
+          ref={picker}
+          class={styles.picker}
+          role="dialog"
+          aria-label="React"
+          // Left by the focus (Tab, a click elsewhere), it closes.
+          onFocusOut={(event) => {
+            if (!picker.current!.contains(event.relatedTarget as Node | null)) setOpen(null)
+          }}
+          onKeyDown={(event) => {
+            const pressed = event.target as HTMLElement
+            const arrow = { ArrowLeft: -1, ArrowRight: 1 }[event.key]
+            // In the box, the arrows move its caret, but from an empty one.
+            if (arrow !== undefined && (pressed !== input.current || typed === '')) {
+              const controls = [...picker.current!.querySelectorAll<HTMLElement>('button, input')]
+              const at = controls.indexOf(pressed)
+              controls[Math.max(0, Math.min(at + arrow, controls.length - 1))].focus()
+              event.preventDefault()
+            } else if (pressed !== input.current && [...event.key].length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+              // A key typed on a reaction is the box's, not a shortcut.
+              event.stopPropagation()
+              input.current!.focus()
+            }
+          }}
+        >
           {QUICK.map((key) => (
             <button key={key} type="button" aria-label={`React with ${key}`} onMouseDown={keepFocus} onClick={() => choose(key)}>
               {key}
