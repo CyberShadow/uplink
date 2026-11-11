@@ -20,6 +20,9 @@ import type {
   RoomId,
   ServerResponse,
   TxLogId,
+  GapId,
+  TimelineFilled,
+  TimelineGap,
   VerificationAnswer,
 } from '../generated/protocol'
 import type { Blobs } from '../blobs'
@@ -64,6 +67,9 @@ export class MatrixStore {
           break
         case 'timeline_added':
           this.timelines.get(event.room)?.added()
+          break
+        case 'timeline_filled':
+          this.timelines.get(event.room)?.filled(event)
           break
         case 'timeline_changed':
           this.timelines.get(event.room)?.changed(event.events)
@@ -131,6 +137,13 @@ export class MatrixStore {
         (events) => this.query({ type: 'list_room_events', room, events }, 'room_events'),
         () => this.query({ type: 'list_matrix_sends', room }, 'matrix_sends'),
         () => this.query({ type: 'list_receipts', room }, 'receipts'),
+        async (gap) => {
+          try {
+            await this.server.request({ type: 'fill_gap', room, gap })
+          } catch (error) {
+            this.error.value = (error as Error).message
+          }
+        },
       )
       this.timelines.set(room, timeline)
     }
@@ -199,6 +212,12 @@ export class MatrixStore {
 /** A room's timeline from some point to its end, oldest first, and the
  * messages being sent to it, which follow. New events are loaded as they
  * are synced; earlier ones on request. */
+/** `events` with `added`, in timeline order, each once. */
+function merged(events: readonly RoomEvent[], added: readonly RoomEvent[]): RoomEvent[] {
+  const known = new Set(events.map((e) => e.id))
+  return [...events, ...added.filter((e) => !known.has(e.id))].sort((a, b) => a.pos - b.pos)
+}
+
 export class Timeline {
   /** `null` until loaded. */
   readonly events = signal<readonly RoomEvent[] | null>(null)
@@ -210,6 +229,10 @@ export class Timeline {
   readonly typing = signal<readonly RoomMember[]>([])
   /** How far the room's members have read. */
   readonly receipts = signal<readonly MemberReceipt[]>([])
+  /** Events missing among those loaded (SPEC §9.2). */
+  readonly gaps = signal<readonly TimelineGap[]>([])
+  /** Gaps being filled. */
+  readonly filling = signal<ReadonlySet<GapId>>(new Set())
 
   private newer = this.loader()
   /** Of events loaded again as they changed, the log entry their load
@@ -231,6 +254,7 @@ export class Timeline {
     private readonly loadEvents: (events: RoomEventId[]) => Promise<Response<'room_events'> | null>,
     private readonly loadSends: () => Promise<Response<'matrix_sends'> | null>,
     private readonly loadReceipts: () => Promise<Response<'receipts'> | null>,
+    private readonly fillGap: (gap: GapId) => Promise<void>,
   ) {
     this.newer.invalidate()
     this.sendLoader.invalidate()
@@ -239,6 +263,33 @@ export class Timeline {
 
   receiptsChanged() {
     this.receiptLoader.invalidate()
+  }
+
+  /** Fetches the events missing in the gap, which then fill it. */
+  async fill(gap: GapId) {
+    if (this.filling.value.has(gap)) return
+    this.filling.value = new Set([...this.filling.value, gap])
+    try {
+      await this.fillGap(gap)
+    } finally {
+      this.filling.value = new Set([...this.filling.value].filter((g) => g !== gap))
+    }
+  }
+
+  /** Events filled a gap: shown among those loaded, if it is. */
+  async filled(filled: TimelineFilled) {
+    if (!this.gaps.value.some((g) => g.id === filled.gap)) return
+    const response = filled.events.length > 0 ? await this.loadEvents(filled.events) : null
+    const events = this.events.value
+    if (!events) return
+    this.events.value = merged(events, response?.events ?? [])
+    this.gaps.value = [...this.gaps.value.filter((g) => g.id !== filled.gap), ...(filled.left ? [filled.left] : [])]
+  }
+
+  private addGaps(gaps: readonly TimelineGap[]) {
+    const known = new Set(this.gaps.value.map((g) => g.id))
+    const added = gaps.filter((g) => !known.has(g.id))
+    if (added.length > 0) this.gaps.value = [...this.gaps.value, ...added]
   }
 
   /** Events were added to the end. */
@@ -284,6 +335,7 @@ export class Timeline {
     this.newer = this.loader()
     this.newer.invalidate()
     this.sendLoader.invalidate()
+    this.gaps.value = []
     // What notices said is void too.
     this.typing.value = []
     this.receiptLoader.invalidate()
@@ -305,6 +357,7 @@ export class Timeline {
         if (!response || this.events.value !== events) return
         if (!last) this.moreBefore.value = response.more_before
         this.events.value = [...(events ?? []), ...response.events]
+        this.addGaps(response.gaps)
         if (!last || response.events.length < TIMELINE_PAGE) return
       }
     })
@@ -326,6 +379,7 @@ export class Timeline {
       if (response && events?.[0] === first) {
         this.events.value = [...response.events, ...events]
         this.moreBefore.value = response.more_before
+        this.addGaps(response.gaps)
       }
     } finally {
       this.loadingEarlier = false

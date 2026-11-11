@@ -947,7 +947,7 @@ describe('room timeline', () => {
     const read = server.receive(room.id, { body: 'Yesterday', ts: day('2026-11-09T12:00') })
     server.receive(room.id, { body: 'Mine', sender: ME, sender_name: 'Me', ts: day('2026-11-10T09:00') })
     server.receive(room.id, { body: 'Unread', ts: day('2026-11-10T09:05') })
-    room.read_up_to = read.id
+    room.read_up_to = server.marker(room.id, read.id)
     await start(`/rooms/${room.id}`)
     await within(timeline()).findByText('Unread')
     const separators = within(timeline()).getAllByRole('separator')
@@ -1137,9 +1137,9 @@ describe('room timeline', () => {
 
     // On the last listed event at or before the one read.
     server.read(room.id, [
-      { member: { user: '@bob:example.org', name: 'Bob' }, event: first.id, ts: null },
+      { member: { user: '@bob:example.org', name: 'Bob' }, event: first.id, pos: first.pos, ts: null },
       // An event not listed, as a reaction.
-      { member: { user: '@carol:example.org', name: 'Carol' }, event: second.id + 10, ts: null },
+      { member: { user: '@carol:example.org', name: 'Carol' }, event: second.id + 10, pos: second.pos + 10, ts: null },
     ])
     await within(line('First')).findByLabelText('Read by Bob')
     within(line('Second')).getByLabelText('Read by Carol')
@@ -1167,6 +1167,33 @@ describe('room timeline', () => {
     })
     await waitFor(() => expect(within(timeline()).queryByText(/Unable to decrypt/)).toBeNull())
     within(line('Hello')).getByRole('button', { name: /👍/ })
+  })
+
+  it('fetches events missing where a gap is, in place', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const first = server.receive(room.id, { body: 'First' })
+    const later = server.receive(room.id, { body: 'Later' })
+    server.gap(room.id, first, [{ body: 'Oldest' }])
+    server.gap(room.id, later, [{ body: 'Missed one' }, { body: 'Missed two' }])
+    const user = await start(`/rooms/${room.id}`)
+    await within(timeline()).findByText('Later')
+    const gaps = within(timeline()).getAllByRole('separator', { name: 'Events missing' })
+    expect(gaps).toHaveLength(2)
+
+    await user.click(within(gaps[1]).getByRole('button', { name: 'Fetch them' }))
+    await within(timeline()).findByText('Missed two')
+    const bodies = () =>
+      within(timeline())
+        .getAllByText(/^(Oldest|First|Missed one|Missed two|Later)$/)
+        .map((e) => e.textContent!.trim())
+    expect(bodies()).toEqual(['First', 'Missed one', 'Missed two', 'Later'])
+    expect(within(timeline()).getAllByRole('separator', { name: 'Events missing' })).toHaveLength(1)
+
+    await user.click(within(timeline()).getByRole('button', { name: 'Fetch them' }))
+    await within(timeline()).findByText('Oldest')
+    expect(bodies()).toEqual(['Oldest', 'First', 'Missed one', 'Missed two', 'Later'])
+    expect(within(timeline()).queryByRole('separator', { name: 'Events missing' })).toBeNull()
   })
 
   it('sends files attached, with the message', async () => {

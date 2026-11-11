@@ -29,6 +29,9 @@ import type {
   MatrixSecurity,
   MatrixSend,
   MatrixVerification,
+  GapId,
+  ReadMarker,
+  RoomEventId,
   VerificationPhase,
   Membership,
   Room,
@@ -97,6 +100,9 @@ export class FakeServer implements Requester, Blobs {
   readonly events = new Map<RoomId, RoomEvent[]>()
   /** Of Matrix accounts, their security: unverified until recovered. */
   readonly security = new Map<string, MatrixSecurity>()
+  /** Of rooms, their gaps, with the events missing there. */
+  private readonly gaps = new Map<RoomId, { id: GapId; before: RoomEventId; missing: RoomEvent[] }[]>()
+  private nextGap = 1
   /** Of rooms, how far their members have read. */
   readonly receipts = new Map<RoomId, MemberReceipt[]>()
   /** Of events edited, their edits, oldest first. */
@@ -296,10 +302,10 @@ export class FakeServer implements Requester, Blobs {
   }
 
   /** An event arrives in the room, as syncing would deliver it. */
-  receive(room: RoomId, event: Partial<RoomEvent>): RoomEvent {
-    const id = this.nextRoomEvent++
-    const full: RoomEvent = {
+  private event(id: RoomEventId, event: Partial<RoomEvent>): RoomEvent {
+    return {
       id,
+      pos: id * 1024,
       event_id: `$${id}`,
       sender: '@bob:example.org',
       sender_name: 'Bob',
@@ -316,12 +322,37 @@ export class FakeServer implements Requester, Blobs {
       html: null,
       ...event,
     }
+  }
+
+  receive(room: RoomId, event: Partial<RoomEvent>): RoomEvent {
+    const id = this.nextRoomEvent++
+    const full = this.event(id, event)
     this.events.get(room)!.push(full)
     this.observe('mx', [
       { type: 'timeline_added', room, events: [id] },
       { type: 'rooms_changed', rooms: [room] },
     ])
     return full
+  }
+
+  /** Events before `before` are missing, as a limited sync leaves them:
+   * `missing`, oldest first, which filling the gap fetches. */
+  gap(room: RoomId, before: RoomEvent, missing: Partial<RoomEvent>[]): GapId {
+    const id = this.nextGap++
+    const events = missing.map((event, i) => {
+      const eventId = this.nextRoomEvent++
+      return {
+        ...this.event(eventId, event),
+        pos: before.pos - missing.length + i,
+      }
+    })
+    this.gaps.set(room, [...(this.gaps.get(room) ?? []), { id, before: before.id, missing: events }])
+    return id
+  }
+
+  /** The read marker at the room's event. */
+  marker(room: RoomId, event: RoomEventId): ReadMarker {
+    return { event, pos: this.events.get(room)!.find((e) => e.id === event)!.pos }
   }
 
   /** Sync changes what an event of the room shows (an edit, a reaction). */
@@ -406,7 +437,7 @@ export class FakeServer implements Requester, Blobs {
     return listed.map((room) => {
       const events = this.events.get(room.id)!
       const unread = events.filter(
-        (e) => e.id > (room.read_up_to ?? 0) && e.kind === 'm.room.message' && e.sender !== ME,
+        (e) => e.pos > (room.read_up_to?.pos ?? -Infinity) && e.kind === 'm.room.message' && e.sender !== ME,
       ).length
       return { ...room, unread, last_event_ts: events.at(-1)?.ts ?? null }
     })
@@ -673,6 +704,19 @@ export class FakeServer implements Requester, Blobs {
         }
       case 'list_edits':
         return { type: 'edits', as_of: this.head(), room: body.room, event: body.event, edits: this.edits.get(body.event) ?? [] }
+      case 'fill_gap': {
+        const gaps = this.gaps.get(body.room) ?? []
+        const gap = gaps.find((g) => g.id === body.gap)
+        if (!gap) throw new RequestError({ code: 'not_found', message: `no gap ${body.gap}` })
+        gaps.splice(gaps.indexOf(gap), 1)
+        const events = this.events.get(body.room)!
+        events.push(...gap.missing)
+        events.sort((a, b) => a.pos - b.pos)
+        this.observe('mx', [
+          { type: 'timeline_filled', room: body.room, gap: gap.id, events: gap.missing.map((e) => e.id), left: null },
+        ])
+        return { type: 'done' }
+      }
       case 'list_receipts':
         return { type: 'receipts', room: body.room, receipts: this.receipts.get(body.room) ?? [] }
       case 'set_typing':
@@ -785,7 +829,7 @@ export class FakeServer implements Requester, Blobs {
       case 'delete_todo':
         return { type: 'dispatched', tx_log_id: this.deleteTodo(body.todo) }
       case 'mark_room_read':
-        this.rooms.find((r) => r.id === body.room)!.read_up_to = body.event
+        this.rooms.find((r) => r.id === body.room)!.read_up_to = this.marker(body.room, body.event)
         return this.dispatched('Read', [{ type: 'rooms_changed', rooms: [body.room] }])
       case 'change_membership': {
         const room = this.rooms.find((r) => r.id === body.room)!
@@ -879,20 +923,25 @@ export class FakeServer implements Requester, Blobs {
 
   private timeline(room: RoomId, page: TimelinePage, limit: number) {
     const all = this.events.get(room)!
+    const pos = (id: RoomEventId) => all.find((e) => e.id === id)!.pos
     let events: RoomEvent[]
     switch (page.type) {
       case 'latest':
         events = all.slice(-limit)
         break
       case 'before':
-        events = all.filter((e) => e.id < page.event).slice(-limit)
+        events = all.filter((e) => e.pos < pos(page.event)).slice(-limit)
         break
       case 'after':
-        events = all.filter((e) => e.id > page.event).slice(0, limit)
+        events = all.filter((e) => e.pos > pos(page.event)).slice(0, limit)
         break
     }
     const first = events[0]
-    return { events, more_before: first !== undefined && all[0].id < first.id }
+    const ids = new Set(events.map((e) => e.id))
+    const gaps = (this.gaps.get(room) ?? [])
+      .filter((g) => ids.has(g.before))
+      .map((g) => ({ id: g.id, before: g.before }))
+    return { events, more_before: first !== undefined && all[0].pos < first.pos, gaps }
   }
 
   private cancelMatrixSend(item: number, description: string): number {

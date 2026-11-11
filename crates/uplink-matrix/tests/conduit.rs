@@ -1227,3 +1227,129 @@ async fn verifying_with_another_device_by_emoji() {
     .await;
     assert!(verified.devices.iter().all(|d| d.verified));
 }
+
+/// A page of uplink's timeline of the room, with its gaps.
+async fn page(
+    uplink: &Uplink,
+    room: &Room,
+    page: TimelinePage,
+) -> (
+    Vec<RoomEvent>,
+    bool,
+    Vec<uplink_protocol::matrix::TimelineGap>,
+) {
+    match uplink
+        .matrix
+        .list_timeline(room.id, page, 500)
+        .await
+        .unwrap()
+    {
+        ServerResponse::Timeline {
+            events,
+            more_before,
+            gaps,
+            ..
+        } => (events, more_before, gaps),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn gaps_are_filled_from_the_homeserver() {
+    use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+    let dir = tempfile::tempdir().unwrap();
+    let homeserver = Homeserver::start(dir.path()).await;
+    let bob = homeserver.register(dir.path(), "bob").await;
+    let alice_phone = homeserver.register(dir.path(), "alice").await;
+    let _bob_received = sync_messages(&bob);
+    // Not encrypted: uplink's device would have no keys of what came
+    // before it.
+    let bob_room = bob.create_room(Default::default()).await.unwrap();
+    bob_room
+        .invite_user_by_id(alice_phone.user_id().unwrap())
+        .await
+        .unwrap();
+    alice_phone
+        .sync_once(SyncSettings::default())
+        .await
+        .unwrap();
+    alice_phone
+        .join_room_by_id(bob_room.room_id())
+        .await
+        .unwrap();
+    let send = |body: String| {
+        let bob_room = bob_room.clone();
+        async move {
+            bob_room
+                .send(RoomMessageEventContent::text_plain(body))
+                .await
+                .unwrap();
+        }
+    };
+    for i in 0..60 {
+        send(format!("before {i}")).await;
+    }
+
+    let uplink = Uplink::new(&homeserver);
+    let sync = uplink.pair_and_sync().await;
+    let room = eventually("uplink to see the room", || async {
+        uplink.room(bob_room.room_id()).await
+    })
+    .await;
+    // The first sync brings the latest events only: a gap before them.
+    let (events, more_before, gaps) = page(&uplink, &room, TimelinePage::Latest).await;
+    assert!(!more_before);
+    assert!(events.len() < 60, "a sync's timeline is limited");
+    assert_eq!(gaps.len(), 1);
+    assert_eq!(gaps[0].before, Some(events[0].id));
+
+    // A restart, and events while it was down: a sync leaves a gap.
+    sync.abort();
+    assert!(sync.await.unwrap_err().is_cancelled());
+    for i in 0..40 {
+        send(format!("meanwhile {i}")).await;
+    }
+    uplink.start_sync();
+    eventually("uplink to sync the latest", || async {
+        let (events, _, _) = page(&uplink, &room, TimelinePage::Latest).await;
+        (events.last()?.body.as_deref() == Some("meanwhile 39")).then_some(())
+    })
+    .await;
+    let (_, _, gaps) = page(&uplink, &room, TimelinePage::Latest).await;
+    assert_eq!(gaps.len(), 2, "before the first events, and amid them");
+
+    // Fill them all, by pages.
+    let mut fills = 0;
+    loop {
+        let (_, _, gaps) = page(&uplink, &room, TimelinePage::Latest).await;
+        let Some(gap) = gaps.first() else { break };
+        uplink.matrix.fill_gap(room.id, gap.id).await.unwrap();
+        fills += 1;
+        assert!(fills < 20, "filling ends");
+    }
+    let (events, more_before, gaps) = page(&uplink, &room, TimelinePage::Latest).await;
+    assert!(!more_before && gaps.is_empty());
+    let bodies: Vec<&str> = events.iter().filter_map(|e| e.body.as_deref()).collect();
+    let expected: Vec<String> = (0..60)
+        .map(|i| format!("before {i}"))
+        .chain((0..40).map(|i| format!("meanwhile {i}")))
+        .collect();
+    assert_eq!(bodies, expected, "every message, in order, once");
+    assert_eq!(events[0].kind, "m.room.create", "back to the room's start");
+    assert!(events.windows(2).all(|w| w[0].pos < w[1].pos));
+    // Paging by position, as clients do.
+    let middle = events
+        .iter()
+        .position(|e| e.body.as_deref() == Some("before 30"))
+        .unwrap();
+    let (earlier, _, _) = page(
+        &uplink,
+        &room,
+        TimelinePage::Before {
+            event: events[middle].id,
+        },
+    )
+    .await;
+    assert_eq!(earlier.len(), middle);
+    assert_eq!(earlier.last().unwrap().id, events[middle - 1].id);
+}

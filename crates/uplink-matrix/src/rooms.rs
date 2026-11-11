@@ -20,11 +20,12 @@ use matrix_sdk::{
     ROOM_VERSION_RULES_FALLBACK,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use uplink_protocol::{
     matrix::{
-        Encryption, EventEdit, MatrixSendsChanged, Membership, Reaction, Reactor, RepliedEvent,
-        Room, RoomEvent, RoomEventId, RoomId, RoomsChanged, TimelineAdded, TimelineChanged,
-        TimelinePage,
+        Encryption, EventEdit, GapId, MatrixSendsChanged, Membership, Reaction, Reactor,
+        ReadMarker, RepliedEvent, Room, RoomEvent, RoomEventId, RoomId, RoomsChanged,
+        TimelineAdded, TimelineChanged, TimelineFilled, TimelineGap, TimelinePage,
     },
     ServerEvent,
 };
@@ -81,6 +82,9 @@ pub struct ObservedRoom {
     /// Timeline events, in order. Not in the log: they are stored.
     #[serde(skip)]
     pub events: Vec<ObservedEvent>,
+    /// Whether events since the last sync were left out: a gap before
+    /// those of `events` (SPEC §9.2).
+    pub limited: bool,
     /// Events the account's own read receipts in the response are for.
     pub own_receipts: Vec<String>,
 }
@@ -238,7 +242,15 @@ impl Observation for Synced {
         for room in self.rooms {
             let (id, upserted) = upsert_room(tx, account, &room)?;
             let changed = set_children(tx, id, &room.children)? || upserted;
-            let added = insert_events(tx, id, &room.events)?;
+            let positions = synced_positions(tx, id, room.events.len())?;
+            let inserted = insert_events(tx, id, &room.events, &positions)?;
+            if let (true, Some(Some(first))) = (room.limited, inserted.first()) {
+                tx.execute(
+                    "INSERT INTO matrix_gap (room, before_event) VALUES (?1, ?2)",
+                    params![id.0, first.0],
+                )?;
+            }
+            let added: Vec<RoomEventId> = inserted.into_iter().flatten().collect();
             let redacted = redact(tx, id, &room.version)?;
             let touched = touched(tx, &added, &redacted)?;
             if send::sends_synced(tx, id)? {
@@ -409,22 +421,39 @@ fn set_children(tx: &Transaction, space: RoomId, children: &[SpaceChild]) -> Res
     Ok(true)
 }
 
-/// Stores the events not stored yet; returns their ids.
+/// How far apart synced events are placed: the room for events
+/// backfilled into a gap between two.
+const SPACING: i64 = 1 << 20;
+
+/// Positions for `n` events synced to the end of the room's timeline.
+fn synced_positions(tx: &Transaction, room: RoomId, n: usize) -> Result<Vec<i64>> {
+    let last: i64 = tx.query_row(
+        "SELECT coalesce(max(pos), 0) FROM matrix_event WHERE room = ?1",
+        [room.0],
+        |r| r.get(0),
+    )?;
+    Ok((1..=n as i64).map(|i| last + i * SPACING).collect())
+}
+
+/// Stores the events not stored yet, at `positions`; returns, of each,
+/// its id if it was stored now.
 fn insert_events(
     tx: &Transaction,
     room: RoomId,
     events: &[ObservedEvent],
-) -> Result<Vec<RoomEventId>> {
+    positions: &[i64],
+) -> Result<Vec<Option<RoomEventId>>> {
+    assert_eq!(events.len(), positions.len());
     let mut insert = tx.prepare(
         "INSERT INTO matrix_event
            (room, event_id, sender, sender_name, ts, type, msgtype, body, raw_json, encryption,
-            rel_type, relates_to, reply_to, redacts, redacted)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            rel_type, relates_to, reply_to, redacts, redacted, pos)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
          ON CONFLICT (room, event_id) DO NOTHING
          RETURNING id",
     )?;
     let mut added = vec![];
-    for e in events {
+    for (e, pos) in events.iter().zip(positions) {
         let r = &e.relation;
         let id = insert
             .query_row(
@@ -444,11 +473,12 @@ fn insert_events(
                     r.reply_to,
                     r.redacts,
                     r.redacted,
+                    pos,
                 ],
                 |r| r.get(0),
             )
             .optional()?;
-        added.extend(id.map(RoomEventId));
+        added.push(id.map(RoomEventId));
     }
     Ok(added)
 }
@@ -554,7 +584,7 @@ fn touched(
     Ok(tx
         .prepare(&format!(
             "SELECT e.id FROM matrix_event e
-             WHERE e.id IN (SELECT value FROM json_each(?1)) AND {LISTED} ORDER BY e.id"
+             WHERE e.id IN (SELECT value FROM json_each(?1)) AND {LISTED} ORDER BY e.pos"
         ))?
         .query_map([touched], |r| Ok(RoomEventId(r.get(0)?)))?
         .collect::<Result<_, _>>()?)
@@ -564,25 +594,31 @@ fn touched(
 /// account's own receipts are for, if that is past the latest receipt
 /// already sent or observed; returns whether it moved.
 fn observe_receipts(tx: &Transaction, room: RoomId, receipts: &[String]) -> Result<bool> {
-    let mut latest: Option<i64> = None;
+    // The latest, by position.
+    let mut latest: Option<(i64, i64)> = None;
     for event_id in receipts {
-        let id: Option<i64> = tx
+        let event: Option<(i64, i64)> = tx
             .query_row(
-                "SELECT id FROM matrix_event WHERE room = ?1 AND event_id = ?2",
+                "SELECT pos, id FROM matrix_event WHERE room = ?1 AND event_id = ?2",
                 params![room.0, event_id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
-        latest = latest.max(id);
+        latest = latest.max(event);
     }
-    let Some(latest) = latest else {
+    let Some((pos, latest)) = latest else {
         return Ok(false);
     };
     Ok(tx.execute(
-        "UPDATE matrix_room
-         SET read_pushed = ?1, read_up_to = max(coalesce(read_up_to, 0), ?1)
-         WHERE id = ?2 AND coalesce(read_pushed, 0) < ?1",
-        params![latest, room.0],
+        &format!(
+            "UPDATE matrix_room
+             SET read_pushed = ?1,
+                 read_up_to = CASE WHEN {up_to} IS NULL OR {up_to} < ?3 THEN ?1 ELSE read_up_to END
+             WHERE id = ?2 AND ({pushed} IS NULL OR {pushed} < ?3)",
+            up_to = pos_of("read_up_to"),
+            pushed = pos_of("read_pushed"),
+        ),
+        params![latest, room.0, pos],
     )? > 0)
 }
 
@@ -748,7 +784,12 @@ impl Observation for ReceiptSent {
     fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
         let pending = outbox::pending_rooms(tx, account)?;
         tx.execute(
-            "UPDATE matrix_room SET read_pushed = max(coalesce(read_pushed, 0), ?1) WHERE id = ?2",
+            &format!(
+                "UPDATE matrix_room SET read_pushed = ?1
+                 WHERE id = ?2 AND ({pushed} IS NULL OR {pushed} < {sent})",
+                pushed = pos_of("read_pushed"),
+                sent = pos_of("?1"),
+            ),
             params![self.up_to.0, self.room.0],
         )?;
         // Nothing else clients show changed.
@@ -776,12 +817,11 @@ pub struct UnsentReceipt {
 
 pub fn unsent_receipts(conn: &Connection, account: &str) -> Result<Vec<UnsentReceipt>> {
     Ok(conn
-        .prepare(
+        .prepare(&format!(
             "SELECT r.id, r.room_id, e.id, e.event_id
-             FROM matrix_room r JOIN matrix_event e ON e.id = r.read_up_to
-             WHERE r.account_id = ?1 AND r.membership = 'joined'
-               AND r.read_up_to > coalesce(r.read_pushed, 0)",
-        )?
+                 FROM matrix_room r JOIN matrix_event e ON e.id = r.read_up_to
+                 WHERE r.account_id = ?1 AND r.membership = 'joined' AND {UNSENT_RECEIPT}"
+        ))?
         .query_map([account], |r| {
             Ok(UnsentReceipt {
                 room: RoomId(r.get(0)?),
@@ -819,7 +859,8 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
         .prepare(&format!(
             "SELECT r.id, r.account_id, r.room_id, r.name, r.encrypted, r.membership,
                     (SELECT count(*) FROM matrix_event e
-                     WHERE e.room = r.id AND e.id > coalesce(r.read_up_to, 0)
+                     WHERE e.room = r.id
+                       AND (r.read_up_to IS NULL OR e.pos > {read_pos})
                        AND e.type IN ('m.room.message', 'm.room.encrypted')
                        AND e.sender != ?2 AND NOT e.redacted AND {LISTED}),
                     (SELECT max(ts) FROM matrix_event e WHERE e.room = r.id),
@@ -828,10 +869,11 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
                     (SELECT json_group_array(child) FROM
                        (SELECT child FROM matrix_space_child c WHERE c.space = r.id
                         ORDER BY child_order IS NULL, child_order, child)),
-                    r.topic, r.joined_members
+                    r.topic, r.joined_members, {read_pos}
              FROM matrix_room r
              WHERE r.account_id = ?1 AND (r.membership != 'left' OR r.desired = 'joined')
-             ORDER BY 8 DESC NULLS LAST, r.id"
+             ORDER BY 8 DESC NULLS LAST, r.id",
+            read_pos = pos_of("r.read_up_to"),
         ))?
         .query_map([account, mxid], |r| {
             Ok(Room {
@@ -843,7 +885,14 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
                 membership: parse_membership(&r.get::<_, String>(5)?),
                 unread: r.get(6)?,
                 last_event_ts: r.get(7)?,
-                read_up_to: r.get::<_, Option<i64>>(8)?.map(RoomEventId),
+                read_up_to: match (r.get::<_, Option<i64>>(8)?, r.get(16)?) {
+                    (Some(event), Some(pos)) => Some(ReadMarker {
+                        event: RoomEventId(event),
+                        pos,
+                    }),
+                    (None, None) => None,
+                    _ => unreachable!("a read marker is of a stored event"),
+                },
                 pending: parse_desired(r.get::<_, Option<String>>(9)?.as_deref()),
                 membership_error: r.get(10)?,
                 space: r.get(11)?,
@@ -933,20 +982,22 @@ pub fn room_ids(
         .collect()
 }
 
-/// The stored ids of the room's events `event_ids` (Matrix ids), of
-/// those stored.
+/// The stored ids of the room's events `event_ids` (Matrix ids), with
+/// their positions, of those stored.
 pub fn event_ids(
     conn: &Connection,
     room: RoomId,
     event_ids: &[String],
-) -> Result<Vec<Option<RoomEventId>>> {
+) -> Result<Vec<Option<(RoomEventId, i64)>>> {
     let mut query =
-        conn.prepare("SELECT id FROM matrix_event WHERE room = ?1 AND event_id = ?2")?;
+        conn.prepare("SELECT id, pos FROM matrix_event WHERE room = ?1 AND event_id = ?2")?;
     event_ids
         .iter()
         .map(|event_id| {
             Ok(query
-                .query_row(params![room.0, event_id], |r| Ok(RoomEventId(r.get(0)?)))
+                .query_row(params![room.0, event_id], |r| {
+                    Ok((RoomEventId(r.get(0)?), r.get(1)?))
+                })
                 .optional()?)
         })
         .collect()
@@ -1012,7 +1063,7 @@ pub(crate) const LISTED: &str = "NOT (
     AND NOT (e.type = 'm.reaction' AND e.redacted)";
 
 const COLUMNS: &str = "e.id, e.event_id, e.sender, e.sender_name, e.ts, e.type, e.msgtype, \
-                       e.body, e.raw_json, e.encryption, e.redacted, e.reply_to";
+                       e.body, e.raw_json, e.encryption, e.redacted, e.reply_to, e.pos";
 
 /// An event of [`COLUMNS`], without what relates to it, and the event it
 /// replies to.
@@ -1021,6 +1072,7 @@ fn room_event(r: &Row) -> uplink_storage::rusqlite::Result<(RoomEvent, Option<St
     Ok((
         RoomEvent {
             id: RoomEventId(r.get(0)?),
+            pos: r.get(12)?,
             event_id: r.get(1)?,
             sender: r.get(2)?,
             sender_name: r.get(3)?,
@@ -1045,24 +1097,34 @@ fn room_event(r: &Row) -> uplink_storage::rusqlite::Result<(RoomEvent, Option<St
     ))
 }
 
-/// Up to `limit` events of the room's timeline, oldest first, and whether
-/// there are earlier ones.
+/// A page of the room's timeline: up to `limit` events, oldest first;
+/// whether there are earlier ones; and the gaps among them (see
+/// `ServerResponse::Timeline`).
 pub fn timeline(
     tx: &Transaction,
     room: RoomId,
     page: TimelinePage,
     limit: u32,
-) -> Result<(Vec<RoomEvent>, bool)> {
+) -> Result<(Vec<RoomEvent>, bool, Vec<TimelineGap>)> {
     let select = |condition: &str, order: &str| {
         format!(
             "SELECT {COLUMNS} FROM matrix_event e
-             WHERE e.room = ?1 AND {condition} AND {LISTED} ORDER BY e.id {order} LIMIT ?3"
+             WHERE e.room = ?1 AND {condition} AND {LISTED} ORDER BY e.pos {order} LIMIT ?3"
         )
     };
+    let anchor = pos_of("?2");
     let (sql, after, newest_first) = match page {
         TimelinePage::Latest => (select("?2 IS NULL", "DESC"), None, true),
-        TimelinePage::Before { event } => (select("e.id < ?2", "DESC"), Some(event.0), true),
-        TimelinePage::After { event } => (select("e.id > ?2", "ASC"), Some(event.0), false),
+        TimelinePage::Before { event } => (
+            select(&format!("e.pos < {anchor}"), "DESC"),
+            Some(event.0),
+            true,
+        ),
+        TimelinePage::After { event } => (
+            select(&format!("e.pos > {anchor}"), "ASC"),
+            Some(event.0),
+            false,
+        ),
     };
     let mut events = query_events(tx, room, &sql, params![room.0, after, limit])?;
     if newest_first {
@@ -1072,16 +1134,198 @@ pub fn timeline(
         Some(first) => tx
             .query_row(
                 &format!(
-                    "SELECT 1 FROM matrix_event e WHERE e.room = ?1 AND e.id < ?2 AND {LISTED}"
+                    "SELECT 1 FROM matrix_event e WHERE e.room = ?1 AND e.pos < ?2 AND {LISTED}"
                 ),
-                params![room.0, first.id.0],
+                params![room.0, first.pos],
                 |_| Ok(()),
             )
             .optional()?
             .is_some(),
         None => false,
     };
-    Ok((events, more_before))
+    // A page is the latest if nothing listed comes after it.
+    let latest = match events.last() {
+        Some(last) => tx
+            .query_row(
+                &format!(
+                    "SELECT 1 FROM matrix_event e WHERE e.room = ?1 AND e.pos > ?2 AND {LISTED}"
+                ),
+                params![room.0, last.pos],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_none(),
+        None => matches!(page, TimelinePage::Latest),
+    };
+    let listed: HashSet<RoomEventId> = events.iter().map(|e| e.id).collect();
+    let gaps = gaps(tx, room)?
+        .into_iter()
+        .filter(|gap| match gap.before {
+            Some(before) => listed.contains(&before),
+            None => latest,
+        })
+        .collect();
+    Ok((events, more_before, gaps))
+}
+
+/// The room's gaps.
+pub fn gaps(tx: &Transaction, room: RoomId) -> Result<Vec<TimelineGap>> {
+    Ok(tx
+        .prepare(&format!(
+            "SELECT g.id,
+                    (SELECT e.id FROM matrix_event e
+                     WHERE e.room = g.room AND e.pos >= {before} AND {LISTED}
+                     ORDER BY e.pos LIMIT 1)
+             FROM matrix_gap g WHERE g.room = ?1 ORDER BY {before}",
+            before = pos_of("g.before_event"),
+        ))?
+        .query_map([room.0], |r| {
+            Ok(TimelineGap {
+                id: GapId(r.get(0)?),
+                before: r.get::<_, Option<i64>>(1)?.map(RoomEventId),
+            })
+        })?
+        .collect::<Result<_, _>>()?)
+}
+
+/// The position of the event whose id `id` (an SQL expression) is.
+pub(crate) fn pos_of(id: &str) -> String {
+    format!("(SELECT pos FROM matrix_event WHERE id = {id})")
+}
+
+/// Of a room `r`, whether its read marker is past the latest receipt
+/// sent or observed.
+pub(crate) const UNSENT_RECEIPT: &str = "(r.read_up_to IS NOT NULL AND (r.read_pushed IS NULL
+    OR (SELECT pos FROM matrix_event WHERE id = r.read_up_to)
+       > (SELECT pos FROM matrix_event WHERE id = r.read_pushed)))";
+
+// ── filling gaps ──────────────────────────────────────────────────────────
+
+/// A page of events missing from the room's timeline, fetched from the
+/// homeserver before the gap `gap` (SPEC §9.2).
+#[derive(Debug, Serialize)]
+pub struct Filled {
+    pub room: RoomId,
+    pub gap: GapId,
+    /// The room version, whose rules redact events.
+    pub version: String,
+    /// Newest first, as the homeserver pages backwards. Not in the log:
+    /// they are stored.
+    #[serde(skip)]
+    pub events: Vec<ObservedEvent>,
+    /// Whether the homeserver has no earlier events.
+    pub start: bool,
+}
+
+impl Observation for Filled {
+    const KIND: &'static str = "matrix.filled";
+
+    fn apply(self, _account: &str, tx: &Transaction) -> Result<Observed> {
+        let gap: Option<(i64, i64)> = tx
+            .query_row(
+                "SELECT g.before_event, e.pos FROM matrix_gap g JOIN matrix_event e
+                   ON e.id = g.before_event
+                 WHERE g.id = ?1 AND g.room = ?2",
+                params![self.gap.0, self.room.0],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        // Filled meanwhile (by another session's request).
+        let Some((_, before)) = gap else {
+            return Ok(Observed {
+                description: "Fetched earlier events".to_owned(),
+                events: vec![],
+            });
+        };
+        let previous: Option<i64> = tx.query_row(
+            "SELECT max(pos) FROM matrix_event WHERE room = ?1 AND pos < ?2",
+            params![self.room.0, before],
+            |r| r.get(0),
+        )?;
+        // Up to the first already stored, which closes the gap.
+        let stored = |e: &ObservedEvent| -> Result<bool> {
+            Ok(tx
+                .query_row(
+                    "SELECT 1 FROM matrix_event WHERE room = ?1 AND event_id = ?2",
+                    params![self.room.0, e.event_id],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some())
+        };
+        let mut missing = vec![];
+        let mut closed = false;
+        for e in self.events {
+            if stored(&e)? {
+                closed = true;
+                break;
+            }
+            missing.push(e);
+        }
+        let n = missing.len() as i64;
+        ensure!(
+            previous.is_none_or(|previous| before - n > previous),
+            "{n} events do not fit in the gap {} of room {}",
+            self.gap.0,
+            self.room.0
+        );
+        // Oldest first, just before the gap's event.
+        missing.reverse();
+        let positions: Vec<i64> = (0..n).map(|i| before - n + i).collect();
+        let added: Vec<RoomEventId> = insert_events(tx, self.room, &missing, &positions)?
+            .into_iter()
+            .map(|id| id.expect("events not stored are stored"))
+            .collect();
+        tx.execute("DELETE FROM matrix_gap WHERE id = ?1", [self.gap.0])?;
+        let left = match added.first() {
+            Some(oldest) if !closed && !self.start => {
+                let id = tx.query_row(
+                    "INSERT INTO matrix_gap (room, before_event) VALUES (?1, ?2) RETURNING id",
+                    params![self.room.0, oldest.0],
+                    |r| r.get(0),
+                )?;
+                Some(GapId(id))
+            }
+            _ => None,
+        };
+        let redacted = redact(tx, self.room, &self.version)?;
+        let touched = touched(tx, &added, &redacted)?;
+        let listed: Vec<RoomEventId> = listed_events(tx, self.room, &added)?
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+        let left = left.map(|left| {
+            gaps(tx, self.room).map(|gaps| {
+                *gaps
+                    .iter()
+                    .find(|g| g.id == left)
+                    .expect("the gap left is the room's")
+            })
+        });
+        let mut events = vec![ServerEvent::TimelineFilled(TimelineFilled {
+            room: self.room,
+            gap: self.gap,
+            events: listed,
+            left: left.transpose()?,
+        })];
+        if !touched.is_empty() {
+            events.push(ServerEvent::TimelineChanged(TimelineChanged {
+                room: self.room,
+                events: touched,
+            }));
+        }
+        // Unread counts, as of the read marker.
+        events.push(ServerEvent::RoomsChanged(RoomsChanged {
+            rooms: vec![self.room],
+        }));
+        Ok(Observed {
+            description: match added.len() {
+                1 => "Fetched 1 earlier event".to_owned(),
+                n => format!("Fetched {n} earlier events"),
+            },
+            events,
+        })
+    }
 }
 
 /// Those of `events` that the room's timeline lists, as it lists them, in
@@ -1098,7 +1342,7 @@ pub fn listed_events(
         &format!(
             "SELECT {COLUMNS} FROM matrix_event e
              WHERE e.room = ?1 AND e.id IN (SELECT value FROM json_each(?2)) AND {LISTED}
-             ORDER BY e.id"
+             ORDER BY e.pos"
         ),
         params![room.0, ids],
     )

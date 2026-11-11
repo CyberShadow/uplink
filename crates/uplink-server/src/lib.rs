@@ -896,6 +896,7 @@ impl Backend for Services {
             ClientRequest::MarkRoomRead { room, event } => self.matrix.mark_read(room, event).await,
             ClientRequest::SetTyping { room, typing } => self.matrix.set_typing(room, typing).await,
             ClientRequest::ListReceipts { room } => self.matrix.list_receipts(room).await,
+            ClientRequest::FillGap { room, gap } => self.matrix.fill_gap(room, gap).await,
             ClientRequest::GetMatrixSecurity { account } => {
                 self.matrix.get_security(&account).await
             }

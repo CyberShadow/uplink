@@ -1,6 +1,7 @@
 //! Matrix (SPEC §9): rooms and timelines synced with matrix-rust-sdk, the
 //! read marker, joining and leaving, and plain-text messages sent.
 
+pub mod backfill;
 pub mod client;
 pub mod html;
 pub mod media;

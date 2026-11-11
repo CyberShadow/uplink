@@ -205,6 +205,13 @@ pub enum ClientRequest {
         page: TimelinePage,
         limit: u32,
     },
+    /// Fetch events missing from the room's timeline: the homeserver's
+    /// page of them before the gap. Answered `Done` once they are stored,
+    /// as `TimelineFilled` says.
+    FillGap {
+        room: RoomId,
+        gap: matrix::GapId,
+    },
     /// These events of the room's timeline, as listed there; those
     /// unknown or not listed are left out.
     ListRoomEvents {
@@ -374,6 +381,9 @@ pub enum ServerResponse {
         events: Vec<matrix::RoomEvent>,
         /// Whether there are earlier events than those listed.
         more_before: bool,
+        /// The gaps just before the events listed, and after the last, if
+        /// it is the latest.
+        gaps: Vec<matrix::TimelineGap>,
     },
     RoomEvents {
         as_of: TxLogId,
@@ -515,6 +525,7 @@ pub enum ServerEvent {
     OutboxChanged(compose::OutboxChanged),
     RoomsChanged(matrix::RoomsChanged),
     TimelineAdded(matrix::TimelineAdded),
+    TimelineFilled(matrix::TimelineFilled),
     TimelineChanged(matrix::TimelineChanged),
     MatrixSendsChanged(matrix::MatrixSendsChanged),
     TodosChanged(todos::TodosChanged),

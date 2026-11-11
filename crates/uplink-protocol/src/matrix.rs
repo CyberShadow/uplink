@@ -58,7 +58,7 @@ pub struct Room {
     pub unread: u32,
     /// The latest event's time, ms since the Unix epoch.
     pub last_event_ts: Option<i64>,
-    pub read_up_to: Option<RoomEventId>,
+    pub read_up_to: Option<ReadMarker>,
     /// A change the user asked for that has yet to take effect.
     pub pending: Option<MembershipChange>,
     /// Why the homeserver refused the last change asked for.
@@ -91,6 +91,9 @@ pub enum Encryption {
 #[serde(deny_unknown_fields)]
 pub struct RoomEvent {
     pub id: RoomEventId,
+    /// Where it is in the timeline, which is in this order: events
+    /// fetched later may be earlier (SPEC §9.2).
+    pub pos: i64,
     /// The Matrix event id, `$opaque`.
     pub event_id: String,
     pub sender: String,
@@ -263,6 +266,41 @@ pub struct PendingMembership {
 #[serde(deny_unknown_fields)]
 pub struct RoomsChanged {
     pub rooms: Vec<RoomId>,
+}
+
+/// The room's read marker: the event read up to, and where it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ReadMarker {
+    pub event: RoomEventId,
+    pub pos: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
+#[serde(transparent)]
+pub struct GapId(pub i64);
+
+/// Events missing from a room's timeline (SPEC §9.2), which `FillGap`
+/// fetches from the homeserver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct TimelineGap {
+    pub id: GapId,
+    /// The listed event the gap is just before; `None` if it is after
+    /// every listed event (of a sync that brought only edits, say).
+    pub before: Option<RoomEventId>,
+}
+
+/// Events missing from a room's timeline were fetched: they fill `gap`,
+/// which `left` replaces if they did not all come.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct TimelineFilled {
+    pub room: RoomId,
+    pub gap: GapId,
+    /// Those listed, of the events fetched.
+    pub events: Vec<RoomEventId>,
+    pub left: Option<TimelineGap>,
 }
 
 /// Events were added to the end of a room's timeline.
@@ -444,8 +482,9 @@ pub struct MatrixDevice {
 #[serde(deny_unknown_fields)]
 pub struct MemberReceipt {
     pub member: RoomMember,
-    /// The stored event their receipt is for.
+    /// The stored event their receipt is for, and where it is.
     pub event: RoomEventId,
+    pub pos: i64,
     /// When they read it, ms since the Unix epoch, if the receipt says.
     pub ts: Option<i64>,
 }

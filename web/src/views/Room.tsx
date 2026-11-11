@@ -5,13 +5,16 @@
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import type {
+  GapId,
   MatrixSend,
   MemberReceipt,
   MembershipChange,
+  ReadMarker,
   Room,
   RoomEvent,
   RoomEventId,
   RoomMember,
+  TimelineGap,
 } from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus, useKeymap } from '../keymap'
@@ -54,7 +57,8 @@ function Timeline(props: { room: Room }) {
   const [overlay, outgoing] = useMemo(() => overlaid(events ?? [], sends ?? []), [events, sends])
   const receipts = timeline.receipts.value
   const readers = useMemo(() => readersByEvent(events ?? [], receipts), [events, receipts])
-  const list = useMemo(() => rows(events ?? [], readUpTo, me), [events, readUpTo, me])
+  const gaps = timeline.gaps.value
+  const list = useMemo(() => rows(events ?? [], readUpTo, me, gaps), [events, readUpTo, me, gaps])
   const lastOwn = useMemo(
     () =>
       events?.findLast(
@@ -129,6 +133,22 @@ function Timeline(props: { room: Room }) {
                 )
               case 'members':
                 return <MembershipRun key={row.key} room={room} events={row.events} />
+              case 'gap': {
+                const filling = timeline.filling.value.has(row.gap)
+                return (
+                  <li key={row.key} class={styles.gap} role="separator" aria-label="Events missing">
+                    <span>Earlier events are missing here.</span>
+                    <button
+                      type="button"
+                      disabled={filling}
+                      onMouseDown={keepFocus}
+                      onClick={() => timeline.fill(row.gap)}
+                    >
+                      {filling ? 'Fetching…' : 'Fetch them'}
+                    </button>
+                  </li>
+                )
+              }
               case 'event':
                 return (
                   <EventRow
@@ -193,7 +213,7 @@ export function readersByEvent(
 ): Map<RoomEventId, MemberReceipt[]> {
   const byEvent = new Map<RoomEventId, MemberReceipt[]>()
   for (const receipt of receipts) {
-    const at = events.findLast((e) => e.id <= receipt.event)
+    const at = events.findLast((e) => e.pos <= receipt.pos)
     if (!at) continue
     const readers = byEvent.get(at.id) ?? []
     readers.push(receipt)
@@ -207,19 +227,26 @@ type Row =
   | { type: 'unread'; key: string }
   | { type: 'event'; key: string; event: RoomEvent }
   | { type: 'members'; key: string; events: RoomEvent[] }
+  | { type: 'gap'; key: string; gap: GapId }
 
 /** Membership changes in a row that are folded into one, as Element
  * folds them: at least these many. */
 const RUN = 3
 
 /** The timeline's rows: a day's line before its first event, the unread
- * line before the first event from others after `readUpTo`, and runs of
- * membership changes folded. */
-export function rows(events: readonly RoomEvent[], readUpTo: RoomEventId | null, me: string): Row[] {
+ * line before the first event from others after `readUpTo`, runs of
+ * membership changes folded, and the gaps where events are missing. */
+export function rows(
+  events: readonly RoomEvent[],
+  readUpTo: ReadMarker | null,
+  me: string,
+  gaps: readonly TimelineGap[] = [],
+): Row[] {
   const out: Row[] = []
   let day: string | null = null
   let run: RoomEvent[] = []
   let unreadShown = readUpTo === null
+  const gapBefore = new Map(gaps.flatMap((g) => (g.before === null ? [] : [[g.before, g.id] as const])))
   const flush = () => {
     if (run.length >= RUN) out.push({ type: 'members', key: `members-${run[0].id}`, events: run })
     else for (const event of run) out.push({ type: 'event', key: String(event.id), event })
@@ -227,8 +254,10 @@ export function rows(events: readonly RoomEvent[], readUpTo: RoomEventId | null,
   }
   for (const event of events) {
     const eventDay = date(new Date(event.ts))
-    const unread = !unreadShown && event.id > readUpTo! && event.sender !== me
-    if (eventDay !== day || unread) flush()
+    const unread = !unreadShown && event.pos > readUpTo!.pos && event.sender !== me
+    const gap = gapBefore.get(event.id)
+    if (eventDay !== day || unread || gap !== undefined) flush()
+    if (gap !== undefined) out.push({ type: 'gap', key: `gap-${gap}`, gap })
     if (eventDay !== day) {
       out.push({ type: 'day', key: `day-${event.id}`, date: eventDay })
       day = eventDay
@@ -245,6 +274,7 @@ export function rows(events: readonly RoomEvent[], readUpTo: RoomEventId | null,
     }
   }
   flush()
+  for (const gap of gaps) if (gap.before === null) out.push({ type: 'gap', key: `gap-${gap.id}`, gap: gap.id })
   return out
 }
 
@@ -346,15 +376,16 @@ function useMarkRead(room: Room, events: readonly RoomEvent[] | null) {
     document.addEventListener('visibilitychange', update)
     return () => document.removeEventListener('visibilitychange', update)
   }, [])
-  const last = events?.at(-1)?.id
+  const last = events?.at(-1)
   // What was marked, so that a room list reloaded meanwhile does not
   // mark it again.
   const marked = useRef<number | null>(null)
+  const read = room.read_up_to?.pos
   useEffect(() => {
-    if (!visible || last === undefined || last <= (room.read_up_to ?? 0) || marked.current === last) return
-    marked.current = last
-    matrix.markRead(room.id, last)
-  }, [visible, last, room.read_up_to, room.id, matrix])
+    if (!visible || last === undefined || (read !== undefined && last.pos <= read) || marked.current === last.id) return
+    marked.current = last.id
+    matrix.markRead(room.id, last.id)
+  }, [visible, last, read, room.id, matrix])
 }
 
 function Pending(props: { item: MatrixSend }) {

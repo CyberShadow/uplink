@@ -490,7 +490,13 @@ CREATE TABLE matrix_event (
   body         TEXT,                 -- of m.room.message
   raw_json     TEXT NOT NULL,        -- the event, decrypted if it could be
   encryption   TEXT NOT NULL,        -- 'none' | 'decrypted' | 'undecryptable'
+  pos          INTEGER NOT NULL,     -- where it is in the timeline (V0028, §9.2)
   UNIQUE (room, event_id)
+);
+CREATE TABLE matrix_gap (      -- events missing before an event (V0028)
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  room         INTEGER NOT NULL REFERENCES matrix_room(id),
+  before_event INTEGER NOT NULL UNIQUE REFERENCES matrix_event(id)
 );
 CREATE TABLE matrix_send (     -- (V0023: was matrix_outbox)
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1658,9 +1664,25 @@ reply's fallback (`mx-reply`) is dropped, as the client shows the reply
 itself. Images show the homeserver's media only (`mxc:`), as the server
 serves them (§9.8); nothing remote loads.
 
-The timeline is ordered by sync arrival. uplink only syncs forward, so
-the first sync brings the latest events of each room, and a gappy
-(`limited`) sync leaves a gap; backfilling with `/messages` is deferred.
+The timeline is ordered by `pos`, not by id: ids are in the order
+events were stored, and events fetched later may be earlier. A synced
+event comes 2^20 after the room's last; read markers and receipts
+compare by position too. A sync whose timeline leaves events out
+(`limited`, as the first sync does) records a gap before the first
+event it stores; so did V0028, before the first event of each room,
+unless it is `m.room.create`. Pages of the timeline list the gaps just
+before their events (and after the last, if it is the latest), which
+the client shows as rows, and `FillGap` fills: the server asks the
+homeserver for the context of the event after the gap, for a token
+before it (pagination tokens are not kept), and for the 50 events
+before that (`/messages`, lazily loading members, whose events give the
+senders' names then). The observation `matrix.filled` stores those not
+stored yet, newest first, until one that is, which closes the gap; they
+go just before the gap's event, one apart (so no position ever
+changes; a gap holds 2^20 - 1 events). A new gap before the oldest
+replaces the old, unless the gap closed or the room's start was
+reached. It logs `TimelineFilled` (the listed events added, and the
+gap left), and `TimelineChanged` of the events they relate to.
 Events that arrive undecryptable are decrypted once their keys come
 (the observation `matrix.decrypted`, which updates the stored event in
 place, logging a `TimelineChanged` of it and of what it relates to, as
@@ -1818,7 +1840,6 @@ which a verified device gives.
 - No room creation, no inviting others, and no joining rooms one is not
   invited to (by id or alias); invitations are joined or declined, and
   rooms left (§9.7).
-- No backfill (§9.2).
 - No verifying other users, nor by QR code (§9.4). No setting up
   cross-signing, Secret Storage or a key backup, nor renaming or signing
   out devices: another client does.
@@ -2252,6 +2273,9 @@ the membership's buttons.
   others, and those needing a decision (refused, sent though
   cancelled), are listed after the timeline with their state and
   buttons (§9.3).
+- **Gaps**, where events are missing (§9.2), are rows ("Earlier events
+  are missing here") with a button that fetches them; they fill in
+  place, merged by position, and a gap left shows where they end.
 - **Who is typing** shows above the composer; who has read how far, as
   up to three avatars (and how many more) at the end of a line.
 - **The composer** sends Markdown with Enter (Shift+Enter for a new

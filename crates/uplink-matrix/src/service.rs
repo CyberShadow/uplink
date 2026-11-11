@@ -1,10 +1,11 @@
 //! Answers the Matrix requests of the WebSocket protocol (SPEC §5.4).
 
 use crate::{
+    backfill,
     client::{self, Clients},
     media,
     membership::ChangeMembership,
-    rooms::{self, MarkRead},
+    rooms::{self, Filled, MarkRead},
     security,
     send::{self, CancelMessage, KeepSent, SendMessage},
     verification,
@@ -14,13 +15,13 @@ use std::sync::Arc;
 use uplink_protocol::{
     compose::BlobId,
     matrix::{
-        MatrixAccount, MatrixContent, MatrixSendId, MemberReceipt, Membership, MembershipChange,
-        RoomEventId, RoomId, RoomMember, TimelinePage, VerificationAnswer,
+        GapId, MatrixAccount, MatrixContent, MatrixSendId, MemberReceipt, Membership,
+        MembershipChange, RoomEventId, RoomId, RoomMember, TimelinePage, VerificationAnswer,
     },
     ErrorCode, ServerError, ServerResponse,
 };
 use uplink_storage::{
-    rusqlite::Connection,
+    rusqlite::{params, Connection, OptionalExtension},
     store::{Store, VariantHash},
 };
 use uplink_tx_log::{
@@ -370,6 +371,46 @@ impl Matrix {
             .map_err(internal)
     }
 
+    /// Fetches the homeserver's page of events before the room's gap
+    /// `gap`, and stores them (SPEC §9.2).
+    pub async fn fill_gap(&self, room: RoomId, gap: GapId) -> Response {
+        let before: String = self
+            .reader
+            .read(move |conn| {
+                conn.query_row(
+                    "SELECT e.event_id FROM matrix_gap g JOIN matrix_event e ON e.id = g.before_event
+                     WHERE g.id = ?1 AND g.room = ?2",
+                    params![gap.0, room.0],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| internal(e.into()))?
+                .ok_or_else(|| {
+                    error(
+                        ErrorCode::NotFound,
+                        format!("room {} has no gap {}", room.0, gap.0),
+                    )
+                })
+            })
+            .await?;
+        let (account, sdk_room) = self.sdk_room(room).await?;
+        let page = backfill::page(&sdk_room, &before).await.map_err(internal)?;
+        self.dispatcher
+            .observe(
+                account,
+                Filled {
+                    room,
+                    gap,
+                    version: page.version,
+                    events: page.events,
+                    start: page.start,
+                },
+            )
+            .await
+            .map_err(internal)?;
+        Ok(ServerResponse::Done)
+    }
+
     /// Tells the room the account is typing, or has stopped.
     pub async fn set_typing(&self, room: RoomId, typing: bool) -> Response {
         let (_, sdk_room) = self.sdk_room(room).await?;
@@ -422,7 +463,12 @@ impl Matrix {
                     .into_iter()
                     .zip(events)
                     .filter_map(|((member, _, ts), event)| {
-                        event.map(|event| MemberReceipt { member, event, ts })
+                        event.map(|(event, pos)| MemberReceipt {
+                            member,
+                            event,
+                            pos,
+                            ts,
+                        })
                     })
                     .collect();
                 Ok(ServerResponse::Receipts { room, receipts })
@@ -471,13 +517,14 @@ impl Matrix {
                 if rooms::room_account(&tx, room).map_err(internal)?.is_none() {
                     return Err(no_room(room));
                 }
-                let (events, more_before) =
+                let (events, more_before, gaps) =
                     rooms::timeline(&tx, room, page, limit).map_err(internal)?;
                 Ok(ServerResponse::Timeline {
                     as_of,
                     room,
                     events,
                     more_before,
+                    gaps,
                 })
             })
             .await

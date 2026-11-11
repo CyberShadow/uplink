@@ -375,6 +375,7 @@ impl Syncer {
                         &room_id,
                         Membership::Joined,
                         update.timeline.events,
+                        update.timeline.limited,
                         receipts,
                     )
                     .await?,
@@ -383,13 +384,19 @@ impl Syncer {
         }
         for (room_id, update) in response.rooms.left {
             observed.push(
-                self.room(&room_id, Membership::Left, update.timeline.events, vec![])
-                    .await?,
+                self.room(
+                    &room_id,
+                    Membership::Left,
+                    update.timeline.events,
+                    update.timeline.limited,
+                    vec![],
+                )
+                .await?,
             );
         }
         for room_id in response.rooms.invited.into_keys() {
             observed.push(
-                self.room(&room_id, Membership::Invited, vec![], vec![])
+                self.room(&room_id, Membership::Invited, vec![], false, vec![])
                     .await?,
             );
         }
@@ -401,6 +408,7 @@ impl Syncer {
         room_id: &RoomId,
         membership: Membership,
         events: Vec<TimelineEvent>,
+        limited: bool,
         own_receipts: Vec<String>,
     ) -> Result<ObservedRoom> {
         let room = self
@@ -427,6 +435,7 @@ impl Syncer {
                 .unwrap_or(matrix_sdk::ROOM_VERSION_FALLBACK)
                 .to_string(),
             events: observed,
+            limited,
             own_receipts,
         })
     }
@@ -474,7 +483,9 @@ fn filter() -> Filter {
     Filter::FilterDefinition(filter)
 }
 
-async fn timeline_event(
+/// The event as stored, with its sender's name in the room, which `names`
+/// caches.
+pub(crate) async fn timeline_event(
     room: &Room,
     event: TimelineEvent,
     names: &mut HashMap<String, Option<String>>,

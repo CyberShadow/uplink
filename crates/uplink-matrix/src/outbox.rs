@@ -3,7 +3,11 @@
 //! left, read receipts to send; and why an account's changes are not
 //! reaching its homeserver.
 
-use crate::{membership::parse_desired, rooms::ACCOUNT_KIND, send};
+use crate::{
+    membership::parse_desired,
+    rooms::{ACCOUNT_KIND, UNSENT_RECEIPT},
+    send,
+};
 use anyhow::Result;
 use std::collections::BTreeMap;
 use uplink_protocol::{
@@ -81,11 +85,11 @@ pub fn outbox(tx: &Transaction) -> Result<Vec<AccountOutbox>> {
 /// The joined rooms read past their latest receipt, with their accounts.
 fn unsent_receipts(conn: &Connection) -> Result<Vec<(String, RoomId)>> {
     Ok(conn
-        .prepare(
-            "SELECT account_id, id FROM matrix_room
-             WHERE membership = 'joined' AND read_up_to > coalesce(read_pushed, 0)
-             ORDER BY account_id, id",
-        )?
+        .prepare(&format!(
+            "SELECT r.account_id, r.id FROM matrix_room r
+                 WHERE r.membership = 'joined' AND {UNSENT_RECEIPT}
+                 ORDER BY r.account_id, r.id"
+        ))?
         .query_map([], |r| Ok((r.get(0)?, RoomId(r.get(1)?))))?
         .collect::<Result<_, _>>()?)
 }
@@ -98,13 +102,13 @@ pub(crate) struct PendingRooms(Vec<(i64, Option<String>, Option<String>, bool)>)
 
 pub(crate) fn pending_rooms(conn: &Connection, account: &str) -> Result<PendingRooms> {
     Ok(PendingRooms(
-        conn.prepare(
-            "SELECT id, desired, membership_error,
-                    membership = 'joined' AND read_up_to > coalesce(read_pushed, 0) AS receipt
-             FROM matrix_room
-             WHERE account_id = ?1 AND (desired IS NOT NULL OR receipt)
-             ORDER BY id",
-        )?
+        conn.prepare(&format!(
+            "SELECT r.id, r.desired, r.membership_error,
+                    r.membership = 'joined' AND {UNSENT_RECEIPT} AS receipt
+             FROM matrix_room r
+             WHERE r.account_id = ?1 AND (r.desired IS NOT NULL OR receipt)
+             ORDER BY r.id"
+        ))?
         .query_map([account], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
         })?
