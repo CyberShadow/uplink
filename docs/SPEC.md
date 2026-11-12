@@ -3195,7 +3195,8 @@ it, however much is on screen: a new message in a label is seen once
 the label is opened, though the message is not. Each place keeps when
 it was last seen (desired state uplink alone keeps, §6.6; V0042
 `seen`: of each kind, the latest id stored then, as ids are given in
-the order things come); an item's activity is seen if any place it is
+the order things come; what was stored before is seen, as Home's, by
+V0045); an item's activity is seen if any place it is
 in (§12.14; Home holds whatever its buckets do) was
 seen after it was recorded. So a conversation seen in the Inbox is
 seen under its other labels too, and a reply to it is news again. The

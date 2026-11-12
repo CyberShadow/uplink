@@ -561,41 +561,67 @@ pub fn places(
         return Ok(Places::default());
     }
     let (from, condition) = newest(tx, &scope, condition)?;
-    let condition = match unseen {
-        false => condition,
-        true => format!(
-            "({condition}) AND e.id > coalesce((
-               SELECT max(s.mail) FROM seen s
-               WHERE s.place IN ('home', 'account:' || e.account_id)
-                  OR s.place IN (
-                       SELECT 'label:' || sl.label FROM mail_entry sm
-                       JOIN entry_label sl ON sl.entry = sm.id AND sl.desired
-                       WHERE sm.account_id = e.account_id
-                         AND (sm.id = e.id OR sm.thread_id = e.thread_id) AND {scope})
-             ), 0)",
-            scope = in_scope(&scope, "sm"),
+    // Home holds every conversation of its buckets, so those it showed
+    // are seen: the unseen are only those after (and the rest is not
+    // walked, which may be most of the mailbox).
+    let (after, unseen) = match unseen {
+        false => (0, "1".to_owned()),
+        true => (
+            tx.query_row(
+                "SELECT coalesce(max(mail), 0) FROM seen WHERE place = 'home'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )?,
+            // After their account's All Mail and each of their labels.
+            "n.id > max(
+               coalesce((SELECT s.mail FROM seen s WHERE s.place = 'account:' || n.account_id), 0),
+               coalesce((SELECT ls.mark FROM label_seen ls WHERE ls.conversation = n.id), 0))"
+                .to_owned(),
         ),
     };
-    let labels = tx
-        .prepare(&format!(
-            "SELECT el.label, count(DISTINCT e.id) FROM {from}
-             JOIN mail_entry m ON m.account_id = e.account_id
-                               AND (m.id = e.id OR m.thread_id = e.thread_id) AND {scope}
-             JOIN entry_label el ON el.entry = m.id AND el.desired
-             WHERE {condition}
-             GROUP BY el.label ORDER BY el.label",
-            scope = in_scope(&scope, "m"),
-        ))?
-        .query_map([], |r| Ok((LabelId(r.get(0)?), r.get::<_, i64>(1)? as u64)))?
-        .collect::<Result<_, _>>()?;
-    let accounts = tx
-        .prepare(&format!(
-            "SELECT e.account_id, count(*) FROM {from} WHERE {condition}
-             GROUP BY e.account_id ORDER BY e.account_id"
-        ))?
-        .query_map([], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u64)))?
-        .collect::<Result<_, _>>()?;
-    Ok(Places { labels, accounts })
+    // The conversations once, by their newest entries; their entries by
+    // their thread (by its index); and their labels.
+    let mut places = Places::default();
+    let mut stmt = tx.prepare(&format!(
+        "WITH newest AS MATERIALIZED (
+           SELECT e.id, e.account_id, e.thread_id FROM {from}
+           WHERE e.id > {after} AND ({condition})),
+         members (conversation, entry) AS (
+           SELECT id, id FROM newest WHERE thread_id IS NULL
+           UNION ALL
+           SELECT n.id, m.id FROM newest n
+           JOIN mail_entry m ON m.account_id = n.account_id AND m.thread_id = n.thread_id
+           WHERE {scope}),
+         labelled AS MATERIALIZED (
+           SELECT DISTINCT mb.conversation, el.label FROM members mb
+           JOIN entry_label el ON el.entry = mb.entry AND el.desired),
+         label_seen AS MATERIALIZED (
+           SELECT l.conversation, max(s.mail) AS mark FROM labelled l
+           JOIN seen s ON s.place = 'label:' || l.label
+           GROUP BY l.conversation),
+         counted AS MATERIALIZED (
+           SELECT n.id, n.account_id FROM newest n WHERE {unseen})
+         SELECT l.label, NULL, count(*) FROM labelled l JOIN counted c ON c.id = l.conversation
+         GROUP BY l.label
+         UNION ALL
+         SELECT NULL, c.account_id, count(*) FROM counted c GROUP BY c.account_id",
+        scope = in_scope(&scope, "m"),
+    ))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let count = row.get::<_, i64>(2)? as u64;
+        match (
+            row.get::<_, Option<i64>>(0)?,
+            row.get::<_, Option<String>>(1)?,
+        ) {
+            (Some(label), None) => places.labels.push((LabelId(label), count)),
+            (None, Some(account)) => places.accounts.push((account, count)),
+            other => unreachable!("a place is a label or an account, not {other:?}"),
+        }
+    }
+    places.labels.sort();
+    places.accounts.sort();
+    Ok(places)
 }
 
 /// The entries of every conversation `query` lists, in its scope, each
