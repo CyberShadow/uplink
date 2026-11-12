@@ -1130,8 +1130,14 @@ impl Backend for Services {
             ClientRequest::MarkSeen { place } => {
                 self.dispatcher.answer(seen::MarkSeen { place }).await
             }
-            ClientRequest::MarkRoomRead { room, event, shown } => {
-                self.matrix.mark_read(room, event, shown).await
+            ClientRequest::MarkRoomRead {
+                room,
+                event,
+                shown,
+                fully,
+            } => self.matrix.mark_read(room, event, shown, fully).await,
+            ClientRequest::MarkRoomFullyRead { room, event } => {
+                self.matrix.mark_fully_read(room, event).await
             }
             ClientRequest::SetTyping { room, typing } => self.matrix.set_typing(room, typing).await,
             ClientRequest::ListReceipts { room } => self.matrix.list_receipts(room).await,

@@ -139,7 +139,8 @@ fn term_matches(room: &Room, term: &Term, spaces: &Spaces, accounts: &[Configure
         Term::Kind(kind) => *kind == Kind::Room,
         Term::Label(name) => room.tags.iter().any(|tag| names_tag(name, tag)),
         Term::Unread => room.unread > 0,
-        Term::Mention => room.highlighted > 0,
+        // However the read marker moved (SPEC §12.15).
+        Term::Mention => room.mentions > 0,
         Term::Notifying => room.notifying > 0,
         Term::Direct => room.direct,
         Term::Invited => room.membership == Membership::Invited,

@@ -88,15 +88,17 @@ impl Db {
     }
 
     async fn sync_events(&self, events: Vec<ObservedEvent>, own_receipts: &[&str]) -> TxLogId {
-        self.sync_room(events, own_receipts, &[]).await
+        self.sync_room(events, own_receipts, &[], None).await
     }
 
-    /// Syncs `events`, the room's `pinned` events those.
+    /// Syncs `events`, the room's `pinned` events those, and its
+    /// `m.fully_read` at `fully_read`.
     async fn sync_room(
         &self,
         events: Vec<ObservedEvent>,
         own_receipts: &[&str],
         pinned: &[&str],
+        fully_read: Option<&str>,
     ) -> TxLogId {
         self.observe(Synced {
             next_batch: "next".into(),
@@ -108,6 +110,7 @@ impl Db {
                 events,
                 limited: false,
                 own_receipts: own_receipts.iter().map(|r| r.to_string()).collect(),
+                fully_read: fully_read.map(str::to_owned),
                 space: false,
                 direct: false,
                 avatar: None,
@@ -319,7 +322,7 @@ async fn unread_messages_that_notify_or_highlight_are_counted() {
     assert_eq!((room.unread, room.notifying, room.highlighted), (3, 2, 1));
     let events = db.timeline().await;
     db.matrix
-        .mark_read(room.id, events[2].id, false)
+        .mark_read(room.id, events[2].id, false, false)
         .await
         .unwrap();
     let room = db.room().await;
@@ -333,7 +336,9 @@ async fn pinned_events_are_listed_in_the_order_pinned() {
     let room = db.room().await;
     assert!(room.pinned.is_empty());
     // One not stored is pinned too, but not listed.
-    let entry = db.sync_room(vec![], &[], &["$2", "$gone", "$1"]).await;
+    let entry = db
+        .sync_room(vec![], &[], &["$2", "$gone", "$1"], None)
+        .await;
     assert!(db
         .events_of(entry)
         .iter()
@@ -483,7 +488,12 @@ async fn reading_moves_the_marker_and_undo_moves_it_back() {
     db.sync(&[("$1", "@bob:x"), ("$2", "@bob:x")], &[]).await;
     let room = db.room().await;
     let second = db.event("$2").await;
-    let read = match db.matrix.mark_read(room.id, second, false).await.unwrap() {
+    let read = match db
+        .matrix
+        .mark_read(room.id, second, false, false)
+        .await
+        .unwrap()
+    {
         ServerResponse::Dispatched { tx_log_id } => tx_log_id,
         other => panic!("unexpected {other:?}"),
     };
@@ -499,6 +509,7 @@ async fn reading_moves_the_marker_and_undo_moves_it_back() {
     db.observe(ReceiptSent {
         room: room.id,
         up_to: second,
+        fully_read: false,
     })
     .await
     .unwrap();
@@ -513,6 +524,69 @@ async fn reading_moves_the_marker_and_undo_moves_it_back() {
     db.sync(&[("$3", "@bob:x")], &[]).await;
     db.sync(&[], &["$3"]).await;
     assert_eq!(db.room().await.unread, 0);
+}
+
+#[tokio::test]
+async fn catching_up_moves_the_fully_read_marker_and_mentions_wait_for_it() {
+    let db = Db::new();
+    let mut mention = message("$2", "@bob:x");
+    mention.push.highlight = true;
+    db.sync_events(
+        vec![message("$1", "@bob:x"), mention, message("$3", "@bob:x")],
+        &[],
+    )
+    .await;
+    let room = db.room().await;
+    let [first, third] = [db.event("$1").await, db.event("$3").await];
+    assert_eq!((room.mentions, room.fully_read), (1, None));
+    // Read as it shows, not caught up on: the mention stays.
+    db.matrix
+        .mark_read(room.id, third, true, false)
+        .await
+        .unwrap();
+    let room = db.room().await;
+    assert_eq!((room.unread, room.mentions), (0, 1));
+    let caught_up = match db.matrix.mark_fully_read(room.id, first).await.unwrap() {
+        ServerResponse::Dispatched { tx_log_id } => tx_log_id,
+        other => panic!("unexpected {other:?}"),
+    };
+    assert_eq!(db.room().await.fully_read.map(|m| m.event), Some(first));
+    assert_eq!(db.room().await.mentions, 1);
+    // Its marker is set on the homeserver, as receipts are sent.
+    let unsent = |db: &Db| {
+        crate::rooms::unsent_receipts(&uplink_storage::open_reader(db._dir.path()).unwrap(), "mx")
+            .unwrap()
+            .into_iter()
+            .map(|u| (u.up_to, u.fully_read))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(unsent(&db), [(third, false), (first, true)]);
+    db.observe(ReceiptSent {
+        room: room.id,
+        up_to: first,
+        fully_read: true,
+    })
+    .await
+    .unwrap();
+    assert_eq!(unsent(&db), [(third, false)]);
+    db.dispatcher.undo(caught_up).await.unwrap();
+    assert_eq!(db.room().await.fully_read, None);
+    // Done with it, by the user's hand: caught up as well.
+    db.matrix
+        .mark_read(room.id, third, false, true)
+        .await
+        .unwrap();
+    assert_eq!(db.room().await.mentions, 0);
+
+    // Another device's `m.fully_read` moves it, past what was set.
+    let db = Db::new();
+    db.sync_events(vec![message("$1", "@bob:x"), message("$2", "@bob:x")], &[])
+        .await;
+    db.sync_room(vec![], &[], &[], Some("$2")).await;
+    assert_eq!(
+        db.room().await.fully_read.map(|m| m.event),
+        Some(db.event("$2").await)
+    );
 }
 
 #[tokio::test]
@@ -552,6 +626,7 @@ mod membership {
                     events: vec![],
                     limited: false,
                     own_receipts: vec![],
+                    fully_read: None,
                     space: false,
                     direct: false,
                     avatar: None,
@@ -753,6 +828,7 @@ mod room_tags {
                     events: vec![],
                     limited: false,
                     own_receipts: vec![],
+                    fully_read: None,
                     space: false,
                     direct: false,
                     avatar: None,
@@ -961,6 +1037,7 @@ mod space_order {
                     events: vec![],
                     limited: false,
                     own_receipts: vec![],
+                    fully_read: None,
                     space: true,
                     direct: false,
                     avatar: None,
@@ -1713,6 +1790,7 @@ mod query {
             events: vec![],
             limited: false,
             own_receipts: vec![],
+            fully_read: None,
             space: false,
             direct: false,
             avatar: None,

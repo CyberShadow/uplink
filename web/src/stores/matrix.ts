@@ -327,9 +327,14 @@ export class MatrixStore {
 
   /** Quietly: reading a room is not news. `shown`: by the room being
    * shown, which `z` passes over (SPEC §12.15), rather than the user's
-   * hand. */
-  markRead(room: RoomId, event: RoomEventId, shown: boolean) {
-    return this.ops.dispatch({ type: 'mark_room_read', room, event, shown }, true)
+   * hand; `fully`: caught up on too, done with. */
+  markRead(room: RoomId, event: RoomEventId, shown: boolean, fully: boolean) {
+    return this.ops.dispatch({ type: 'mark_room_read', room, event, shown, fully }, true)
+  }
+
+  /** Catching up got to `event`, by the room being shown (SPEC §12.15). */
+  markFullyRead(room: RoomId, event: RoomEventId) {
+    return this.ops.dispatch({ type: 'mark_room_fully_read', room, event }, true)
   }
 
   private async query<T extends Response<'rooms' | 'timeline' | 'room_events' | 'edits' | 'receipts'>['type']>(

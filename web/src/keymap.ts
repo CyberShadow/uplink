@@ -18,6 +18,8 @@ export type Action =
   | 'lineUp'
   | 'pageUp'
   | 'pageDown'
+  | 'jumpToUnread'
+  | 'nextMention'
   | 'open'
   | 'back'
   | 'select'
@@ -122,6 +124,8 @@ export const KEYMAP: Binding[] = [
   { action: 'lineUp', keys: ['ArrowUp'], label: '↑', help: 'Up a line, as k (in a list)', repeats: true },
   { action: 'pageUp', keys: ['PageUp'], label: 'PgUp', help: "Scroll up a page (in a room, its box's too)", repeats: true },
   { action: 'pageDown', keys: ['PageDown'], label: 'PgDn', help: "Scroll down a page (in a room, its box's too)", repeats: true },
+  { action: 'jumpToUnread', keys: ['Shift+PageUp'], label: 'Shift+PgUp', help: 'Jump to the first unread message (in a room)' },
+  { action: 'nextMention', keys: ['Shift+PageDown'], label: 'Shift+PgDn', help: 'Jump to the next mention not yet seen (in a room)' },
   { action: 'open', keys: ['o', 'Enter'], label: 'o, Enter', help: 'Open conversation' },
   { action: 'back', keys: ['u'], label: 'u', help: 'Back to the list' },
   { action: 'select', keys: ['x'], label: 'x', help: 'Select conversation' },
@@ -169,7 +173,7 @@ export const KEYMAP: Binding[] = [
     action: 'up',
     keys: ['Escape'],
     label: 'Esc',
-    help: 'Up, again and again: out of what has the focus, then closes a panel, back to the list, selects none, and home',
+    help: 'Up, again and again: out of what has the focus, then closes a panel, back to the list, selects none (in a room behind: marks it read), and home',
   },
   { action: 'goHome', ...go('h'), help: 'Go home' },
   { action: 'goInbox', ...go('i'), help: 'Go to Inbox' },

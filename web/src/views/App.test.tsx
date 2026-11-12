@@ -1208,7 +1208,8 @@ describe('matrix', () => {
     expect(link.className).toMatch(/bold/)
     await user.click(link)
     expect(location.pathname).toBe(`/rooms/${room.id}`)
-    expect(await screen.findByText('Hello there')).toBeTruthy()
+    // Read once wholly on screen.
+    scrolledTo((await screen.findByText('Hello there')).closest('[data-event]')!)
     await waitFor(() => expect(link.className).not.toMatch(/bold/))
     expect(link.getAttribute('aria-current')).toBe('page')
     // Reading quietly: no notice.
@@ -1672,6 +1673,9 @@ describe('matrix', () => {
     await user.click(await within(screen.getByRole('list', { name: 'Timeline' })).findByRole('button', { name: /1 reply/ }))
     const thread = screen.getByRole('list', { name: 'Thread messages' })
     await within(thread).findByText('lunch then')
+    // Caught up on, Esc has no catching up to finish.
+    scrolledTo(document.getElementById(`event-${root.id}`)!)
+    await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'Catching up' })).toBeNull())
     expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Reply in thread' }))
     await user.keyboard('{Escape}')
     expect(document.activeElement).toBe(document.body)
@@ -1819,6 +1823,7 @@ describe('room timeline', () => {
     server.receive(room.id, { body: 'Mine', sender: ME, sender_name: 'Me', ts: day('2026-11-10T09:00') })
     server.receive(room.id, { body: 'Unread', ts: day('2026-11-10T09:05') })
     room.read_up_to = server.marker(room.id, read.id)
+    room.fully_read = room.read_up_to
     await start(`/rooms/${room.id}`)
     await within(timeline()).findByText('Unread')
     const separators = within(timeline()).getAllByRole('separator')
@@ -1828,6 +1833,43 @@ describe('room timeline', () => {
     const unread = line('Unread')
     expect(unread.querySelector('time')!.textContent).toBe('09:05')
     expect(within(unread).getByTitle('@bob:example.org').textContent).toContain('Bob')
+  })
+
+  it('reads what is on screen, catches up over what was, and finishes by Esc', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const old = server.receive(room.id, { body: 'Old' })
+    const first = server.receive(room.id, { body: 'First' })
+    server.receive(room.id, { body: `hey ${ME}` })
+    const last = server.receive(room.id, { body: 'Last' })
+    room.read_up_to = server.marker(room.id, old.id)
+    room.fully_read = room.read_up_to
+    const user = await start(`/rooms/${room.id}`)
+    await within(timeline()).findByText('Last')
+    const bar = screen.getByRole('toolbar', { name: 'Catching up' })
+    expect(within(bar).getByTitle(/^Jump to first unread/).textContent).toBe('3 new messages')
+    expect(within(bar).getByTitle(/^Jump to the mention/).textContent).toBe('@ 1')
+    // The latest on screen is read, by its showing; catching up waits for
+    // what is before it.
+    scrolledTo(line('Last'))
+    await waitFor(() =>
+      expect(server.requests).toContainEqual({ type: 'mark_room_read', room: room.id, event: last.id, shown: true, fully: false }),
+    )
+    expect(server.requests.some((r) => r.type === 'mark_room_fully_read')).toBe(false)
+    scrolledTo(line('First'))
+    await waitFor(() =>
+      expect(server.requests).toContainEqual({ type: 'mark_room_fully_read', room: room.id, event: first.id }),
+    )
+    // The mention, not yet shown, still counts.
+    await waitFor(() => expect(within(bar).getByTitle(/^Jump to first unread/).textContent).toBe('2 new messages'))
+    expect(within(bar).getByTitle(/^Jump to the mention/).textContent).toBe('@ 1')
+    // The "New" line stays where catching up was when the room opened.
+    expect(line('First').previousElementSibling!.textContent).toBe('New')
+    // Out of the box, then done with the room.
+    await user.keyboard('{Escape}{Escape}')
+    expect(server.requests).toContainEqual({ type: 'mark_room_read', room: room.id, event: last.id, shown: false, fully: true })
+    await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'Catching up' })).toBeNull())
+    expect(location.pathname).toBe(`/rooms/${room.id}`)
   })
 
   it('summarizes state events, folding runs of membership changes', async () => {

@@ -358,10 +358,11 @@ async fn messages_both_ways_in_an_encrypted_room() {
     let raw: serde_json::Value = serde_json::from_str(&custom.raw).unwrap();
     assert_eq!(raw["content"]["answer"], 42);
 
-    // Reading in uplink sends a receipt the other device sees.
+    // Reading in uplink, done with it, sends a receipt the other device
+    // sees, and sets the fully-read marker (SPEC §12.15).
     uplink
         .matrix
-        .mark_read(room.id, custom.id, false)
+        .mark_read(room.id, custom.id, false, true)
         .await
         .unwrap();
     assert_eq!(uplink.room(&room_id).await.unwrap().unread, 0);
@@ -383,6 +384,20 @@ async fn messages_both_ways_in_an_encrypted_room() {
             .filter(|(event_id, _)| event_id.as_str() == custom.event_id)
             .map(drop)
     })
+    .await;
+    eventually(
+        "alice's other device to see the fully-read marker",
+        || async {
+            alice_phone
+                .sync_once(SyncSettings::default().timeout(Duration::ZERO))
+                .await
+                .unwrap();
+            phone_room
+                .fully_read_event_id()
+                .filter(|event_id| event_id.as_str() == custom.event_id)
+                .map(drop)
+        },
+    )
     .await;
 }
 

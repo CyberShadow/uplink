@@ -1646,8 +1646,8 @@ leaves every room in). `is:mail`, `is:room`, `is:todo` and `is:event`
 name a kind. Words match, as in mail (by words, ignoring case, the last
 a prefix unless quoted), a room's name, a to-do's title and notes, and
 an event's subject, location and preview. Of rooms: `is:unread` (messages
-unread), `is:mention` (one that highlights is unread, or after the
-fully-read marker and not yet shown, §12.15), `is:notifying` (one
+unread), `is:mention` (one that highlights is after the fully-read
+marker, §12.15: `Room.mentions`), `is:notifying` (one
 notifies, by the push rules: a muted room has none), `is:dm` (a direct
 chat, by `m.direct`, as the room was last synced: V0036
 `matrix_room.direct`), `is:invite`, `label:`/`tag:` (its tags, §9.5, by
@@ -3217,19 +3217,23 @@ have their own ways in. A room keeps two points, as Matrix does:
   marker is, and pushed as room account data) is where catching up has
   got to: it moves forward over what has been on screen without a gap
   after it (as the timeline is scrolled down through, or up through and
-  back), or to the read marker when the user is done (`Esc` on the bar
-  below, or "Mark as read" there). The line "New" marks it in the
+  back), or, with the read marker, to the latest when the user is done
+  (`Esc` while the bar below shows, "Mark as read" there, or `e` on
+  home's room: `MarkRoomRead`'s `fully`). V0044
+  `matrix_room.fully_read`, `fully_read_pushed`; `MarkFullyRead`,
+  `MarkRoomFullyRead`. The line "New" marks it in the
   timeline (instead of where the unread began when the room was opened).
 
 While the fully-read marker is above what is on screen, a bar at the
 top says how many messages are after it, with "Jump to first unread"
 (`Shift+PageUp`, as Element's) and "Mark as read". A mention of the user
-(a message that highlights, §9.5) after the fully-read marker that has
-not been on screen is unread however the read marker moved: it counts
-in `is:mention`, so in Immediate's count; the bar says how many (`@ 2`)
-and jumps to the oldest of them, then the next (`Shift+PageDown`), as
-Telegram's do. Once on screen, it is read (V00xx:
-`matrix_event.shown`, set by `MarkRoomRead`'s `shown` mentions).
+(a message that highlights, §9.5, `RoomEvent.highlight`) after the
+fully-read marker counts however the read marker moved: in
+`is:mention`, so in Immediate's count, until catching up passes it (no
+mark of its own: a mention seen out of order counts until what is
+before it is caught up on, or the user is done). The bar says how many
+of those loaded have not been on screen (`@ 2`) and jumps to the oldest
+of them (`Shift+PageDown`), as Telegram's does.
 
 **Showing is not doing.** What a view dispatches by being shown, not by
 the user's hand — `MarkSeen`, `MarkRoomRead` and the fully-read

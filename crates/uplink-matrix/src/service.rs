@@ -7,7 +7,7 @@ use crate::{
     membership::ChangeMembership,
     preview,
     room_tags::{self, SetRoomTags},
-    rooms::{self, Filled, MarkRead},
+    rooms::{self, Filled, FullyRead, MarkFullyRead, MarkRead},
     security,
     send::{self, CancelMessage, KeepSent, SendMessage},
     space_order::{self, OrderSpaces},
@@ -1225,7 +1225,40 @@ impl Matrix {
         self.dispatcher.answer(SetRoomTags { changes }).await
     }
 
-    pub async fn mark_read(&self, room: RoomId, event: RoomEventId, shown: bool) -> Response {
+    /// Marks the room read up to `event`; if `fully`, caught up on too
+    /// (SPEC §12.15).
+    pub async fn mark_read(
+        &self,
+        room: RoomId,
+        event: RoomEventId,
+        shown: bool,
+        fully: bool,
+    ) -> Response {
+        self.check_event(room, event).await?;
+        self.dispatcher
+            .answer(MarkRead {
+                room,
+                up_to: Some(event),
+                shown,
+                fully_read: fully.then_some(FullyRead { up_to: Some(event) }),
+            })
+            .await
+    }
+
+    /// Moves the room's fully-read marker to `event`, as catching up does,
+    /// by the room being shown.
+    pub async fn mark_fully_read(&self, room: RoomId, event: RoomEventId) -> Response {
+        self.check_event(room, event).await?;
+        self.dispatcher
+            .answer(MarkFullyRead {
+                room,
+                up_to: Some(event),
+                shown: true,
+            })
+            .await
+    }
+
+    async fn check_event(&self, room: RoomId, event: RoomEventId) -> Result<(), ServerError> {
         self.reader
             .read(move |conn| {
                 if rooms::event_in_room(conn, room, event).map_err(internal)? {
@@ -1233,13 +1266,6 @@ impl Matrix {
                 } else {
                     Err(no_event(room, event))
                 }
-            })
-            .await?;
-        self.dispatcher
-            .answer(MarkRead {
-                room,
-                up_to: Some(event),
-                shown,
             })
             .await
     }

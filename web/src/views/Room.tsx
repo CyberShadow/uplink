@@ -70,9 +70,9 @@ function Timeline(props: { room: Room; words: string | null }) {
   const me = matrix.accounts.value!.find((a) => a.id === room.account)!.mxid
   const composer = useRef<HTMLTextAreaElement>(null)
   const [mode, setMode] = useState<Mode>({ type: 'new' })
-  // Where the unread began when the room was opened: reading it moves
-  // the marker, but not the line, while it is on show.
-  const [readUpTo] = useState(room.read_up_to)
+  // Where catching up was when the room was opened: reading moves the
+  // marker, but not the line, while it is on show (SPEC §12.15).
+  const [caughtUp] = useState(room.fully_read)
   const [files, setFiles] = useState<File[]>([])
   // A search shows over another panel, which closing it shows again.
   const [opened, setOpened] = useState<Panel>(null)
@@ -90,22 +90,25 @@ function Timeline(props: { room: Room; words: string | null }) {
   // From no line (those of a list have its own), to the latest.
   const toLatest = () => moveLine(listed.current!, -1)
   const focusLine = (event: RoomEventId) => lineOf(listed.current!, event)?.focus()
+  const reading = useReading(room, events, me, listed, scroller)
+  const behind = reading.behind.length > 0 || reading.more
   useKeymap({
     reply: write,
     write,
     label: () => setTagging(true),
     ...lines(toLatest, toLatest),
     ...scrolling,
+    jumpToUnread: reading.jumpToFirstUnread,
+    nextMention: reading.nextMention,
     // Else, home (`Shell`).
-    ...(panel && { up: () => setPanel(null) }),
+    ...(panel ? { up: () => setPanel(null) } : behind && { up: reading.markRead }),
   })
-  useMarkRead(room, events)
 
   const [overlay, outgoing] = useMemo(() => overlaid(events ?? [], sends ?? [], null), [events, sends])
   const receipts = timeline.receipts.value
   const readers = useMemo(() => readersByEvent(events ?? [], receipts), [events, receipts])
   const gaps = timeline.gaps.value
-  const list = useMemo(() => rows(events ?? [], readUpTo, me, gaps), [events, readUpTo, me, gaps])
+  const list = useMemo(() => rows(events ?? [], caughtUp, me, gaps), [events, caughtUp, me, gaps])
   const lastOwn = useMemo(
     () =>
       events?.findLast(
@@ -178,6 +181,7 @@ function Timeline(props: { room: Room; words: string | null }) {
           </p>
         )}
         {room.pinned.length > 0 && <PinnedBar room={room} />}
+        <CatchUp reading={reading} />
         {/* Reversed, so that it stays scrolled to the latest event. */}
         <div ref={scroller} class={styles.scroller}>
           <ol
@@ -599,8 +603,9 @@ export type Row =
  * folds them: at least these many. */
 const RUN = 3
 
-/** The timeline's rows: a day's line before its first event, the unread
- * line before the first event from others after `readUpTo`, runs of
+/** The timeline's rows: a day's line before its first event, the "New"
+ * line before the first event from others after `readUpTo` (the
+ * fully-read marker, SPEC §12.15), runs of
  * membership changes folded, and the gaps where events are missing. */
 export function rows(
   events: readonly RoomEvent[],
@@ -738,20 +743,142 @@ function MembershipControls(props: { room: Room }) {
   }
 }
 
-/** Marks the room read up to its latest event, while the tab is visible. */
-function useMarkRead(room: Room, events: readonly RoomEvent[] | null) {
+/** What reading the room has got to (SPEC §12.15), and its ways in. */
+interface Reading {
+  /** Messages from others after the fully-read marker, loaded. */
+  behind: readonly RoomEvent[]
+  /** Whether there may be more before them, not loaded. */
+  more: boolean
+  /** Of those, the mentions not yet on screen. */
+  mentions: readonly RoomEvent[]
+  /** Done with it: read and caught up on, to its latest. */
+  markRead: () => void
+  jumpToFirstUnread: () => void
+  /** To the oldest mention not yet on screen. */
+  nextMention: () => void
+}
+
+/** Reads the room as its messages come wholly on screen, in a visible
+ * tab, as Element's receipts do: the read marker follows the latest from
+ * others shown, and the fully-read marker moves over what was shown
+ * without a gap after it (SPEC §12.15). */
+function useReading(
+  room: Room,
+  events: readonly RoomEvent[] | null,
+  me: string,
+  list: RefObject<HTMLOListElement>,
+  scroller: RefObject<HTMLDivElement>,
+): Reading {
   const { matrix } = useServices()
+  const timeline = matrix.timeline(room.id)
   const visible = useVisible()
-  const last = events?.at(-1)
+  // The events wholly on screen while the room has shown; reported as
+  // they come, so rendered anew.
+  const onScreen = useRef(new Set<RoomEventId>())
+  const [reported, setReported] = useState(0)
+  useEffect(() => {
+    if (!visible) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const shown = entries.filter((e) => e.isIntersecting && e.intersectionRatio >= 1)
+        for (const entry of shown) onScreen.current.add(Number((entry.target as HTMLElement).dataset.event))
+        if (shown.length > 0) setReported((n) => n + 1)
+      },
+      { root: scroller.current, threshold: 1 },
+    )
+    for (const line of list.current!.querySelectorAll('[data-event]')) observer.observe(line)
+    return () => observer.disconnect()
+  }, [visible, events, list, scroller])
+
   // What was marked, so that a room list reloaded meanwhile does not
   // mark it again.
-  const marked = useRef<number | null>(null)
+  const marked = useRef<RoomEventId | null>(null)
+  const caught = useRef<RoomEventId | null>(null)
+  const gaps = timeline.gaps.value
+  const moreBefore = timeline.moreBefore.value
   const read = room.read_up_to?.pos
+  const fully = room.fully_read
   useEffect(() => {
-    if (!visible || last === undefined || (read !== undefined && last.pos <= read) || marked.current === last.id) return
-    marked.current = last.id
-    matrix.markRead(room.id, last.id, true)
-  }, [visible, last, read, room.id, matrix])
+    if (!visible || events === null) return
+    const seen = onScreen.current
+    const latest = events.findLast((e) => e.sender !== me && seen.has(e.id))
+    if (latest && (read === undefined || latest.pos > read) && marked.current !== latest.id) {
+      marked.current = latest.id
+      matrix.markRead(room.id, latest.id, true, false)
+    }
+    // From the marker, if loaded (or, without one, the room's start),
+    // over what was shown, the account's own, and what has no line,
+    // until a gap or a line not yet shown.
+    const from = fully === null ? (moreBefore ? -1 : 0) : events.findIndex((e) => e.id === fully.event) + 1
+    if (from <= 0 && (fully !== null || from < 0)) return
+    const lines = new Set([...list.current!.querySelectorAll<HTMLElement>('[data-event]')].map((l) => Number(l.dataset.event)))
+    const gapBefore = new Set(gaps.flatMap((g) => (g.before === null ? [] : [g.before])))
+    let to: RoomEvent | null = null
+    for (const event of events.slice(from)) {
+      if (gapBefore.has(event.id)) break
+      if (lines.has(event.id) && event.sender !== me && !seen.has(event.id)) break
+      to = event
+    }
+    if (to && caught.current !== to.id) {
+      caught.current = to.id
+      matrix.markFullyRead(room.id, to.id)
+    }
+  }, [visible, events, reported, read, fully, moreBefore, gaps, me, room.id, matrix, list])
+
+  const at = fully === null ? -Infinity : fully.pos
+  const behind = (events ?? []).filter(
+    (e) => e.pos > at && e.sender !== me && e.kind === 'm.room.message' && !e.redacted && e.thread_root === null,
+  )
+  const loaded = fully === null ? !moreBefore : (events ?? []).some((e) => e.id === fully.event)
+  const mentions = behind.filter((e) => e.highlight && !onScreen.current.has(e.id))
+  const show = async (pos: number, id: () => RoomEventId | undefined) => {
+    await timeline.loadUntil(pos)
+    // Once rendered.
+    requestAnimationFrame(() => {
+      const event = id()
+      if (event !== undefined) reveal(event)
+    })
+  }
+  return {
+    behind,
+    more: !loaded,
+    mentions,
+    markRead: () => {
+      const latest = room.latest ?? events?.at(-1)?.id
+      if (latest !== undefined) matrix.markRead(room.id, latest, false, true)
+    },
+    jumpToFirstUnread: () => {
+      void show(at, () => timeline.events.value?.find((e) => e.pos > at && e.sender !== me)?.id)
+    },
+    nextMention: () => {
+      const next = mentions[0]
+      if (next) void show(next.pos, () => next.id)
+    },
+  }
+}
+
+/** While catching up is behind what shows: how many messages are after
+ * the fully-read marker, and the mentions of them not yet shown, with
+ * the ways to them, as Element's and Telegram's bars. */
+function CatchUp(props: { reading: Reading }) {
+  const { behind, more, mentions, markRead, jumpToFirstUnread, nextMention } = props.reading
+  if (behind.length === 0 && !more) return null
+  const count = `${behind.length}${more ? '+' : ''}`
+  return (
+    <div class={styles.catchUp} role="toolbar" aria-label="Catching up">
+      <button type="button" class={styles.link} title="Jump to first unread (Shift+PgUp)" onMouseDown={keepFocus} onClick={jumpToFirstUnread}>
+        {count === '1' ? '1 new message' : `${count} new messages`}
+      </button>
+      {mentions.length > 0 && (
+        <button type="button" class={styles.mentions} title="Jump to the mention (Shift+PgDn)" onMouseDown={keepFocus} onClick={nextMention}>
+          @ {mentions.length}
+        </button>
+      )}
+      <button type="button" class={styles.link} title="Mark as read (Esc)" onMouseDown={keepFocus} onClick={markRead}>
+        Mark as read
+      </button>
+    </div>
+  )
 }
 
 /** A message being sent, at the end of the timeline as it will be once

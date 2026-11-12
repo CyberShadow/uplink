@@ -508,6 +508,7 @@ mod tests {
                         events: vec![],
                         limited: false,
                         own_receipts: vec![],
+                        fully_read: None,
                     }],
                 },
             )

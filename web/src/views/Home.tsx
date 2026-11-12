@@ -67,7 +67,7 @@ export function Home() {
         return mail.archive([threadOf(row.conversation)])
       case 'room': {
         const { latest, unread } = row.room
-        if (latest !== null && unread > 0) matrix.markRead(row.room.id, latest, false)
+        if (latest !== null && unread > 0) matrix.markRead(row.room.id, latest, false, true)
         return
       }
       case 'event':

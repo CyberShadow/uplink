@@ -288,6 +288,14 @@ pub enum ClientRequest {
         event: RoomEventId,
         /// Done by the room being shown, as it is read.
         shown: bool,
+        /// Caught up on too: the user is done with it (SPEC §12.15).
+        fully: bool,
+    },
+    /// Move the room's fully-read marker to `event`, as catching up does,
+    /// by the room being shown (SPEC §12.15).
+    MarkRoomFullyRead {
+        room: RoomId,
+        event: RoomEventId,
     },
     /// Tell the room the account is typing, or has stopped. Not an op:
     /// typing is of the moment.

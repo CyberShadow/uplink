@@ -119,6 +119,7 @@ function isResendable(body: ClientRequest): boolean {
     case 'cancel_matrix_send':
     case 'keep_matrix_sent':
     case 'mark_room_read':
+    case 'mark_room_fully_read':
     case 'mark_seen':
     case 'recover_matrix':
     case 'verify_matrix_device':

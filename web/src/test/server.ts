@@ -308,6 +308,8 @@ export class FakeServer implements Requester, Blobs {
       unread: 0,
       last_event_ts: null,
       read_up_to: null,
+      fully_read: null,
+      mentions: 0,
       pending: null,
       membership_error: null,
       space: false,
@@ -352,7 +354,8 @@ export class FakeServer implements Requester, Blobs {
       html: null,
       thread: null,
       thread_root: null,
-      highlight: false,
+      // As push rules would have it: a message that names the account.
+      highlight: event.body?.includes(ME) ?? false,
       ...event,
     }
   }
@@ -508,9 +511,13 @@ export class FakeServer implements Requester, Blobs {
       )
       // As push rules would have them: messages that name the account
       // highlight; in quiet rooms, only those notify.
-      const highlighted = unread.filter((e) => e.body?.includes(ME)).length
+      const highlighted = unread.filter((e) => e.highlight).length
+      const mentions = events.filter(
+        (e) => e.pos > (room.fully_read?.pos ?? -Infinity) && e.kind === 'm.room.message' && e.sender !== ME && e.highlight,
+      ).length
       return {
         ...room,
+        mentions,
         unread: unread.filter((e) => e.thread_root === null).length,
         notifying: this.quiet.has(room.id) ? highlighted : unread.length,
         highlighted,
@@ -595,7 +602,8 @@ export class FakeServer implements Requester, Blobs {
     // (`ServerResponse::position`).
     let answer: () => ServerResponse
     // What a view did by being shown (SPEC §12.15) is logged as such.
-    this.showing = body.type === 'mark_seen' || ('shown' in body && body.shown)
+    this.showing =
+      body.type === 'mark_seen' || body.type === 'mark_room_fully_read' || ('shown' in body && body.shown)
     try {
       const response = this.answer(body)
       answer = () => response
@@ -1134,9 +1142,15 @@ export class FakeServer implements Requester, Blobs {
       case 'mark_seen':
         this.seen.push(body.place)
         return this.dispatched('Seen', [])
-      case 'mark_room_read':
-        this.rooms.find((r) => r.id === body.room)!.read_up_to = this.marker(body.room, body.event)
+      case 'mark_room_read': {
+        const room = this.rooms.find((r) => r.id === body.room)!
+        room.read_up_to = this.marker(body.room, body.event)
+        if (body.fully) room.fully_read = room.read_up_to
         return this.dispatched('Read', [{ type: 'rooms_changed', rooms: [body.room] }])
+      }
+      case 'mark_room_fully_read':
+        this.rooms.find((r) => r.id === body.room)!.fully_read = this.marker(body.room, body.event)
+        return this.dispatched('Caught up', [{ type: 'rooms_changed', rooms: [body.room] }])
       case 'change_membership': {
         const room = this.rooms.find((r) => r.id === body.room)!
         room.pending = body.change

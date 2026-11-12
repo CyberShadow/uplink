@@ -100,6 +100,8 @@ pub struct ObservedRoom {
     pub limited: bool,
     /// Events the account's own read receipts in the response are for.
     pub own_receipts: Vec<String>,
+    /// The event the account's `m.fully_read` is at, if it has one.
+    pub fully_read: Option<String>,
 }
 
 /// A room a space lists, by an `m.space.child` event with `via`.
@@ -289,7 +291,8 @@ impl Observation for Synced {
             if send::sends_synced(tx, id)? {
                 sent.push(id);
             }
-            let read = observe_receipts(tx, id, &room.own_receipts)?;
+            let read = observe_receipts(tx, id, &room.own_receipts)?
+                | observe_fully_read(tx, id, room.fully_read.as_deref())?;
             if changed || read || !added.is_empty() || !redacted.is_empty() {
                 changed_rooms.push(id);
             }
@@ -729,6 +732,36 @@ fn observe_receipts(tx: &Transaction, room: RoomId, receipts: &[String]) -> Resu
     )? > 0)
 }
 
+/// Moves the fully-read marker forward to the event the account's
+/// `m.fully_read` is at, if that is past the latest pushed or observed;
+/// returns whether it moved.
+fn observe_fully_read(tx: &Transaction, room: RoomId, event_id: Option<&str>) -> Result<bool> {
+    let Some(event_id) = event_id else {
+        return Ok(false);
+    };
+    let Some((pos, event)) = tx
+        .query_row(
+            "SELECT pos, id FROM matrix_event WHERE room = ?1 AND event_id = ?2",
+            params![room.0, event_id],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+        )
+        .optional()?
+    else {
+        return Ok(false);
+    };
+    Ok(tx.execute(
+        &format!(
+            "UPDATE matrix_room
+             SET fully_read_pushed = ?1,
+                 fully_read = CASE WHEN {at} IS NULL OR {at} < ?3 THEN ?1 ELSE fully_read END
+             WHERE id = ?2 AND ({pushed} IS NULL OR {pushed} < ?3)",
+            at = pos_of("fully_read"),
+            pushed = pos_of("fully_read_pushed"),
+        ),
+        params![event, room.0, pos],
+    )? > 0)
+}
+
 // ── decrypting late ───────────────────────────────────────────────────────
 
 /// Events of the room stored undecryptable that the client has decrypted
@@ -839,8 +872,9 @@ pub fn undecryptable(
 
 // ── the read marker ───────────────────────────────────────────────────────
 
-/// Sets the room's read marker; `None` is before the first event.
-/// `shown`: by the room being shown (SPEC §12.15).
+/// Sets the room's read marker; `None` is before the first event. With
+/// `fully_read`, its fully-read marker too: the user is done with it
+/// (SPEC §12.15). `shown`: by the room being shown.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MarkRead {
@@ -848,36 +882,102 @@ pub struct MarkRead {
     pub up_to: Option<RoomEventId>,
     #[serde(default)]
     pub shown: bool,
+    #[serde(default)]
+    pub fully_read: Option<FullyRead>,
+}
+
+/// Where a fully-read marker is set to; `None` is before the first event.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FullyRead {
+    pub up_to: Option<RoomEventId>,
+}
+
+/// Sets the room's fully-read marker alone, as catching up moves it
+/// (SPEC §12.15): over what was on screen, by the room being shown.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MarkFullyRead {
+    pub room: RoomId,
+    pub up_to: Option<RoomEventId>,
+    pub shown: bool,
+}
+
+/// Sets the room's markers, each a column and where it is set to,
+/// returning where they were, the room's name, and the events clients
+/// are told of.
+fn set_marker(
+    tx: &Transaction,
+    room: RoomId,
+    markers: &[(&str, Option<RoomEventId>)],
+) -> Result<(Vec<Option<RoomEventId>>, String, Vec<ServerEvent>)> {
+    let (account, name): (String, String) = tx
+        .query_row(
+            "SELECT account_id, name FROM matrix_room WHERE id = ?1",
+            [room.0],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .with_context(|| format!("no room {}", room.0))?;
+    let pending = outbox::pending_rooms(tx, &account)?;
+    let mut previous = vec![];
+    for (column, up_to) in markers {
+        previous.push(
+            tx.query_row(
+                &format!("SELECT {column} FROM matrix_room WHERE id = ?1"),
+                [room.0],
+                |r| r.get::<_, Option<i64>>(0),
+            )?
+            .map(RoomEventId),
+        );
+        tx.execute(
+            &format!("UPDATE matrix_room SET {column} = ?1 WHERE id = ?2"),
+            params![up_to.map(|e| e.0), room.0],
+        )?;
+    }
+    let mut events = vec![ServerEvent::RoomsChanged(RoomsChanged {
+        rooms: vec![room],
+    })];
+    // A receipt to send, or none.
+    if outbox::pending_rooms(tx, &account)? != pending {
+        events.push(outbox::outbox_changed(&account));
+    }
+    Ok((previous, name, events))
 }
 
 impl Op for MarkRead {
     const KIND: &'static str = "matrix.mark_read";
 
     fn apply(self, tx: &Transaction) -> Result<Applied> {
-        let (account, name, previous): (String, String, Option<i64>) = tx
-            .query_row(
-                "SELECT account_id, name, read_up_to FROM matrix_room WHERE id = ?1",
-                [self.room.0],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .with_context(|| format!("no room {}", self.room.0))?;
-        let pending = outbox::pending_rooms(tx, &account)?;
-        tx.execute(
-            "UPDATE matrix_room SET read_up_to = ?1 WHERE id = ?2",
-            params![self.up_to.map(|e| e.0), self.room.0],
-        )?;
-        let mut events = vec![ServerEvent::RoomsChanged(RoomsChanged {
-            rooms: vec![self.room],
-        })];
-        // A receipt to send, or none.
-        if outbox::pending_rooms(tx, &account)? != pending {
-            events.push(outbox::outbox_changed(&account));
-        }
+        let mut markers = vec![("read_up_to", self.up_to)];
+        markers.extend(self.fully_read.map(|f| ("fully_read", f.up_to)));
+        let (previous, name, events) = set_marker(tx, self.room, &markers)?;
         Ok(Applied {
             description: format!("Read {name}"),
             inverse: Inverse::of(&MarkRead {
                 room: self.room,
-                up_to: previous.map(RoomEventId),
+                up_to: previous[0],
+                shown: false,
+                fully_read: self.fully_read.map(|_| FullyRead { up_to: previous[1] }),
+            }),
+            events,
+        })
+    }
+
+    fn shown(&self) -> bool {
+        self.shown
+    }
+}
+
+impl Op for MarkFullyRead {
+    const KIND: &'static str = "matrix.mark_fully_read";
+
+    fn apply(self, tx: &Transaction) -> Result<Applied> {
+        let (previous, name, events) = set_marker(tx, self.room, &[("fully_read", self.up_to)])?;
+        Ok(Applied {
+            description: format!("Caught up on {name}"),
+            inverse: Inverse::of(&MarkFullyRead {
+                room: self.room,
+                up_to: previous[0],
                 shown: false,
             }),
             events,
@@ -889,11 +989,14 @@ impl Op for MarkRead {
     }
 }
 
-/// A read receipt was sent for the room's event `up_to`.
+/// A read receipt was sent for the room's event `up_to`; or, if
+/// `fully_read`, the fully-read marker set at it.
 #[derive(Debug, Serialize)]
 pub struct ReceiptSent {
     pub room: RoomId,
     pub up_to: RoomEventId,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub fully_read: bool,
 }
 
 impl Observation for ReceiptSent {
@@ -901,11 +1004,15 @@ impl Observation for ReceiptSent {
 
     fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
         let pending = outbox::pending_rooms(tx, account)?;
+        let column = match self.fully_read {
+            false => "read_pushed",
+            true => "fully_read_pushed",
+        };
         tx.execute(
             &format!(
-                "UPDATE matrix_room SET read_pushed = ?1
+                "UPDATE matrix_room SET {column} = ?1
                  WHERE id = ?2 AND ({pushed} IS NULL OR {pushed} < {sent})",
-                pushed = pos_of("read_pushed"),
+                pushed = pos_of(column),
                 sent = pos_of("?1"),
             ),
             params![self.up_to.0, self.room.0],
@@ -917,38 +1024,55 @@ impl Observation for ReceiptSent {
             vec![outbox::outbox_changed(account)]
         };
         Ok(Observed {
-            description: "Sent a read receipt".to_owned(),
+            description: match self.fully_read {
+                false => "Sent a read receipt".to_owned(),
+                true => "Set the fully-read marker".to_owned(),
+            },
             events,
         })
     }
 }
 
 /// A read receipt to send: the room's read marker is past the latest
-/// receipt.
+/// receipt; or, if `fully_read`, its fully-read marker past the latest
+/// set.
 #[derive(Debug, Clone)]
 pub struct UnsentReceipt {
     pub room: RoomId,
     pub room_id: String,
     pub up_to: RoomEventId,
     pub event_id: String,
+    pub fully_read: bool,
 }
 
 pub fn unsent_receipts(conn: &Connection, account: &str) -> Result<Vec<UnsentReceipt>> {
-    Ok(conn
-        .prepare(&format!(
+    let mut unsent = vec![];
+    for (fully_read, at, pushed) in [
+        (false, "read_up_to", "read_pushed"),
+        (true, "fully_read", "fully_read_pushed"),
+    ] {
+        let mut stmt = conn.prepare(&format!(
             "SELECT r.id, r.room_id, e.id, e.event_id
-                 FROM matrix_room r JOIN matrix_event e ON e.id = r.read_up_to
-                 WHERE r.account_id = ?1 AND r.membership = 'joined' AND {UNSENT_RECEIPT}"
-        ))?
-        .query_map([account], |r| {
+             FROM matrix_room r JOIN matrix_event e ON e.id = r.{at}
+             WHERE r.account_id = ?1 AND r.membership = 'joined'
+               AND (r.{pushed} IS NULL OR e.pos > {pushed_pos})
+             ORDER BY r.id",
+            pushed_pos = pos_of(&format!("r.{pushed}")),
+        ))?;
+        let rows = stmt.query_map([account], |r| {
             Ok(UnsentReceipt {
                 room: RoomId(r.get(0)?),
                 room_id: r.get(1)?,
                 up_to: RoomEventId(r.get(2)?),
                 event_id: r.get(3)?,
+                fully_read,
             })
-        })?
-        .collect::<Result<_, _>>()?)
+        })?;
+        for row in rows {
+            unsent.push(row?);
+        }
+    }
+    Ok(unsent)
 }
 
 // ── queries ───────────────────────────────────────────────────────────────
@@ -973,6 +1097,16 @@ pub fn sync_state(conn: &Connection, account: &str) -> Result<Option<SyncState>>
 /// Undecryptable events count as unread messages, which they nearly
 /// always are; edits and redacted messages do not.
 pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
+    // Of room `r`, its messages from others after its marker `marker`.
+    let after = |marker: &str| {
+        format!(
+            "e.room = r.id
+             AND (r.{marker} IS NULL OR e.pos > {pos})
+             AND e.type IN ('m.room.message', 'm.room.encrypted')
+             AND e.sender != ?2 AND NOT e.redacted AND {LISTED}",
+            pos = pos_of(&format!("r.{marker}")),
+        )
+    };
     Ok(tx
         .prepare(&format!(
             "SELECT r.id, r.account_id, r.room_id, r.name, r.encrypted, r.membership,
@@ -990,18 +1124,15 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
                     {shown_order}, {shown_tags}, r.direct,
                     (SELECT e.id FROM matrix_event e WHERE e.room = r.id AND {MAIN} AND {LISTED}
                      ORDER BY e.pos DESC LIMIT 1),
-                    r.alias
+                    r.alias, r.fully_read, {fully_pos},
+                    (SELECT count(*) FROM matrix_event e WHERE {after_fully} AND e.highlight)
              FROM matrix_room r
              WHERE r.account_id = ?1 AND (r.membership != 'left' OR r.desired = 'joined')
              ORDER BY 8 DESC NULLS LAST, r.id",
             read_pos = pos_of("r.read_up_to"),
-            unread = format!(
-                "e.room = r.id
-                 AND (r.read_up_to IS NULL OR e.pos > {read_pos})
-                 AND e.type IN ('m.room.message', 'm.room.encrypted')
-                 AND e.sender != ?2 AND NOT e.redacted AND {LISTED}",
-                read_pos = pos_of("r.read_up_to"),
-            ),
+            fully_pos = pos_of("r.fully_read"),
+            after_fully = after("fully_read"),
+            unread = after("read_up_to"),
             shown_order = space_order::SHOWN,
             shown_tags = room_tags::SHOWN,
         ))?
@@ -1042,6 +1173,15 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
                     .expect("json_group_array makes an array of strings"),
                 direct: r.get(23)?,
                 latest: r.get::<_, Option<i64>>(24)?.map(RoomEventId),
+                fully_read: match (r.get::<_, Option<i64>>(26)?, r.get(27)?) {
+                    (Some(event), Some(pos)) => Some(ReadMarker {
+                        event: RoomEventId(event),
+                        pos,
+                    }),
+                    (None, None) => None,
+                    _ => unreachable!("a fully-read marker is of a stored event"),
+                },
+                mentions: r.get(28)?,
             })
         })?
         .collect::<Result<_, _>>()?)
@@ -1363,10 +1503,13 @@ pub(crate) fn pos_of(id: &str) -> String {
 }
 
 /// Of a room `r`, whether its read marker is past the latest receipt
-/// sent or observed.
-pub(crate) const UNSENT_RECEIPT: &str = "(r.read_up_to IS NOT NULL AND (r.read_pushed IS NULL
-    OR (SELECT pos FROM matrix_event WHERE id = r.read_up_to)
-       > (SELECT pos FROM matrix_event WHERE id = r.read_pushed)))";
+/// sent or observed, or its fully-read marker past the latest set.
+pub(crate) const UNSENT_RECEIPT: &str = "((r.read_up_to IS NOT NULL AND (r.read_pushed IS NULL
+      OR (SELECT pos FROM matrix_event WHERE id = r.read_up_to)
+         > (SELECT pos FROM matrix_event WHERE id = r.read_pushed)))
+    OR (r.fully_read IS NOT NULL AND (r.fully_read_pushed IS NULL
+      OR (SELECT pos FROM matrix_event WHERE id = r.fully_read)
+         > (SELECT pos FROM matrix_event WHERE id = r.fully_read_pushed))))";
 
 // ── filling gaps ──────────────────────────────────────────────────────────
 

@@ -30,7 +30,7 @@ class FakeIntersectionObserver {
   /** Reports `target` in view, if observed. */
   show(target: Element) {
     if (!this.targets.has(target)) return
-    const entry = { target, isIntersecting: true } as IntersectionObserverEntry
+    const entry = { target, isIntersecting: true, intersectionRatio: 1 } as IntersectionObserverEntry
     this.callback([entry], this as unknown as IntersectionObserver)
   }
 }

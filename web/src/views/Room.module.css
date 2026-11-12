@@ -947,3 +947,30 @@ button.sender:hover .name {
   font-family: monospace;
   font-size: 12px;
 }
+
+/* Catching up (SPEC §12.15): over the timeline's top, as Element's bar. */
+.catchUp {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  padding: 4px 16px;
+  border-bottom: 1px solid var(--line);
+  color: var(--accent);
+  font-size: 0.9em;
+}
+
+.catchUp > :last-child {
+  margin-left: auto;
+}
+
+.mentions {
+  padding: 0 6px;
+  border: none;
+  border-radius: 8px;
+  background: var(--error-fg);
+  color: var(--bg);
+  font: inherit;
+  font-weight: bold;
+  cursor: pointer;
+}

@@ -60,6 +60,8 @@ describe('roomTree', () => {
     unread: 0,
     last_event_ts: null,
     read_up_to: null,
+    fully_read: null,
+    mentions: 0,
     pending: null,
     membership_error: null,
     space: false,

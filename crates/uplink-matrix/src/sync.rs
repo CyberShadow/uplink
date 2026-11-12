@@ -459,6 +459,7 @@ impl Syncer {
             events: observed,
             limited,
             own_receipts,
+            fully_read: room.fully_read_event_id().map(|e| e.to_string()),
         })
     }
 }
@@ -1232,7 +1233,8 @@ impl Sender {
     }
 
     /// Sends a read receipt for each joined room whose read marker moved
-    /// past the latest receipt.
+    /// past the latest receipt, and sets the fully-read marker of each
+    /// whose fully-read marker moved past the latest set.
     async fn push_receipts(&self) -> Result<()> {
         let account = self.account.clone();
         let unsent = read(&self.reader, move |conn| {
@@ -1245,8 +1247,12 @@ impl Sender {
                 .client
                 .get_room(room_id)
                 .with_context(|| format!("joined room {room_id} is not in the client"))?;
+            let kind = match receipt.fully_read {
+                false => ReceiptType::Read,
+                true => ReceiptType::FullyRead,
+            };
             room.send_single_receipt(
-                ReceiptType::Read,
+                kind,
                 ReceiptThread::Unthreaded,
                 <&EventId>::try_from(receipt.event_id.as_str())?.to_owned(),
             )
@@ -1254,6 +1260,7 @@ impl Sender {
             self.observe(ReceiptSent {
                 room: receipt.room,
                 up_to: receipt.up_to,
+                fully_read: receipt.fully_read,
             })
             .await?;
         }

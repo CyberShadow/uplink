@@ -71,6 +71,11 @@ pub struct Room {
     /// marks it read up to that.
     pub latest: Option<RoomEventId>,
     pub read_up_to: Option<ReadMarker>,
+    /// Where catching up has got to (`m.fully_read`, SPEC §12.15).
+    pub fully_read: Option<ReadMarker>,
+    /// Messages from others after it that mention the account: they are
+    /// unread however the read marker moved (`is:mention`).
+    pub mentions: u32,
     /// A change the user asked for that has yet to take effect.
     pub pending: Option<MembershipChange>,
     /// Why the homeserver refused the last change asked for.
