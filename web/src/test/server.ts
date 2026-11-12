@@ -517,6 +517,8 @@ export class FakeServer implements Requester, Blobs {
 
   /** HTML bodies by message, for messages that have one. */
   readonly html = new Map<number, string>()
+  /** Senders whose remote images are shown unasked, lowercased. */
+  readonly imageSenders = new Set<string>()
   readonly text = new Map<number, string>()
   /** Attachments by message, for messages that have some. */
   readonly attachments = new Map<number, Attachment[]>()
@@ -625,6 +627,7 @@ export class FakeServer implements Requester, Blobs {
             date_sent: entry.received_at / 1000,
             body_text: this.text.get(entry.message) ?? `Body of ${entry.subject}`,
             body_html: this.html.get(entry.message) ?? null,
+            always_show_images: entry.from_addr !== null && this.imageSenders.has(entry.from_addr.toLowerCase()),
             attachments: this.attachments.get(entry.message) ?? [],
           },
         }
@@ -639,6 +642,15 @@ export class FakeServer implements Requester, Blobs {
           { type: 'labels_changed', changes },
         ])
         this.undoableLabels(id, changes)
+        return { type: 'dispatched', tx_log_id: id }
+      }
+      case 'always_show_images': {
+        const sender = body.sender.toLowerCase()
+        if (body.always) this.imageSenders.add(sender)
+        else this.imageSenders.delete(sender)
+        const id = this.commit({ type: 'user' }, `Always showing images from ${sender}`, [
+          { type: 'image_sender_changed', sender, always: body.always },
+        ])
         return { type: 'dispatched', tx_log_id: id }
       }
       case 'undo': {

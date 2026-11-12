@@ -108,6 +108,7 @@ fn declarations() -> String {
         LabelsChanged,
         LabelState,
         LabelListChanged,
+        ImageSenderChanged,
         DraftId,
         OutboxId,
         DraftContent,

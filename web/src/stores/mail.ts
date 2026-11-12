@@ -144,6 +144,10 @@ export class MailStore {
   readonly selected = signal<ReadonlySet<string>>(new Set())
   readonly open = signal<Open | null>(null)
   readonly error = signal<string | null>(null)
+  /** Whether senders' remote images are shown unasked, as changed since
+   * their messages loaded, by lowercased address: newer than what those
+   * say (`always_show_images`). */
+  readonly imageSenders = signal<ReadonlyMap<string, boolean>>(new Map())
   /** Whether the list keeps the conversation open though it may no
    * longer be listed: reading it may take it out of an unread search,
    * which it stays in while open, as in Gmail. Closing it reloads the
@@ -208,6 +212,9 @@ export class MailStore {
           break
         case 'label_list_changed':
           break
+        case 'image_sender_changed':
+          this.imageSenders.value = new Map(this.imageSenders.value).set(event.sender, event.always)
+          continue
         case 'rooms_changed':
         case 'timeline_added':
         case 'todos_changed':
@@ -675,6 +682,18 @@ export class MailStore {
   }
 
   // ── messages ────────────────────────────────────────────────────────────
+
+  /** Whether the message's remote images are shown unasked. */
+  alwaysShowsImages(message: MessageContent): boolean {
+    const sender = message.from_addr?.toLowerCase()
+    const changed = sender === undefined ? undefined : this.imageSenders.value.get(sender)
+    return changed ?? message.always_show_images
+  }
+
+  /** Shows the remote images of `sender`'s mail unasked, or no longer. */
+  async alwaysShowImages(sender: string, always: boolean) {
+    await this.ops.dispatch({ type: 'always_show_images', sender, always })
+  }
 
   /** `null` if it could not be loaded; `error` says why. */
   async loadMessage(message: MessageId): Promise<MessageContent | null> {

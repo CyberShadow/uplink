@@ -367,6 +367,32 @@ describe('mail', () => {
     expect(frame.srcdoc).toContain(`img-src data: ${location.origin};`)
   })
 
+  it("shows a sender's remote images unasked once asked to, until asked not to", async () => {
+    const first = server.deliver('work', 'Newsletter')
+    const second = server.deliver('work', 'Another')
+    const html = '<p>Hello <img src="/api/remote-image?url=https%3A%2F%2Ft.example%2Fpixel.gif"></p>'
+    server.html.set(first.message, html)
+    server.html.set(second.message, html)
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('j{Enter}')
+    let frame = (await screen.findByTitle('Message body')) as HTMLIFrameElement
+    expect(frame.srcdoc).toContain('img-src data:;')
+    await user.click(screen.getByRole('button', { name: 'Always show images from bob@example.org' }))
+    expect(await screen.findByText('Always showing images from bob@example.org')).toBeTruthy()
+    expect(frame.srcdoc).toContain(`img-src data: ${location.origin};`)
+    expect(screen.queryByText('Remote images are not shown.')).toBeNull()
+    // The sender's other mail too, as the server says.
+    await user.keyboard('u')
+    await user.keyboard('k{Enter}')
+    await screen.findByRole('heading', { name: 'Another' })
+    frame = (await screen.findByTitle('Message body')) as HTMLIFrameElement
+    expect(frame.srcdoc).toContain(`img-src data: ${location.origin};`)
+    await user.click(within(frame.closest('section')!).getByRole('button', { name: 'More' }))
+    await user.click(screen.getByRole('menuitem', { name: "Don't always show images from bob@example.org" }))
+    await waitFor(() => expect(frame.srcdoc).toContain('img-src data:;'))
+    expect(server.imageSenders.size).toBe(0)
+  })
+
   it("folds the quote of the mail answered, as Gmail does, but not a forward's", async () => {
     const reply = server.deliver('work', 'Re: Lunch')
     server.html.set(reply.message, '<p>Yes.</p><p>On Mon, Alice wrote:</p><blockquote>Lunch?</blockquote>')

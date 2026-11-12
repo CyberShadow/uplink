@@ -102,6 +102,7 @@ function isResendable(body: ClientRequest): boolean {
       return true
     case 'undo':
     case 'modify_labels':
+    case 'always_show_images':
     case 'delete_draft':
     case 'attach_to_draft':
     case 'detach_from_draft':

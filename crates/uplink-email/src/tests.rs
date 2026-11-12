@@ -28,6 +28,7 @@ impl Db {
         let mut registry = Registry::new();
         mailbox::register(&mut registry);
         crate::compose::register(&mut registry);
+        crate::image_senders::register(&mut registry);
         let hub = Arc::new(Hub::new(64));
         let dispatcher = Dispatcher::new(
             uplink_storage::open(dir.path()).unwrap(),
@@ -1709,6 +1710,64 @@ pub(crate) mod service {
                 .unwrap_err()
                 .code,
             ErrorCode::NotFound
+        );
+    }
+
+    #[tokio::test]
+    async fn a_senders_images_shown_unasked() {
+        let db = Db::new();
+        let mail = mail_with(&db).await;
+        let message = message_of(&db, "m2");
+        let always = || async {
+            let ServerResponse::Message { message } = mail.load_message(message).await.unwrap()
+            else {
+                panic!()
+            };
+            message.always_show_images
+        };
+        assert!(!always().await);
+        let mut live = db.hub.subscribe();
+        // By address, of any case.
+        let ServerResponse::Dispatched { tx_log_id } =
+            mail.always_show_images(" S@X ".into(), true).await.unwrap()
+        else {
+            panic!()
+        };
+        assert!(always().await);
+        let entry = live.recv().await.unwrap();
+        assert_eq!(entry.description, "Always showing images from s@x");
+        assert_eq!(
+            entry.events,
+            [ServerEvent::ImageSenderChanged(
+                uplink_protocol::mail::ImageSenderChanged {
+                    sender: "s@x".into(),
+                    always: true
+                }
+            )]
+        );
+        // Once.
+        assert_eq!(
+            mail.always_show_images("s@x".into(), true)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+        db.dispatcher.undo(tx_log_id).await.unwrap();
+        assert!(!always().await);
+        assert_eq!(
+            mail.always_show_images("s@x".into(), false)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+        assert_eq!(
+            mail.always_show_images("nobody".into(), true)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Invalid
         );
     }
 

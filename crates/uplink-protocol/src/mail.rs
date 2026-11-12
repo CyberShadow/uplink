@@ -162,6 +162,9 @@ pub struct MessageContent {
     /// The HTML body, sanitized, if the message has one. It may refer to
     /// remote resources, which clients should not load unasked.
     pub body_html: Option<String>,
+    /// Whether the user has its sender's remote images shown unasked
+    /// (`AlwaysShowImages`).
+    pub always_show_images: bool,
     pub attachments: Vec<Attachment>,
 }
 
@@ -193,6 +196,15 @@ pub struct EntriesAdded {
 #[serde(deny_unknown_fields)]
 pub struct EntriesRemoved {
     pub entries: Vec<EntryId>,
+}
+
+/// Whether a sender's remote images are shown unasked, now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ImageSenderChanged {
+    /// Lowercased.
+    pub sender: String,
+    pub always: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]

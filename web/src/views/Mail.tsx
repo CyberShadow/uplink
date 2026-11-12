@@ -708,6 +708,17 @@ function ConversationMessage(props: {
                   { label: 'Mark unread from here', icon: 'mail', action: actions.markUnreadFrom },
                 ],
                 ...(actions.spam ? [[{ label: 'Report spam', icon: 'octagon-x' as const, action: actions.spam }]] : []),
+                ...(content?.from_addr && mail.alwaysShowsImages(content)
+                  ? [
+                      [
+                        {
+                          label: `Don't always show images from ${content.from_addr}`,
+                          icon: 'image-off' as const,
+                          action: () => void mail.alwaysShowImages(content.from_addr!, false),
+                        },
+                      ],
+                    ]
+                  : []),
                 [
                   { label: 'Download message', icon: 'download', action: actions.download },
                   { label: 'Show original', icon: 'code', action: actions.showOriginal },
@@ -742,7 +753,13 @@ function ConversationMessage(props: {
             {content.body_html === null ? (
               <TextBody text={content.body_text} fold={!forwards(content.subject)} />
             ) : (
-              <HtmlBody html={content.body_html} fold={!forwards(content.subject)} />
+              <HtmlBody
+                html={content.body_html}
+                fold={!forwards(content.subject)}
+                always={mail.alwaysShowsImages(content)}
+                sender={content.from_addr}
+                alwaysShow={() => void mail.alwaysShowImages(content.from_addr!, true)}
+              />
             )}
           </>
         ))}

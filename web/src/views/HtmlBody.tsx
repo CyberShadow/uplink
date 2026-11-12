@@ -69,9 +69,18 @@ function frameDocument(html: string, remote: boolean, classes: string): string {
 }
 
 /** `fold`: whether to fold away the quote of the mail it answers, if it
- * ends with one (SPEC §12.8). */
-export function HtmlBody(props: { html: string; fold: boolean }) {
-  const [remote, setRemote] = useState(false)
+ * ends with one (SPEC §12.8). `always`: whether its remote images are
+ * shown unasked, as its sender's are; else, `alwaysShow` makes them so,
+ * if it has a sender. */
+export function HtmlBody(props: {
+  html: string
+  fold: boolean
+  always: boolean
+  sender: string | null
+  alwaysShow: () => void
+}) {
+  const [asked, setAsked] = useState(false)
+  const remote = asked || props.always
   const [quoteShown, setQuoteShown] = useState(false)
   const dark = useDark()
   const [html, folded] = useMemo(
@@ -95,9 +104,17 @@ export function HtmlBody(props: { html: string; fold: boolean }) {
       {!remote && REMOTE.test(props.html) && (
         <p class={styles.remote}>
           Remote images are not shown.{' '}
-          <button type="button" onMouseDown={keepFocus} onClick={() => setRemote(true)}>
+          <button type="button" onMouseDown={keepFocus} onClick={() => setAsked(true)}>
             Show them
           </button>
+          {props.sender !== null && (
+            <>
+              {' · '}
+              <button type="button" onMouseDown={keepFocus} onClick={props.alwaysShow}>
+                Always show images from {props.sender}
+              </button>
+            </>
+          )}
         </p>
       )}
       <iframe

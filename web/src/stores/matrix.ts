@@ -107,6 +107,7 @@ export class MatrixStore {
         case 'entries_removed':
         case 'labels_changed':
         case 'label_list_changed':
+        case 'image_sender_changed':
         case 'draft_edited':
         case 'drafts_changed':
         case 'outbox_changed':

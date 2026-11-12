@@ -72,6 +72,7 @@ export class DraftStore {
         case 'entries_removed':
         case 'labels_changed':
         case 'label_list_changed':
+        case 'image_sender_changed':
         case 'rooms_changed':
         case 'timeline_added':
         case 'timeline_filled':

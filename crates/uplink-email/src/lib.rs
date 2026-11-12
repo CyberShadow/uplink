@@ -4,6 +4,7 @@
 pub mod account;
 pub mod compose;
 pub mod gmail;
+pub mod image_senders;
 pub mod imap;
 pub mod m365;
 pub mod mail_server;

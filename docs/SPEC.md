@@ -821,7 +821,8 @@ than it buffers is closed; the client reconnects and resumes.
 `ServerEvent` variants by domain:
 
 - **Mail**: `EntriesAdded`, `EntriesRemoved`, `LabelsChanged` (desired
-  and observed membership per entry and label), `LabelListChanged`.
+  and observed membership per entry and label), `LabelListChanged`,
+  `ImageSenderChanged { sender, always }` (§8.9).
   Events carry ids, not content, since they are stored in the log;
   clients query what they display. As the log is replayed, a change to
   an event's shape migrates the recorded ones too (V0022 did, for
@@ -868,7 +869,8 @@ than it buffers is closed; the client reconnects and resumes.
 - `ListMessageEntries { message }` — a message's entries, in every
   account: a to-do's message.
 - `LoadMessage { message }` — headers, the text body, and the sanitized
-  HTML body if there is one (§8.9).
+  HTML body if there is one, and whether its sender's remote images are
+  shown unasked (§8.9).
 - `ListRooms` — Matrix accounts and their rooms with unread counts;
   `ListTimeline { room, page, limit }` — the latest events, or those
   before or after one, oldest first, each with what is folded into it
@@ -904,7 +906,8 @@ than it buffers is closed; the client reconnects and resumes.
   label, mark read and star; `CreateDraft`, `EditDraft { draft, revision,
   splice }`, `DeleteDraft`, `SendDraft`, `CancelSend { item }`,
   `KeepSent { item }` (§6.7, §7); `KeepObserved { op }` — a refused
-  change taken back to what the provider has (§6.6);
+  change taken back to what the provider has (§6.6); `AlwaysShowImages
+  { sender, always }` (§8.9);
   `SendMatrixMessage { room, body }`, `CancelMatrixSend { item }`,
   `KeepMatrixSent { item }`,
   `MarkRoomRead { room, event }`, `ChangeMembership { room, change }`,
@@ -1749,7 +1752,14 @@ referrer. Remote fonts and stylesheets still don't load. Shown, the mail's
 `<style>` elements end in a comment: Firefox reuses a sheet it parsed
 for an earlier document of the same text and principal, with its images
 as that document's CSP refused them, and would otherwise not show those
-of the frame shown without them. The endpoint
+of the frame shown without them. The user may have a sender's remote
+images shown unasked ("Always show images from …", beside "Show them"),
+until asked not to (from the message's menu): by the `From:` address,
+lowercased, kept by uplink alone (`image_sender`) and set by an op,
+`mail.always_show_images`, which undoing reverses. `From:` is not
+authenticated, so anyone may claim to be such a sender: what that gives
+them is what showing would, that the mail was opened, when, and by
+uplink's server. The endpoint
 (behind basic auth) fetches only from public addresses (not loopback,
 private, link-local, shared, benchmarking, multicast or reserved ones,
 nor IPv6 ones carrying such an IPv4 one: mapped, compatible, NAT64's or

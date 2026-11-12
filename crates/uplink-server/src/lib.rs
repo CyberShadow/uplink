@@ -220,6 +220,7 @@ pub struct Services {
 pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
     uplink_email::mailbox::register(&mut registry);
     uplink_email::compose::register(&mut registry);
+    uplink_email::image_senders::register(&mut registry);
     uplink_matrix::register(&mut registry);
     uplink_todos::register(&mut registry);
     let root = &config.data_dir;
@@ -1019,6 +1020,9 @@ impl Backend for Services {
             }
             ClientRequest::ListConversation { entry } => self.mail.list_conversation(entry).await,
             ClientRequest::LoadMessage { message } => self.mail.load_message(message).await,
+            ClientRequest::AlwaysShowImages { sender, always } => {
+                self.mail.always_show_images(sender, always).await
+            }
             ClientRequest::ModifyLabels {
                 entries,
                 add,

@@ -5,6 +5,7 @@ use crate::{
         self, AttachToDraft, CancelSend, DeleteDraft, DetachFromDraft, EditDraft, KeepSent,
         PutDraft, SendDraft,
     },
+    image_senders::{self, AlwaysShowImages},
     mailbox::{LabelChange, SetLabels},
     outbox,
     parse::{self, html_body, parse},
@@ -145,6 +146,10 @@ impl Mail {
                     })?;
                 let raw = store.get(&VariantHash(variant)).map_err(internal)?;
                 let parsed = parse(&raw);
+                let always_show_images = match &parsed.from_addr {
+                    Some(sender) => image_senders::always(conn, sender).map_err(internal)?,
+                    None => false,
+                };
                 Ok(ServerResponse::Message {
                     message: MessageContent {
                         id: message,
@@ -157,6 +162,7 @@ impl Mail {
                         date_sent: parsed.date_sent,
                         body_text: parsed.body_text,
                         body_html: html_body(&raw),
+                        always_show_images,
                         attachments: parse::attachments(&raw),
                     },
                 })
@@ -246,6 +252,18 @@ impl Mail {
             })
             .collect();
         self.dispatcher.answer(SetLabels { changes }).await
+    }
+
+    pub async fn always_show_images(&self, sender: String, always: bool) -> Response {
+        if !sender.contains('@') {
+            return Err(error(
+                ErrorCode::Invalid,
+                format!("not an address: {sender:?}"),
+            ));
+        }
+        self.dispatcher
+            .answer(AlwaysShowImages { sender, always })
+            .await
     }
 
     pub async fn list_drafts(&self) -> Response {
