@@ -632,7 +632,7 @@ function droppedAfter(e: DragEvent): boolean {
   return e.clientY > top + height / 2
 }
 
-function inboxUnread(account: Account): number {
+export function inboxUnread(account: Account): number {
   return account.labels.find((l) => l.system && l.external_id === 'INBOX')?.unread ?? 0
 }
 

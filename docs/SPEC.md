@@ -2580,6 +2580,15 @@ src/views/
 └── Help.tsx               # keyboard shortcuts
 ```
 
+The window's title names what is on show, as Gmail's and Element's do:
+the most particular first, then `uplink` (`src/title.ts`). A list is
+named with its unread, as Gmail's is, and its account
+(`Inbox (3) – alice@gmail.com – uplink`), the Inboxes as one by theirs
+(`All inboxes (5)`), a search by its query (`from:bob – Search`); a
+conversation by its subject, a room by its name, a draft by its subject
+(`… – Draft`); other views by their names in the nav. Until what it
+names is loaded, the title is `uplink`.
+
 ### 12.5 Keyboard shortcuts
 
 Gmail's scheme. The notable choices we ARE picking:

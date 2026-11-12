@@ -244,7 +244,10 @@ b { font-family: f; background: url(http://t.example/style.gif) }</style><b>bold
             "referer": "",
             "reached": [None, None],
         }, (browser, result)
-        assert result["dialogs"] == [] and result["title"] and result["pages"] == 2, (browser, result)
+        assert result["dialogs"] == [] and result["title"] == "Hostile – uplink" and result["pages"] == 2, (
+            browser,
+            result,
+        )
         assert result["keys"] == {"in frame": "IFRAME", "escaped": "BODY"}, (browser, result)
 
 machine.copy_from_vm("/tmp/screenshots", "")

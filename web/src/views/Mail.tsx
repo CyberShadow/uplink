@@ -17,7 +17,7 @@ import styles from './Mail.module.css'
 import { fileSize } from './size'
 import { brief, dateTime } from '../format'
 import { Icon, type IconName } from './Icon'
-import { labelName } from './Nav'
+import { inboxUnread, labelName } from './Nav'
 import { useTitle } from '../title'
 
 // Route params; preact-iso's own `query` prop is the URL's query string.
@@ -242,12 +242,12 @@ export function Mail(props: Props) {
   )
 }
 
-/** What the window's title names of a list; nothing while what it is
- * of is loading. */
+/** What the window's title names of a list, with its unread as Gmail's
+ * says (`Inbox (3)`); nothing while what it is of is loading. */
 function listTitle(mail: MailStore, view: View): string[] {
   switch (view.kind) {
     case 'inbox':
-      return ['All inboxes']
+      return [counted('All inboxes', (mail.accounts.value ?? []).reduce((n, a) => n + inboxUnread(a), 0))]
     case 'search':
       return [view.query, 'Search']
     case 'message':
@@ -259,9 +259,13 @@ function listTitle(mail: MailStore, view: View): string[] {
     case 'label': {
       const account = mail.accounts.value?.find((a) => a.id === view.account)
       const label = account?.labels.find((l) => l.external_id === view.label)
-      return label ? [labelName(account!, label), account!.address] : []
+      return label ? [counted(labelName(account!, label), label.unread), account!.address] : []
     }
   }
+}
+
+function counted(name: string, unread: number): string {
+  return unread > 0 ? `${name} (${unread})` : name
 }
 
 /** What the keys, and the toolbar, do to the targets. */

@@ -303,7 +303,6 @@ def hostile(page):
             route.continue_()
 
     page.context.route("**/*", sent)
-    title = page.title()
 
     rows = page.get_by_role("list", name="Messages").get_by_role("listitem")
     rows.filter(has_text="Hostile").click()
@@ -348,6 +347,8 @@ def hostile(page):
         ),
     }
     page.screenshot(path=f"{SHOTS}/hostile-{page.context.browser.browser_type.name}.png")
+    # The app's own, naming the mail open, whatever the mail did.
+    title = page.title()
 
     # The app's keys, with the focus in the frame, on the link followed:
     # Escape leaves it, and `u` goes back to the list.
@@ -370,7 +371,7 @@ def hostile(page):
         "beyond": sorted({r.url for r in requests if not r.url.startswith(origin + "/")}),
         "followed": followed,
         "dialogs": dialogs,
-        "title": page.title() == title,
+        "title": title,
         "pages": len(page.context.pages),
         "keys": keys,
     }
