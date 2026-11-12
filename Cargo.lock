@@ -4902,6 +4902,8 @@ dependencies = [
  "ammonia",
  "anyhow",
  "base64 0.22.1",
+ "html5ever 0.40.1",
+ "markup5ever_rcdom",
  "matrix-sdk",
  "mime",
  "serde",
@@ -4915,6 +4917,7 @@ dependencies = [
  "uplink-realtime",
  "uplink-storage",
  "uplink-tx-log",
+ "url",
 ]
 
 [[package]]

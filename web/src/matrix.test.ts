@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { gist, links, permalink, roomLink } from './matrix'
+import { gist, links, mxcPath, permalink, roomLink } from './matrix'
 import type { RoomPreview } from './generated/protocol'
 
 describe('gist', () => {
@@ -60,5 +60,32 @@ describe('permalink', () => {
     expect(permalink('https://matrix.to/#/nobody')).toBeNull()
     expect(permalink('https://matrix.to/#/%E0%A4%A')).toBeNull()
     expect(permalink('https://example.org/#/@bob:example.org')).toBeNull()
+  })
+})
+
+describe('mxcPath', () => {
+  it("is a media's server and id, as the browser takes them as a path", () => {
+    expect(mxcPath('mxc://example.org/abc_D-1')).toBe('example.org/abc_D-1')
+    expect(mxcPath('mxc://example.org:8448/a')).toBe('example.org:8448/a')
+    expect(mxcPath('mxc://[::1]:8448/a')).toBe('[::1]:8448/a')
+  })
+
+  it('of anything a browser would resolve, out of the media, or read otherwise, is none', () => {
+    for (const mxc of [
+      'mxc://../..',
+      'mxc://./a',
+      'mxc://x/..',
+      'mxc://x/%2e%2e',
+      'mxc://x/a/../..',
+      'mxc://x/a?url=b',
+      'mxc://x/a#b',
+      'mxc://x\\..\\../a',
+      'mxc://x/a\tb',
+      'mxc:///a',
+      'mxc://x/',
+      'https://x/a',
+    ]) {
+      expect(mxcPath(mxc), mxc).toBeNull()
+    }
   })
 })

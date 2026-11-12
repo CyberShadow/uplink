@@ -25,6 +25,7 @@ import {
   linkify,
   links,
   media,
+  mxcPath,
   permalink,
   senderColor,
   shown,
@@ -416,13 +417,13 @@ function LinkPreview(props: { room: Room; event: RoomEvent; url: string }) {
     }
   }, [matrix, room.id, event.id, url])
   if (preview === null) return null
-  const image = preview.image?.match(/^mxc:\/\/([^/]+)\/([^/?#]+)$/)
+  const image = preview.image === null ? null : mxcPath(preview.image)
   return (
     <a class={styles.preview} href={url} target="_blank" rel="noopener noreferrer">
       {image && (
         <img
           class={styles.previewImage}
-          src={`/api/rooms/${room.id}/events/${event.id}/preview/${image[1]}/${image[2]}?url=${encodeURIComponent(url)}`}
+          src={`/api/rooms/${room.id}/events/${event.id}/preview/${image}?url=${encodeURIComponent(url)}`}
           alt=""
           loading="lazy"
         />

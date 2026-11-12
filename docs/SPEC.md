@@ -2094,7 +2094,18 @@ attributes the Matrix spec suggests clients show, and no others; links
 open in a new tab; a code block keeps only its `language-*` class; a
 reply's fallback (`mx-reply`) is dropped, as the client shows the reply
 itself. Images show the homeserver's media only (`mxc:`), as the server
-serves them (§9.8); nothing remote loads.
+serves them (§9.8); nothing remote loads. The HTML is in the app's page,
+not a frame: what keeps it there is the sanitizing, and the page's CSP
+(§13.1). Of uplink's own URLs, it has only the event's media's, of
+well-formed `mxc:` URIs (a server name and an id of the spec's
+characters; not `.` or `..` for a server name, which ruma takes, as of
+DNS's characters): a path the browser takes as it is. Otherwise
+dot-segments, which it resolves (`%2e` too), would reach anything of
+uplink's, its fetches of mail's remote images most of all: a message
+would have the server fetch whatever it names as it is shown. The
+client builds the paths of the media events send, of avatars and of
+previews' images so too. `html/hostile.rs` checks it against hostile
+messages, and the `e2e` test in Chromium and Firefox.
 
 The timeline is ordered by `pos`, not by id: ids are in the order
 events were stored, and events fetched later may be earlier. A synced

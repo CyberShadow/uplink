@@ -379,7 +379,38 @@ def hostile(page):
     }
 
 
-STEPS = {f.__name__: f for f in [read, archive, undo, label, search, reply, matrix, todos, home, history, trash, attachment, tabs, hostile]}
+def hostile_matrix(page):
+    """Opens the Planning room, with Bob's hostile message: what it runs,
+    and what is requested, as uplink's fetches of remote images and
+    anyone's beyond uplink."""
+    origin = os.environ["UPLINK_URL"]
+    dialogs = []
+    page.on("dialog", lambda d: (dialogs.append(d.message), d.dismiss()))
+    requests = []
+
+    def sent(route):
+        requests.append(route.request.url)
+        route.continue_()
+
+    page.context.route("**/*", sent)
+    page.get_by_role("navigation").get_by_role("link", name="Planning").click()
+    timeline = page.get_by_role("list", name="Timeline")
+    message = timeline.get_by_role("listitem").filter(has_text="Hostile Matrix")
+    expect(message).to_be_visible(timeout=15000)
+    page.wait_for_timeout(2000)
+    return {
+        "remote": sorted(u for u in requests if u.startswith(f"{origin}/api/remote-image")),
+        "beyond": sorted({u for u in requests if not u.startswith(origin + "/")}),
+        "dialogs": dialogs,
+        "images": [img.get_attribute("src") for img in message.locator("img").all()],
+        "links": [a.get_attribute("href") for a in message.locator("a").all()],
+    }
+
+
+STEPS = {
+    f.__name__: f
+    for f in [read, archive, undo, label, search, reply, matrix, todos, home, history, trash, attachment, tabs, hostile, hostile_matrix]
+}
 
 step = STEPS[sys.argv[1]]
 with sync_playwright() as p:

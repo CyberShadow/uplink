@@ -1,13 +1,12 @@
 import { useState } from 'preact/hooks'
 import type { Room } from '../generated/protocol'
+import { mxcPath } from '../matrix'
 import styles from './RoomAvatar.module.css'
 
 /** Where the server serves the room's avatar `mxc://server/media`. */
 export function avatarPath(room: Room): string | null {
-  const match = room.avatar?.match(/^mxc:\/\/([^/]+)\/([^/]+)$/)
-  if (!match) return null
-  const [, server, media] = match
-  return `/api/rooms/${room.id}/avatar/${encodeURIComponent(server)}/${encodeURIComponent(media)}`
+  const path = room.avatar === null ? null : mxcPath(room.avatar)
+  return path && `/api/rooms/${room.id}/avatar/${path}`
 }
 
 /** What a room without an avatar shows, as Element does: its name's first

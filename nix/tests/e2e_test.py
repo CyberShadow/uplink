@@ -251,4 +251,32 @@ b { font-family: f; background: url(http://t.example/style.gif) }</style><b>bold
         )
         assert result["keys"] == {"in frame": "IFRAME", "escaped": "BODY"}, (browser, result)
 
+with subtest("a hostile Matrix message runs nothing, and has uplink fetch nothing remote"):
+    # Dot-segments, which browsers resolve, out of the event's media to
+    # uplink's fetches of mail's remote images.
+    climb = "../../../../../remote-image/t.example?url=http%3A%2F%2Ft.example%2F"
+    matrix(bob, "PUT", f"/rooms/{room}/send/m.room.message/3", {
+        "msgtype": "m.text",
+        "body": "Hostile Matrix",
+        "format": "org.matrix.custom.html",
+        "formatted_body": (
+            "<p>Hostile Matrix</p>"
+            f'<img src="mxc://localhost/{climb}mx-dots">'
+            f'<img src="mxc://localhost/{climb.replace("..", "%2e%2e")}mx-encoded">'
+            f'<img src="mxc://../..">'
+            '<img src="https://t.example/mx-absolute.png"><img src=x onerror="alert(1)">'
+            f'<a href="/api/rooms/1/events/1/media/x/{climb}mx-link">relative</a>'
+            '<a href="javascript:alert(1)">script</a>'
+        ),
+    })
+    for browser in ["chromium", "firefox"]:
+        result = json.loads(machine.succeed(f"uplink-ui hostile_matrix {browser}"))
+        assert result == {
+            "remote": [],
+            "beyond": [],
+            "dialogs": [],
+            "images": [None, None, None, None, None],
+            "links": [None, None],
+        }, (browser, result)
+
 machine.copy_from_vm("/tmp/screenshots", "")

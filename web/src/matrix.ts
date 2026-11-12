@@ -95,13 +95,23 @@ export function shown(event: RoomEvent): Shown {
   return { msgtype: event.msgtype, body: event.body, html: event.html, content: json(event).content ?? {} }
 }
 
+/** The `server/id` of media `mxc`, as the server's paths of media take
+ * it, if it is a well-formed `mxc:` URI (a server name, of a host and a
+ * port, and an id of the Matrix spec's characters): `null` if not. As a
+ * path, the browser takes it as it is: of the server names the spec's
+ * grammar has, not `.` or `..`, which it would resolve, out of the
+ * media's paths to anything of uplink's. */
+export function mxcPath(mxc: string): string | null {
+  const match = /^mxc:\/\/((?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(?::[0-9]{1,5})?)\/([A-Za-z0-9_-]+)$/.exec(mxc)
+  if (!match || match[1] === '.' || match[1] === '..') return null
+  return `${match[1]}/${match[2]}`
+}
+
 /** Where the server serves the media `mxc` an event names (SPEC §9.8),
  * or a thumbnail of it; `null` if it is not an `mxc:` URI. */
 export function mediaPath(room: RoomId, event: RoomEvent, mxc: string, thumbnail = false): string | null {
-  const match = /^mxc:\/\/([^/]+)\/([^/?#]+)$/.exec(mxc)
-  if (!match) return null
-  const [, server, media] = match
-  return `/api/rooms/${room}/events/${event.id}/${thumbnail ? 'thumbnail' : 'media'}/${encodeURIComponent(server)}/${encodeURIComponent(media)}`
+  const path = mxcPath(mxc)
+  return path && `/api/rooms/${room}/events/${event.id}/${thumbnail ? 'thumbnail' : 'media'}/${path}`
 }
 
 /** The media a message sends, and a thumbnail of it for images and

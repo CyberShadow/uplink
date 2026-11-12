@@ -4,6 +4,7 @@
 //! in the client's stead (SPEC §9.8): nothing remote loads.
 
 use ammonia::{Builder, UrlRelative, UrlRelativeEvaluate};
+use matrix_sdk::ruma::MxcUri;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -11,7 +12,7 @@ use uplink_protocol::matrix::{RoomEventId, RoomId};
 
 /// The tags the Matrix spec suggests clients show
 /// (client-server API, "m.room.message msgtypes").
-const TAGS: &[&str] = &[
+pub(crate) const TAGS: &[&str] = &[
     "font",
     "del",
     "h1",
@@ -83,7 +84,7 @@ pub fn sanitized(room: RoomId, event: RoomEventId, content: &Value) -> Option<St
         ("code", HashSet::from(["class"])),
         ("div", HashSet::from(["data-mx-maths"])),
     ]);
-    let media = format!("/api/rooms/{}/events/{}/media/", room.0, event.0);
+    let media = media_prefix(room, event);
     let served = media.clone();
     let clean = Builder::empty()
         .tags(TAGS.iter().copied().collect())
@@ -94,15 +95,13 @@ pub fn sanitized(room: RoomId, event: RoomEventId, content: &Value) -> Option<St
             "http", "https", "ftp", "mailto", "magnet", "mxc",
         ]))
         // Of uplink's own, only the event's media, as the filter serves them.
-        .url_relative(UrlRelative::Custom(Box::new(Within(served))))
+        .url_relative(UrlRelative::Custom(Box::new(Media(served))))
         // The fallback of a reply, which the client shows on its own.
         .clean_content_tags(HashSet::from(["mx-reply", "script", "style"]))
         .set_tag_attribute_value("a", "target", "_blank")
         .attribute_filter(
             move |element, attribute, value| match (element, attribute) {
-                ("img", "src") => value
-                    .strip_prefix("mxc://")
-                    .map(|mxc| format!("{media}{mxc}").into()),
+                ("img", "src") => media_path(value).map(|path| format!("{media}{path}").into()),
                 (_, _) if value.starts_with("mxc:") => None,
                 // Only the language of a code block.
                 ("code", "class") => {
@@ -116,14 +115,34 @@ pub fn sanitized(room: RoomId, event: RoomEventId, content: &Value) -> Option<St
     Some(clean)
 }
 
-/// Keeps relative URLs under its prefix only.
-struct Within(String);
+/// Where the server serves the media of `event` that its HTML has: its
+/// `server/id` after.
+fn media_prefix(room: RoomId, event: RoomEventId) -> String {
+    format!("/api/rooms/{}/events/{}/media/", room.0, event.0)
+}
 
-impl<'a> UrlRelativeEvaluate<'a> for Within {
+/// The `server/id` of media `mxc`, if it is a well-formed `mxc:` URI, as
+/// a path that a browser takes as it is. Ruma takes `.` and `..` for
+/// server names (of DNS's characters); in a path, a browser resolves
+/// them, to anything of uplink's.
+fn media_path(mxc: &str) -> Option<&str> {
+    let (server, _) = <&MxcUri>::from(mxc).parts().ok()?;
+    (!matches!(server.as_str(), "." | "..")).then(|| &mxc["mxc://".len()..])
+}
+
+/// Keeps relative URLs of the event's media only (under its prefix),
+/// well-formed, as the filter serves them.
+struct Media(String);
+
+impl<'a> UrlRelativeEvaluate<'a> for Media {
     fn evaluate<'url>(&self, url: &'url str) -> Option<Cow<'url, str>> {
-        url.starts_with(&self.0).then_some(Cow::Borrowed(url))
+        let path = url.strip_prefix(&self.0)?;
+        (media_path(&format!("mxc://{path}")) == Some(path)).then_some(Cow::Borrowed(url))
     }
 }
+
+#[cfg(test)]
+mod hostile;
 
 #[cfg(test)]
 mod tests {
@@ -185,6 +204,18 @@ mod tests {
         assert_eq!(
             clean(r#"<a href="mxc://x.org/cat">x</a>"#),
             r#"<a rel="noopener noreferrer" target="_blank">x</a>"#
+        );
+        // Not those that, resolved, would be anything else of uplink's.
+        assert_eq!(
+            clean(
+                r#"<img src="mxc://../cat"><img src="mxc://x.org/../../cat"><img src="mxc://x.org/%2e%2e">"#
+            ),
+            "<img><img><img>"
+        );
+        // A port, an IPv6 address.
+        assert_eq!(
+            clean(r#"<img src="mxc://x.org:8448/cat"><img src="mxc://[::1]/cat">"#),
+            r#"<img src="/api/rooms/3/events/7/media/x.org:8448/cat"><img src="/api/rooms/3/events/7/media/[::1]/cat">"#
         );
     }
 

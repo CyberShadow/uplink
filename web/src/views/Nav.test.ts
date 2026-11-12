@@ -137,7 +137,7 @@ describe('roomTree', () => {
 describe('room avatars', () => {
   it('are served at a path naming them', () => {
     const room = { id: 7, avatar: 'mxc://example.org:8448/AbC_d-1' } as Room
-    expect(avatarPath(room)).toBe('/api/rooms/7/avatar/example.org%3A8448/AbC_d-1')
+    expect(avatarPath(room)).toBe('/api/rooms/7/avatar/example.org:8448/AbC_d-1')
     expect(avatarPath({ ...room, avatar: null })).toBeNull()
     expect(avatarPath({ ...room, avatar: 'https://example.org/a' })).toBeNull()
   })
