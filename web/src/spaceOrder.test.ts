@@ -15,6 +15,7 @@ const space = (name: string, space_order: string | null = null): Room => ({
   read_up_to: null,
   fully_read: null,
   mentions: 0,
+  preview: null,
   pending: null,
   membership_error: null,
   space: true,

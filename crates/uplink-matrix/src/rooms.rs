@@ -24,7 +24,7 @@ use std::collections::HashSet;
 use uplink_protocol::{
     matrix::{
         Encryption, EventEdit, GapId, MatrixSendsChanged, Membership, Reaction, Reactor,
-        ReadMarker, RepliedEvent, Room, RoomEvent, RoomEventId, RoomId, RoomsChanged,
+        ReadMarker, RepliedEvent, Room, RoomEvent, RoomEventId, RoomId, RoomPreview, RoomsChanged,
         ThreadSummary, TimelineAdded, TimelineChanged, TimelineFilled, TimelineGap, TimelinePage,
     },
     ServerEvent,
@@ -1125,8 +1125,22 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
                     (SELECT e.id FROM matrix_event e WHERE e.room = r.id AND {MAIN} AND {LISTED}
                      ORDER BY e.pos DESC LIMIT 1),
                     r.alias, r.fully_read, {fully_pos},
-                    (SELECT count(*) FROM matrix_event e WHERE {after_fully} AND e.highlight)
+                    (SELECT count(*) FROM matrix_event e WHERE {after_fully} AND e.highlight),
+                    p.id, p.sender, p.sender_name, p.type,
+                    coalesce(json_extract(pe.raw_json, '$.content.\"m.new_content\".msgtype'), p.msgtype),
+                    coalesce(json_extract(pe.raw_json, '$.content.\"m.new_content\".body'), p.body)
              FROM matrix_room r
+             -- Its preview: its latest message, and that's latest edit.
+             LEFT JOIN matrix_event p ON p.id = (
+               SELECT e.id FROM matrix_event e
+               WHERE e.room = r.id AND e.type IN ('m.room.message', 'm.room.encrypted')
+                 AND NOT e.redacted AND {LISTED} AND {MAIN}
+               ORDER BY e.pos DESC LIMIT 1)
+             LEFT JOIN matrix_event pe ON pe.id = (
+               SELECT e.id FROM matrix_event t
+               JOIN matrix_event e ON e.room = t.room AND e.relates_to = t.event_id
+               WHERE t.id = p.id AND {EDIT}
+               ORDER BY e.ts DESC, e.event_id DESC LIMIT 1)
              WHERE r.account_id = ?1 AND (r.membership != 'left' OR r.desired = 'joined')
              ORDER BY 8 DESC NULLS LAST, r.id",
             read_pos = pos_of("r.read_up_to"),
@@ -1182,6 +1196,17 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
                     _ => unreachable!("a fully-read marker is of a stored event"),
                 },
                 mentions: r.get(28)?,
+                preview: match r.get::<_, Option<i64>>(29)? {
+                    Some(event) => Some(RoomPreview {
+                        event: RoomEventId(event),
+                        sender: r.get(30)?,
+                        sender_name: r.get(31)?,
+                        kind: r.get(32)?,
+                        msgtype: r.get(33)?,
+                        body: r.get(34)?,
+                    }),
+                    None => None,
+                },
             })
         })?
         .collect::<Result<_, _>>()?)

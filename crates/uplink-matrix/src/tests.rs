@@ -1960,6 +1960,27 @@ mod query {
         assert!(matching("deploy is:todo").is_empty());
         assert!(matching("in:inbox OR subject:deploy").is_empty());
         assert_eq!(matching("deploy is:room").len(), 5);
+
+        // Each room's preview is its latest message, as last edited (the
+        // edit is not one of its own); a room with none has none.
+        let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
+        let tx = conn.transaction().unwrap();
+        let rooms = crate::rooms::rooms(&tx, "mx", ME).unwrap();
+        let preview = |name: &str| {
+            let room = rooms.iter().find(|r| r.name == name).unwrap();
+            room.preview
+                .as_ref()
+                .map(|p| (p.sender.clone(), p.body.clone()))
+        };
+        assert_eq!(
+            preview("Team chat"),
+            Some(("@carol:x".into(), Some("Deploy at noon?".into())))
+        );
+        assert_eq!(
+            preview("Bob"),
+            Some(("@bob:x".into(), Some("100% deployed".into())))
+        );
+        assert_eq!(preview("Work"), None);
     }
 }
 

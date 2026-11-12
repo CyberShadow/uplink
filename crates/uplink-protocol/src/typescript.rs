@@ -71,6 +71,7 @@ fn declarations() -> String {
         Recovery,
         MatrixDevice,
         ReadMarker,
+        RoomPreview,
         GapId,
         TimelineGap,
         TimelineFilled,

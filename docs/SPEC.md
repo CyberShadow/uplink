@@ -3112,7 +3112,9 @@ bucket that matches it. Unlike a search, a label or tag no kind has is
 false rather than an error, since the default buckets name Gmail's
 labels and Element's tags, which some accounts lack. A bucket's rows are
 its to-dos (by due date), its events, then its mail and rooms, the most
-recently active first; it shows 20 at most (the client's `limit`), its
+recently active first (a room's row says, as mail's its subject and
+snippet, what is new — `3 new`, `2 mentioning you` — and its latest
+message, `Bob: Lunch?`, as last edited: `Room.preview`); it shows 20 at most (the client's `limit`), its
 count saying `20+` when there may be more mail, with a link "Show all"
 to the bucket's query as a search; its heading links there too, however
 many it shows, to work through the bucket as a list. Mail opens within that search, so `j`

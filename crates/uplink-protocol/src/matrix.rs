@@ -76,6 +76,8 @@ pub struct Room {
     /// Messages from others after it that mention the account: they are
     /// unread however the read marker moved (`is:mention`).
     pub mentions: u32,
+    /// Its latest message, as lists of rooms show it (SPEC §12.13).
+    pub preview: Option<RoomPreview>,
     /// A change the user asked for that has yet to take effect.
     pub pending: Option<MembershipChange>,
     /// Why the homeserver refused the last change asked for.
@@ -113,6 +115,21 @@ pub enum Encryption {
     Decrypted,
     /// Encrypted, and uplink has not got the key.
     Undecryptable,
+}
+
+/// A room's latest message in its main timeline, as last edited: of
+/// anyone, the account's own too.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RoomPreview {
+    pub event: RoomEventId,
+    pub sender: String,
+    pub sender_name: Option<String>,
+    /// `m.room.message`, or `m.room.encrypted` if undecryptable.
+    pub kind: String,
+    pub msgtype: Option<String>,
+    /// `None` if undecryptable.
+    pub body: Option<String>,
 }
 
 /// A message a search found, in its room.

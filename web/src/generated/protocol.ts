@@ -179,6 +179,20 @@ current: boolean, };
  */
 export type ReadMarker = { event: RoomEventId, pos: number, };
 
+/**
+ * A room's latest message in its main timeline, as last edited: of
+ * anyone, the account's own too.
+ */
+export type RoomPreview = { event: RoomEventId, sender: string, sender_name: string | null, 
+/**
+ * `m.room.message`, or `m.room.encrypted` if undecryptable.
+ */
+kind: string, msgtype: string | null, 
+/**
+ * `None` if undecryptable.
+ */
+body: string | null, };
+
 export type GapId = number;
 
 /**
@@ -873,6 +887,10 @@ fully_read: ReadMarker | null,
  */
 mentions: number, 
 /**
+ * Its latest message, as lists of rooms show it (SPEC §12.13).
+ */
+preview: RoomPreview | null, 
+/**
  * A change the user asked for that has yet to take effect.
  */
 pending: MembershipChange | null, 
@@ -1258,4 +1276,4 @@ exception: boolean, };
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "d040235c27e276bf"
+export const PROTOCOL_VERSION = "a4dd00d26ffc776e"

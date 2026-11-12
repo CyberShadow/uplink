@@ -2636,6 +2636,12 @@ describe('home', () => {
     const user = await start('/')
     expect(screen.getByRole('link', { name: /^Home/ }).getAttribute('aria-current')).toBe('page')
     await waitFor(() => expect(bucketRows('Now')).toEqual(['Lobby']))
+    const detail = () =>
+      within(screen.getByRole('region', { name: 'Now' })).getAllByRole('listitem')[0].querySelector('[class*=detail]')!.textContent
+    // A room says what its latest message does, as mail its snippet.
+    expect(detail()).toBe('Bob: Hello there')
+    server.receive(lobby.id, { body: 'Lunch?\nAt noon', sender_name: 'Carol', sender: '@carol:example.org' })
+    await waitFor(() => expect(detail()).toBe('2 new — Carol: Lunch? At noon'))
     expect(bucketRows('Inbox')).toHaveLength(3)
     expect(within(screen.getByRole('region', { name: 'Later' })).getByText('Nothing.')).toBeTruthy()
     expect(within(screen.getByRole('navigation', { name: 'Buckets' })).getAllByRole('button').map((b) => b.textContent)).toEqual([

@@ -7,6 +7,7 @@ import type { Requester } from '../connection'
 import { RequestError } from '../connection'
 import type {
   Attachment,
+  RoomPreview,
   Place,
   Account,
   CalendarEvent,
@@ -83,6 +84,20 @@ interface Undoable {
 }
 
 const NO_POWERS: RoomPowers = { invite: false, name: false, topic: false }
+
+/** A room's latest message as the server previews it, as last edited. */
+function preview(event: RoomEvent | undefined): RoomPreview | null {
+  if (!event) return null
+  const edited = event.edit && (JSON.parse(event.edit.content) as { msgtype?: string; body?: string })
+  return {
+    event: event.id,
+    sender: event.sender,
+    sender_name: event.sender_name,
+    kind: event.kind,
+    msgtype: edited?.msgtype ?? event.msgtype,
+    body: edited?.body ?? event.body,
+  }
+}
 
 export class FakeServer implements Requester, Blobs {
   readonly requests: ClientRequest[] = []
@@ -310,6 +325,7 @@ export class FakeServer implements Requester, Blobs {
       read_up_to: null,
       fully_read: null,
       mentions: 0,
+      preview: null,
       pending: null,
       membership_error: null,
       space: false,
@@ -523,6 +539,7 @@ export class FakeServer implements Requester, Blobs {
         highlighted,
         last_event_ts: events.at(-1)?.ts ?? null,
         latest: events.filter((e) => e.thread_root === null).at(-1)?.id ?? null,
+        preview: preview(events.findLast((e) => e.thread_root === null && e.kind === 'm.room.message' && !e.redacted)),
       }
     })
   }

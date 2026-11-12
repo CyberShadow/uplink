@@ -1,5 +1,26 @@
 import { describe, expect, it } from 'vitest'
-import { links, permalink, roomLink } from './matrix'
+import { gist, links, permalink, roomLink } from './matrix'
+import type { RoomPreview } from './generated/protocol'
+
+describe('gist', () => {
+  const said = (fields: Partial<RoomPreview>): RoomPreview => ({
+    event: 1,
+    sender: '@bob:x',
+    sender_name: 'Bob',
+    kind: 'm.room.message',
+    msgtype: 'm.text',
+    body: 'Hi',
+    ...fields,
+  })
+  it('says who said what, the account as You, media and emotes in words', () => {
+    expect(gist(said({}), '@me:x')).toBe('Bob: Hi')
+    expect(gist(said({ sender: '@me:x' }), '@me:x')).toBe('You: Hi')
+    expect(gist(said({ sender_name: null }), '@me:x')).toBe('bob: Hi')
+    expect(gist(said({ msgtype: 'm.image', body: 'cat.png' }), '@me:x')).toBe('Bob sent an image')
+    expect(gist(said({ msgtype: 'm.emote', body: 'waves' }), '@me:x')).toBe('* Bob waves')
+    expect(gist(said({ kind: 'm.room.encrypted', msgtype: null, body: null }), '@me:x')).toBe('Bob: Unable to decrypt')
+  })
+})
 
 describe('links', () => {
   it('of HTML, are its links, not what the text says', () => {

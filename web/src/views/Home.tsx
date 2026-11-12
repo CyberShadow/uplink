@@ -23,6 +23,7 @@ import { RoomAvatar } from './RoomAvatar'
 import { RoomTagPicker } from './RoomTagPicker'
 import { messagePath } from './Todos'
 import { FAVOURITE } from '../roomTags'
+import { gist } from '../matrix'
 import styles from './Home.module.css'
 
 /** How many a bucket lists: `20+` if there may be more mail. */
@@ -181,7 +182,7 @@ export function Home() {
 }
 
 function RowView(props: { row: Row }) {
-  const { mail } = useServices()
+  const { mail, matrix } = useServices()
   const { row } = props
   switch (row.kind) {
     case 'todo': {
@@ -226,19 +227,26 @@ function RowView(props: { row: Row }) {
     }
     case 'room': {
       const { room } = row
-      const invited = room.membership === 'invited'
+      const me = matrix.accounts.value!.find((a) => a.id === room.account)!.mxid
+      // As mail's subject before its snippet: what is new, then what the
+      // latest message says.
+      const counted =
+        room.membership === 'invited'
+          ? 'Invited'
+          : room.highlighted > 0
+            ? `${room.highlighted} mentioning you`
+            : room.unread > 1
+              ? `${room.unread} new`
+              : null
+      const said = room.preview && gist(room.preview, me)
       return (
         <>
           <RoomAvatar room={room} class={styles.kind} />
           <span class={styles.title}>{room.name}</span>
           <span class={styles.detail}>
-            {invited
-              ? 'Invited'
-              : room.highlighted > 0
-                ? `${room.highlighted} mentioning you`
-                : room.unread > 0
-                  ? `${room.unread} unread`
-                  : ''}
+            {counted !== null && <span class={styles.subject}>{counted}</span>}
+            {counted !== null && said && ' — '}
+            {said}
           </span>
           <span class={styles.when}>{room.last_event_ts === null ? '' : brief(room.last_event_ts)}</span>
         </>

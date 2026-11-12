@@ -1,6 +1,6 @@
 // What Matrix events and sends say, as the views show it (SPEC §9).
 
-import type { MatrixContent, MemberAction, RoomEvent, RoomId } from './generated/protocol'
+import type { MatrixContent, MemberAction, RoomEvent, RoomId, RoomPreview } from './generated/protocol'
 
 /** Message types of text: shown as such, and edited. */
 export const TEXT = new Set(['m.text', 'm.notice', 'm.emote'])
@@ -131,6 +131,25 @@ export function senderColor(user: string): string {
   let hash = 0
   for (let i = 0; i < user.length; i++) hash = (hash * 31 + user.charCodeAt(i)) | 0
   return SENDER_COLORS[Math.abs(hash) % SENDER_COLORS.length]
+}
+
+/** What a room's latest message says, in a line (SPEC §12.13): `You`
+ * for the account's own. */
+export function gist(preview: RoomPreview, me: string): string {
+  const who = preview.sender === me ? 'You' : displayName(preview.sender, preview.sender_name)
+  if (preview.body === null) return `${who}: ${preview.kind === 'm.room.encrypted' ? 'Unable to decrypt' : preview.kind}`
+  const sent = MEDIA[preview.msgtype ?? '']
+  if (sent) return `${who} sent ${sent}`
+  if (preview.msgtype === 'm.emote') return `* ${who} ${preview.body}`
+  // A line: its line breaks are spaces.
+  return `${who}: ${preview.body.replace(/\s+/g, ' ')}`
+}
+
+const MEDIA: Record<string, string> = {
+  'm.image': 'an image',
+  'm.video': 'a video',
+  'm.audio': 'audio',
+  'm.file': 'a file',
 }
 
 /** `@alice:example.org`'s name: as the event gives it, else its localpart. */
