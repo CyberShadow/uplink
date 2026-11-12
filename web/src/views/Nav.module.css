@@ -144,14 +144,6 @@
   color: var(--muted);
 }
 
-.count.alert {
-  font-weight: 600;
-  padding: 0 6px;
-  border-radius: 8px;
-  background: var(--error-bg);
-  color: var(--error-fg);
-}
-
 .dot {
   flex: none;
   width: 8px;

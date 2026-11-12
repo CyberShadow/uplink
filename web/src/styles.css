@@ -16,6 +16,9 @@
   --unread-bg: #fff;
   --error-bg: #fce8e6;
   --error-fg: #a50e0e;
+  /* Grey counts' pills: of what is unread. */
+  --badge-bg: #e8eaed;
+  --badge-fg: #3c4043;
   --ok: #1e8e3e;
   /* Words found, as search marks them. */
   --mark: #fde68a;
@@ -43,6 +46,8 @@
     --unread-bg: #202424;
     --error-bg: #5c1c1c;
     --error-fg: #f6aea9;
+    --badge-bg: #3c4043;
+    --badge-fg: #d6d2cc;
     --ok: #81c995;
     --mark: #6b5310;
   }

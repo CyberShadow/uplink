@@ -14,6 +14,7 @@ import { roomPath } from './Room'
 import { NotificationsItem } from './Notifications'
 import { awaitsUser, securityPath } from './Security'
 import styles from './Nav.module.css'
+import { Badge, type BadgeTone } from './Badge'
 import { Icon, type IconName } from './Icon'
 import { RoomAvatar } from './RoomAvatar'
 import { RoomStarter } from './RoomStarter'
@@ -278,7 +279,9 @@ function roomsIn(node: RoomNode, seen = new Set<string>()): Room[] {
 
 /** A count's look: as any, quietly; or red, as what needs the user's
  * attention. */
-type Tone = 'plain' | 'alert'
+/** A nav place's count: a `size` (how many there are) is a plain number,
+ * the others a `Badge`'s. */
+type Tone = 'size' | BadgeTone
 
 const marked = (mark: Mark) => mark.count > 0 || mark.dot
 
@@ -318,7 +321,7 @@ export function Nav(props: { open: boolean }) {
     name: string,
     count: number,
     depth = 0,
-    tone: Tone = 'plain',
+    tone: Tone = 'size',
     bold = false,
     mark: Mark = NONE,
   ) => {
@@ -334,13 +337,14 @@ export function Nav(props: { open: boolean }) {
       >
         {lead}
         <span class={styles.name}>{name}</span>
+        <MarkDot mark={mark} />
         <Count count={count} tone={tone} />
-        <PlaceMark mark={mark} />
+        <MarkCount mark={mark} />
       </a>
     )
   }
-  const item = (href: string, icon: IconName, name: string, count: number, alert = false, mark: Mark = NONE) => (
-    <li key={href}>{link(href, <Icon name={icon} />, name, count, 0, alert ? 'alert' : 'plain', false, mark)}</li>
+  const item = (href: string, icon: IconName, name: string, count: number, tone: Tone = 'size', mark: Mark = NONE) => (
+    <li key={href}>{link(href, <Icon name={icon} />, name, count, 0, tone, false, mark)}</li>
   )
   const labelItem = (account: Account, label: Label) => (
     <li key={label.id}>
@@ -350,7 +354,7 @@ export function Nav(props: { open: boolean }) {
         labelName(account, label),
         label.unread,
         0,
-        'plain',
+        'unread',
         false,
         marks.label(label),
       )}
@@ -381,7 +385,7 @@ export function Nav(props: { open: boolean }) {
             node.name,
             node.label.unread,
             depth,
-            'plain',
+            'unread',
             false,
             folded ? strongest(labelsIn(node).map(marks.label)) : marks.label(node.label),
           )
@@ -449,7 +453,7 @@ export function Nav(props: { open: boolean }) {
             room.membership === 'invited' ? `${room.name} (invited)` : room.name,
             0,
             depth,
-            'plain',
+            'size',
             room.unread > 0,
             marks.room(room),
           )}
@@ -502,24 +506,24 @@ export function Nav(props: { open: boolean }) {
   // request does.
   const securityItem = (account: string) => {
     const awaiting = matrix.security(account).state.value?.verifications.filter(awaitsUser).length ?? 0
-    return item(securityPath(account), 'shield', 'Security', awaiting, awaiting > 0)
+    return item(securityPath(account), 'shield', 'Security', awaiting, 'alert')
   }
   const outbox = drafts.outbox.value ?? []
-  const counts: Record<string, [number, boolean]> = {
-    [inboxPath()]: [mail.accounts.value?.reduce((unread, account) => unread + inboxUnread(account), 0) ?? 0, false],
-    '/': [0, false],
-    '/drafts': [drafts.drafts.value?.size ?? 0, false],
-    '/outbox': [outboxCount(outbox), outboxNeedsAttention(outbox)],
-    '/history': [0, false],
-    '/todos': [todos.todos.value?.filter((t) => t.done_at === null).length ?? 0, false],
-    '/calendar': [0, false],
+  const counts: Record<string, [number, Tone]> = {
+    [inboxPath()]: [mail.accounts.value?.reduce((unread, account) => unread + inboxUnread(account), 0) ?? 0, 'unread'],
+    '/': [0, 'size'],
+    '/drafts': [drafts.drafts.value?.size ?? 0, 'size'],
+    '/outbox': [outboxCount(outbox), outboxNeedsAttention(outbox) ? 'alert' : 'size'],
+    '/history': [0, 'size'],
+    '/todos': [todos.todos.value?.filter((t) => t.done_at === null).length ?? 0, 'size'],
+    '/calendar': [0, 'size'],
   }
   return (
     <nav ref={nav} class={props.open ? `${styles.nav} ${styles.open}` : styles.nav}>
       <ul>
         {views(mail.accounts.value ?? []).map((view) => {
-          const [count, alert] = counts[view.href]!
-          return item(view.href, view.icon, view.name, count, alert, marks.view(view.href))
+          const [count, tone] = counts[view.href]!
+          return item(view.href, view.icon, view.name, count, tone, marks.view(view.href))
         })}
       </ul>
       {mail.accounts.value?.map((account) => (
@@ -533,7 +537,7 @@ export function Nav(props: { open: boolean }) {
           mark={marks.account(account.id)}
         >
           {navLabels(account).system.map((label) => labelItem(account, label))}
-          {item(allMailPath(account.id), 'mails', 'All Mail', 0, false, marks.account(account.id))}
+          {item(allMailPath(account.id), 'mails', 'All Mail', 0, 'size', marks.account(account.id))}
           {labelTree(navLabels(account).user).map((node) => labelNode(account, node, 0))}
         </Section>
       ))}
@@ -607,31 +611,37 @@ function useReveal(path: string, open: boolean, nav: RefObject<HTMLElement>) {
 function Count(props: { count: number; tone: Tone }) {
   if (props.count === 0) return null
   const { tone } = props
-  return (
-    <span
-      class={tone === 'plain' ? styles.count : `${styles.count} ${styles[tone]}`}
-      title={
-        tone === 'alert' ? 'Something needs your attention' : undefined
-      }
-    >
-      {props.count}
-    </span>
-  )
+  switch (tone) {
+    case 'size':
+      return <span class={styles.count}>{props.count}</span>
+    case 'alert':
+      return <Badge count={props.count} tone="alert" title="Something needs your attention" />
+    case 'unread':
+      return <Badge count={props.count} tone="unread" title="Unread" />
+  }
 }
 
 /** A place's mark (SPEC §12.14): of the count buckets' items in it, in
  * red; else a dot, while a dot bucket's item in it is unseen. */
 export function PlaceMark(props: { mark: Mark }) {
-  const { mark } = props
-  if (mark.count > 0) {
-    return (
-      <span class={`${styles.count} ${styles.alert}`} title="Needs your attention">
-        {mark.count > 99 ? '99+' : mark.count}
-      </span>
-    )
-  }
-  if (mark.dot) return <span class={styles.dot} title="Something new" />
-  return null
+  return (
+    <>
+      <MarkDot mark={props.mark} />
+      <MarkCount mark={props.mark} />
+    </>
+  )
+}
+
+/** A mark's dot, before a place's own count: it comes and goes as the
+ * place is seen, which would otherwise move the count. */
+function MarkDot(props: { mark: Mark }) {
+  if (props.mark.count > 0 || !props.mark.dot) return null
+  return <span class={styles.dot} title="Something new" />
+}
+
+/** A mark's red count, after a place's own. */
+function MarkCount(props: { mark: Mark }) {
+  return <Badge count={props.mark.count} tone="alert" title="Needs your attention" />
 }
 
 /** The marks of the nav's places, as the server last said. */
@@ -714,8 +724,9 @@ function Section(props: {
           <Icon name={folded ? 'chevron-right' : 'chevron-down'} />
           <span class={folded && props.bold ? `${styles.name} ${styles.bold}` : styles.name}>{props.title}</span>
           {props.status}
-          {folded && props.unread > 0 && <span class={styles.count}>{props.unread}</span>}
-          {folded && <PlaceMark mark={props.mark} />}
+          {folded && <MarkDot mark={props.mark} />}
+          {folded && <Badge count={props.unread} tone="unread" title="Unread" />}
+          {folded && <MarkCount mark={props.mark} />}
         </button>
       </h2>
       {!folded && <ul>{props.children}</ul>}

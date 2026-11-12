@@ -26,6 +26,7 @@ import { messagePath } from './Todos'
 import styles from './Mail.module.css'
 import { fileSize } from './size'
 import { brief, dateTime } from '../format'
+import { Badge } from './Badge'
 import { Icon, type IconName } from './Icon'
 import { inboxUnread, labelName } from './Nav'
 import { useTitle } from '../title'
@@ -527,6 +528,7 @@ function MessageList(props: { mail: MailStore; open: (conversation: Conversation
         const isFlagged = thread.entries.some((e) => todos.flagged.value.has(e.message))
         const isSelected = mail.selected.value.has(key)
         const count = thread.entries.length
+        const unread = mail.countHaving(thread, 'UNREAD')
         return (
           <li
             key={key}
@@ -535,7 +537,7 @@ function MessageList(props: { mail: MailStore; open: (conversation: Conversation
               styles.row,
               isFocused && styles.focused,
               isSelected && styles.selected,
-              mail.having(thread, 'UNREAD') && styles.unread,
+              unread > 0 && styles.unread,
             ]
               .filter(Boolean)
               .join(' ')}
@@ -559,13 +561,16 @@ function MessageList(props: { mail: MailStore; open: (conversation: Conversation
               {count > 1 && <span class={styles.count}> {count}</span>}
             </span>
             <span class={styles.summary}>
-              <span class={styles.tags}>
-                {isFlagged && <Flag />}
-                {address(latest.account) && <span class={styles.account}>{address(latest.account)}</span>}
-                <LabelChips mail={mail} thread={thread} />
+              <span class={styles.text}>
+                <span class={styles.tags}>
+                  {isFlagged && <Flag />}
+                  {address(latest.account) && <span class={styles.account}>{address(latest.account)}</span>}
+                  <LabelChips mail={mail} thread={thread} />
+                </span>
+                <span class={styles.subject}>{latest.subject ?? '(no subject)'}</span>
+                <span class={styles.snippet}>{latest.snippet}</span>
               </span>
-              <span class={styles.subject}>{latest.subject ?? '(no subject)'}</span>
-              <span class={styles.snippet}>{latest.snippet}</span>
+              <UnreadOf unread={unread} one={count === 1} class={styles.badge} />
             </span>
             <span class={styles.clip}>
               {conversation.has_attachments && (
@@ -581,6 +586,18 @@ function MessageList(props: { mail: MailStore; open: (conversation: Conversation
         )
       })}
     </ul>
+  )
+}
+
+/** Of a conversation (or a room), how many of its messages are unread,
+ * at its row's end, apart from the count after its senders: unless it
+ * has `one` message, whose being unread the row's bold says. */
+export function UnreadOf(props: { unread: number; one: boolean; class: string }) {
+  if (props.unread === 0 || props.one) return null
+  return (
+    <span class={props.class}>
+      <Badge count={props.unread} tone="unread" title={props.unread === 1 ? '1 unread' : `${props.unread} unread`} />
+    </span>
   )
 }
 

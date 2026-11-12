@@ -3176,6 +3176,18 @@ homeserver's notification counts, which Element shows, are the mark's
 now). The place on show has its background only, not bold, so that it
 is not taken for unread.
 
+Counts look alike wherever they are (`Badge`): of what needs the user
+(a mark's, mentions), a red pill; of what is unread, a grey pill (a
+label's, a folded section's, All inboxes'); of how many there are (a
+conversation's messages, Drafts, To-dos, a bucket's items), a plain
+grey number. A row of mail, at home or in a list, has its messages'
+count after its senders, as Gmail's, and how many are unread at the end
+of its subject and snippet, apart (as Thunderbird's Total and Unread
+columns, and Telegram's chats' pills at their right): unless it is of
+one message, whose being unread its bold says. A room's row has, at the
+end of its latest message, its mentions (`@2`, red), then how many are
+unread.
+
 The server derives and pushes them (`Badges`, §5.5), as home lists the
 buckets (`ListHome`): of each badged bucket, its items, up to
 `BADGE_LIMIT` (100), each by its latest activity (`Activity`: mail by

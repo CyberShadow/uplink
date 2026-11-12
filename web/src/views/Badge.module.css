@@ -1,0 +1,22 @@
+.badge {
+  flex: none;
+  display: inline-block;
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.alert {
+  background: var(--error-bg);
+  color: var(--error-fg);
+}
+
+.unread {
+  background: var(--badge-bg);
+  color: var(--badge-fg);
+}

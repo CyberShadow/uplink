@@ -385,8 +385,9 @@ cd web && pnpm install && pnpm test   # web tests
 ```
 
 For working on the UI, run `uplink serve` (on the example's
-`127.0.0.1:8443`) and `cd web && UPLINK_DEV_AUTH=alice:uplink pnpm dev`,
-then open <http://localhost:5173/>. Vite proxies `/ws` to the server,
+`127.0.0.1:8443`, or another at `UPLINK_DEV_SERVER=host:port`) and
+`cd web && UPLINK_DEV_AUTH=alice:uplink pnpm dev`, then open
+<http://localhost:5173/>. Vite proxies `/ws` to the server,
 adding those credentials.
 
 `web/src/generated/protocol.ts` is generated from `crates/uplink-protocol`;

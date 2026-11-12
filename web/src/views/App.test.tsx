@@ -113,6 +113,10 @@ describe('mail', () => {
       expect(subjects()).toEqual(['Re: Plans', 'First', 'Second', 'Third'])
       expect(rows()[0].querySelector('[class*=from]')!.textContent).toBe('Alice, me, Bob 3')
       expect(rows()[0].className).toMatch(/unread/)
+      // How many of them are unread, at the row's end; of a conversation
+      // of one, its bold says.
+      expect(rows()[0].querySelector('[title$=unread]')!.textContent).toBe('1')
+      expect(rows()[1].querySelector('[title$=unread]')).toBeNull()
     })
 
     it('stars the latest message, and unstars every one', async () => {
@@ -1848,7 +1852,7 @@ describe('room timeline', () => {
     await within(timeline()).findByText('Last')
     const bar = screen.getByRole('toolbar', { name: 'Catching up' })
     expect(within(bar).getByTitle(/^Jump to first unread/).textContent).toBe('3 new messages')
-    expect(within(bar).getByTitle(/^Jump to the mention/).textContent).toBe('@ 1')
+    expect(within(bar).getByTitle(/^Jump to the mention/).textContent).toBe('@1')
     // The latest on screen is read, by its showing; catching up waits for
     // what is before it.
     scrolledTo(line('Last'))
@@ -1862,7 +1866,7 @@ describe('room timeline', () => {
     )
     // The mention, not yet shown, still counts.
     await waitFor(() => expect(within(bar).getByTitle(/^Jump to first unread/).textContent).toBe('2 new messages'))
-    expect(within(bar).getByTitle(/^Jump to the mention/).textContent).toBe('@ 1')
+    expect(within(bar).getByTitle(/^Jump to the mention/).textContent).toBe('@1')
     // The "New" line stays where catching up was when the room opened.
     expect(line('First').previousElementSibling!.textContent).toBe('New')
     // Out of the box, then done with the room.
@@ -2636,12 +2640,15 @@ describe('home', () => {
     const user = await start('/')
     expect(screen.getByRole('link', { name: /^Home/ }).getAttribute('aria-current')).toBe('page')
     await waitFor(() => expect(bucketRows('Now')).toEqual(['Lobby']))
-    const detail = () =>
-      within(screen.getByRole('region', { name: 'Now' })).getAllByRole('listitem')[0].querySelector('[class*=detail]')!.textContent
-    // A room says what its latest message does, as mail its snippet.
-    expect(detail()).toBe('Bob: Hello there')
+    const detail = () => {
+      const row = within(screen.getByRole('region', { name: 'Now' })).getAllByRole('listitem')[0]
+      return [row.querySelector('[class*=text]')!.textContent, row.querySelector('[title$=unread]')?.textContent]
+    }
+    // A room says what its latest message does, as mail its snippet, and
+    // at the end how many are unread.
+    expect(detail()).toEqual(['Bob: Hello there', '1'])
     server.receive(lobby.id, { body: 'Lunch?\nAt noon', sender_name: 'Carol', sender: '@carol:example.org' })
-    await waitFor(() => expect(detail()).toBe('2 new — Carol: Lunch? At noon'))
+    await waitFor(() => expect(detail()).toEqual(['Carol: Lunch? At noon', '2']))
     expect(bucketRows('Inbox')).toHaveLength(3)
     expect(within(screen.getByRole('region', { name: 'Later' })).getByText('Nothing.')).toBeTruthy()
     expect(within(screen.getByRole('navigation', { name: 'Buckets' })).getAllByRole('button').map((b) => b.textContent)).toEqual([

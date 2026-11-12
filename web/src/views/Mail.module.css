@@ -133,9 +133,28 @@
 }
 
 .from,
-.summary {
+.summary .text {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* The subject and snippet, then how many are unread at the end: apart
+   from the count after the senders, which is of all. */
+.summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.summary .text {
+  flex: 1;
+  min-width: 0;
+}
+
+.badge {
+  flex: none;
+  display: flex;
 }
 
 /* A conversation's count of messages. */
@@ -271,7 +290,7 @@
     grid-template-areas:
       'select from date'
       'select subject star'
-      'select snippet star'
+      'select snippet badge'
       'select tags clip';
     column-gap: 12px;
     padding: 10px 16px 10px 8px;
@@ -292,8 +311,14 @@
     font-size: 15px;
   }
 
-  .row .summary {
+  .row .summary,
+  .row .summary .text {
     display: contents;
+  }
+
+  .row .badge {
+    grid-area: badge;
+    justify-self: end;
   }
 
   .row .subject,

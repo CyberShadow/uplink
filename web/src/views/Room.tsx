@@ -28,6 +28,7 @@ import { date, dateTime, time } from '../format'
 import { TEXT, displayName, sendSummary, senderColor, shown } from '../matrix'
 import { mention } from './Autocomplete'
 import { EventRow, type Line, type LineActions, lineActions, MembershipRun, type Reacting, reveal, type Overlay } from './RoomEvent'
+import { Badge } from './Badge'
 import { Icon } from './Icon'
 import { RoomSearch } from './RoomSearch'
 import { Composer, type Mode } from './RoomComposer'
@@ -871,7 +872,7 @@ function CatchUp(props: { reading: Reading }) {
       </button>
       {mentions.length > 0 && (
         <button type="button" class={styles.mentions} title="Jump to the mention (Shift+PgDn)" onMouseDown={keepFocus} onClick={nextMention}>
-          @ {mentions.length}
+          <Badge count={mentions.length} tone="alert" prefix="@" title="Mentioning you" />
         </button>
       )}
       <button type="button" class={styles.link} title="Mark as read (Esc)" onMouseDown={keepFocus} onClick={markRead}>

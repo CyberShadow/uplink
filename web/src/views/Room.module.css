@@ -965,12 +965,9 @@ button.sender:hover .name {
 }
 
 .mentions {
-  padding: 0 6px;
+  display: flex;
+  padding: 0;
   border: none;
-  border-radius: 8px;
-  background: var(--error-fg);
-  color: var(--bg);
-  font: inherit;
-  font-weight: bold;
+  background: none;
   cursor: pointer;
 }

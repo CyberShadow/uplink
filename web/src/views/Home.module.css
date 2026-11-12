@@ -130,11 +130,32 @@
   color: var(--muted);
 }
 
-.title,
-.detail {
+.title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The subject and snippet (or a room's latest message), then the
+   mentions and how many are unread, at the end. */
+.detail {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.detail .text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.badge {
+  flex: none;
+  display: flex;
 }
 
 .detail {

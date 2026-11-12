@@ -645,8 +645,13 @@ export class MailStore {
 
   /** Whether an entry of the thread has the system label `externalId`. */
   having(thread: Thread, externalId: string): boolean {
+    return this.countHaving(thread, externalId) > 0
+  }
+
+  /** How many of the thread's entries have the system label. */
+  countHaving(thread: Thread, externalId: string): number {
     const label = this.systemLabel(thread.account, externalId).id
-    return thread.entries.some((e) => e.labels.includes(label))
+    return thread.entries.filter((e) => e.labels.includes(label)).length
   }
 
   // ── ops ─────────────────────────────────────────────────────────────────
