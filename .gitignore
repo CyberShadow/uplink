@@ -3,6 +3,7 @@
 /result-*
 web/node_modules/
 web/package-lock.json
+web/*.tsbuildinfo
 crates/uplink-server/static/*
 !crates/uplink-server/static/.gitkeep
 /data/
