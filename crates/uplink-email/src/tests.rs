@@ -375,6 +375,69 @@ async fn remote_label_changes_win_unless_a_local_change_is_pending() {
     );
 }
 
+/// Lists show conversations: a change says how many its messages are of,
+/// unless each is of one of its own.
+#[tokio::test]
+async fn set_labels_counts_conversations() {
+    let db = Db::new();
+    let store = db.store();
+    let threaded = |id: &str, n: &str| NewEntry {
+        thread_id: Some("t".into()),
+        ..new_entry(
+            &store,
+            id,
+            &["INBOX", "UNREAD"],
+            &raw(&format!("{n}@x"), "s@x", DATE, n, ""),
+        )
+    };
+    db.observe(
+        "a",
+        observed(
+            labels(ALL),
+            vec![
+                threaded("m1", "1"),
+                threaded("m2", "2"),
+                new_entry(
+                    &store,
+                    "m3",
+                    &["INBOX", "UNREAD"],
+                    &raw("3@x", "s@x", DATE, "3", ""),
+                ),
+            ],
+            vec![],
+            &[],
+        ),
+    )
+    .await;
+    let change = |label: &str, entries: &[&str]| SetLabels {
+        changes: entries
+            .iter()
+            .map(|e| LabelChange {
+                entry: db.entry(e),
+                label: db.label("a", label),
+                desired: false,
+            })
+            .collect(),
+    };
+    let mut live = db.hub.subscribe();
+    db.dispatcher
+        .dispatch(change("UNREAD", &["m1", "m2"]))
+        .await
+        .unwrap();
+    assert_eq!(
+        live.recv().await.unwrap().description,
+        "Marked 2 messages in 1 conversation read"
+    );
+    db.dispatcher
+        .dispatch(change("INBOX", &["m1", "m2", "m3"]))
+        .await
+        .unwrap();
+    assert_eq!(
+        live.recv().await.unwrap().description,
+        "Archived 3 messages in 2 conversations"
+    );
+}
+
 #[tokio::test]
 async fn set_labels_undo_redo() {
     let db = Db::new();

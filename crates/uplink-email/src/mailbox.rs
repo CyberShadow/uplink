@@ -694,7 +694,9 @@ impl Op for SetLabels {
         let mut events = vec![];
         let mut accounts = BTreeSet::new();
         // (label, desired) → entries changed
-        let mut groups: BTreeMap<(LabelId, bool), usize> = BTreeMap::new();
+        // By change, the entries changed so, and their conversations.
+        let mut groups: BTreeMap<(LabelId, bool), (usize, BTreeSet<Conversation>)> =
+            BTreeMap::new();
         let mut entries: Vec<EntryId> = vec![];
         for change in &self.changes {
             if !entries.contains(&change.entry) {
@@ -730,11 +732,11 @@ impl Op for SetLabels {
             changes.extend(implied.into_iter().map(|c| (c, true)));
         }
         for (change, undescribed) in changes {
-            let entry_account: String = tx
+            let (entry_account, thread): (String, Option<String>) = tx
                 .query_row(
-                    "SELECT account_id FROM mail_entry WHERE id = ?1",
+                    "SELECT account_id, thread_id FROM mail_entry WHERE id = ?1",
                     [change.entry.0],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()?
                 .ok_or_else(|| Conflict("the message is no longer in its account".into()))?;
@@ -765,10 +767,17 @@ impl Op for SetLabels {
                 observed,
                 Some(this),
             )?;
+            let conversation = match thread {
+                Some(thread) => Conversation::Thread(entry_account.clone(), thread),
+                None => Conversation::Alone(change.entry),
+            };
             accounts.insert(entry_account);
             inverse.push(LabelChange { desired, ..change });
             if !undescribed {
-                *groups.entry((change.label, change.desired)).or_default() += 1;
+                let (count, conversations) =
+                    groups.entry((change.label, change.desired)).or_default();
+                *count += 1;
+                conversations.insert(conversation);
             }
             events.push(LabelState {
                 entry: change.entry,
@@ -778,7 +787,7 @@ impl Op for SetLabels {
             });
         }
         let mut description = vec![];
-        for ((label, desired), count) in groups {
+        for ((label, desired), (count, conversations)) in groups {
             let (external_id, name, folder): (String, String, bool) = tx.query_row(
                 "SELECT external_id, name, folder FROM label WHERE id = ?1",
                 [label.0],
@@ -790,6 +799,7 @@ impl Op for SetLabels {
                 folder,
                 desired,
                 count,
+                conversations.len(),
             ));
         }
         Ok(Applied {
@@ -890,8 +900,9 @@ fn describe_label_change(
     folder: bool,
     desired: bool,
     count: usize,
+    conversations: usize,
 ) -> String {
-    let n = messages(count);
+    let n = in_conversations(count, conversations);
     match (external_id, desired) {
         ("INBOX", false) => format!("archived {n}"),
         ("INBOX", true) => format!("moved {n} to Inbox"),
@@ -911,10 +922,29 @@ fn describe_label_change(
     }
 }
 
+/// A conversation the entries changed are of, as lists group them: an
+/// account's thread, or an entry without one by itself.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum Conversation {
+    Thread(String, String),
+    Alone(EntryId),
+}
+
 fn messages(count: usize) -> String {
     match count {
         1 => "1 message".to_owned(),
         n => format!("{n} messages"),
+    }
+}
+
+/// The messages changed, and, unless each is of a conversation of its
+/// own, the conversations they are of, as lists show conversations.
+fn in_conversations(count: usize, conversations: usize) -> String {
+    let messages = messages(count);
+    match conversations {
+        _ if conversations == count => messages,
+        1 => format!("{messages} in 1 conversation"),
+        n => format!("{messages} in {n} conversations"),
     }
 }
 
