@@ -4,11 +4,10 @@
 import type { RoomEvent } from '../generated/protocol'
 import { useServices } from '../context'
 import type { Found as Items } from '../stores/mail'
-import { brief, date } from '../format'
+import { date } from '../format'
 import { calendarPath } from './Calendar'
-import { Icon } from './Icon'
+import { Cells, EventCells, KindIcon, ROW, RoomCells, TodoCells, When } from './ItemRow'
 import { roomPath } from './Room'
-import { RoomAvatar } from './RoomAvatar'
 import { messagePath } from './Todos'
 import styles from './Found.module.css'
 
@@ -30,11 +29,8 @@ export function Found(props: { found: Items }) {
           <ul>
             {rooms.map((room) => (
               <li key={room.id}>
-                <a href={roomPath(room.id)}>
-                  <RoomAvatar room={room} class={styles.icon} />
-                  <span class={styles.title}>{room.name}</span>
-                  <span class={styles.detail}>{room.unread > 0 ? `${room.unread} unread` : ''}</span>
-                  <span class={styles.when}>{room.last_event_ts === null ? '' : brief(room.last_event_ts)}</span>
+                <a class={ROW} href={roomPath(room.id)}>
+                  <RoomCells room={room} />
                 </a>
               </li>
             ))}
@@ -47,13 +43,13 @@ export function Found(props: { found: Items }) {
           <ul>
             {messages.map(({ room, event }) => (
               <li key={event.id}>
-                <a href={roomPath(room)}>
-                  <Icon name="messages-square" class={styles.icon} />
-                  <span class={styles.title}>
-                    {event.sender_name ?? event.sender} in {roomName(room)}
-                  </span>
-                  <span class={styles.detail}>{shownBody(event)}</span>
-                  <span class={styles.when}>{brief(event.ts)}</span>
+                <a class={ROW} href={roomPath(room)}>
+                  <Cells
+                    icon={<KindIcon name="messages-square" />}
+                    title={`${event.sender_name ?? event.sender} in ${roomName(room)}`}
+                    detail={shownBody(event)}
+                    when={<When at={event.ts} />}
+                  />
                 </a>
               </li>
             ))}
@@ -66,11 +62,8 @@ export function Found(props: { found: Items }) {
           <ul>
             {todos.map((todo) => (
               <li key={todo.id}>
-                <a href={todo.message === null ? '/todos' : messagePath(todo.message)}>
-                  <Icon name="list-todo" class={styles.icon} />
-                  <span class={styles.title}>{todo.title}</span>
-                  <span class={styles.detail}>{todo.notes}</span>
-                  <span class={styles.when}>{todo.due ?? ''}</span>
+                <a class={ROW} href={todo.message === null ? '/todos' : messagePath(todo.message)}>
+                  <TodoCells todo={todo} />
                 </a>
               </li>
             ))}
@@ -83,11 +76,8 @@ export function Found(props: { found: Items }) {
           <ul>
             {events.map((event) => (
               <li key={event.id}>
-                <a href={calendarPath('agenda', date(new Date(event.start)))}>
-                  <Icon name="calendar" class={styles.icon} />
-                  <span class={styles.title}>{event.subject}</span>
-                  <span class={styles.detail}>{event.location}</span>
-                  <span class={styles.when}>{brief(event.start)}</span>
+                <a class={ROW} href={calendarPath('agenda', date(new Date(event.start)))}>
+                  <EventCells event={event} />
                 </a>
               </li>
             ))}

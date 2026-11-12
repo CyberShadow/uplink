@@ -2733,6 +2733,10 @@ describe('search', () => {
     const titles = async (name: string) =>
       within(await screen.findByRole('region', { name })).getAllByRole('listitem').map((item) => item.querySelector('[class*=title]')!.textContent)
     expect(await titles('Rooms found')).toEqual(['Lunch club'])
+    // A room found is as home's: its latest message, and how many unread.
+    const found = within(screen.getByRole('region', { name: 'Rooms found' })).getByRole('listitem')
+    expect(found.querySelector('[class*=text]')!.textContent).toBe('Bob: Lunch at noon?')
+    expect(found.querySelector('[title$=unread]')!.textContent).toBe('1')
     expect(await titles('Messages found')).toEqual(['Bob in Lunch club'])
     expect(await titles('To-dos found')).toEqual(['Book lunch'])
     expect(await titles('Events found')).toEqual(['Team lunch'])

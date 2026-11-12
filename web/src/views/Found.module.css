@@ -20,10 +20,6 @@
 }
 
 .found a {
-  display: grid;
-  grid-template-columns: 24px minmax(0, 16em) minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
   padding: 4px 16px;
   border-bottom: 1px solid var(--line);
   color: inherit;
@@ -32,37 +28,4 @@
 
 .found a:hover {
   background: var(--hover);
-}
-
-.icon {
-  width: 20px;
-  height: 20px;
-  color: var(--muted);
-}
-
-.title,
-.detail {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.detail,
-.when {
-  color: var(--muted);
-}
-
-.when {
-  font-size: 0.875em;
-  white-space: nowrap;
-}
-
-@media (max-width: 720px) {
-  .found a {
-    grid-template-columns: 24px minmax(0, 1fr) auto;
-  }
-
-  .detail {
-    grid-column: 2 / -1;
-  }
 }

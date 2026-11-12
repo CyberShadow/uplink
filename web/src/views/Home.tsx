@@ -12,19 +12,15 @@ import { useTitle } from '../title'
 import { lines, useKeymap } from '../keymap'
 import type { Row } from '../stores/home'
 import { conversationKey, threadOf } from '../stores/mail'
-import { brief, date, time } from '../format'
+import { date, time } from '../format'
 import { searchPath } from './App'
 import { calendarPath } from './Calendar'
-import { Icon } from './Icon'
 import { LabelPicker } from './LabelPicker'
-import { senders, UnreadOf } from './Mail'
-import { Badge } from './Badge'
+import { ConversationCells, EventCells, ROW, RoomCells, TodoCells } from './ItemRow'
 import { roomPath } from './Room'
-import { RoomAvatar } from './RoomAvatar'
 import { RoomTagPicker } from './RoomTagPicker'
 import { messagePath } from './Todos'
 import { FAVOURITE } from '../roomTags'
-import { gist } from '../matrix'
 import styles from './Home.module.css'
 
 /** How many a bucket lists: `20+` if there may be more mail. */
@@ -136,7 +132,7 @@ export function Home() {
                     <li
                       key={row.key}
                       ref={isFocused ? focused : undefined}
-                      class={[styles.row, isFocused && styles.focused, unread(row) && styles.unread].filter(Boolean).join(' ')}
+                      class={[ROW, styles.row, isFocused && styles.focused, unread(row) && styles.unread].filter(Boolean).join(' ')}
                       aria-current={isFocused || undefined}
                       onClick={() => {
                         home.focus.value = row.key
@@ -183,86 +179,16 @@ export function Home() {
 }
 
 function RowView(props: { row: Row }) {
-  const { mail, matrix } = useServices()
   const { row } = props
   switch (row.kind) {
-    case 'todo': {
-      const { todo } = row
-      const overdue = todo.due !== null && todo.due < date(new Date())
-      return (
-        <>
-          <Icon name="list-todo" class={styles.kind} />
-          <span class={styles.title}>{todo.title}</span>
-          <span class={styles.detail}>
-            <span class={styles.text}>{todo.notes}</span>
-          </span>
-          <span class={[styles.when, overdue && styles.overdue].filter(Boolean).join(' ')}>{todo.due ?? ''}</span>
-        </>
-      )
-    }
-    case 'event': {
-      const { event } = row
-      return (
-        <>
-          <Icon name="calendar" class={styles.kind} />
-          <span class={styles.title}>{event.subject}</span>
-          <span class={styles.detail}>
-            <span class={styles.text}>{event.location}</span>
-          </span>
-          <span class={styles.when}>{brief(event.start)}</span>
-        </>
-      )
-    }
-    case 'mail': {
-      const { conversation } = row
-      const { latest } = conversation
-      const own = mail.accounts.value?.find((a) => a.id === latest.account)?.address ?? ''
-      const unreadLabel = mail.systemLabel(latest.account, 'UNREAD').id
-      const members = [latest, ...conversation.earlier]
-      const unread = members.filter((m) => m.labels.includes(unreadLabel)).length
-      return (
-        <>
-          <Icon name="mail" class={styles.kind} />
-          <span class={styles.title}>
-            {senders(conversation.senders, own)}
-            {members.length > 1 && <span class={styles.count}> {members.length}</span>}
-          </span>
-          <span class={styles.detail}>
-            <span class={styles.text}>
-              <span class={styles.subject}>{latest.subject ?? '(no subject)'}</span> — {latest.snippet}
-            </span>
-            <UnreadOf unread={unread} one={members.length === 1} class={styles.badge} />
-          </span>
-          <time class={styles.when} dateTime={new Date(latest.received_at).toISOString()}>
-            {brief(latest.received_at)}
-          </time>
-        </>
-      )
-    }
-    case 'room': {
-      const { room } = row
-      const me = matrix.accounts.value!.find((a) => a.id === room.account)!.mxid
-      // As mail's snippet, what the latest message says; and at the end,
-      // the mentions, then how many are unread.
-      return (
-        <>
-          <RoomAvatar room={room} class={styles.kind} />
-          <span class={styles.title}>{room.name}</span>
-          <span class={styles.detail}>
-            <span class={styles.text}>
-              {room.membership === 'invited' ? (
-                <span class={styles.subject}>Invited</span>
-              ) : (
-                room.preview && gist(room.preview, me)
-              )}
-            </span>
-            <Badge count={room.highlighted} tone="alert" prefix="@" title="Mentioning you" />
-            <UnreadOf unread={room.unread} one={false} class={styles.badge} />
-          </span>
-          <span class={styles.when}>{room.last_event_ts === null ? '' : brief(room.last_event_ts)}</span>
-        </>
-      )
-    }
+    case 'todo':
+      return <TodoCells todo={row.todo} />
+    case 'event':
+      return <EventCells event={row.event} />
+    case 'mail':
+      return <ConversationCells conversation={row.conversation} />
+    case 'room':
+      return <RoomCells room={row.room} />
   }
 }
 

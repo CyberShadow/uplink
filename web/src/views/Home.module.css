@@ -95,11 +95,8 @@
   padding: 0;
 }
 
+/* A row's cells are `ItemRow`'s; unread, it stands out, as mail's. */
 .row {
-  display: grid;
-  grid-template-columns: 24px minmax(0, 14em) minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
   padding: 4px 16px 4px 12px;
   border-bottom: 1px solid var(--line);
   border-left: 4px solid transparent;
@@ -115,81 +112,14 @@
   background: var(--unread-bg);
 }
 
-.unread .title,
-.unread .subject {
-  font-weight: 600;
-}
-
 .focused {
   border-left-color: var(--accent);
-}
-
-.kind {
-  width: 20px;
-  height: 20px;
-  color: var(--muted);
-}
-
-.title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* The subject and snippet (or a room's latest message), then the
-   mentions and how many are unread, at the end. */
-.detail {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  white-space: nowrap;
-}
-
-.detail .text {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.badge {
-  flex: none;
-  display: flex;
-}
-
-.detail {
-  color: var(--muted);
-}
-
-.detail .subject {
-  color: var(--fg);
-}
-
-.when {
-  color: var(--muted);
-  font-size: 0.875em;
-  white-space: nowrap;
-}
-
-.overdue {
-  color: var(--error-fg);
 }
 
 .all {
   display: inline-block;
   padding: 4px 16px 8px;
   color: var(--accent);
-}
-
-@media (max-width: 720px) {
-  .row {
-    grid-template-columns: 24px minmax(0, 1fr) auto;
-  }
-
-  .detail {
-    grid-column: 2 / -1;
-  }
 }
 
 .bucket h2 a {

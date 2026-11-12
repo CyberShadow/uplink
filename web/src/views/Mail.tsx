@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
-import type { Conversation, Entry, EntryId, ImageRule, Label, MessageContent, RemoteHost, Sender } from '../generated/protocol'
+import type { Conversation, Entry, EntryId, ImageRule, Label, MessageContent, RemoteHost } from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus, lines, useKeymap } from '../keymap'
 import {
@@ -26,7 +26,7 @@ import { messagePath } from './Todos'
 import styles from './Mail.module.css'
 import { fileSize } from './size'
 import { brief, dateTime } from '../format'
-import { Badge } from './Badge'
+import { senders, UnreadOf } from './ItemRow'
 import { Icon, type IconName } from './Icon'
 import { inboxUnread, labelName } from './Nav'
 import { useTitle } from '../title'
@@ -587,32 +587,6 @@ function MessageList(props: { mail: MailStore; open: (conversation: Conversation
       })}
     </ul>
   )
-}
-
-/** Of a conversation (or a room), how many of its messages are unread,
- * at its row's end, apart from the count after its senders: unless it
- * has `one` message, whose being unread the row's bold says. */
-export function UnreadOf(props: { unread: number; one: boolean; class: string }) {
-  if (props.unread === 0 || props.one) return null
-  return (
-    <span class={props.class}>
-      <Badge count={props.unread} tone="unread" title={props.unread === 1 ? '1 unread' : `${props.unread} unread`} />
-    </span>
-  )
-}
-
-/** A conversation's senders, as Gmail's rows name them: the one by name;
- * several by first names, `me` for the account's own address, the first
- * and the last two if there are many. */
-export function senders(list: Sender[], own: string): string {
-  const name = (s: Sender, brief: boolean) => {
-    if (s.addr && s.addr.toLowerCase() === own.toLowerCase()) return 'me'
-    const full = s.name ?? s.addr ?? '(unknown sender)'
-    return brief && s.name ? s.name.split(/\s+/)[0] : full
-  }
-  if (list.length === 1) return name(list[0], false)
-  const names = list.map((s) => name(s, true))
-  return (names.length > 3 ? [names[0], '…', ...names.slice(-2)] : names).join(', ')
 }
 
 /** The conversation open: its messages oldest first, the unread ones and

@@ -1,0 +1,75 @@
+/* The cells: icon, title, what it says, when. */
+.row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 14em) minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.kind {
+  width: 20px;
+  height: 20px;
+  color: var(--muted);
+}
+
+.title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bold {
+  font-weight: 600;
+}
+
+/* A conversation's count of messages, after its senders. */
+.count {
+  color: var(--muted);
+  font-weight: normal;
+}
+
+/* What it says, then its counts at the end. */
+.detail {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.subject {
+  color: var(--fg);
+}
+
+.badge {
+  flex: none;
+  display: flex;
+}
+
+.when {
+  color: var(--muted);
+  font-size: 0.875em;
+  white-space: nowrap;
+}
+
+.overdue {
+  color: var(--error-fg);
+}
+
+@media (max-width: 720px) {
+  .row {
+    grid-template-columns: 24px minmax(0, 1fr) auto;
+  }
+
+  .detail {
+    grid-column: 2 / -1;
+  }
+}
