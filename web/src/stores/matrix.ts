@@ -1,7 +1,7 @@
 // Matrix state: accounts with their rooms, the timelines on show with
 // their messages being sent (SPEC §9, §12.6), mirrored like mail's.
 
-import { signal, type Signal } from '@preact/signals'
+import { batch, signal, type Signal } from '@preact/signals'
 import type {
   ClientRequest,
   LogEntry,
@@ -197,7 +197,6 @@ export class MatrixStore {
         room,
         (request) => this.query(request, 'timeline'),
         (events) => this.query({ type: 'list_room_events', room, events }, 'room_events'),
-        () => this.query({ type: 'list_matrix_sends', room }, 'matrix_sends'),
         () => this.query({ type: 'list_receipts', room }, 'receipts'),
         async (gap) => {
           try {
@@ -331,7 +330,7 @@ export class MatrixStore {
     return this.ops.dispatch({ type: 'mark_room_read', room, event }, true)
   }
 
-  private async query<T extends Response<'rooms' | 'timeline' | 'room_events' | 'edits' | 'matrix_sends' | 'receipts'>['type']>(
+  private async query<T extends Response<'rooms' | 'timeline' | 'room_events' | 'edits' | 'receipts'>['type']>(
     request: ClientRequest,
     type: T,
   ): Promise<Response<T> | null> {
@@ -374,10 +373,6 @@ export class Timeline {
    * reflects. */
   private loadedAt = new Map<RoomEventId, TxLogId>()
   private loadingEarlier = false
-  private sendLoader = new Loader(async () => {
-    const response = await this.loadSends()
-    if (response) this.sends.value = response.sends
-  })
   private receiptLoader = new Loader(async () => {
     const response = await this.loadReceipts()
     if (response) this.receipts.value = response.receipts
@@ -387,12 +382,10 @@ export class Timeline {
     readonly room: RoomId,
     private readonly load: (request: ClientRequest) => Promise<Response<'timeline'> | null>,
     private readonly loadEvents: (events: RoomEventId[]) => Promise<Response<'room_events'> | null>,
-    private readonly loadSends: () => Promise<Response<'matrix_sends'> | null>,
     private readonly loadReceipts: () => Promise<Response<'receipts'> | null>,
     private readonly fillGap: (gap: GapId) => Promise<void>,
   ) {
     this.newer.invalidate()
-    this.sendLoader.invalidate()
     this.receiptLoader.invalidate()
   }
 
@@ -460,8 +453,10 @@ export class Timeline {
     }
   }
 
+  /** The sends are loaded with the events at the end, which they
+   * follow. */
   sendsChanged() {
-    this.sendLoader.invalidate()
+    this.newer.invalidate()
   }
 
   /** Everything is void: load the latest events afresh. A load in flight
@@ -471,17 +466,17 @@ export class Timeline {
     this.loadedAt.clear()
     this.newer = this.loader()
     this.newer.invalidate()
-    this.sendLoader.invalidate()
     this.gaps.value = []
     // What notices said is void too.
     this.typing.value = []
     this.receiptLoader.invalidate()
   }
 
-  /** Loads the events after those loaded, or the latest. */
+  /** Loads the events after those loaded, or the latest, and the sends,
+   * which follow them. */
   private loader(): Loader {
     return new Loader(async () => {
-      // Page by page, until a page is not full.
+      // Page by page, until one reaches the end, with the sends.
       for (;;) {
         const events = this.events.value
         const last = events?.at(-1)
@@ -492,10 +487,14 @@ export class Timeline {
           limit: TIMELINE_PAGE,
         })
         if (!response || this.events.value !== events) return
-        if (!last) this.moreBefore.value = response.more_before
-        this.events.value = [...(events ?? []), ...response.events]
-        this.addGaps(response.gaps)
-        if (!last || response.events.length < TIMELINE_PAGE) return
+        // At once: a send synced back shows as one or the other.
+        batch(() => {
+          if (!last) this.moreBefore.value = response.more_before
+          this.events.value = [...(events ?? []), ...response.events]
+          if (response.sends) this.sends.value = response.sends
+          this.addGaps(response.gaps)
+        })
+        if (response.sends) return
       }
     })
   }

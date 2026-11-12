@@ -587,6 +587,61 @@ export class FakeServer implements Requester, Blobs {
     const meanwhile = this.meanwhile
     this.meanwhile = null
     meanwhile?.()
+    // Entries it commits are sent before it, as the server sends them
+    // (`ServerResponse::position`).
+    let answer: () => ServerResponse
+    try {
+      const response = this.answer(body)
+      answer = () => response
+    } catch (error) {
+      answer = () => {
+        throw error
+      }
+    }
+    return new Promise((resolve, reject) => {
+      this.channel.push(() => {
+        try {
+          resolve(answer())
+        } catch (error) {
+          reject(error as Error)
+        }
+      })
+      this.flush()
+    })
+  }
+
+  /** What is on its way to the client, in order: log entries, and
+   * responses. An entry after a response waits for the client to take
+   * it, in the next task, as it would on the socket: so that a response
+   * reflects every entry delivered before it, and no later one. */
+  private readonly channel: (LogEntry | (() => void))[] = []
+  /** Whether a response was delivered in this task. */
+  private taking = false
+
+  private flush() {
+    for (;;) {
+      const next = this.channel[0]
+      if (next === undefined || (typeof next !== 'function' && this.taking)) return
+      this.channel.shift()
+      if (typeof next !== 'function') {
+        this.client.apply(next)
+        continue
+      }
+      next()
+      if (this.taking) continue
+      this.taking = true
+      // Not a timer, which a test may have faked.
+      const { port1, port2 } = new MessageChannel()
+      port1.onmessage = () => {
+        port1.close()
+        this.taking = false
+        this.flush()
+      }
+      port2.postMessage(null)
+    }
+  }
+
+  private answer(body: ClientRequest): ServerResponse {
     switch (body.type) {
       case 'list_accounts':
         return { type: 'accounts', as_of: this.head(), accounts: this.listAccounts() }
@@ -1009,13 +1064,6 @@ export class FakeServer implements Requester, Blobs {
           throw new RequestError({ code: 'invalid', message: 'importing the room keys: wrong passphrase' })
         }
         return { type: 'room_keys_imported', imported: 3, total: 5 }
-      case 'list_matrix_sends':
-        return {
-          type: 'matrix_sends',
-          as_of: this.head(),
-          room: body.room,
-          sends: this.matrixSends.filter((s) => s.room === body.room),
-        }
       case 'send_matrix_message': {
         const id = this.nextOutbox++
         this.matrixSends.push({
@@ -1324,15 +1372,19 @@ export class FakeServer implements Requester, Blobs {
     const all = this.events.get(room)!.filter((e) => e.thread_root === null)
     const pos = (id: RoomEventId) => all.find((e) => e.id === id)!.pos
     let events: RoomEvent[]
+    let atEnd: boolean
     switch (page.type) {
       case 'latest':
         events = all.slice(-limit)
+        atEnd = true
         break
       case 'before':
         events = all.filter((e) => e.pos < pos(page.event)).slice(-limit)
+        atEnd = false
         break
       case 'after':
         events = all.filter((e) => e.pos > pos(page.event)).slice(0, limit)
+        atEnd = events.length < limit
         break
     }
     const first = events[0]
@@ -1340,7 +1392,12 @@ export class FakeServer implements Requester, Blobs {
     const gaps = (this.gaps.get(room) ?? [])
       .filter((g) => ids.has(g.before))
       .map((g) => ({ id: g.id, before: g.before }))
-    return { events, more_before: first !== undefined && all[0].pos < first.pos, gaps }
+    return {
+      events,
+      more_before: first !== undefined && all[0].pos < first.pos,
+      gaps,
+      sends: atEnd ? this.matrixSends.filter((s) => s.room === room) : null,
+    }
   }
 
   private cancelMatrixSend(item: number, description: string): number {
@@ -1408,7 +1465,8 @@ export class FakeServer implements Requester, Blobs {
       events,
     }
     this.log.push(entry)
-    this.client.apply(entry)
+    this.channel.push(entry)
+    this.flush()
     return entry.id
   }
 

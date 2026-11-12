@@ -777,12 +777,23 @@ impl Matrix {
                 }
                 let (events, more_before, gaps) =
                     rooms::timeline(&tx, room, page, limit).map_err(internal)?;
+                // One after an event that is full may have another after it.
+                let at_end = match page {
+                    TimelinePage::Latest => true,
+                    TimelinePage::Before { .. } => false,
+                    TimelinePage::After { .. } => events.len() < limit as usize,
+                };
+                let sends = at_end
+                    .then(|| send::sends(&tx, room))
+                    .transpose()
+                    .map_err(internal)?;
                 Ok(ServerResponse::Timeline {
                     as_of,
                     room,
                     events,
                     more_before,
                     gaps,
+                    sends,
                 })
             })
             .await
@@ -910,20 +921,6 @@ impl Matrix {
     }
 
     /// The room's sends not yet reconciled, for the end of its timeline.
-    pub async fn list_sends(&self, room: RoomId) -> Response {
-        self.reader
-            .read(move |conn| {
-                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
-                rooms::room_account(&tx, room)
-                    .map_err(internal)?
-                    .ok_or_else(|| no_room(room))?;
-                let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
-                let sends = send::sends(&tx, room).map_err(internal)?;
-                Ok(ServerResponse::MatrixSends { as_of, room, sends })
-            })
-            .await
-    }
-
     /// Only to joined rooms of configured accounts, and of events stored
     /// in the room: replying to one, editing one of the account's own
     /// messages, reacting to one or redacting one; files only as uploaded.

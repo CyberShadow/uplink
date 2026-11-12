@@ -1113,7 +1113,6 @@ impl Backend for Services {
             ClientRequest::PreviewUrl { room, event, url } => {
                 return self.matrix.preview_url(room, event, url).await.into()
             }
-            ClientRequest::ListMatrixSends { room } => self.matrix.list_sends(room).await,
             ClientRequest::SendMatrixMessage { room, content } => {
                 self.matrix.send_message(room, content).await
             }

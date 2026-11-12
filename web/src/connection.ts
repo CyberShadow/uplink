@@ -96,7 +96,6 @@ function isResendable(body: ClientRequest): boolean {
     case 'fill_gap':
     case 'set_typing':
     case 'get_matrix_security':
-    case 'list_matrix_sends':
     case 'list_message_entries':
     case 'list_conversation':
     case 'list_todos':

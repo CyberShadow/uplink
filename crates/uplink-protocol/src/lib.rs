@@ -260,11 +260,6 @@ pub enum ClientRequest {
         room: RoomId,
         event: RoomEventId,
     },
-    /// The room's messages being sent, sent and not yet synced back, or
-    /// sent though cancelled: for the end of its timeline.
-    ListMatrixSends {
-        room: RoomId,
-    },
     /// Send to the room: a message, a reaction, a redaction or a file.
     SendMatrixMessage {
         room: RoomId,
@@ -510,6 +505,12 @@ pub enum ServerResponse {
         /// The gaps just before the events listed, and after the last, if
         /// it is the latest.
         gaps: Vec<matrix::TimelineGap>,
+        /// Of a page that reaches the timeline's end (the latest, or one
+        /// after an event that is not full): the room's messages being
+        /// sent, sent and not yet synced back, or sent though cancelled,
+        /// which follow it. With the events, so that one synced back
+        /// shows in one place or the other, never both or neither.
+        sends: Option<Vec<matrix::MatrixSend>>,
     },
     RoomEvents {
         as_of: TxLogId,
@@ -546,11 +547,6 @@ pub enum ServerResponse {
         room: RoomId,
         root: Box<matrix::RoomEvent>,
         replies: Vec<matrix::RoomEvent>,
-    },
-    MatrixSends {
-        as_of: TxLogId,
-        room: RoomId,
-        sends: Vec<matrix::MatrixSend>,
     },
     /// Of `ListReceipts`: as the homeserver last said, not logged.
     Receipts {
@@ -609,7 +605,6 @@ impl ServerResponse {
             | Self::Thread { as_of, .. }
             | Self::RoomSearch { as_of, .. }
             | Self::Pinned { as_of, .. }
-            | Self::MatrixSends { as_of, .. }
             | Self::Todos { as_of, .. }
             | Self::Events { as_of, .. }
             | Self::History { as_of, .. } => Some(*as_of),

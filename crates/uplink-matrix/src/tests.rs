@@ -162,8 +162,13 @@ impl Db {
     /// The room's sends not yet reconciled.
     async fn sends(&self) -> Vec<MatrixSend> {
         let room = self.room().await;
-        match self.matrix.list_sends(room.id).await.unwrap() {
-            ServerResponse::MatrixSends { sends, .. } => sends,
+        match self
+            .matrix
+            .list_timeline(room.id, uplink_protocol::matrix::TimelinePage::Latest, 1)
+            .await
+            .unwrap()
+        {
+            ServerResponse::Timeline { sends, .. } => sends.unwrap(),
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -1324,6 +1329,24 @@ mod relations {
             panic!()
         };
         assert_eq!((ids(&events), more_before), (vec!["$3"], true));
+        // Pages that reach the end have the sends, which follow it.
+        let matrix = &db.matrix;
+        let has_sends = |page| async move {
+            let ServerResponse::Timeline { sends, .. } =
+                matrix.list_timeline(room, page, 1).await.unwrap()
+            else {
+                panic!()
+            };
+            sends.is_some()
+        };
+        let last = events[0].id;
+        assert!(has_sends(TimelinePage::Latest).await);
+        assert!(!has_sends(TimelinePage::Before { event: last }).await);
+        assert!(
+            !has_sends(TimelinePage::After { event: first }).await,
+            "full"
+        );
+        assert!(has_sends(TimelinePage::After { event: last }).await);
         let ServerResponse::RoomEvents { events, .. } = db
             .matrix
             .list_room_events(room, vec![reply, first, RoomEventId(9999)])

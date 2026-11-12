@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { effect } from '@preact/signals'
 import { FakeServer, ME } from '../test/server'
 import { Client } from './client'
 import { TIMELINE_PAGE } from './matrix'
@@ -102,9 +103,18 @@ describe('MatrixStore', () => {
     await vi.waitFor(() => expect(sends()).toEqual([]))
 
     await client.matrix.send(room.id, text('again'))
+    await vi.waitFor(() => expect(sends()).toHaveLength(1))
+    // Shown once as it is synced back: sent or being sent, never both or
+    // neither.
+    const shown: number[] = []
+    const stop = effect(() => {
+      shown.push((bodies(room.id)?.length ?? 0) + (sends()?.length ?? 0))
+    })
     server.echo(server.matrixSends[0].id)
-    await vi.waitFor(() => expect(sends()).toEqual([]))
     await vi.waitFor(() => expect(bodies(room.id)).toEqual(['again']))
+    stop()
+    expect(sends()).toEqual([])
+    expect(new Set(shown)).toEqual(new Set([1]))
     expect(client.matrix.timeline(room.id).events.value![0].sender).toBe(ME)
   })
 })

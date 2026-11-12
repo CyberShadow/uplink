@@ -881,7 +881,10 @@ than it buffers is closed; the client reconnects and resumes.
 - `ListRooms` — Matrix accounts and their rooms with unread counts;
   `ListTimeline { room, page, limit }` — the latest events, or those
   before or after one, oldest first, each with what is folded into it
-  (§9.2); `ListRoomEvents { room, events }` — those of the events the
+  (§9.2), and, of a page that reaches the end (the latest, or one after
+  an event that is not full), the room's sends not yet synced back,
+  which follow it: with the events, so that a send synced back shows as
+  one or the other, never both or neither; `ListRoomEvents { room, events }` — those of the events the
   timeline lists, as it lists them (for `TimelineChanged`);
   `ListEdits { room, event }` — a message's edits, oldest first, for its
   edit history; `ListThread { room, root }` — a thread (§9.2);
@@ -895,9 +898,7 @@ than it buffers is closed; the client reconnects and resumes.
   edit's, has every word of the query (ignoring the case of ASCII
   letters, as SQLite's `LIKE`), newest first, a page at a time, and
   whether there are more. Messages are stored decrypted, so encrypted
-  rooms are searched too;
-  `ListMatrixSends { room }`: its sends not yet synced back, for the end
-  of the timeline.
+  rooms are searched too.
 - `Undo { tx_log_id }`; `ListHistory { before, limit }` — the user's
   ops, newest first, each with the entry that undid it, if any (§6.3).
 - `ListDrafts` — all drafts. `ListOutbox` — per account, its push
@@ -2179,7 +2180,7 @@ say: a refusal needs a decision, as any.
 
 Events are named by their Matrix ids, and must be stored in the room.
 The room's timeline shows it at the end,
-with its state (`ListMatrixSends`), until it is synced back, and the
+with its state (`ListTimeline`), until it is synced back, and the
 outbox lists it with the account's. Cancelling it (its undo, or
 `CancelMatrixSend`) drops it while queued or refused; once claimed, it
 makes it unwanted, settled by the outcome. The sending loop claims a

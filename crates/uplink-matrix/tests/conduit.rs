@@ -198,8 +198,13 @@ impl Uplink {
 
     /// How many of the room's sends are not yet reconciled.
     async fn sends(&self, room: &Room) -> usize {
-        match self.matrix.list_sends(room.id).await.unwrap() {
-            ServerResponse::MatrixSends { sends, .. } => sends.len(),
+        match self
+            .matrix
+            .list_timeline(room.id, TimelinePage::Latest, 1)
+            .await
+            .unwrap()
+        {
+            ServerResponse::Timeline { sends, .. } => sends.unwrap().len(),
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -1828,8 +1833,14 @@ async fn members_are_listed_and_managed_and_the_room_renamed() {
         .await
         .unwrap();
     eventually("the kick to be refused", || async {
-        match uplink.matrix.list_sends(room.id).await.unwrap() {
-            ServerResponse::MatrixSends { sends, .. } => sends
+        match uplink
+            .matrix
+            .list_timeline(room.id, TimelinePage::Latest, 1)
+            .await
+            .unwrap()
+        {
+            ServerResponse::Timeline { sends, .. } => sends
+                .unwrap()
                 .first()
                 .filter(|s| s.state == MatrixSendState::Refused)
                 .map(|_| ()),
