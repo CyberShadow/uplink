@@ -280,10 +280,3 @@ export function links(body: string, html: string | null): string[] {
   return [...anchors].map((a) => a.getAttribute('href')!).filter((href) => /^https?:\/\//.test(href))
 }
 
-/** Whether the message mentions `user`: by `m.mentions`, or, of senders
- * that do not say, by naming them. */
-export function mentions(content: Content, user: string): boolean {
-  const said = content['m.mentions']
-  if (said !== undefined) return Array.isArray(said.user_ids) && said.user_ids.includes(user)
-  return typeof content.body === 'string' && content.body.includes(user)
-}

@@ -1217,7 +1217,8 @@ const COLUMNS: &str = "e.id, e.event_id, e.sender, e.sender_name, e.ts, e.type, 
        AND json_extract(e.raw_json, '$.content.\"m.relates_to\".is_falling_back') \
      THEN NULL ELSE e.reply_to END, e.pos, \
      (SELECT t.id FROM matrix_event t \
-      WHERE e.rel_type = 'm.thread' AND t.room = e.room AND t.event_id = e.relates_to)";
+      WHERE e.rel_type = 'm.thread' AND t.room = e.room AND t.event_id = e.relates_to), \
+     e.highlight";
 
 /// An event of [`COLUMNS`], without what relates to it, and the event it
 /// replies to.
@@ -1248,6 +1249,7 @@ fn room_event(r: &Row) -> uplink_storage::rusqlite::Result<(RoomEvent, Option<St
             html: None,
             thread: None,
             thread_root: r.get::<_, Option<i64>>(13)?.map(RoomEventId),
+            highlight: r.get(14)?,
         },
         r.get(11)?,
     ))

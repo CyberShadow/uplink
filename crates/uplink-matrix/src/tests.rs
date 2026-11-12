@@ -1677,6 +1677,24 @@ fn messages_mention_the_users_they_link_and_whom_they_reply_to() {
         reply["m.mentions"],
         json!({ "user_ids": ["@carol:example.org"] })
     );
+
+    // `@room`, a word of its own, Markdown or not, mentions the room.
+    for (text, markdown, room) in [
+        ("@room: lunch!", true, true),
+        ("lunch, @room", false, true),
+        ("(@room)", true, true),
+        ("@roomy", true, false),
+        ("@room:example.org", true, false),
+        ("me@room", true, false),
+    ] {
+        let content = text_content(text, markdown, false, None, None, None);
+        let expected = if room {
+            json!({ "room": true })
+        } else {
+            json!({})
+        };
+        assert_eq!(content["m.mentions"], expected, "{text}");
+    }
 }
 
 mod query {

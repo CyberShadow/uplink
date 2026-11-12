@@ -1738,6 +1738,13 @@ describe('room composer', () => {
     expect(screen.queryByRole('listbox')).toBeNull()
     await user.keyboard('{Backspace}{Backspace}')
 
+    // @room, after the members, if typed.
+    await user.keyboard('@ro')
+    await waitFor(() => expect(options().map((o) => o.textContent)).toEqual(['@roomNotify the whole room']))
+    await user.keyboard('{Tab}')
+    expect(box.value).toBe('@room ')
+    await user.clear(box)
+
     await user.keyboard('/inv')
     expect(options().map((o) => o.textContent)).toEqual(['/invite <user-id>Invites the user to the room'])
     await user.keyboard('{Tab}@dave:example.org{Enter}')
@@ -1759,6 +1766,19 @@ describe('room composer', () => {
 describe('room timeline', () => {
   const day = (iso: string) => new Date(iso).getTime()
   const timeline = () => screen.getByRole('list', { name: 'Timeline' })
+
+  it('highlights the messages the push rules do, but the account\'s own', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    server.receive(room.id, { body: 'Lunch, @room', highlight: true })
+    server.receive(room.id, { body: 'Just chatting' })
+    server.receive(room.id, { body: 'Said my name', sender: ME, sender_name: 'Me', highlight: true })
+    await start(`/rooms/${room.id}`)
+    const line = async (text: string) => (await within(timeline()).findByText(text)).closest('li')!
+    expect((await line('Lunch, @room')).className).toMatch(/mention/)
+    expect((await line('Just chatting')).className).not.toMatch(/mention/)
+    expect((await line('Said my name')).className).not.toMatch(/mention/)
+  })
   const line = (text: string | RegExp) => within(timeline()).getByText(text).closest('li')!
   const member = (user: string, membership: string, prev?: string) =>
     JSON.stringify({ type: 'm.room.member', state_key: user, content: { membership }, unsigned: prev ? { prev_content: { membership: prev } } : {} })

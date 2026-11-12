@@ -25,7 +25,6 @@ import {
   linkify,
   links,
   media,
-  mentions,
   permalink,
   senderColor,
   shown,
@@ -147,7 +146,7 @@ export function EventRow(
   const classes = [
     styles.row,
     summary !== null && styles.state,
-    message && !own && !event.redacted && mentions(content.content, me) && styles.mention,
+    message && !own && !event.redacted && event.highlight && styles.mention,
     deleting && styles.pending,
     props.target && styles.target,
   ]

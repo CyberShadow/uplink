@@ -933,7 +933,12 @@ thread: ThreadSummary | null,
  * Of a message of a thread whose root is stored, the root: the
  * thread lists it, not the main timeline.
  */
-thread_root: RoomEventId | null, };
+thread_root: RoomEventId | null, 
+/**
+ * Whether the account's push rules highlight it: it mentions the
+ * account (by `m.mentions`, its name or `@room`) or a keyword.
+ */
+highlight: boolean, };
 
 /**
  * An edit (`m.replace`) of a message.
@@ -1200,4 +1205,4 @@ exception: boolean, };
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "a82b361fdc2c00f6"
+export const PROTOCOL_VERSION = "684b5d564330d459"

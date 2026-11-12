@@ -2139,7 +2139,10 @@ JSON since V0026) is one of:
   pills) mention them: the plain body has their names, and
   `m.mentions.user_ids` the users (intentional mentions; `{}` with
   none). Or else (`markdown: false`, `/plain`; V0030 marked the earlier
-  sends Markdown) it is sent as it is, mentioning no one. It may reply to
+  sends Markdown) it is sent as it is, mentioning no one by links.
+  Either way, `@room` as a word of its own (not of a user id,
+  `@room:server`) mentions the whole room (`m.mentions.room`), which
+  notifies its members as its power levels let the account. It may reply to
   a stored event (`m.in_reply_to`, without the fallback quote, which the
   spec no longer asks for), mentioning its sender, or edit one of the
   account's own messages (`m.replace`, with `m.new_content`, which
@@ -2962,8 +2965,9 @@ buttons.
   (`ResolveRoomAlias`) once shown, once per address: until it is, the
   pill says the address and opens matrix.to.
   Emotes show as IRC shows them (`* Name waves`), notices dimmed. A
-  message that mentions the user (by `m.mentions`, or, without it, its
-  body naming their user id) is highlighted. Images and stickers show
+  message the account's push rules highlight (as `RoomEvent::highlight`
+  says: mentioning them, by `m.mentions`, their name or `@room`, or a
+  keyword), but its own, is highlighted. Images and stickers show
   inline, at the size the event gives within 320×240 (stickers
   128×128), by their thumbnail; a click opens the full one. Video and
   audio play inline; other files are links that download them, with
@@ -3053,7 +3057,7 @@ buttons.
   so above the box, which keeps the text. Completions show above the box
   as one types, as Element's: commands after a leading `/`, joined
   members (but the account) after `@`, by a word of their name or their
-  id, inserted as a link that mentions them, and emoji after `:` and two
+  id, inserted as a link that mentions them (then `@room`, from `@r`), and emoji after `:` and two
   characters, by their Slack-style shortcodes (Emojibase's data, loaded
   on first use); a whole `:shortcode:` typed becomes its emoji. Up and
   Down choose, Tab or Enter take one, Escape hides them until the text

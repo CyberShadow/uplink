@@ -351,6 +351,7 @@ export class FakeServer implements Requester, Blobs {
       html: null,
       thread: null,
       thread_root: null,
+      highlight: false,
       ...event,
     }
   }

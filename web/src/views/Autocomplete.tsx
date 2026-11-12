@@ -45,10 +45,11 @@ export function mention(user: string, name: string): string {
 }
 
 /** The members whose name has a word beginning with `query`, or whose
- * id does, but the account. */
+ * id does, but the account; then `@room`, if `query` begins it, which
+ * notifies the whole room (as its power levels let the sender). */
 export function memberSuggestions(members: readonly MemberInfo[], query: string, me: string): Suggestion[] {
   const q = query.toLowerCase()
-  return members
+  const found: Suggestion[] = members
     .filter((m) => m.membership === 'joined' && m.user !== me)
     .filter((m) => {
       const name = displayName(m.user, m.name).toLowerCase()
@@ -59,6 +60,10 @@ export function memberSuggestions(members: readonly MemberInfo[], query: string,
       const name = displayName(m.user, m.name)
       return { key: m.user, label: name, detail: m.user, insert: `${mention(m.user, name)} ` }
     })
+  if (q !== '' && 'room'.startsWith(q)) {
+    found.push({ key: '@room', label: '@room', detail: 'Notify the whole room', insert: '@room ' })
+  }
+  return found
 }
 
 export function commandSuggestions(query: string): Suggestion[] {

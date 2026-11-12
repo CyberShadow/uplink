@@ -158,6 +158,9 @@ pub struct RoomEvent {
     /// Of a message of a thread whose root is stored, the root: the
     /// thread lists it, not the main timeline.
     pub thread_root: Option<RoomEventId>,
+    /// Whether the account's push rules highlight it: it mentions the
+    /// account (by `m.mentions`, its name or `@room`) or a keyword.
+    pub highlight: bool,
 }
 
 /// What a linked page says of itself (OpenGraph), as the homeserver

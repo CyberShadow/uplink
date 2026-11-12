@@ -1304,10 +1304,17 @@ pub fn text_content(
         users.extend(mentioned.iter().map(|&user| user.to_owned()));
         users.sort();
         users.dedup();
+        let mut said = json!({});
+        if !users.is_empty() {
+            said["user_ids"] = json!(users);
+        }
+        if mentions_room(&plain) {
+            said["room"] = json!(true);
+        }
         let mut content = json!({
             "msgtype": if emote { "m.emote" } else { "m.text" },
             "body": plain,
-            "m.mentions": if users.is_empty() { json!({}) } else { json!({ "user_ids": users }) },
+            "m.mentions": said,
         });
         if let Some(html) = markdown.then(|| FormattedBody::markdown(body)).flatten() {
             content["format"] = json!("org.matrix.custom.html");
@@ -1348,6 +1355,22 @@ pub fn text_content(
 
 /// Markdown's links to users, `[name](https://matrix.to/#/@user:server)`:
 /// the text with each as its name, and the users.
+/// Whether the text says `@room`, as a word of its own (not of a user id,
+/// `@room:example.org`), which mentions the whole room, Markdown or not:
+/// as Element's pill, `m.mentions.room`.
+fn mentions_room(text: &str) -> bool {
+    let word = |c: char| c.is_alphanumeric() || "_-.=/@".contains(c);
+    text.match_indices("@room").any(|(at, _)| {
+        let mut after = text[at + "@room".len()..].chars();
+        !text[..at].chars().next_back().is_some_and(word)
+            && match after.next() {
+                // A user id's server follows its colon at once.
+                Some(':') => after.next().is_none_or(char::is_whitespace),
+                next => !next.is_some_and(word),
+            }
+    })
+}
+
 fn mentions(markdown: &str) -> (String, Vec<String>) {
     const PERMALINK: &str = "](https://matrix.to/#/";
     let mut plain = String::new();
