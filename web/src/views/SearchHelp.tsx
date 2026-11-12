@@ -1,4 +1,5 @@
 import { searchPath } from './App'
+import { useTitle } from '../title'
 import styles from './SearchHelp.module.css'
 
 /** One way to write a term: an example, and what it lists. */
@@ -79,6 +80,7 @@ const SECTIONS: { title: string; rows: Row[] }[] = [
 
 /** The search language (SPEC §8.7), with examples to try. */
 export function SearchHelp() {
+  useTitle('Search help')
   return (
     <article class={styles.help} aria-label="Search help">
       <h2>Searching</h2>

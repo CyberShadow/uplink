@@ -2,6 +2,7 @@ import { useEffect } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import type { CalendarEvent } from '../generated/protocol'
 import { useServices } from '../context'
+import { useTitle } from '../title'
 import { date as dateString, time } from '../format'
 import { useKeymap } from '../keymap'
 import styles from './Calendar.module.css'
@@ -75,6 +76,7 @@ export function Calendar(props: { view?: string; date?: string }) {
 
   const events = calendar.events.value
   const title = `${view === 'week' ? 'Week of' : 'From'} ${dateString(first)}`
+  useTitle(title, 'Calendar')
   return (
     <section class={styles.calendar} aria-label="Calendar">
       <header class={styles.header}>

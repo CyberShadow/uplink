@@ -12,6 +12,7 @@ import type {
   VerificationAnswer,
 } from '../generated/protocol'
 import { useServices } from '../context'
+import { useTitle } from '../title'
 import { dateTime } from '../format'
 import type { Security } from '../stores/matrix'
 import styles from './Security.module.css'
@@ -24,6 +25,7 @@ export function SecurityView(props: { account: string }) {
   const { matrix } = useServices()
   const account = decodeURIComponent(props.account)
   const known = matrix.accounts.value?.find((a) => a.id === account)
+  useTitle(...(known ? ['Security', known.mxid] : []))
   if (matrix.accounts.value === null) return <p class={styles.placeholder}>Loading…</p>
   if (!known) return <p class={styles.placeholder}>No Matrix account {account}.</p>
   const security = matrix.security(account)

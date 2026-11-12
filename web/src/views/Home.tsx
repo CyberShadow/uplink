@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import type { CalendarEvent, HomeBucket } from '../generated/protocol'
 import { useServices } from '../context'
+import { useTitle } from '../title'
 import { lines, useKeymap } from '../keymap'
 import type { Row } from '../stores/home'
 import { conversationKey, threadOf } from '../stores/mail'
@@ -30,6 +31,7 @@ function count(bucket: HomeBucket, rows: number): string {
 }
 
 export function Home() {
+  useTitle('Home')
   const { home, mail, matrix, todos } = useServices()
   const { route } = useLocation()
   useEffect(() => home.show(), [home])

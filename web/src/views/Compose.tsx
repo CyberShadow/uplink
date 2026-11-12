@@ -14,14 +14,17 @@ import { useServices } from '../context'
 import { keepFocus, useKeymap } from '../keymap'
 import styles from './Compose.module.css'
 import { fileSize } from './size'
+import { useTitle } from '../title'
 
 export default function Compose(props: { draft?: string }) {
   const { drafts } = useServices()
   const loaded = drafts.drafts.value
   const draft = loaded?.get(props.draft!)
+  const session = draft && drafts.session(draft.id)
+  useTitle(...(session ? [session.content.value.subject || '(no subject)', 'Draft'] : []))
   if (!loaded) return <p class={styles.placeholder}>Loading…</p>
   if (!draft) return <p class={styles.placeholder}>This draft was sent or discarded.</p>
-  return <ComposeForm session={drafts.session(draft.id)} draft={draft} />
+  return <ComposeForm session={session!} draft={draft} />
 }
 
 const ADDRESS_FIELDS: [DraftField, string][] = [

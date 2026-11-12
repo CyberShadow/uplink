@@ -25,6 +25,7 @@ import { SearchHelp } from './SearchHelp'
 import { SecurityView } from './Security'
 import { RecordVisits, Switcher } from './Switcher'
 import { Todos } from './Todos'
+import { useTitle } from '../title'
 import styles from './App.module.css'
 
 const Compose = lazy(() => import('./Compose'))
@@ -174,6 +175,7 @@ function Inbox(props: { entry?: string }) {
 }
 
 function NotFound() {
+  useTitle('Not found')
   return (
     <p class={styles.placeholder}>
       Nothing is here. <a href="/">Home</a>

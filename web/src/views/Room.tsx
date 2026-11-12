@@ -35,6 +35,7 @@ import { MessageDetails } from './RoomMessage'
 import { ThreadPanel } from './RoomThread'
 import { RoomTagPicker } from './RoomTagPicker'
 import { tagName } from '../roomTags'
+import { useTitle } from '../title'
 
 export function roomPath(room: number): string {
   return `/rooms/${room}`
@@ -49,6 +50,7 @@ export function RoomView(props: { room?: string; words?: string }) {
   const { matrix } = useServices()
   const rooms = matrix.rooms.value
   const room = rooms?.find((r) => String(r.id) === props.room)
+  useTitle(...(room ? [room.name] : []))
   if (!rooms) return <p class={styles.placeholder}>Loading…</p>
   if (!room) return <p class={styles.placeholder}>No such room.</p>
   return (

@@ -4,11 +4,13 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import type { HistoryEntry } from '../generated/protocol'
 import { useServices } from '../context'
+import { useTitle } from '../title'
 import { keepFocus, lines, useKeymap } from '../keymap'
 import styles from './History.module.css'
 import { dateTime } from '../format'
 
 export function History() {
+  useTitle('History')
   const { history, ops } = useServices()
   const entries = history.entries.value
   const [focus, setFocus] = useState(0)

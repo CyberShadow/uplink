@@ -14,6 +14,7 @@ import type {
   PendingChanges,
 } from '../generated/protocol'
 import { useServices } from '../context'
+import { useTitle } from '../title'
 import { keepFocus, lines, useKeymap } from '../keymap'
 import styles from './Mail.module.css'
 import outgoing from './Outgoing.module.css'
@@ -26,6 +27,7 @@ export function composePath(draft: string): string {
 }
 
 export function Drafts() {
+  useTitle('Drafts')
   const { drafts } = useServices()
   const { route } = useLocation()
   const loaded = drafts.drafts.value
@@ -73,6 +75,7 @@ export function Drafts() {
 }
 
 export function Outbox() {
+  useTitle('Outbox')
   const { drafts, mail } = useServices()
   const accounts = drafts.outbox.value
   // Re-render every second, for the countdowns.

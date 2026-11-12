@@ -17,6 +17,8 @@ import styles from './Mail.module.css'
 import { fileSize } from './size'
 import { brief, dateTime } from '../format'
 import { Icon, type IconName } from './Icon'
+import { labelName } from './Nav'
+import { useTitle } from '../title'
 
 // Route params; preact-iso's own `query` prop is the URL's query string.
 interface Props {
@@ -77,6 +79,7 @@ export function Mail(props: Props) {
         ? null
         : Number(props.entry)
   const opened = openId === null ? undefined : conversations.find((c) => hasEntry(c, openId))
+  useTitle(...(opened ? [opened.latest.subject ?? '(no subject)'] : listTitle(mail, view)))
   useEffect(() => mail.showConversation(opened ? openId : null), [mail, opened, openId])
   // Of the conversation open, the entries in the list's scope.
   const scope = list?.scope
@@ -237,6 +240,28 @@ export function Mail(props: Props) {
       )}
     </>
   )
+}
+
+/** What the window's title names of a list; nothing while what it is
+ * of is loading. */
+function listTitle(mail: MailStore, view: View): string[] {
+  switch (view.kind) {
+    case 'inbox':
+      return ['All inboxes']
+    case 'search':
+      return [view.query, 'Search']
+    case 'message':
+      return []
+    case 'all': {
+      const account = mail.accounts.value?.find((a) => a.id === view.account)
+      return account ? ['All Mail', account.address] : []
+    }
+    case 'label': {
+      const account = mail.accounts.value?.find((a) => a.id === view.account)
+      const label = account?.labels.find((l) => l.external_id === view.label)
+      return label ? [labelName(account!, label), account!.address] : []
+    }
+  }
 }
 
 /** What the keys, and the toolbar, do to the targets. */

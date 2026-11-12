@@ -315,6 +315,23 @@ describe('mail', () => {
     expect(location.pathname).toBe('/')
   })
 
+  it('names in the window title what is open', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const user = await start('/mail/work/INBOX')
+    expect(document.title).toBe('Inbox – work@example.com – uplink')
+    await user.keyboard('j{Enter}')
+    await screen.findByText('Body of Second')
+    expect(document.title).toBe('Second – uplink')
+    await user.keyboard('u')
+    await screen.findByRole('list', { name: 'Messages' })
+    expect(document.title).toBe('Inbox – work@example.com – uplink')
+    await user.click(within(screen.getByRole('navigation')).getByRole('link', { name: /Lounge/ }))
+    expect(location.pathname).toBe(`/rooms/${room.id}`)
+    await screen.findByRole('list', { name: 'Timeline' })
+    expect(document.title).toBe('Lounge – uplink')
+  })
+
   it('opens a message, reads it, and goes back to the list', async () => {
     const user = await start('/mail/work/INBOX')
     await user.keyboard('j{Enter}')

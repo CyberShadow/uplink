@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import type { Todo } from '../generated/protocol'
 import { useServices } from '../context'
+import { useTitle } from '../title'
 import { keepFocus, lines, useKeymap } from '../keymap'
 import styles from './Todos.module.css'
 
@@ -13,6 +14,7 @@ export function messagePath(message: number): string {
 }
 
 export function Todos() {
+  useTitle('To-dos')
   const { todos } = useServices()
   const { route } = useLocation()
   const list = todos.todos.value
