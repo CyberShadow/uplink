@@ -211,10 +211,37 @@ pub struct MessageContent {
     /// The HTML body, sanitized, if the message has one. It may refer to
     /// remote resources, which clients should not load unasked.
     pub body_html: Option<String>,
-    /// Whether the user has its sender's remote images shown unasked
-    /// (`AlwaysShowImages`).
-    pub always_show_images: bool,
+    /// The hosts of its remote images, by name, and how many each has: but
+    /// likely tracking pixels (tiny or hidden `<img>`s), which never load,
+    /// and are only counted.
+    pub remote_images: Vec<RemoteHost>,
+    pub tracking_pixels: u32,
+    /// The user's rules that have some of its remote images shown
+    /// unasked (`AlwaysShowImages`).
+    pub image_rules: Vec<ImageRule>,
     pub attachments: Vec<Attachment>,
+}
+
+/// A host a message's remote images are at, as its HTML body has them
+/// fetched: `/api/remote-image/<host>?url=…`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteHost {
+    pub host: String,
+    pub images: u32,
+}
+
+/// What has the user's mail's remote images shown unasked (SPEC §8.9):
+/// all of a sender's, or those at a host, whoever's. Lowercased.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImageRule {
+    /// Mail whose `From:` is the address.
+    Sender { address: String },
+    /// Mail whose `From:` is at the domain, exactly.
+    Domain { domain: String },
+    /// Images at the host, in anyone's mail.
+    Host { host: String },
 }
 
 /// A part of a message other than its body. Its content is had over HTTP:
@@ -247,12 +274,11 @@ pub struct EntriesRemoved {
     pub entries: Vec<EntryId>,
 }
 
-/// Whether a sender's remote images are shown unasked, now.
+/// Whether the user has the rule, now.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
-pub struct ImageSenderChanged {
-    /// Lowercased.
-    pub sender: String,
+pub struct ImageRuleChanged {
+    pub rule: ImageRule,
     pub always: bool,
 }
 

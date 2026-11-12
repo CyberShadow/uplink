@@ -28,7 +28,7 @@ impl Db {
         let mut registry = Registry::new();
         mailbox::register(&mut registry);
         crate::compose::register(&mut registry);
-        crate::image_senders::register(&mut registry);
+        crate::image_rules::register(&mut registry);
         let hub = Arc::new(Hub::new(64));
         let dispatcher = Dispatcher::new(
             uplink_storage::open(dir.path()).unwrap(),
@@ -1753,61 +1753,99 @@ pub(crate) mod service {
     }
 
     #[tokio::test]
-    async fn a_senders_images_shown_unasked() {
+    async fn rules_show_remote_images_unasked() {
+        use uplink_protocol::mail::{ImageRule, ImageRuleChanged};
         let db = Db::new();
         let mail = mail_with(&db).await;
         let message = message_of(&db, "m2");
-        let always = || async {
+        let rules = || async {
             let ServerResponse::Message { message } = mail.load_message(message).await.unwrap()
             else {
                 panic!()
             };
-            message.always_show_images
+            message.image_rules
         };
-        assert!(!always().await);
+        let sender = |address: &str| ImageRule::Sender {
+            address: address.into(),
+        };
+        let domain = |domain: &str| ImageRule::Domain {
+            domain: domain.into(),
+        };
+        let host = |host: &str| ImageRule::Host { host: host.into() };
+        assert_eq!(rules().await, []);
         let mut live = db.hub.subscribe();
-        // By address, of any case.
-        let ServerResponse::Dispatched { tx_log_id } =
-            mail.always_show_images(" S@X ".into(), true).await.unwrap()
+        // Of any case.
+        let ServerResponse::Dispatched { tx_log_id } = mail
+            .always_show_images(sender(" S@X "), true)
+            .await
+            .unwrap()
         else {
             panic!()
         };
-        assert!(always().await);
+        assert_eq!(rules().await, [sender("s@x")]);
         let entry = live.recv().await.unwrap();
         assert_eq!(entry.description, "Always showing images from s@x");
         assert_eq!(
             entry.events,
-            [ServerEvent::ImageSenderChanged(
-                uplink_protocol::mail::ImageSenderChanged {
-                    sender: "s@x".into(),
-                    always: true
-                }
-            )]
+            [ServerEvent::ImageRuleChanged(ImageRuleChanged {
+                rule: sender("s@x"),
+                always: true
+            })]
         );
         // Once.
         assert_eq!(
-            mail.always_show_images("s@x".into(), true)
+            mail.always_show_images(sender("s@x"), true)
                 .await
                 .unwrap_err()
                 .code,
             ErrorCode::Conflict
         );
         db.dispatcher.undo(tx_log_id).await.unwrap();
-        assert!(!always().await);
+        live.recv().await.unwrap();
+        assert_eq!(rules().await, []);
         assert_eq!(
-            mail.always_show_images("s@x".into(), false)
+            mail.always_show_images(sender("s@x"), false)
                 .await
                 .unwrap_err()
                 .code,
             ErrorCode::Conflict
         );
+        // Anyone's at the domain, exactly; images at a host, whoever's.
+        mail.always_show_images(domain("X"), true).await.unwrap();
+        mail.always_show_images(domain("sub.x"), true)
+            .await
+            .unwrap();
+        mail.always_show_images(host("img.t.example"), true)
+            .await
+            .unwrap();
+        let entry = live.recv().await.unwrap();
+        assert_eq!(entry.description, "Always showing images from anyone at x");
+        assert_eq!(rules().await, [domain("x")]);
         assert_eq!(
-            mail.always_show_images("nobody".into(), true)
-                .await
-                .unwrap_err()
-                .code,
-            ErrorCode::Invalid
+            crate::image_rules::applying(
+                &db.reader(),
+                Some("A@SUB.X"),
+                ["t.example", "img.t.example"]
+            )
+            .unwrap(),
+            [domain("sub.x"), host("img.t.example")]
         );
+        for rule in [
+            sender("nobody"),
+            sender("a@b@c"),
+            domain("a@b"),
+            host(" "),
+            host("a;b"),
+        ] {
+            assert_eq!(
+                mail.always_show_images(rule.clone(), true)
+                    .await
+                    .unwrap_err()
+                    .code,
+                ErrorCode::Invalid,
+                "{rule:?}"
+            );
+        }
     }
 
     #[tokio::test]

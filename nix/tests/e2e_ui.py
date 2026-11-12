@@ -295,7 +295,7 @@ def hostile(page):
     def sent(route):
         requests.append(route.request)
         url = route.request.url
-        if url.startswith(f"{origin}/api/remote-image?"):
+        if url.startswith(f"{origin}/api/remote-image/"):
             route.fulfill(content_type="image/gif", body=pixel)
         elif url.startswith("http://t.example/"):
             route.fulfill(content_type="text/html", body="<p>sender")
@@ -309,6 +309,7 @@ def hostile(page):
     body = page.frame_locator("iframe[title='Message body']")
     expect(body.get_by_text("Hostile content")).to_be_visible()
     expect(page.get_by_text("Remote images are not shown.")).to_be_visible()
+    expect(page.get_by_text("1 likely tracker blocked.")).to_be_visible()
     page.wait_for_timeout(2000)
 
     def framed():
@@ -367,7 +368,8 @@ def hostile(page):
     errors[:] = [e for e in errors if not any(r in e for r in refused)]
     return {
         "before": before,
-        "shown": [unquote(url.removeprefix(f"{origin}/api/remote-image?url=")) for url in shown],
+        # What uplink was asked to fetch, else what was.
+        "shown": [unquote(url.split("?url=", 1)[1]) if "?url=" in url else url for url in shown],
         "beyond": sorted({r.url for r in requests if not r.url.startswith(origin + "/")}),
         "followed": followed,
         "dialogs": dialogs,

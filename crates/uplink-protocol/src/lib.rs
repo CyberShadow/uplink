@@ -157,10 +157,10 @@ pub enum ClientRequest {
     LoadMessage {
         message: MessageId,
     },
-    /// Show the remote images of mail from `sender` (an address, of any
-    /// case) unasked, or no longer.
+    /// Have the rule (of any case) show remote images unasked, or no
+    /// longer.
     AlwaysShowImages {
-        sender: String,
+        rule: mail::ImageRule,
         always: bool,
     },
     /// Add and remove labels on entries, all of the labels' account.
@@ -762,7 +762,7 @@ pub enum ServerEvent {
     EntriesRemoved(mail::EntriesRemoved),
     LabelsChanged(mail::LabelsChanged),
     LabelListChanged(mail::LabelListChanged),
-    ImageSenderChanged(mail::ImageSenderChanged),
+    ImageRuleChanged(mail::ImageRuleChanged),
     DraftEdited(compose::DraftEdited),
     DraftsChanged(compose::DraftsChanged),
     OutboxChanged(compose::OutboxChanged),

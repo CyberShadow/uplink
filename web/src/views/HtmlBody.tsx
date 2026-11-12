@@ -1,15 +1,21 @@
 // An HTML mail body (SPEC §8.9), already sanitized by the server, shown in
 // a sandboxed frame: no scripts, links open in a new tab, and nothing
 // remote loads (tracking pixels, fonts). Remote images, which the server
-// fetches in the client's stead, load if asked for.
+// fetches in the client's stead, load by host, as asked for; likely
+// tracking pixels, never.
 
 import { useEffect, useMemo, useState } from 'preact/hooks'
+import type { RemoteHost } from '../generated/protocol'
 import { keepFocus, takeKeys } from '../keymap'
 import styles from './Mail.module.css'
+import { MenuButton, type MenuItem } from './Menu'
 import { QUOTE_CLASS, foldHtml } from './quote'
 
-/** The server's rewriting of a remote image's URL, to fetch it itself. */
-const REMOTE = /\/api\/remote-image\?url=/
+/** Where the server fetches a host's remote images for a mail:
+ * `<path>?url=…`. */
+function remotePath(host: string): string {
+  return `/api/remote-image/${host}`
+}
 
 // Mail is shown as for white paper: the frame is in a light colour scheme
 // (Mail.module.css), so that mail with a dark mode of its own, often
@@ -43,44 +49,51 @@ function useDark(): boolean {
   return dark
 }
 
-/** `html` with its `<style>` elements marked as shown with remote images.
- * Firefox reuses a sheet it parsed for a document before, of the same
- * text, with its images as that document's CSP refused them: the frame's,
- * shown without them. */
-function remoteShown(html: string): string {
+/** `html` with its `<style>` elements marked as shown with the remote
+ * images of `hosts`. Firefox reuses a sheet it parsed for a document
+ * before, of the same text, with its images as that document's CSP
+ * refused them: the frame's, shown with fewer. */
+function remoteShown(html: string, hosts: string[]): string {
   // Inert: nothing in it loads.
   const template = document.createElement('template')
   template.innerHTML = html
-  for (const style of template.content.querySelectorAll('style')) style.append('/* remote images shown */')
+  for (const style of template.content.querySelectorAll('style')) {
+    style.append(`/* remote images shown: ${hosts.join(' ')} */`)
+  }
   return template.innerHTML
 }
 
-function frameDocument(html: string, remote: boolean, classes: string): string {
-  // The server's fetches of remote images, at uplink's origin; by name, as
-  // Firefox does not take a srcdoc frame's 'self' for its (inherited)
-  // origin.
-  const images = remote ? `data: ${location.origin}` : 'data:'
+function frameDocument(html: string, shown: ReadonlySet<string>, classes: string): string {
+  // The server's fetches of the remote images of the hosts shown, at
+  // uplink's origin, by path (exactly: the query is not matched). The
+  // origin by name, as Firefox does not take a srcdoc frame's 'self' for
+  // its (inherited) origin. Likely tracking pixels' path is never here.
+  const hosts = [...shown].sort()
+  const images = ['data:', ...hosts.map((host) => location.origin + remotePath(host))].join(' ')
   return `<!doctype html><html class="${classes}"><head><meta charset="utf-8"><meta name="darkreader-lock">
 <meta http-equiv="x-dns-prefetch-control" content="off">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${images}; style-src 'unsafe-inline'">
 <base target="_blank">
 <style>${STYLE}</style>
-</head><body>${remote ? remoteShown(html) : html}</body></html>`
+</head><body>${hosts.length > 0 ? remoteShown(html, hosts) : html}</body></html>`
 }
 
 /** `fold`: whether to fold away the quote of the mail it answers, if it
- * ends with one (SPEC §12.8). `always`: whether its remote images are
- * shown unasked, as its sender's are; else, `alwaysShow` makes them so,
- * if it has a sender. */
+ * ends with one (SPEC §12.8). `hosts`: those of its remote images;
+ * `shown`, those shown unasked, by the user's rules; `rules`, rules to
+ * have more shown so; `pixels`, how many likely tracking pixels it has,
+ * which never load. */
 export function HtmlBody(props: {
   html: string
   fold: boolean
-  always: boolean
-  sender: string | null
-  alwaysShow: () => void
+  hosts: RemoteHost[]
+  shown: ReadonlySet<string>
+  rules: MenuItem[]
+  pixels: number
 }) {
   const [asked, setAsked] = useState(false)
-  const remote = asked || props.always
+  const shown = asked ? new Set(props.hosts.map((h) => h.host)) : props.shown
+  const hidden = props.hosts.filter((h) => !shown.has(h.host))
   const [quoteShown, setQuoteShown] = useState(false)
   const dark = useDark()
   const [html, folded] = useMemo(
@@ -101,20 +114,19 @@ export function HtmlBody(props: {
   }
   return (
     <>
-      {!remote && REMOTE.test(props.html) && (
+      {hidden.length > 0 && (
         <p class={styles.remote}>
-          Remote images are not shown.{' '}
+          {shown.size === 0 ? 'Remote images are not shown.' : 'Some remote images are not shown.'}{' '}
           <button type="button" onMouseDown={keepFocus} onClick={() => setAsked(true)}>
             Show them
           </button>
-          {props.sender !== null && (
+          {props.rules.length > 0 && (
             <>
               {' · '}
-              <button type="button" onMouseDown={keepFocus} onClick={props.alwaysShow}>
-                Always show images from {props.sender}
-              </button>
+              <MenuButton label="Always show" groups={[props.rules]} start />
             </>
           )}
+          {props.pixels > 0 && ` · ${trackers(props.pixels)} blocked.`}
         </p>
       )}
       <iframe
@@ -124,12 +136,16 @@ export function HtmlBody(props: {
         // (with scripts too, the mail could lift its own sandbox); popups,
         // so that links open.
         sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
-        srcdoc={frameDocument(html, remote, classes)}
+        srcdoc={frameDocument(html, shown, classes)}
         onLoad={(event) => loaded(event.currentTarget)}
       />
       {folded && <QuoteToggle shown={quoteShown} toggle={() => setQuoteShown(!quoteShown)} />}
     </>
   )
+}
+
+function trackers(n: number): string {
+  return n === 1 ? '1 likely tracker' : `${n} likely trackers`
 }
 
 /** Gmail's "•••", which shows or hides a message's quote. */

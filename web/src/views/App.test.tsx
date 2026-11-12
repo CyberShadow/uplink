@@ -380,10 +380,12 @@ describe('mail', () => {
     expect(focusedSubject()).toBe('Third')
   })
 
-  it('shows an HTML body in a sandbox, remote images only when asked, through the server', async () => {
+  it('shows an HTML body in a sandbox, remote images only when asked, through the server, never pixels', async () => {
     const first = server.deliver('work', 'Newsletter')
     // As the server rewrites it.
-    const html = '<p>Hello <img src="/api/remote-image?url=https%3A%2F%2Ft.example%2Fpixel.gif"></p>'
+    const html =
+      '<p>Hello <img src="/api/remote-image/t.example?url=https%3A%2F%2Ft.example%2Fhello.gif">' +
+      '<img width="1" height="1" src="/api/remote-pixel/t.example?url=https%3A%2F%2Ft.example%2Fopen.gif"></p>'
     server.html.set(first.message, html)
     const user = await start('/mail/work/INBOX')
     await user.keyboard('{Enter}')
@@ -394,34 +396,54 @@ describe('mail', () => {
     // Nor lookups of the hosts linked to, which tell DNS servers it was read.
     expect(frame.srcdoc).toContain('<meta http-equiv="x-dns-prefetch-control" content="off">')
     expect(frame.srcdoc).toContain('img-src data:;')
+    expect(screen.getByText(/1 likely tracker blocked\./)).toBeTruthy()
     await user.click(screen.getByRole('button', { name: 'Show them' }))
-    expect(frame.srcdoc).toContain(`img-src data: ${location.origin};`)
+    // By the host's path, exactly: not the pixel's.
+    expect(frame.srcdoc).toContain(`img-src data: ${location.origin}/api/remote-image/t.example;`)
+    expect(screen.queryByText(/not shown/)).toBeNull()
   })
 
-  it("shows a sender's remote images unasked once asked to, until asked not to", async () => {
+  it("shows remote images unasked by the user's rules, of a sender or a host, until asked not to", async () => {
     const first = server.deliver('work', 'Newsletter')
     const second = server.deliver('work', 'Another')
-    const html = '<p>Hello <img src="/api/remote-image?url=https%3A%2F%2Ft.example%2Fpixel.gif"></p>'
-    server.html.set(first.message, html)
-    server.html.set(second.message, html)
+    const image = (host: string, name: string) =>
+      `<img src="/api/remote-image/${host}?url=https%3A%2F%2F${host}%2F${name}.gif">`
+    server.html.set(first.message, `<p>${image('a.example', '1')}${image('a.example', '2')}${image('b.example', '3')}</p>`)
+    server.html.set(second.message, `<p>${image('a.example', '4')}${image('c.example', '5')}</p>`)
     const user = await start('/mail/work/INBOX')
     await user.keyboard('j{Enter}')
     let frame = (await screen.findByTitle('Message body')) as HTMLIFrameElement
-    expect(frame.srcdoc).toContain('img-src data:;')
-    await user.click(screen.getByRole('button', { name: 'Always show images from bob@example.org' }))
-    expect(await screen.findByText('Always showing images from bob@example.org')).toBeTruthy()
-    expect(frame.srcdoc).toContain(`img-src data: ${location.origin};`)
-    expect(screen.queryByText('Remote images are not shown.')).toBeNull()
-    // The sender's other mail too, as the server says.
+    const csp = () => frame.srcdoc.match(/img-src ([^;]*);/)![1]
+    const origin = location.origin
+    expect(csp()).toBe('data:')
+    await user.click(screen.getByRole('button', { name: 'Always show ▾' }))
+    expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+      'From bob@example.org',
+      'From anyone at example.org',
+      'Hosted at a.example (2 images), from anyone',
+      'Hosted at b.example (1 image), from anyone',
+    ])
+    await user.click(screen.getByRole('menuitem', { name: 'Hosted at a.example (2 images), from anyone' }))
+    await waitFor(() => expect(csp()).toBe(`data: ${origin}/api/remote-image/a.example`))
+    expect(screen.getByText(/Some remote images are not shown\./)).toBeTruthy()
+    // Whoever's mail they are in, as the server says.
     await user.keyboard('u')
     await user.keyboard('k{Enter}')
     await screen.findByRole('heading', { name: 'Another' })
     frame = (await screen.findByTitle('Message body')) as HTMLIFrameElement
-    expect(frame.srcdoc).toContain(`img-src data: ${location.origin};`)
+    expect(csp()).toBe(`data: ${origin}/api/remote-image/a.example`)
+    // All of a sender's.
+    await user.click(screen.getByRole('button', { name: 'Always show ▾' }))
+    await user.click(screen.getByRole('menuitem', { name: 'From bob@example.org' }))
+    await waitFor(() => expect(csp()).toBe(`data: ${origin}/api/remote-image/a.example ${origin}/api/remote-image/c.example`))
+    expect(screen.queryByText(/not shown/)).toBeNull()
     await user.click(within(frame.closest('section')!).getByRole('button', { name: 'More' }))
     await user.click(screen.getByRole('menuitem', { name: "Don't always show images from bob@example.org" }))
-    await waitFor(() => expect(frame.srcdoc).toContain('img-src data:;'))
-    expect(server.imageSenders.size).toBe(0)
+    await waitFor(() => expect(csp()).toBe(`data: ${origin}/api/remote-image/a.example`))
+    await user.click(within(frame.closest('section')!).getByRole('button', { name: 'More' }))
+    await user.click(screen.getByRole('menuitem', { name: "Don't always show images hosted at a.example" }))
+    await waitFor(() => expect(csp()).toBe('data:'))
+    expect(server.imageRules.size).toBe(0)
   })
 
   it("folds the quote of the mail answered, as Gmail does, but not a forward's", async () => {

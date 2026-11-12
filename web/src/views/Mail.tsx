@@ -1,9 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
-import type { Conversation, Entry, EntryId, Label, MessageContent, Sender } from '../generated/protocol'
+import type { Conversation, Entry, EntryId, ImageRule, Label, MessageContent, RemoteHost, Sender } from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus, lines, useKeymap } from '../keymap'
-import { conversationKey, hasEntry, inScope, threadOf, type MailStore, type Targets, type Thread, type View } from '../stores/mail'
+import {
+  conversationKey,
+  hasEntry,
+  inScope,
+  threadOf,
+  type ImageRuleState,
+  type MailStore,
+  type Targets,
+  type Thread,
+  type View,
+} from '../stores/mail'
 import { respond, type Response } from '../compose/reply'
 import { allMailPath, inboxPath, mailPath, searchPath } from './App'
 import { Found } from './Found'
@@ -746,6 +756,9 @@ function ConversationMessage(props: {
     }
   }, [mail, message, expanded])
   const date = content?.date_sent ? content.date_sent * 1000 : entry.received_at
+  // The rules that would show its remote images: none, without any.
+  const rules: ImageRuleState[] = content && content.remote_images.length > 0 ? mail.imageRules(content) : []
+  const rulesHad = rules.filter((r) => r.always)
   return (
     <section class={expanded ? styles.expanded : undefined} aria-expanded={expanded}>
       <header class={styles.messageHeader} onClick={props.toggle}>
@@ -773,15 +786,13 @@ function ConversationMessage(props: {
                   { label: 'Mark unread from here', icon: 'mail', action: actions.markUnreadFrom },
                 ],
                 ...(actions.spam ? [[{ label: 'Report spam', icon: 'octagon-x' as const, action: actions.spam }]] : []),
-                ...(content?.from_addr && mail.alwaysShowsImages(content)
+                ...(rulesHad.length > 0
                   ? [
-                      [
-                        {
-                          label: `Don't always show images from ${content.from_addr}`,
-                          icon: 'image-off' as const,
-                          action: () => void mail.alwaysShowImages(content.from_addr!, false),
-                        },
-                      ],
+                      rulesHad.map(({ rule }) => ({
+                        label: `Don't always show ${ruleImages(rule)}`,
+                        icon: 'image-off' as const,
+                        action: () => void mail.alwaysShowImages(rule, false),
+                      })),
                     ]
                   : []),
                 [
@@ -821,15 +832,47 @@ function ConversationMessage(props: {
               <HtmlBody
                 html={content.body_html}
                 fold={!forwards(content.subject)}
-                always={mail.alwaysShowsImages(content)}
-                sender={content.from_addr}
-                alwaysShow={() => void mail.alwaysShowImages(content.from_addr!, true)}
+                hosts={content.remote_images}
+                shown={mail.shownHosts(content)}
+                rules={rules
+                  .filter((r) => !r.always)
+                  .map(({ rule }) => ({
+                    label: ruleChoice(rule, content.remote_images),
+                    action: () => void mail.alwaysShowImages(rule, true),
+                  }))}
+                pixels={content.tracking_pixels}
               />
             )}
           </>
         ))}
     </section>
   )
+}
+
+/** The images an image rule shows, as its descriptions say. */
+function ruleImages(rule: ImageRule): string {
+  switch (rule.type) {
+    case 'sender':
+      return `images from ${rule.address}`
+    case 'domain':
+      return `images from anyone at ${rule.domain}`
+    case 'host':
+      return `images hosted at ${rule.host}`
+  }
+}
+
+/** A rule, as "Always show" offers it for a message of `hosts`. */
+function ruleChoice(rule: ImageRule, hosts: RemoteHost[]): string {
+  switch (rule.type) {
+    case 'sender':
+      return `From ${rule.address}`
+    case 'domain':
+      return `From anyone at ${rule.domain}`
+    case 'host': {
+      const images = hosts.find((h) => h.host === rule.host)!.images
+      return `Hosted at ${rule.host} (${images === 1 ? '1 image' : `${images} images`}), from anyone`
+    }
+  }
 }
 
 /** A plain-text body; `fold`: as `HtmlBody`'s. */

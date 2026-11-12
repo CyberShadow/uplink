@@ -1,7 +1,7 @@
 //! What uplink takes from a raw message: identity, listing headers and the
 //! text to index (SPEC §4.4–4.5).
 
-use crate::remote::proxy_html;
+use crate::remote::{proxy_html, Remote};
 use base64::Engine;
 use mail_parser::{
     Address, HeaderName, Message, MessageParser, MessagePart, MimeHeaders, PartType,
@@ -108,7 +108,8 @@ pub fn has_attachments(raw: &[u8]) -> bool {
 /// stay, since mail layout depends on them. Remote images, in `<img>` and
 /// in CSS, are fetched through uplink's server ([`proxy_html`]), for the
 /// client to block or allow (SPEC §8.9); other `<img>` sources go. Images of the message's own (`cid:`) are inlined as `data:` URIs.
-pub fn html_body(raw: &[u8]) -> Option<String> {
+/// With it, its remote images, as proxied.
+pub fn html_body(raw: &[u8]) -> Option<(String, Remote)> {
     let message = MessageParser::new().parse(raw)?;
     let PartType::Html(html) = &message.html_part(0)?.body else {
         // A text-only message: its text part stands in as the HTML one.
@@ -124,6 +125,7 @@ pub fn html_body(raw: &[u8]) -> Option<String> {
         .collect();
     // Remote images are proxied first, so that sanitizing has the last word
     // on what the client gets.
+    let (proxied, remote) = proxy_html(html);
     let html = ammonia::Builder::default()
         // Let `cid:` through the scheme check, for the filter below.
         .add_url_schemes(["cid"])
@@ -155,9 +157,9 @@ pub fn html_body(raw: &[u8]) -> Option<String> {
             "size",
             "dir",
         ])
-        .clean(&proxy_html(html))
+        .clean(&proxied)
         .to_string();
-    Some(html)
+    Some((html, remote))
 }
 
 /// The message's attachments, inline images included: those its HTML body
@@ -305,11 +307,14 @@ pub(crate) mod tests {
             "<style>p { color: red }</style><p style=\"margin: 0\" onclick=\"x()\">Hi\
              <script>alert(1)</script><img src=\"https://t.example/p.gif\"></p>",
         ))
-        .unwrap();
+        .unwrap()
+        .0;
         assert!(html.contains("<style>p { color: red }</style>"), "{html}");
         assert!(html.contains("style=\"margin: 0\""), "{html}");
         assert!(
-            html.contains("<img src=\"/api/remote-image?url=https%3A%2F%2Ft.example%2Fp.gif\">"),
+            html.contains(
+                "<img src=\"/api/remote-image/t.example?url=https%3A%2F%2Ft.example%2Fp.gif\">"
+            ),
             "{html}"
         );
         assert!(
@@ -329,8 +334,9 @@ pub(crate) mod tests {
              <img src=\" HTTPS://X.example/d.png?q=1&amp;r=2\"><img src=\"/relative.png\">\
              <img src=\"data:image/gif;base64,R0lG\"><img src=\"javascript:x()\"></div>",
         ))
-        .unwrap();
-        let proxied = |url: &str| format!("/api/remote-image?url={url}");
+        .unwrap()
+        .0;
+        let proxied = |url: &str| format!("/api/remote-image/x.example?url={url}");
         for expected in [
             format!(
                 "background: url(\"{}\")",
@@ -413,7 +419,7 @@ JVBERi0xLjQ=\r
             ))
         );
         assert_eq!(attachment(raw, 2), None);
-        let html = html_body(raw).unwrap();
+        let html = html_body(raw).unwrap().0;
         assert!(
             html.contains("<img src=\"data:image/png;base64,iVBORw0K\">"),
             "{html}"

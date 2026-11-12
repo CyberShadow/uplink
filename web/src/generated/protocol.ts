@@ -226,7 +226,7 @@ export type SasEmoji = { symbol: string, description: string, };
  */
 export type VerificationAnswer = "accept" | "confirm" | "mismatch" | "cancel";
 
-export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": "list_history", before: TxLogId | null, limit: number, } | { "type": "list_accounts" } | { "type": "list_entries", query: string, after: ListPosition | null, limit: number, } | { "type": "list_items", query: string, after: ListPosition | null, limit: number, } | { "type": "list_home", limit: number, } | { "type": "list_conversation", entry: EntryId, } | { "type": "list_message_entries", message: MessageId, } | { "type": "load_message", message: MessageId, } | { "type": "always_show_images", sender: string, always: boolean, } | { "type": "modify_labels", entries: Array<EntryId>, add: Array<LabelId>, remove: Array<LabelId>, } | { "type": "act_on_conversations", conversations: ConversationSet, action: ConversationAction, } | { "type": "count_conversations", query: string, } | { "type": "list_drafts" } | { "type": "create_draft", id: DraftId, account: string, content: DraftContent, in_reply_to: MessageId | null, } | { "type": "edit_draft", draft: DraftId, revision: number, splice: Splice, } | { "type": "delete_draft", draft: DraftId, } | { "type": "attach_to_draft", draft: DraftId, blob: BlobId, name: string, mime: string, } | { "type": "detach_from_draft", draft: DraftId, attachment: DraftAttachmentId, } | { "type": "send_draft", draft: DraftId, } | { "type": "cancel_send", item: OutboxId, } | { "type": "keep_sent", item: OutboxId, } | { "type": "list_outbox" } | { "type": "keep_observed", account: string, op: TxLogId | null, } | { "type": "list_rooms" } | { "type": "list_timeline", room: RoomId, page: TimelinePage, limit: number, } | { "type": "fill_gap", room: RoomId, gap: GapId, } | { "type": "list_room_events", room: RoomId, events: Array<RoomEventId>, } | { "type": "list_edits", room: RoomId, event: RoomEventId, } | { "type": "list_matrix_sends", room: RoomId, } | { "type": "send_matrix_message", room: RoomId, content: MatrixContent, } | { "type": "cancel_matrix_send", item: MatrixSendId, } | { "type": "keep_matrix_sent", item: MatrixSendId, } | { "type": "mark_room_read", room: RoomId, event: RoomEventId, } | { "type": "set_typing", room: RoomId, typing: boolean, } | { "type": "list_receipts", room: RoomId, } | { "type": "list_members", room: RoomId, } | { "type": "list_pinned", room: RoomId, } | { "type": "list_thread", room: RoomId, root: RoomEventId, } | { "type": "search_room", room: RoomId, query: string, before: RoomEventId | null, limit: number, } | { "type": "preview_url", room: RoomId, event: RoomEventId, url: string, } | { "type": "create_matrix_room", account: string, room: NewRoom, } | { "type": "start_direct_chat", account: string, user: string, } | { "type": "join_matrix_room", account: string, room: string, } | { "type": "resolve_room_alias", account: string, alias: string, } | { "type": "get_matrix_security", account: string, } | { "type": "recover_matrix", account: string, recovery: string, } | { "type": "verify_matrix_device", account: string, device: string | null, } | { "type": "answer_verification", account: string, flow_id: string, answer: VerificationAnswer, } | { "type": "import_room_keys", account: string, blob: BlobId, passphrase: string, } | { "type": "change_membership", room: RoomId, change: MembershipChange, } | { "type": "order_spaces", changes: Array<SpaceOrderChange>, } | { "type": "modify_room_tags", rooms: Array<RoomId>, add: Array<string>, remove: Array<string>, } | { "type": "list_events", from: number, to: number, } | { "type": "list_todos" } | { "type": "create_todo", title: string, notes: string, due: string | null, message: MessageId | null, } | { "type": "edit_todo", todo: TodoId, edit: TodoEdit, } | { "type": "delete_todo", todo: TodoId, };
+export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": "list_history", before: TxLogId | null, limit: number, } | { "type": "list_accounts" } | { "type": "list_entries", query: string, after: ListPosition | null, limit: number, } | { "type": "list_items", query: string, after: ListPosition | null, limit: number, } | { "type": "list_home", limit: number, } | { "type": "list_conversation", entry: EntryId, } | { "type": "list_message_entries", message: MessageId, } | { "type": "load_message", message: MessageId, } | { "type": "always_show_images", rule: ImageRule, always: boolean, } | { "type": "modify_labels", entries: Array<EntryId>, add: Array<LabelId>, remove: Array<LabelId>, } | { "type": "act_on_conversations", conversations: ConversationSet, action: ConversationAction, } | { "type": "count_conversations", query: string, } | { "type": "list_drafts" } | { "type": "create_draft", id: DraftId, account: string, content: DraftContent, in_reply_to: MessageId | null, } | { "type": "edit_draft", draft: DraftId, revision: number, splice: Splice, } | { "type": "delete_draft", draft: DraftId, } | { "type": "attach_to_draft", draft: DraftId, blob: BlobId, name: string, mime: string, } | { "type": "detach_from_draft", draft: DraftId, attachment: DraftAttachmentId, } | { "type": "send_draft", draft: DraftId, } | { "type": "cancel_send", item: OutboxId, } | { "type": "keep_sent", item: OutboxId, } | { "type": "list_outbox" } | { "type": "keep_observed", account: string, op: TxLogId | null, } | { "type": "list_rooms" } | { "type": "list_timeline", room: RoomId, page: TimelinePage, limit: number, } | { "type": "fill_gap", room: RoomId, gap: GapId, } | { "type": "list_room_events", room: RoomId, events: Array<RoomEventId>, } | { "type": "list_edits", room: RoomId, event: RoomEventId, } | { "type": "list_matrix_sends", room: RoomId, } | { "type": "send_matrix_message", room: RoomId, content: MatrixContent, } | { "type": "cancel_matrix_send", item: MatrixSendId, } | { "type": "keep_matrix_sent", item: MatrixSendId, } | { "type": "mark_room_read", room: RoomId, event: RoomEventId, } | { "type": "set_typing", room: RoomId, typing: boolean, } | { "type": "list_receipts", room: RoomId, } | { "type": "list_members", room: RoomId, } | { "type": "list_pinned", room: RoomId, } | { "type": "list_thread", room: RoomId, root: RoomEventId, } | { "type": "search_room", room: RoomId, query: string, before: RoomEventId | null, limit: number, } | { "type": "preview_url", room: RoomId, event: RoomEventId, url: string, } | { "type": "create_matrix_room", account: string, room: NewRoom, } | { "type": "start_direct_chat", account: string, user: string, } | { "type": "join_matrix_room", account: string, room: string, } | { "type": "resolve_room_alias", account: string, alias: string, } | { "type": "get_matrix_security", account: string, } | { "type": "recover_matrix", account: string, recovery: string, } | { "type": "verify_matrix_device", account: string, device: string | null, } | { "type": "answer_verification", account: string, flow_id: string, answer: VerificationAnswer, } | { "type": "import_room_keys", account: string, blob: BlobId, passphrase: string, } | { "type": "change_membership", room: RoomId, change: MembershipChange, } | { "type": "order_spaces", changes: Array<SpaceOrderChange>, } | { "type": "modify_room_tags", rooms: Array<RoomId>, add: Array<string>, remove: Array<string>, } | { "type": "list_events", from: number, to: number, } | { "type": "list_todos" } | { "type": "create_todo", title: string, notes: string, due: string | null, message: MessageId | null, } | { "type": "edit_todo", todo: TodoId, edit: TodoEdit, } | { "type": "delete_todo", todo: TodoId, };
 
 export type ServerResponse = { "type": "undone", tx_log_id: TxLogId, } | { "type": "dispatched", tx_log_id: TxLogId, } | { "type": "done" } | { "type": "matrix_security", security: MatrixSecurity, } | { "type": "room_keys_imported", imported: number, total: number, } | { "type": "accounts", as_of: TxLogId, accounts: Array<Account>, } | { "type": "conversations", as_of: TxLogId, conversations: Array<Conversation>, 
 /**
@@ -364,7 +364,7 @@ export type Source = { "type": "user" } | { "type": "account", id: string, };
  * rather than content, since they are stored in the log; clients query
  * what they display.
  */
-export type ServerEvent = { "type": "entries_added" } & EntriesAdded | { "type": "entries_removed" } & EntriesRemoved | { "type": "labels_changed" } & LabelsChanged | { "type": "label_list_changed" } & LabelListChanged | { "type": "image_sender_changed" } & ImageSenderChanged | { "type": "draft_edited" } & DraftEdited | { "type": "drafts_changed" } & DraftsChanged | { "type": "outbox_changed" } & OutboxChanged | { "type": "rooms_changed" } & RoomsChanged | { "type": "timeline_added" } & TimelineAdded | { "type": "timeline_filled" } & TimelineFilled | { "type": "timeline_changed" } & TimelineChanged | { "type": "matrix_sends_changed" } & MatrixSendsChanged | { "type": "todos_changed" } & TodosChanged | { "type": "calendar_changed" } & CalendarChanged;
+export type ServerEvent = { "type": "entries_added" } & EntriesAdded | { "type": "entries_removed" } & EntriesRemoved | { "type": "labels_changed" } & LabelsChanged | { "type": "label_list_changed" } & LabelListChanged | { "type": "image_rule_changed" } & ImageRuleChanged | { "type": "draft_edited" } & DraftEdited | { "type": "drafts_changed" } & DraftsChanged | { "type": "outbox_changed" } & OutboxChanged | { "type": "rooms_changed" } & RoomsChanged | { "type": "timeline_added" } & TimelineAdded | { "type": "timeline_filled" } & TimelineFilled | { "type": "timeline_changed" } & TimelineChanged | { "type": "matrix_sends_changed" } & MatrixSendsChanged | { "type": "todos_changed" } & TodosChanged | { "type": "calendar_changed" } & CalendarChanged;
 
 export type MessageId = number;
 
@@ -490,10 +490,16 @@ date_sent: number | null, body_text: string,
  */
 body_html: string | null, 
 /**
- * Whether the user has its sender's remote images shown unasked
- * (`AlwaysShowImages`).
+ * The hosts of its remote images, by name, and how many each has: but
+ * likely tracking pixels (tiny or hidden `<img>`s), which never load,
+ * and are only counted.
  */
-always_show_images: boolean, attachments: Array<Attachment>, };
+remote_images: Array<RemoteHost>, tracking_pixels: number, 
+/**
+ * The user's rules that have some of its remote images shown
+ * unasked (`AlwaysShowImages`).
+ */
+image_rules: Array<ImageRule>, attachments: Array<Attachment>, };
 
 /**
  * A part of a message other than its body. Its content is had over HTTP:
@@ -534,13 +540,21 @@ export type LabelState = { entry: EntryId, label: LabelId, desired: boolean, obs
 export type LabelListChanged = { account: string, };
 
 /**
- * Whether a sender's remote images are shown unasked, now.
+ * A host a message's remote images are at, as its HTML body has them
+ * fetched: `/api/remote-image/<host>?url=…`.
  */
-export type ImageSenderChanged = { 
+export type RemoteHost = { host: string, images: number, };
+
 /**
- * Lowercased.
+ * What has the user's mail's remote images shown unasked (SPEC §8.9):
+ * all of a sender's, or those at a host, whoever's. Lowercased.
  */
-sender: string, always: boolean, };
+export type ImageRule = { "type": "sender", address: string, } | { "type": "domain", domain: string, } | { "type": "host", host: string, };
+
+/**
+ * Whether the user has the rule, now.
+ */
+export type ImageRuleChanged = { rule: ImageRule, always: boolean, };
 
 /**
  * Chosen by the client creating the draft (a UUID), so that it can be
@@ -1178,4 +1192,4 @@ exception: boolean, };
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "94d9c0959c0ba9af"
+export const PROTOCOL_VERSION = "bff11f3121c818bc"

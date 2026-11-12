@@ -6,11 +6,12 @@ use crate::{
         self, AttachToDraft, CancelSend, DeleteDraft, DetachFromDraft, EditDraft, KeepSent,
         PutDraft, SendDraft,
     },
-    image_senders::{self, AlwaysShowImages},
+    image_rules::{self, AlwaysShowImages},
     mailbox::{LabelChange, SetLabels},
     outbox,
     parse::{self, html_body, parse},
     query::{self, ConfiguredAccount, ListError, Unknown},
+    remote::Remote,
 };
 use std::{
     path::Path,
@@ -19,7 +20,10 @@ use std::{
 };
 use uplink_protocol::{
     compose::{BlobId, DraftAttachmentId, DraftContent, DraftId, OutboxId, Splice, UploadedBlob},
-    mail::{ConversationAction, EntryId, LabelId, ListPosition, MessageContent, MessageId},
+    mail::{
+        ConversationAction, EntryId, ImageRule, LabelId, ListPosition, MessageContent, MessageId,
+        RemoteHost,
+    },
     ErrorCode, ServerError, ServerResponse, TxLogId,
 };
 use uplink_storage::rusqlite::{Connection, OptionalExtension};
@@ -147,10 +151,16 @@ impl Mail {
                     })?;
                 let raw = store.get(&VariantHash(variant)).map_err(internal)?;
                 let parsed = parse(&raw);
-                let always_show_images = match &parsed.from_addr {
-                    Some(sender) => image_senders::always(conn, sender).map_err(internal)?,
-                    None => false,
+                let (body_html, remote) = match html_body(&raw) {
+                    Some((html, remote)) => (Some(html), remote),
+                    None => (None, Remote::default()),
                 };
+                let image_rules = image_rules::applying(
+                    conn,
+                    parsed.from_addr.as_deref(),
+                    remote.hosts.keys().map(String::as_str),
+                )
+                .map_err(internal)?;
                 Ok(ServerResponse::Message {
                     message: MessageContent {
                         id: message,
@@ -162,8 +172,14 @@ impl Mail {
                         cc_addrs: parsed.cc_addrs,
                         date_sent: parsed.date_sent,
                         body_text: parsed.body_text,
-                        body_html: html_body(&raw),
-                        always_show_images,
+                        body_html,
+                        remote_images: remote
+                            .hosts
+                            .into_iter()
+                            .map(|(host, images)| RemoteHost { host, images })
+                            .collect(),
+                        tracking_pixels: remote.pixels,
+                        image_rules,
                         attachments: parse::attachments(&raw),
                     },
                 })
@@ -275,15 +291,12 @@ impl Mail {
         self.dispatcher.answer(SetLabels { changes }).await
     }
 
-    pub async fn always_show_images(&self, sender: String, always: bool) -> Response {
-        if !sender.contains('@') {
-            return Err(error(
-                ErrorCode::Invalid,
-                format!("not an address: {sender:?}"),
-            ));
-        }
+    pub async fn always_show_images(&self, rule: ImageRule, always: bool) -> Response {
+        let Some(rule) = image_rules::normalized(rule.clone()) else {
+            return Err(error(ErrorCode::Invalid, format!("not a rule: {rule:?}")));
+        };
         self.dispatcher
-            .answer(AlwaysShowImages { sender, always })
+            .answer(AlwaysShowImages { rule, always })
             .await
     }
 

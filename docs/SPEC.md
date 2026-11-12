@@ -825,7 +825,7 @@ than it buffers is closed; the client reconnects and resumes.
 
 - **Mail**: `EntriesAdded`, `EntriesRemoved`, `LabelsChanged` (desired
   and observed membership per entry and label), `LabelListChanged`,
-  `ImageSenderChanged { sender, always }` (§8.9).
+  `ImageRuleChanged { rule, always }` (§8.9).
   Events carry ids, not content, since they are stored in the log;
   clients query what they display. As the log is replayed, a change to
   an event's shape migrates the recorded ones too (V0022 did, for
@@ -875,8 +875,9 @@ than it buffers is closed; the client reconnects and resumes.
 - `ListMessageEntries { message }` — a message's entries, in every
   account: a to-do's message.
 - `LoadMessage { message }` — headers, the text body, and the sanitized
-  HTML body if there is one, and whether its sender's remote images are
-  shown unasked (§8.9).
+  HTML body if there is one, its remote images' hosts (with how many
+  of each), how many likely tracking pixels it has, and the user's rules
+  that show its images unasked (§8.9).
 - `ListRooms` — Matrix accounts and their rooms with unread counts;
   `ListTimeline { room, page, limit }` — the latest events, or those
   before or after one, oldest first, each with what is folded into it
@@ -917,7 +918,7 @@ than it buffers is closed; the client reconnects and resumes.
   splice }`, `DeleteDraft`, `SendDraft`, `CancelSend { item }`,
   `KeepSent { item }` (§6.7, §7); `KeepObserved { op }` — a refused
   change taken back to what the provider has (§6.6); `AlwaysShowImages
-  { sender, always }` (§8.9);
+  { rule, always }` (§8.9);
   `SendMatrixMessage { room, body }`, `CancelMatrixSend { item }`,
   `KeepMatrixSent { item }`,
   `MarkRoomRead { room, event }`, `ChangeMembership { room, change }`,
@@ -1753,31 +1754,60 @@ browser would fetch images by are rewritten there, never in text:
 `http:`, `https:` and scheme-relative URLs of `<img src>`, and of CSS in
 `style` attributes and `<style>` elements (`url(…)`, `src(…)`, strings
 in `image-set(…)` and after `@import`), become
-`/api/remote-image?url=<URL>`. Other `<img>` sources go (but `cid:`, which
+`/api/remote-image/<host>?url=<URL>`, by the URL's host: a name of DNS's
+letters, digits, `-`, `_` and `.`, or an IPv4 address (URLs take hosts of
+`;`, `"` and more, which would end the frame's CSP, below; those of
+IPv6 addresses or other characters are as other URLs). Other `<img>` sources go (but `cid:`, which
 sanitizing inlines); other CSS URLs become `""` (but `data:`): relative
 ones would load from uplink. The URLs are written back with their `<`
 escaped (`\3c `): read with their escapes undone, a `data:` one could
 otherwise close the `<style>` it is in, and what followed would be read
 as HTML that was never rewritten. CSS nested deeper than cssparser reads (75
 blocks) is dropped whole. Whatever the rewriting misses, the CSP blocks:
-a miss is an image not shown, never one fetched by the browser. Asked to show
-them, the client lets the frame load images from uplink's origin
-(`img-src data: <origin>`, named: Firefox does not match a `srcdoc`
-frame's `'self'` to the origin it inherits); a sender then learns the server's address, a
+a miss is an image not shown, never one fetched by the browser.
+
+An `<img>` likely to be a tracking pixel becomes
+`/api/remote-pixel/<host>?url=<URL>` instead, which nothing serves and the
+CSP never lets load: too small to see (both sides at most 2px, by its
+`style` before its attributes, or one so and the other not given), or
+hidden by its `style` (`display: none`, `visibility: hidden`, or an
+`opacity`, `max-width` or `max-height` of 0). Only its markup tells:
+fetching it to see would be what tracks. In the user's mail, where a
+mail had both such images and others, those were on another host than
+the others' in all but a few percent; a pixel taken wrongly is a box
+left empty that was all but empty. The client says how many there are
+("N likely trackers blocked"), never showing them.
+
+Asked to show them ("Show them"), the client lets the frame load the
+images of each of the mail's hosts from uplink's origin, by path
+(`img-src data: <origin>/api/remote-image/<host> …`; the origin named:
+Firefox does not match a `srcdoc` frame's `'self'` to the origin it
+inherits); the server serves a URL only at the path of its own host, so
+that a host shown cannot pass for another. A sender then learns the server's address, a
 fixed user agent (`Mozilla/5.0 (compatible; uplink)`) and when the mail
 was shown, but nothing of the browser: no client headers, cookies or
 referrer. Remote fonts and stylesheets still don't load. Shown, the mail's
 `<style>` elements end in a comment: Firefox reuses a sheet it parsed
 for an earlier document of the same text and principal, with its images
 as that document's CSP refused them, and would otherwise not show those
-of the frame shown without them. The user may have a sender's remote
-images shown unasked ("Always show images from …", beside "Show them"),
-until asked not to (from the message's menu): by the `From:` address,
-lowercased, kept by uplink alone (`image_sender`) and set by an op,
-`mail.always_show_images`, which undoing reverses. `From:` is not
-authenticated, so anyone may claim to be such a sender: what that gives
-them is what showing would, that the mail was opened, when, and by
-uplink's server. The endpoint
+of the frame shown without them (the comment names the hosts shown).
+
+The user may have remote images shown unasked by rules ("Always show ▾"
+beside "Show them"), until asked not to (from the message's menu): all
+of a sender's, by the `From:` address or its domain (exactly: not its
+subdomains'), or those at a host, whoever's mail they are in, as the
+menu offers them for the message, with how many of its images each host
+has. Mail of hosts only some shown says "Some remote images are not
+shown." Rules are lowercased, kept by uplink alone (`image_rule`) and
+set by an op, `mail.always_show_images`, which undoing reverses; a
+message loads with the rules it has, and events since change them.
+`From:` is not authenticated, so anyone may claim to be such a sender,
+and anyone may put an image of a host shown in their mail: what that
+gives them is what showing would, that the mail was opened, when, and
+by uplink's server. Exact hosts, rather than their sites: the user's
+mail has tracking pixels on other hosts of the same site as the images
+it shows (`click.` or `email.` beside `images.`) as often as on other
+sites. The endpoint
 (behind basic auth) fetches only from public addresses (not loopback,
 private, link-local, shared, benchmarking, multicast or reserved ones,
 nor IPv6 ones carrying such an IPv4 one: mapped, compatible, NAT64's or

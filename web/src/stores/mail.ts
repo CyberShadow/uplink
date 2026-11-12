@@ -21,6 +21,7 @@ import type {
   ListPosition,
   ListScope,
   LogEntry,
+  ImageRule,
   MessageContent,
   MessageId,
   Room,
@@ -152,10 +153,10 @@ export class MailStore {
   readonly matching = signal(false)
   readonly open = signal<Open | null>(null)
   readonly error = signal<string | null>(null)
-  /** Whether senders' remote images are shown unasked, as changed since
-   * their messages loaded, by lowercased address: newer than what those
-   * say (`always_show_images`). */
-  readonly imageSenders = signal<ReadonlyMap<string, boolean>>(new Map())
+  /** Whether the user has rules that show remote images unasked, as
+   * changed since messages loaded, by `ruleKey`: newer than what those
+   * say (`image_rules`). */
+  readonly imageRuleChanges = signal<ReadonlyMap<string, boolean>>(new Map())
   /** Whether the list keeps the conversation open though it may no
    * longer be listed: reading it may take it out of an unread search,
    * which it stays in while open, as in Gmail. Closing it reloads the
@@ -220,8 +221,8 @@ export class MailStore {
           break
         case 'label_list_changed':
           break
-        case 'image_sender_changed':
-          this.imageSenders.value = new Map(this.imageSenders.value).set(event.sender, event.always)
+        case 'image_rule_changed':
+          this.imageRuleChanges.value = new Map(this.imageRuleChanges.value).set(ruleKey(event.rule), event.always)
           continue
         case 'rooms_changed':
         case 'timeline_added':
@@ -718,16 +719,35 @@ export class MailStore {
 
   // ── messages ────────────────────────────────────────────────────────────
 
-  /** Whether the message's remote images are shown unasked. */
-  alwaysShowsImages(message: MessageContent): boolean {
+  /** The rules that would show some of the message's remote images
+   * unasked, and whether the user has each: its sender's, of their
+   * address and domain, and its images' hosts'. */
+  imageRules(message: MessageContent): ImageRuleState[] {
     const sender = message.from_addr?.toLowerCase()
-    const changed = sender === undefined ? undefined : this.imageSenders.value.get(sender)
-    return changed ?? message.always_show_images
+    const domain = sender?.split('@')[1]
+    const rules: ImageRule[] = [
+      ...(sender !== undefined ? [{ type: 'sender' as const, address: sender }] : []),
+      ...(domain ? [{ type: 'domain' as const, domain }] : []),
+      ...message.remote_images.map((h) => ({ type: 'host' as const, host: h.host })),
+    ]
+    const had = new Set(message.image_rules.map(ruleKey))
+    return rules.map((rule) => ({
+      rule,
+      always: this.imageRuleChanges.value.get(ruleKey(rule)) ?? had.has(ruleKey(rule)),
+    }))
   }
 
-  /** Shows the remote images of `sender`'s mail unasked, or no longer. */
-  async alwaysShowImages(sender: string, always: boolean) {
-    await this.ops.dispatch({ type: 'always_show_images', sender, always })
+  /** The hosts whose images the message shows unasked: all of them, as
+   * its sender's are; else those the user has rules for. */
+  shownHosts(message: MessageContent): ReadonlySet<string> {
+    const rules = this.imageRules(message).filter((r) => r.always)
+    if (rules.some((r) => r.rule.type !== 'host')) return new Set(message.remote_images.map((h) => h.host))
+    return new Set(rules.map((r) => (r.rule as { host: string }).host))
+  }
+
+  /** Has the rule show remote images unasked, or no longer. */
+  async alwaysShowImages(rule: ImageRule, always: boolean) {
+    await this.ops.dispatch({ type: 'always_show_images', rule, always })
   }
 
   /** `null` if it could not be loaded; `error` says why. */
@@ -739,6 +759,25 @@ export class MailStore {
       this.error.value = (error as Error).message
       return null
     }
+  }
+}
+
+/** A rule that would show some of a message's remote images unasked, and
+ * whether the user has it. */
+export interface ImageRuleState {
+  rule: ImageRule
+  always: boolean
+}
+
+/** What tells `rule` from others. */
+export function ruleKey(rule: ImageRule): string {
+  switch (rule.type) {
+    case 'sender':
+      return `sender:${rule.address}`
+    case 'domain':
+      return `domain:${rule.domain}`
+    case 'host':
+      return `host:${rule.host}`
   }
 }
 

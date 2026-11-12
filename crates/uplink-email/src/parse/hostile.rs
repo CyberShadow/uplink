@@ -10,7 +10,7 @@
 //! of uplink's fetches.
 
 use super::html_body;
-use crate::remote::REMOTE_IMAGE_PATH;
+use crate::remote::{remote, PIXEL_PATH, REMOTE_IMAGE_PATH};
 use cssparser::{Parser, Token};
 use html5ever::{local_name, ns, tendril::TendrilSink, QualName};
 use markup5ever_rcdom::{Handle, NodeData, RcDom};
@@ -144,7 +144,7 @@ const HOSTILE: &[&str] = &[
      <body background=\"https://t.example/body\"><div style=\"background:url(https://t.example/div)\"></div>",
     "<svg><image href=\"https://t.example/si\"/><use href=\"https://t.example/u#a\"/>\
      <feImage href=https://t.example/fe /></svg>",
-    "<img src=\"/api/remote-image?url=https://t.example/self\"><img src=\"//t.example/rel\">\
+    "<img src=\"/api/remote-image/t.example?url=https://t.example/self\"><img src=\"//t.example/rel\">\
      <img src=\"cid:none\"><img src=\"http:t.example/opaque\"><img src=\"\\\\t.example\\share\">",
     // CSS's ways to fetch.
     "<style>@import url(https://t.example/i1); @import 'https://t.example/i2'; \
@@ -168,7 +168,7 @@ const HOSTILE: &[&str] = &[
     "<style>/*</style><img src=https://t.example/cmt>*/</style>",
     "<p style=\"behavior:url(https://t.example/htc);-moz-binding:url(https://t.example/xbl#x);\
      background:url(&#34;https://t.example/ent&#34;)\">p</p>",
-    "<style>i{background:url(/api/remote-image?url=https://t.example/selfcss)}\
+    "<style>i{background:url(/api/remote-image/t.example?url=https://t.example/selfcss)}\
      b{background:url(/api/messages/1/attachments/0)}</style>",
     // Nested deeper than cssparser reads.
     concat!(
@@ -177,6 +177,11 @@ const HOSTILE: &[&str] = &[
         "a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(a(",
         "url(https://t.example/deep)</style>"
     ),
+    // Hosts that, in the frame's CSP as shown, would end its directives or
+    // the attribute it is in.
+    "<img src=\"https://t.example;font-src *;.t.example/csp\">\
+     <img src=\"https://t.example%22%3E%3Cimg%20src=x.t.example/quote\">\
+     <i style=\"background:url('https://t.example,*.t.example/comma')\">i</i>",
     // Clobbering, and the frame's own names.
     "<img name=getElementById><form id=x name=y><a id=defaultView name=location>a</a>\
      <div class=uplink-quote id=top>q</div>",
@@ -187,7 +192,7 @@ fn hostile_html_is_contained() {
     let mut failures = vec![];
     for &body in HOSTILE {
         let raw = format!("From: a@example.com\r\nContent-Type: text/html\r\n\r\n{body}");
-        let html = html_body(raw.as_bytes()).expect("an HTML body");
+        let html = html_body(raw.as_bytes()).expect("an HTML body").0;
         let mut problems = vec![];
         let dom = parse(&html);
         // The `<html>` element html5ever puts the fragment's nodes in.
@@ -299,11 +304,25 @@ fn check_node(node: &Handle, problems: &mut Vec<String>) {
     }
 }
 
-/// Whether `url` is of uplink's fetches of remote images.
+/// Whether `url` is of uplink's fetches of remote images (or of pixels,
+/// never fetched): at the path of the host of the URL it fetches.
 fn fetched(url: &str) -> bool {
-    url.strip_prefix(REMOTE_IMAGE_PATH)
-        .and_then(|rest| rest.strip_prefix("?url="))
-        .is_some_and(|encoded| !encoded.contains(['/', ':', '<', '"', '\'']))
+    let Some(rest) = url
+        .strip_prefix(REMOTE_IMAGE_PATH)
+        .or_else(|| url.strip_prefix(PIXEL_PATH))
+    else {
+        return false;
+    };
+    let Some((host, encoded)) = rest.strip_prefix('/').and_then(|r| r.split_once("?url=")) else {
+        return false;
+    };
+    let decoded: String = url::form_urlencoded::parse(format!("u={encoded}").as_bytes())
+        .map(|(_, v)| v.into_owned())
+        .collect();
+    host.bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-')
+        && !encoded.contains(['/', ':', '<', '"', '\''])
+        && remote(&decoded).is_some_and(|(of, _)| of == host)
 }
 
 /// Every URL-like value of `css`, as a browser tokenizes it, is void,

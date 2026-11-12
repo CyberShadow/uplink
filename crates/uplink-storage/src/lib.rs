@@ -310,6 +310,57 @@ mod tests {
         conn
     }
 
+    /// Senders' addresses whose images are shown become sender rules
+    /// (V0041), recorded ops and events too, as undo and replay read them.
+    #[test]
+    fn image_senders_become_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = migrated_to(dir.path(), 40);
+        conn.execute_batch(
+            r#"INSERT INTO image_sender (address) VALUES ('s@x');
+               INSERT INTO tx_log (id, ts, description, op_type, op_json, inverse_type,
+                                   inverse_json, events_json)
+               VALUES (1, 0, '', 'mail.always_show_images', '{"sender":"s@x","always":true}',
+                       'mail.always_show_images', '{"sender":"s@x","always":false}',
+                       '[{"type":"image_sender_changed","sender":"s@x","always":true}]'),
+                      (2, 0, '', 'x', '{}', 'y', '{}', '[{"type":"drafts_changed","drafts":[]}]');"#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open(dir.path()).unwrap();
+        let rules: Vec<(String, String)> = conn
+            .prepare("SELECT kind, value FROM image_rule")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rules, [("sender".into(), "s@x".into())]);
+        let log: Vec<(String, String, String)> = conn
+            .prepare("SELECT op_json, inverse_json, events_json FROM tx_log ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            log,
+            [
+                (
+                    r#"{"rule":{"type":"sender","address":"s@x"},"always":true}"#.into(),
+                    r#"{"rule":{"type":"sender","address":"s@x"},"always":false}"#.into(),
+                    r#"[{"type":"image_rule_changed","rule":{"type":"sender","address":"s@x"},"always":true}]"#.into(),
+                ),
+                (
+                    "{}".into(),
+                    "{}".into(),
+                    r#"[{"type":"drafts_changed","drafts":[]}]"#.into()
+                ),
+            ]
+        );
+    }
+
     /// Recorded `outbox_changed` events take the shape that names
     /// accounts (V0022), as replay deserializes them.
     #[test]

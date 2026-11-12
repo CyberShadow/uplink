@@ -13,8 +13,9 @@ export interface MenuItem {
 
 /** `groups`: the items, separated between groups. The menu opens below
  * the button, aligned with its end, or with `start`, its start, as a
- * button at the start of a bar needs. */
-export function MenuButton(props: { label: string; icon: IconName; groups: MenuItem[][]; start?: true }) {
+ * button at the start of a bar needs. The button is its `icon`, or
+ * without one, a button of its label, as in a line of text. */
+export function MenuButton(props: { label: string; icon?: IconName; groups: MenuItem[][]; start?: true }) {
   const [open, setOpen] = useState(false)
   const root = useRef<HTMLSpanElement>(null)
   useEffect(() => {
@@ -31,15 +32,15 @@ export function MenuButton(props: { label: string; icon: IconName; groups: MenuI
     <span class={styles.root} ref={root}>
       <button
         type="button"
-        class={styles.button}
-        aria-label={props.label}
-        title={props.label}
+        class={props.icon && styles.button}
+        aria-label={props.icon && props.label}
+        title={props.icon && props.label}
         aria-haspopup="menu"
         aria-expanded={open}
         onMouseDown={keepFocus}
         onClick={() => setOpen(!open)}
       >
-        <Icon name={props.icon} />
+        {props.icon ? <Icon name={props.icon} /> : `${props.label} ▾`}
       </button>
       {open && (
         <ul class={[styles.menu, props.start && styles.start].filter(Boolean).join(' ')} role="menu" aria-label={props.label}>

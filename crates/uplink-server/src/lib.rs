@@ -222,7 +222,7 @@ pub struct Services {
 pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
     uplink_email::mailbox::register(&mut registry);
     uplink_email::compose::register(&mut registry);
-    uplink_email::image_senders::register(&mut registry);
+    uplink_email::image_rules::register(&mut registry);
     uplink_matrix::register(&mut registry);
     uplink_todos::register(&mut registry);
     let root = &config.data_dir;
@@ -540,7 +540,7 @@ fn build_app(state: AppState) -> Router {
         )
         .route("/api/matrix/:account/room-keys", post(room_keys_handler))
         .route(
-            uplink_email::remote::REMOTE_IMAGE_PATH,
+            &format!("{}/:host", uplink_email::remote::REMOTE_IMAGE_PATH),
             get(remote_image_handler),
         )
         .route(
@@ -878,11 +878,17 @@ struct RemoteImage {
     url: reqwest::Url,
 }
 
-/// A remote image of a mail's, fetched by the server (SPEC §8.9).
+/// A remote image of a mail's, fetched by the server (SPEC §8.9): only
+/// at the host its path names, which the frame's CSP lets through as
+/// the user has them shown.
 async fn remote_image_handler(
     State(state): State<AppState>,
+    extract::Path(host): extract::Path<String>,
     extract::Query(RemoteImage { url }): extract::Query<RemoteImage>,
 ) -> Response {
+    if uplink_email::remote::remote(url.as_str()).map(|(of, _)| of) != Some(host) {
+        return (StatusCode::BAD_REQUEST, "Not an image of that host\n").into_response();
+    }
     state.remote_images.get(url).await
 }
 
@@ -1042,8 +1048,8 @@ impl Backend for Services {
             }
             ClientRequest::ListConversation { entry } => self.mail.list_conversation(entry).await,
             ClientRequest::LoadMessage { message } => self.mail.load_message(message).await,
-            ClientRequest::AlwaysShowImages { sender, always } => {
-                self.mail.always_show_images(sender, always).await
+            ClientRequest::AlwaysShowImages { rule, always } => {
+                self.mail.always_show_images(rule, always).await
             }
             ClientRequest::ModifyLabels {
                 entries,
@@ -1440,7 +1446,7 @@ mod tests {
                 true,
             ),
             (
-                "GET /api/remote-image?url=x",
+                "GET /api/remote-image/x.example?url=https://x.example/",
                 "sec-fetch-site=cross-site sec-fetch-mode=no-cors sec-fetch-dest=image",
                 true,
             ),
@@ -1483,6 +1489,40 @@ mod tests {
                 refused(request, headers).await,
                 expected,
                 "{request} {headers}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_images_are_fetched_only_at_the_host_named() {
+        let app = build_app(test_state());
+        for uri in [
+            "/api/remote-image/a.example?url=https://b.example/x.gif",
+            "/api/remote-image/a.example?url=https://a.example.b.example/x.gif",
+            "/api/remote-image/a.example?url=ftp://a.example/x.gif",
+            "/api/remote-pixel/a.example?url=https://a.example/x.gif",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .header(
+                            header::AUTHORIZATION,
+                            basic_auth_header(TEST_USER, TEST_PASS),
+                        )
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                matches!(
+                    response.status(),
+                    StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND
+                ),
+                "{uri}: {}",
+                response.status()
             );
         }
     }

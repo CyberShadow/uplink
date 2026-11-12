@@ -199,6 +199,7 @@ with subtest("hostile mail runs nothing, loads nothing but through uplink when a
 <noscript><p title="</noscript><img src=x onerror=alert('mxss')>"></noscript>
 <style>i { background: url("data:\\3C/style><img src='/api/messages/1/attachments/0'>") }</style>
 <img src="http://t.example/img.gif"><img src="/relative.gif"><img srcset="http://t.example/srcset.gif 1x">
+<img width=1 height=1 src="http://t.example/pixel.gif">
 <div style="background: url(http://t.example/div.gif)">div</div>
 <style>@import url(http://t.example/import.css);
 @font-face { font-family: f; src: url(http://t.example/font.woff) }
@@ -228,7 +229,7 @@ b { font-family: f; background: url(http://t.example/style.gif) }</style><b>bold
     for browser in ["chromium", "firefox"]:
         result = json.loads(machine.succeed(f"uplink-ui hostile {browser}"))
         # Remote images only once shown, and only uplink's fetches of them;
-        # never fonts, stylesheets or uplink's own URLs.
+        # never fonts, stylesheets, uplink's own URLs or the pixel.
         assert result["before"] == [], (browser, result)
         expected = sorted(
             f"http://t.example/{name}.gif" for name in ["div", "img", "style", "plain", "fontless"]

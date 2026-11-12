@@ -18,6 +18,8 @@ import type {
   PendingChanges,
   Splice,
   Entry,
+  ImageRule,
+  MessageContent,
   EntryId,
   Label,
   LabelId,
@@ -59,6 +61,7 @@ import type {
   UrlPreview,
 } from '../generated/protocol'
 import type { Client } from '../stores/client'
+import { ruleKey } from '../stores/mail'
 import { apply } from '../compose/splice'
 import { sendSummary } from '../matrix'
 
@@ -515,10 +518,28 @@ export class FakeServer implements Requester, Blobs {
     })
   }
 
+  /** The remote images of the entry's message, as its HTML body (as the
+   * server rewrites it) has them, and the user's rules for them. */
+  private remoteImages(entry: Entry): Pick<MessageContent, 'remote_images' | 'tracking_pixels' | 'image_rules'> {
+    const html = this.html.get(entry.message) ?? ''
+    const hosts = new Map<string, number>()
+    for (const [, host] of html.matchAll(/\/api\/remote-image\/([^?]+)\?/g)) hosts.set(host, (hosts.get(host) ?? 0) + 1)
+    const sender = entry.from_addr?.toLowerCase()
+    const candidates: ImageRule[] = [
+      ...(sender ? [{ type: 'sender' as const, address: sender }, { type: 'domain' as const, domain: sender.split('@')[1] }] : []),
+      ...[...hosts.keys()].map((host) => ({ type: 'host' as const, host })),
+    ]
+    return {
+      remote_images: [...hosts].sort().map(([host, images]) => ({ host, images })),
+      tracking_pixels: html.match(/\/api\/remote-pixel\//g)?.length ?? 0,
+      image_rules: candidates.filter((rule) => this.imageRules.has(ruleKey(rule))),
+    }
+  }
+
   /** HTML bodies by message, for messages that have one. */
   readonly html = new Map<number, string>()
-  /** Senders whose remote images are shown unasked, lowercased. */
-  readonly imageSenders = new Set<string>()
+  /** The user's rules that show remote images unasked, by `ruleKey`. */
+  readonly imageRules = new Map<string, ImageRule>()
   readonly text = new Map<number, string>()
   /** Attachments by message, for messages that have some. */
   readonly attachments = new Map<number, Attachment[]>()
@@ -627,7 +648,7 @@ export class FakeServer implements Requester, Blobs {
             date_sent: entry.received_at / 1000,
             body_text: this.text.get(entry.message) ?? `Body of ${entry.subject}`,
             body_html: this.html.get(entry.message) ?? null,
-            always_show_images: entry.from_addr !== null && this.imageSenders.has(entry.from_addr.toLowerCase()),
+            ...this.remoteImages(entry),
             attachments: this.attachments.get(entry.message) ?? [],
           },
         }
@@ -702,11 +723,10 @@ export class FakeServer implements Requester, Blobs {
       case 'count_conversations':
         return { type: 'conversation_count', count: this.matching(body.query).length }
       case 'always_show_images': {
-        const sender = body.sender.toLowerCase()
-        if (body.always) this.imageSenders.add(sender)
-        else this.imageSenders.delete(sender)
-        const id = this.commit({ type: 'user' }, `Always showing images from ${sender}`, [
-          { type: 'image_sender_changed', sender, always: body.always },
+        if (body.always) this.imageRules.set(ruleKey(body.rule), body.rule)
+        else this.imageRules.delete(ruleKey(body.rule))
+        const id = this.commit({ type: 'user' }, `${body.always ? 'Always' : 'No longer always'} showing images`, [
+          { type: 'image_rule_changed', rule: body.rule, always: body.always },
         ])
         return { type: 'dispatched', tx_log_id: id }
       }
