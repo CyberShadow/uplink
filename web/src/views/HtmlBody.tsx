@@ -3,8 +3,8 @@
 // remote loads (tracking pixels, fonts). Remote images, which the server
 // fetches in the client's stead, load if asked for.
 
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
-import { keepFocus } from '../keymap'
+import { useEffect, useMemo, useState } from 'preact/hooks'
+import { keepFocus, takeKeys } from '../keymap'
 import styles from './Mail.module.css'
 import { QUOTE_CLASS, foldHtml } from './quote'
 
@@ -71,7 +71,6 @@ function frameDocument(html: string, remote: boolean, classes: string): string {
 /** `fold`: whether to fold away the quote of the mail it answers, if it
  * ends with one (SPEC §12.8). */
 export function HtmlBody(props: { html: string; fold: boolean }) {
-  const frame = useRef<HTMLIFrameElement>(null)
   const [remote, setRemote] = useState(false)
   const [quoteShown, setQuoteShown] = useState(false)
   const dark = useDark()
@@ -80,12 +79,16 @@ export function HtmlBody(props: { html: string; fold: boolean }) {
     [props.html, props.fold],
   )
   const classes = [dark && 'dark', quoteShown && 'quote'].filter(Boolean).join(' ')
-  // Its own scrolling would nest in the message's: fit it to its content.
-  // By the root's box, not its scrollHeight, which is never less than the
-  // frame's height: the frame could grow but never shrink.
-  const fit = () => {
-    const root = frame.current?.contentDocument?.documentElement
-    if (root) frame.current!.style.height = `${Math.ceil(root.getBoundingClientRect().height)}px`
+  // Each document the frame loads: its keys are the app's, and it is
+  // fitted to its content, its own scrolling nesting in the message's
+  // otherwise. By the root's box, not its scrollHeight, which is never less
+  // than the frame's height: the frame could grow but never shrink. (The
+  // frame, by the event: it may load as it is inserted, before a ref is
+  // set.)
+  const loaded = (frame: HTMLIFrameElement) => {
+    takeKeys(frame.contentWindow!)
+    const root = frame.contentDocument!.documentElement
+    frame.style.height = `${Math.ceil(root.getBoundingClientRect().height)}px`
   }
   return (
     <>
@@ -98,7 +101,6 @@ export function HtmlBody(props: { html: string; fold: boolean }) {
         </p>
       )}
       <iframe
-        ref={frame}
         class={styles.html}
         title="Message body"
         // Same origin, without scripts, so that the frame can be measured
@@ -106,7 +108,7 @@ export function HtmlBody(props: { html: string; fold: boolean }) {
         // so that links open.
         sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
         srcdoc={frameDocument(html, remote, classes)}
-        onLoad={fit}
+        onLoad={(event) => loaded(event.currentTarget)}
       />
       {folded && <QuoteToggle shown={quoteShown} toggle={() => setQuoteShown(!quoteShown)} />}
     </>

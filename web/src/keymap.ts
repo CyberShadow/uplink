@@ -373,6 +373,15 @@ const windowKeys = sequences(
 )
 window.addEventListener('keydown', windowKeys)
 
+/** Lets the window's bindings have the keydowns of a frame's `window`, of
+ * the app's origin, as if its own: a mail's, which has no scripts to
+ * pass them on, and keeps them while it has the focus. The app's document
+ * has the frame for its focused element, which bindings with `focus`
+ * count as within them, and which Escape leaves. */
+export function takeKeys(frame: Window) {
+  frame.addEventListener('keydown', windowKeys)
+}
+
 const ACTIVATE = ['Enter', ' ']
 
 /** How long a sequence waits for its next press; on the window, until
@@ -426,8 +435,9 @@ function sequences(
     )
   const nearest = (bindings: Bound[]) => bindings.findLast((b) => b.scope !== null) ?? bindings.at(-1)
   return (event) => {
-    // Choosing an autocompletion sends a keydown that is a plain Event.
-    if (!(event instanceof KeyboardEvent) || MODIFIERS.includes(event.key)) return
+    // Choosing an autocompletion sends a keydown that is a plain Event,
+    // without a key; a frame's are of its own `KeyboardEvent`.
+    if (event.key === undefined || MODIFIERS.includes(event.key)) return
     // Typing in a field gives up a sequence begun, too.
     if (ignore(event)) {
       reset()

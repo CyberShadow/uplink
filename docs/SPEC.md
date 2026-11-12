@@ -2593,7 +2593,10 @@ The notable choices we are NOT picking:
 
 Implemented: `j k o Enter u x *a *n e s l Shift+i Shift+u gi gs gt gd /
 ?` (M4), `c r a f` (M6), and in compose `Ctrl+Enter` send and `Esc` close
-(the draft stays; these work from within its fields). `gd` goes to
+(the draft stays; these work from within its fields). They work with
+the focus in a mail's frame too (on a link clicked), which has no scripts
+to pass its keys on: the app listens on the frame's window, of its
+origin, and Escape leaves the frame. `gd` goes to
 uplink's own drafts; Gmail's DRAFT label is listed as "Gmail drafts".
 `ga` goes to All Mail. `#` moves to
 Trash and `!` reports spam, or not spam (§8.1; M10). Opening a message marks it read, as Gmail does, without

@@ -349,6 +349,17 @@ def hostile(page):
     }
     page.screenshot(path=f"{SHOTS}/hostile-{page.context.browser.browser_type.name}.png")
 
+    # The app's keys, with the focus in the frame, on the link followed:
+    # Escape leaves it, and `u` goes back to the list.
+    page.bring_to_front()
+    body.get_by_role("link", name="A link").focus()
+    in_frame = page.evaluate("() => document.activeElement.tagName")
+    page.keyboard.press("Escape")
+    keys = {"in frame": in_frame, "escaped": page.evaluate("() => document.activeElement.tagName")}
+    body.get_by_role("link", name="A link").focus()
+    page.keyboard.press("u")
+    expect(page.get_by_role("list", name="Messages")).to_be_visible()
+
     # The frame's CSP, refusing what it was meant to (Firefox's words for
     # a font refused: "content blocked").
     refused = ["Content-Security-Policy", "Content Security Policy", "content blocked"]
@@ -361,6 +372,7 @@ def hostile(page):
         "dialogs": dialogs,
         "title": page.title() == title,
         "pages": len(page.context.pages),
+        "keys": keys,
     }
 
 
