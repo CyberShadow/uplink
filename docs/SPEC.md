@@ -2617,8 +2617,9 @@ message, as Slack's do on the one it focuses: `r` replies, `e` edits
 one's own, `t` opens its thread or replies in one, `+` opens its
 reactions (at the first: `←`/`→` move along them, `Enter` takes one,
 other keys type one into their box; the focus leaving closes them, and
-closed, the line has it back), `p` pins or unpins it and `Delete`/`Backspace` (as Discord's;
-macOS's Delete is Backspace) or `#` delete one's own, once asked, as
+closed, the line has it back), `p` pins or unpins it and `Delete` (on macOS, the
+key so labelled: Backspace, as Apple Mail's; elsewhere, Backspace is
+left to the browser, as Back where it is) or `#` delete one's own, once asked, as
 deleting (by the menu too) cannot be undone once the homeserver has it:
 the dialog's Delete has the focus, so `Enter` deletes and `Esc` keeps
 it; what its

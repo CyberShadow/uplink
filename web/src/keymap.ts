@@ -145,9 +145,10 @@ export const KEYMAP: Binding[] = [
   { action: 'done', keys: ['e'], label: 'e', help: 'Mark done, or not done (in to-dos); at home: archive, read the room, or finish the to-do' },
   {
     action: 'delete',
-    keys: ['[Shift]+#', 'Delete', 'Backspace'],
-    // macOS's Delete key is Backspace.
-    label: MAC ? '#, Delete' : '#, Delete, Backspace',
+    // macOS's Delete key is Backspace, as Apple Mail's delete; elsewhere,
+    // Backspace is left to the browser (as Back, where it is).
+    keys: MAC ? ['[Shift]+#', 'Backspace'] : ['[Shift]+#', 'Delete'],
+    label: '#, Delete',
     help: 'Delete (mail: move to Trash; in a room, the message, if your own, once asked)',
   },
   { action: 'edit', keys: ['e'], label: 'e', help: 'Edit the message (in a room, your own)' },

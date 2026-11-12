@@ -1389,7 +1389,10 @@ describe('matrix', () => {
     await user.keyboard('{Escape}')
     expect(screen.queryByRole('alertdialog')).toBeNull()
     expect(document.activeElement).toBe(lineOf(mine))
-    await user.keyboard('{Backspace}{Enter}')
+    // Backspace is the browser's, off macOS (Back, where it is).
+    await user.keyboard('{Backspace}')
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    await user.keyboard('#{Enter}')
     expect(document.activeElement).toBe(lineOf(mine))
     expect(sent()).toEqual([
       { type: 'reaction', event: theirs.event_id, key: '👎' },
