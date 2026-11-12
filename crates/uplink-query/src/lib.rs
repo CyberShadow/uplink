@@ -79,8 +79,7 @@ pub enum Kind {
     Event,
 }
 
-/// A day, as to-dos are due: of the user's calendar, not UTC, so that
-/// `today` is the user's (the request says which day that is).
+/// A day, as to-dos are due; `today` is that of [`today`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Day {
     Today,
@@ -98,6 +97,12 @@ impl Day {
             Day::Date(days) => days,
         }
     }
+}
+
+/// The day of `now` (unix ms), as days since 1970-01-01: of UTC, as
+/// dates in queries are, the user being assumed to be on it (SPEC §8.7).
+pub fn today(now: i64) -> i64 {
+    now.div_euclid(86_400_000)
 }
 
 /// A date, `YYYY-MM-DD`, as days since 1970-01-01.

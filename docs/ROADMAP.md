@@ -180,6 +180,10 @@ Deferred:
 
 Deferred:
 - Contact management (CardDAV).
+- Time zones. Queries' days (`after:`, `due:today`, `is:overdue`) are of
+  UTC for now. In steps: the server's own time zone, assuming the user,
+  self-hosting, is in it; a time zone set in `uplink.yaml`; perhaps the
+  browser's, if ever needed.
 
 Out of scope (per VISION non-goals):
 - Multi-tenancy.

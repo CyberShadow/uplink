@@ -1003,13 +1003,12 @@ impl Backend for Services {
                 .map_err(undo_error),
             ClientRequest::ListHistory { before, limit } => self.history(before, limit).await,
             ClientRequest::ListAccounts => self.mail.list_accounts().await,
-            ClientRequest::ListHome { today, limit } => self.items.home(today, limit).await,
+            ClientRequest::ListHome { limit } => self.items.home(limit).await,
             ClientRequest::ListItems {
                 query,
-                today,
                 after,
                 limit,
-            } => self.items.list(query, today, after, limit).await,
+            } => self.items.list(query, after, limit).await,
             ClientRequest::ListEntries {
                 query,
                 after,

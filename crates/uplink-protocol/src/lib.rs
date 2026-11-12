@@ -127,12 +127,10 @@ pub enum ClientRequest {
     },
     /// What `query` matches of every kind (SPEC §8.7): a page of mail's
     /// conversations, as `ListEntries` lists them, and the rooms, to-dos
-    /// and events; `today` (`YYYY-MM-DD`) is the user's, which `due:`
-    /// and `is:overdue` count from. A page after `after` is of mail
-    /// alone, the rest being on the first.
+    /// and events. A page after `after` is of mail alone, the rest being
+    /// on the first.
     ListItems {
         query: String,
-        today: String,
         after: Option<ListPosition>,
         limit: u32,
     },
@@ -140,7 +138,6 @@ pub enum ClientRequest {
     /// `ListItems` lists them, of up to `limit` conversations; an item is
     /// in the first bucket that matches it.
     ListHome {
-        today: String,
         limit: u32,
     },
     /// The entries of the entry's conversation, in Trash and Spam too,

@@ -1646,8 +1646,8 @@ the accounts' own; `is:unread` those after the room's read marker and
 not the account's, `is:mention` and `is:notifying` those that highlight
 or notify; dates are of the message, and the room's terms (`tag:`,
 `space:`, `is:dm`, `is:invite`, `account:`) are of its room. A label or
-account no kind has is an error. `ListItems { query, today, after,
-limit }` lists them all in one read: a page of conversations (as
+account no kind has is an error. `ListItems { query, after, limit }`
+lists them all in one read: a page of conversations (as
 `ListEntries`, a later page of them alone), and every room (most
 recently active first), to-do (as listed) and event (those yet to end,
 soonest first, then those past, latest first) matched, and the latest
@@ -1657,8 +1657,10 @@ hold of. The search box at the top searches everything this way, but in
 a room, where it searches the room's messages (§12.11): the search page
 lists rooms, messages, to-dos and events found above the mail, each a
 link to it (a message to its room); it lists again when rooms, to-dos or
-calendars change, as it does when mail does. `today` is the user's date, as the browser has it (§12.10),
-which `due:` counts from. Rooms, to-dos and events are few, so they are
+calendars change, as it does when mail does. Today, which `due:` and
+`is:overdue` count from, is the server's, of UTC (`uplink_query::today`)
+as dates are: the user is assumed to be on UTC, until time zones are
+supported (ROADMAP). Rooms, to-dos and events are few, so they are
 matched as listed, in Rust (`uplink_query::matches`); mail's terms of
 other kinds fold to constants in its SQL, and a query of other kinds
 reads no mail.
@@ -2863,7 +2865,8 @@ narrow window's drawer opens.
 ### 12.10 Dates and times
 
 One format throughout, `web/src/format.ts`: `YYYY-MM-DD` and 24-hour
-`HH:MM`, in the browser's time zone. Not the browser locale's
+`HH:MM`, in the browser's time zone (but queries' days are of UTC,
+§8.7). Not the browser locale's
 conventions: those come from the OS's regional settings, which Firefox
 and glibc read differently (`LC_TIME=en_DK` gives ISO dates in a
 terminal, but `10/11/2026, 11.51` in a page), and uplink has one user.
@@ -3027,7 +3030,7 @@ account's security is loaded for it.
 (and `g z` to the history, §6.3). `g i` still goes to the Inbox. Above, the agenda: the events of now through tomorrow, from
 `ListEvents`, each a link to its day. Below, a row of the buckets'
 names and counts, which scroll to them, and the buckets, configured in
-`home` (§3.2), in order. `ListHome { today, limit }` lists them, in one
+`home` (§3.2), in order. `ListHome { limit }` lists them, in one
 read: each bucket's query, less every earlier bucket's
 (`(q₃) -(q₁) -(q₂)`), as `ListItems` lists it (§8.7), with up to `limit`
 conversations and whether there are more; so an item is in the first

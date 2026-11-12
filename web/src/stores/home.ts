@@ -5,7 +5,6 @@
 import { batch, computed, signal } from '@preact/signals'
 import type { CalendarEvent, Conversation, HomeBucket, LogEntry, Room, ServerEvent, Todo } from '../generated/protocol'
 import type { Requester } from '../connection'
-import { date } from '../format'
 import { conversationKey } from './mail'
 import { Loader, query } from './query'
 
@@ -92,7 +91,7 @@ export class HomeStore {
     const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2).getTime()
     try {
       const [home, events] = await Promise.all([
-        query(this.server, { type: 'list_home', today: date(now), limit: BUCKET_LIMIT }, 'home'),
+        query(this.server, { type: 'list_home', limit: BUCKET_LIMIT }, 'home'),
         query(this.server, { type: 'list_events', from: now.getTime(), to: end }, 'events'),
       ])
       const before = this.rows.value

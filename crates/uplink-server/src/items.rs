@@ -63,11 +63,10 @@ impl Items {
     pub async fn list(
         &self,
         query: String,
-        today: String,
         after: Option<ListPosition>,
         limit: u32,
     ) -> Response {
-        let (today, now) = checked(&today, limit)?;
+        let (today, now) = checked(limit)?;
         let query = uplink_query::parse(&query, now).map_err(|e| invalid(e.0))?;
         let this = self.clone();
         self.reader
@@ -110,8 +109,8 @@ impl Items {
     /// list. A name no kind has is false, not an error: the default
     /// buckets name Gmail's labels and Element's tags, which an account
     /// may lack.
-    pub async fn home(&self, today: String, limit: u32) -> Response {
-        let (today, now) = checked(&today, limit)?;
+    pub async fn home(&self, limit: u32) -> Response {
+        let (today, now) = checked(limit)?;
         let mut before: Vec<&str> = vec![];
         let mut buckets = vec![];
         let configured = self.home.load_full();
@@ -218,18 +217,16 @@ fn invalid(why: String) -> ServerError {
     error(ErrorCode::Invalid, why)
 }
 
-/// The user's day, `today`, as days since 1970-01-01, and now, in ms.
-fn checked(today: &str, limit: u32) -> Result<(i64, i64), ServerError> {
+/// Today, as days since 1970-01-01, and now, in ms, for a `limit` checked.
+fn checked(limit: u32) -> Result<(i64, i64), ServerError> {
     if !(1..=MAX_LIMIT).contains(&limit) {
         return Err(invalid(format!("limit must be between 1 and {MAX_LIMIT}")));
     }
-    let today = uplink_query::days(today)
-        .ok_or_else(|| invalid(format!("today {today:?} is not a date, YYYY-MM-DD")))?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("the clock is after 1970")
         .as_millis() as i64;
-    Ok((today, now))
+    Ok((uplink_query::today(now), now))
 }
 
 #[cfg(test)]
@@ -307,7 +304,7 @@ mod tests {
         let list = |query: &str| {
             let items = items.clone();
             let query = query.to_owned();
-            async move { items.list(query, "2026-11-11".into(), None, 10).await }
+            async move { items.list(query, None, 10).await }
         };
         let names = |response: Response| match response.unwrap() {
             ServerResponse::Items {
@@ -335,13 +332,7 @@ mod tests {
         let refused = |response: Response| response.unwrap_err().message;
         assert_eq!(refused(list("tag:work").await), "no label or tag work");
         assert_eq!(refused(list("account:nobody").await), "no account nobody");
-        assert!(
-            refused(items.list("x".into(), "today".into(), None, 10).await).starts_with("today")
-        );
-        assert!(
-            refused(items.list("x".into(), "2026-11-11".into(), None, 0).await)
-                .starts_with("limit")
-        );
+        assert!(refused(items.list("x".into(), None, 0).await).starts_with("limit"));
 
         // An item is in the first bucket that matches it; a name no kind
         // has is false.
@@ -355,7 +346,7 @@ mod tests {
             bucket("Else", "tag:nowhere OR is:todo"),
         ]);
         let ServerResponse::Home { buckets, .. } =
-            items.home("2026-11-11".into(), 10).await.unwrap()
+            items.home(10).await.unwrap()
         else {
             panic!()
         };

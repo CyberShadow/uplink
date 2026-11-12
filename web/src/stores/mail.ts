@@ -24,7 +24,6 @@ import type {
   Room,
   Todo,
 } from '../generated/protocol'
-import { date } from '../format'
 import type { Requester } from '../connection'
 import type { Ops } from './ops'
 import { query } from './query'
@@ -492,7 +491,7 @@ export class MailStore {
     switch (list.view.kind) {
       // Of every kind, so names of every kind's.
       case 'search':
-        return { type: 'list_items', query: list.view.query, today: date(new Date()), after, limit }
+        return { type: 'list_items', query: list.view.query, after, limit }
       case 'message':
         return { type: 'list_message_entries', message: list.view.message }
       case 'all':
