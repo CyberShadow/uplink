@@ -2,7 +2,7 @@ import { signal } from '@preact/signals'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/preact'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Entry, MemberState } from '../generated/protocol'
+import type { Badges, Entry, Marks, MemberState } from '../generated/protocol'
 import { Client } from '../stores/client'
 import { conversationKey, PAGE } from '../stores/mail'
 import { TIMELINE_PAGE } from '../stores/matrix'
@@ -36,6 +36,12 @@ async function start(path = '/mail/work/INBOX') {
   else if (path === '/') await screen.findByRole('region', { name: 'Home' })
   else await screen.findByRole('list', { name: 'Messages' })
   return userEvent.setup()
+}
+
+/** Badges as the server pushes them: of `marks`, no others. */
+function badges(marks: Partial<Marks>): Badges {
+  const none = { count: 0, dot: false }
+  return { buckets: [], marks: { home: none, labels: [], accounts: [], rooms: [], todos: none, calendar: none, ...marks } }
 }
 
 function rows() {
@@ -319,30 +325,34 @@ describe('mail', () => {
     await start('/mail/work/INBOX')
     const icon = () => document.querySelector<HTMLLinkElement>('link[rel=icon]')!.getAttribute('href')
     expect(icon()).toBe('/logo.svg')
-    client.home.badges.value = {
-      buckets: [{ name: 'Immediate', badge: 'count', items: [{ kind: 'todo', todo: 1 }] }],
-    }
+    client.home.badges.value = badges({ home: { count: 1, dot: false } })
     await waitFor(() => expect(decodeURIComponent(icon()!)).toMatch(/>1<\/text><\/svg>$/))
-    client.home.badges.value = { buckets: [{ name: 'Immediate', badge: 'count', items: [] }] }
+    client.home.badges.value = badges({})
     await waitFor(() => expect(icon()).toBe('/logo.svg'))
   })
 
-  it('marks Home in the nav as the icon is marked', async () => {
-    await start('/mail/work/INBOX')
-    const home = () => within(screen.getByRole('navigation')).getByRole('link', { name: /^Home/ })
-    expect(home().textContent).toBe('Home')
-    client.home.badges.value = {
-      buckets: [
-        { name: 'Immediate', badge: 'count', items: [] },
-        { name: 'Upkeep', badge: 'dot', items: [{ kind: 'todo', todo: 1 }] },
-      ],
-    }
-    await waitFor(() => expect(home().querySelector('[title="Something to keep up with"]')).not.toBeNull())
-    client.home.badges.value = {
-      buckets: [{ name: 'Immediate', badge: 'count', items: [{ kind: 'todo', todo: 1 }, { kind: 'todo', todo: 2 }] }],
-    }
-    await waitFor(() => expect(home().textContent).toBe('Home2'))
-    expect(home().dataset.unread).toBe('true')
+  it("marks the nav's places as the server says", async () => {
+    const inbox = server.labelId('work', 'INBOX')
+    const user = await start('/mail/work/INBOX')
+    const nav = screen.getByRole('navigation')
+    const link = (name: RegExp) => within(nav).getByRole('link', { name })
+    expect(link(/^Home/).textContent).toBe('Home')
+    client.home.badges.value = badges({
+      home: { count: 0, dot: true },
+      labels: [[inbox, { count: 0, dot: true }]],
+      accounts: [['work', { count: 2, dot: true }]],
+      todos: { count: 1, dot: false },
+    })
+    await waitFor(() => expect(link(/^Home/).querySelector('[title="Something new"]')).not.toBeNull())
+    expect(link(/^Home/).dataset.unread).toBe('true')
+    // The Inbox's unread, quietly, and its dot.
+    expect(link(/^Inbox/).textContent).toBe('Inbox3')
+    expect(link(/^Inbox/).querySelector('[title="Something new"]')).not.toBeNull()
+    expect(link(/^All Mail/).textContent).toBe('All Mail2')
+    expect(link(/^To-dos/).querySelector('[title="Needs your attention"]')!.textContent).toBe('1')
+    // A folded account has its All Mail's.
+    await user.click(within(nav).getByRole('button', { name: /^work@example.com/ }))
+    expect(within(nav).getByRole('button', { name: /^work@example.com/ }).querySelector('[title="Needs your attention"]')!.textContent).toBe('2')
   })
 
   it('names in the window title what is open', async () => {
@@ -1176,18 +1186,19 @@ describe('matrix', () => {
     server.receive(room.id, { body: 'Hello there' })
     const user = await start()
     const nav = screen.getByRole('navigation')
-    // Its avatar, the initial, is not in its name.
-    const link = await within(nav).findByRole('link', { name: 'Lounge1' })
+    // Its avatar, the initial, is not in its name; unread, it is bold.
+    const link = await within(nav).findByRole('link', { name: 'Lounge' })
+    expect(link.className).toMatch(/bold/)
     await user.click(link)
     expect(location.pathname).toBe(`/rooms/${room.id}`)
     expect(await screen.findByText('Hello there')).toBeTruthy()
-    await waitFor(() => within(nav).getByRole('link', { name: 'Lounge' }))
+    await waitFor(() => expect(link.className).not.toMatch(/bold/))
     expect(link.getAttribute('aria-current')).toBe('page')
     // Reading quietly: no notice.
     expect(screen.queryByRole('status')).toBeNull()
   })
 
-  it('counts messages that notify, and notifies of them while their room is not on show', async () => {
+  it('notifies of messages that notify while their room is not on show', async () => {
     const shown: Array<{ title: string; options: NotificationOptions; onclick: (() => void) | null }> = []
     class FakeNotification {
       static permission = 'granted'
@@ -1210,19 +1221,17 @@ describe('matrix', () => {
       server.receive(lounge.id, { body: 'Earlier' })
       await start('/todos')
       const nav = screen.getByRole('navigation')
-      await within(nav).findByRole('link', { name: 'Lounge1' })
+      await within(nav).findByRole('link', { name: 'Lounge' })
 
       server.receive(lounge.id, { body: 'Lunch?' })
       await waitFor(() => expect(shown).toHaveLength(1))
       expect(shown[0].title).toBe('Lounge')
       expect(shown[0].options).toEqual({ body: 'Bob: Lunch?', tag: `room-${lounge.id}` })
 
-      // A quiet room notifies only of mentions, which its count shows.
+      // A quiet room notifies only of mentions.
       server.receive(quiet.id, { body: 'chatter' })
       server.receive(quiet.id, { body: `hey ${ME}` })
       await waitFor(() => expect(shown).toHaveLength(2))
-      const count = within(within(nav).getByRole('link', { name: /^Quiet/ })).getByText('1')
-      expect(count.title).toBe('You are mentioned')
 
       shown[1].onclick!()
       await within(await screen.findByRole('list', { name: 'Timeline' })).findByText(/^hey/)
@@ -1235,7 +1244,7 @@ describe('matrix', () => {
     }
   })
 
-  it('nests rooms in their spaces, which fold, counting what is unread', async () => {
+  it('nests rooms in their spaces, which fold, with the marks of what is in them', async () => {
     server.addMatrixAccount()
     const general = server.addRoom('General')
     const team = server.addRoom('Team')
@@ -1249,7 +1258,7 @@ describe('matrix', () => {
     const rooms = within(nav).getByRole('region', { name: `Rooms of ${ME}` })
     const space = (await within(rooms).findByText('Team')).closest('li')!
     expect(space.querySelector('img')?.getAttribute('src')).toBe(`/api/rooms/${team.id}/avatar/example.org/team`)
-    expect(within(space).getByRole('link', { name: 'General1' })).toBeTruthy()
+    expect(within(space).getByRole('link', { name: 'General' }).className).toMatch(/bold/)
     expect(within(space).queryByRole('link', { name: 'Elsewhere' })).toBeNull()
     within(rooms).getByRole('link', { name: 'Elsewhere' })
 
@@ -1258,7 +1267,10 @@ describe('matrix', () => {
     expect(row.getAttribute('aria-expanded')).toBe('true')
     await user.click(within(row).getByText('Team'))
     expect(within(space).queryByRole('link', { name: /General/ })).toBeNull()
-    expect(within(space).getByRole('button', { name: 'Team1' }).getAttribute('aria-expanded')).toBe('false')
+    expect(row.getAttribute('aria-expanded')).toBe('false')
+    expect(within(row).getByText('Team').className).toMatch(/bold/)
+    client.home.badges.value = badges({ rooms: [[general.id, { count: 2, dot: false }]] })
+    await waitFor(() => expect(within(space).getByRole('button', { name: 'Team2' })).toBeTruthy())
   })
 
   it('moves top-level spaces by dragging them, with undo', async () => {

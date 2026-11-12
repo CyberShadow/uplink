@@ -1375,6 +1375,7 @@ pub(crate) mod service {
             let unknown = || crate::query::Unknown::False;
             let count = crate::query::count(&tx, &accounts, &query, unknown()).unwrap();
             let mut matching = crate::query::matching(&tx, &accounts, &query, unknown()).unwrap();
+            let places = crate::query::places(&tx, &accounts, &query, unknown()).unwrap();
             drop(tx);
             let ServerResponse::Conversations { conversations, .. } =
                 mail.list_entries(list.into(), None, 10).await.unwrap()
@@ -1391,6 +1392,32 @@ pub(crate) mod service {
                         .collect()
                 })
                 .collect();
+            // A conversation is in each label of its entries listed.
+            let mut labels = std::collections::BTreeMap::<LabelId, u64>::new();
+            for c in &conversations {
+                let of: std::collections::BTreeSet<LabelId> = c
+                    .earlier
+                    .iter()
+                    .flat_map(|m| m.labels.iter().copied())
+                    .chain(c.latest.labels.iter().copied())
+                    .collect();
+                for label in of {
+                    *labels.entry(label).or_default() += 1;
+                }
+            }
+            let accounts: Vec<(String, u64)> = if conversations.is_empty() {
+                vec![]
+            } else {
+                vec![("a".into(), conversations.len() as u64)]
+            };
+            assert_eq!(
+                places,
+                crate::query::Places {
+                    labels: labels.into_iter().collect(),
+                    accounts,
+                },
+                "{list}"
+            );
             matching.sort();
             listed.sort();
             assert_eq!(count, listed.len() as u64, "{list}");

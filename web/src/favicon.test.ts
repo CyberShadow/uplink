@@ -1,22 +1,23 @@
 import { describe, expect, it } from 'vitest'
-import type { Activity, Badge, Badges } from './generated/protocol'
+import type { Badges } from './generated/protocol'
 import { iconOf, markOf } from './favicon'
 
-const todos = (n: number): Activity[] => Array.from({ length: n }, (_, i) => ({ kind: 'todo', todo: i }))
-const badges = (...buckets: [Badge, number][]): Badges => ({
-  buckets: buckets.map(([badge, n], i) => ({ name: `B${i}`, badge, items: todos(n) })),
+const NONE = { count: 0, dot: false }
+const badges = (count: number, dot: boolean): Badges => ({
+  buckets: [],
+  marks: { home: { count, dot }, labels: [], accounts: [], rooms: [], todos: NONE, calendar: NONE },
 })
 
 describe('the icon', () => {
   it("counts the count-badged buckets' items, to 99", () => {
-    expect(markOf(badges(['count', 2], ['dot', 5], ['count', 1]))).toEqual({ kind: 'count', text: '3' })
-    expect(markOf(badges(['count', 60], ['count', 40]))).toEqual({ kind: 'count', text: '99+' })
-    expect(markOf(badges(['count', 99]))).toEqual({ kind: 'count', text: '99' })
+    expect(markOf(badges(3, true))).toEqual({ kind: 'count', text: '3' })
+    expect(markOf(badges(100, false))).toEqual({ kind: 'count', text: '99+' })
+    expect(markOf(badges(99, false))).toEqual({ kind: 'count', text: '99' })
   })
 
   it('has a dot while only dot-badged buckets hold anything, and else nothing', () => {
-    expect(markOf(badges(['count', 0], ['dot', 1]))).toEqual({ kind: 'dot' })
-    expect(markOf(badges(['count', 0], ['dot', 0]))).toBeNull()
+    expect(markOf(badges(0, true))).toEqual({ kind: 'dot' })
+    expect(markOf(badges(0, false))).toBeNull()
     expect(markOf(null)).toBeNull()
   })
 

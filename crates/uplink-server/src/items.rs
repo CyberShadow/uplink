@@ -4,6 +4,7 @@
 //! view (SPEC §12.13) is the matches of its buckets' queries.
 
 use arc_swap::ArcSwap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uplink_config::HomeBucket;
@@ -14,7 +15,8 @@ use uplink_protocol::{
     mail::{EntryId, ListPosition},
     matrix::Room,
     todos::Todo,
-    Activity, Badge, BadgedBucket, Badges, ErrorCode, ServerError, ServerResponse, BADGE_LIMIT,
+    Activity, Badge, BadgedBucket, Badges, ErrorCode, Mark, Marks, ServerError, ServerResponse,
+    BADGE_LIMIT,
 };
 use uplink_query::{Query, Term};
 use uplink_storage::rusqlite::{Connection, Transaction};
@@ -42,6 +44,62 @@ struct Bucket {
     badge: Option<Badge>,
     text: String,
     query: Query,
+}
+
+/// The marks of the places, as they are added up bucket by bucket.
+#[derive(Default)]
+struct Places {
+    home: Mark,
+    labels: BTreeMap<uplink_protocol::mail::LabelId, Mark>,
+    accounts: BTreeMap<String, Mark>,
+    rooms: BTreeMap<uplink_protocol::matrix::RoomId, Mark>,
+    todos: Mark,
+    calendar: Mark,
+}
+
+impl Places {
+    /// Adds a bucket's: a room by its messages that notify, or 1.
+    fn add(&mut self, badge: Badge, mail: &mail::Places, others: &Others) {
+        let count = |n: usize| n as u32;
+        for (label, n) in &mail.labels {
+            self.labels.entry(*label).or_default().add(badge, *n as u32);
+        }
+        for (account, n) in &mail.accounts {
+            self.accounts
+                .entry(account.clone())
+                .or_default()
+                .add(badge, *n as u32);
+            self.home.add(badge, *n as u32);
+        }
+        for room in &others.rooms {
+            let n = room.notifying.max(1);
+            self.rooms.entry(room.id).or_default().add(badge, n);
+        }
+        self.home.add(badge, count(others.rooms.len()));
+        self.todos.add(badge, count(others.todos.len()));
+        self.home.add(badge, count(others.todos.len()));
+        self.calendar.add(badge, count(others.events.len()));
+        self.home.add(badge, count(others.events.len()));
+    }
+}
+
+impl From<Places> for Marks {
+    fn from(places: Places) -> Self {
+        fn marked<K>(marks: BTreeMap<K, Mark>) -> Vec<(K, Mark)> {
+            marks
+                .into_iter()
+                .filter(|(_, mark)| !mark.is_none())
+                .collect()
+        }
+        Marks {
+            home: places.home,
+            labels: marked(places.labels),
+            accounts: marked(places.accounts),
+            rooms: marked(places.rooms),
+            todos: places.todos,
+            calendar: places.calendar,
+        }
+    }
 }
 
 /// What a query matches of kinds other than mail.
@@ -176,7 +234,8 @@ impl Items {
     }
 
     /// What the badged buckets hold (SPEC §12.14), as `home` lists them:
-    /// up to `BADGE_LIMIT` items each.
+    /// up to `BADGE_LIMIT` items each; and the marks of the places their
+    /// items are in, of them all.
     pub async fn badges(&self) -> Result<Badges, ServerError> {
         let now = now();
         let today = uplink_query::today(now);
@@ -190,11 +249,16 @@ impl Items {
             .read(move |conn| {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
                 let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
+                let mut marks = Places::default();
                 let buckets = badged
                     .into_iter()
                     .map(|(badge, bucket)| {
                         let page = this.mail(&tx, &bucket.query, None, BADGE_LIMIT as u32)?;
                         let others = others(&tx, &rooms, &bucket.query, today, now)?;
+                        let places =
+                            mail::places(&tx, &this.mail_accounts, &bucket.query, Unknown::False)
+                                .map_err(list_error)?;
+                        marks.add(badge, &places, &others);
                         let mail = page
                             .conversations
                             .iter()
@@ -216,7 +280,10 @@ impl Items {
                         })
                     })
                     .collect::<Result<_, ServerError>>()?;
-                Ok(Badges { buckets })
+                Ok(Badges {
+                    buckets,
+                    marks: marks.into(),
+                })
             })
             .await
     }
@@ -505,7 +572,22 @@ mod tests {
                         badge: Badge::Dot,
                         items: vec![],
                     },
-                ]
+                ],
+                // An invitation counts as one.
+                marks: Marks {
+                    home: Mark {
+                        count: 1,
+                        dot: false
+                    },
+                    rooms: vec![(
+                        room,
+                        Mark {
+                            count: 1,
+                            dot: false
+                        }
+                    )],
+                    ..Marks::default()
+                },
             }
         );
     }

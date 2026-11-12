@@ -25,7 +25,7 @@ impl Hub {
         Self {
             live: broadcast::channel(capacity).0,
             notices: broadcast::channel(NOTICES).0,
-            badges: watch::channel(Arc::new(Badges { buckets: vec![] })).0,
+            badges: watch::channel(Arc::new(Badges::default())).0,
         }
     }
 

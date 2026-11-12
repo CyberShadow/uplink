@@ -1,23 +1,23 @@
 // The app's icon (SPEC §12.14): the logo, with the count of what the
 // count-badged buckets hold on it, as Gmail's and Element's count; or a
-// dot, while only dot-badged ones hold anything.
+// dot, while only dot-badged ones hold anything: home's mark.
 
 import { useEffect } from 'preact/hooks'
 import type { Badges } from './generated/protocol'
 import logo from '../public/logo.svg?raw'
 
-/** The most an icon counts: more is `99+`, as a bucket names at most
- * `BADGE_LIMIT` (100). */
+/** The most an icon counts: more is `99+`. */
 const MOST = 99
 
 export type Mark = { kind: 'count'; text: string } | { kind: 'dot' } | null
 
-/** What the icon shows of `badges`; nothing until the server says. */
+/** What the icon shows of `badges`: home's mark (SPEC §12.14); nothing
+ * until the server says. */
 export function markOf(badges: Badges | null): Mark {
   if (badges === null) return null
-  const count = badges.buckets.filter((b) => b.badge === 'count').reduce((n, b) => n + b.items.length, 0)
+  const { count, dot } = badges.marks.home
   if (count > 0) return { kind: 'count', text: count > MOST ? `${MOST}+` : String(count) }
-  return badges.buckets.some((b) => b.badge === 'dot' && b.items.length > 0) ? { kind: 'dot' } : null
+  return dot ? { kind: 'dot' } : null
 }
 
 /** The icon's URL: the logo, `mark` drawn over it, in its 32×32. */

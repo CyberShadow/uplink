@@ -538,6 +538,48 @@ pub fn count(
     Ok(count as u64)
 }
 
+/// Where the conversations `query` lists are, as the nav links to them
+/// (SPEC §12.14): how many have an entry with each label (in scope), and
+/// how many are of each account.
+#[derive(Debug, Default, PartialEq)]
+pub struct Places {
+    pub labels: Vec<(LabelId, u64)>,
+    pub accounts: Vec<(String, u64)>,
+}
+
+pub fn places(
+    tx: &Transaction,
+    accounts: &[ConfiguredAccount],
+    query: &Query,
+    unknown: Unknown,
+) -> Result<Places, ListError> {
+    let (condition, scope) = compile(tx, accounts, query, unknown)?;
+    if matches!(condition, Condition::Const(false)) {
+        return Ok(Places::default());
+    }
+    let (from, condition) = newest(tx, &scope, condition)?;
+    let labels = tx
+        .prepare(&format!(
+            "SELECT el.label, count(DISTINCT e.id) FROM {from}
+             JOIN mail_entry m ON m.account_id = e.account_id
+                               AND (m.id = e.id OR m.thread_id = e.thread_id) AND {scope}
+             JOIN entry_label el ON el.entry = m.id AND el.desired
+             WHERE {condition}
+             GROUP BY el.label ORDER BY el.label",
+            scope = in_scope(&scope, "m"),
+        ))?
+        .query_map([], |r| Ok((LabelId(r.get(0)?), r.get::<_, i64>(1)? as u64)))?
+        .collect::<Result<_, _>>()?;
+    let accounts = tx
+        .prepare(&format!(
+            "SELECT e.account_id, count(*) FROM {from} WHERE {condition}
+             GROUP BY e.account_id ORDER BY e.account_id"
+        ))?
+        .query_map([], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u64)))?
+        .collect::<Result<_, _>>()?;
+    Ok(Places { labels, accounts })
+}
+
 /// The entries of every conversation `query` lists, in its scope, each
 /// conversation's oldest first.
 pub fn matching(

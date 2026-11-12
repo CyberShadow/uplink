@@ -137,14 +137,15 @@
 
 .current {
   background: var(--focus);
-  font-weight: 600;
 }
 
+/* Unread, quietly: the mark (§12.14) is what calls for attention. */
 .count {
-  font-weight: 600;
+  color: var(--muted);
 }
 
-.alert {
+.count.alert {
+  font-weight: 600;
   padding: 0 6px;
   border-radius: 8px;
   background: var(--error-bg);
@@ -158,13 +159,6 @@
   margin: 0 4px;
   border-radius: 50%;
   background: var(--accent);
-}
-
-.mention {
-  padding: 0 6px;
-  border-radius: 8px;
-  background: var(--accent);
-  color: var(--bg);
 }
 
 /* Unread, though nothing notifies. */

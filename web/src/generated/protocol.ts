@@ -298,9 +298,31 @@ more: boolean, rooms: Array<Room>, todos: Array<Todo>, events: Array<CalendarEve
 export type Badge = "count" | "dot";
 
 /**
- * The badged home buckets, in order, and what is in each.
+ * The badged home buckets, in order, and what is in each; and the
+ * marks of the nav's places.
  */
-export type Badges = { buckets: Array<BadgedBucket>, };
+export type Badges = { buckets: Array<BadgedBucket>, marks: Marks, };
+
+/**
+ * Of each place of the nav that has a mark (SPEC §12.14), the mark:
+ * those without are not listed. Folded places' are the client's.
+ */
+export type Marks = { 
+/**
+ * The icon's.
+ */
+home: Mark, labels: Array<[LabelId, Mark]>, 
+/**
+ * Of each mail account's All Mail.
+ */
+accounts: Array<[string, Mark]>, rooms: Array<[RoomId, Mark]>, todos: Mark, calendar: Mark, };
+
+/**
+ * Of the badged buckets' items in a place: how many of those of `count`
+ * buckets (a room by its messages that notify, or 1), and whether any of
+ * a `dot` bucket's is.
+ */
+export type Mark = { count: number, dot: boolean, };
 
 export type BadgedBucket = { name: string, badge: Badge, 
 /**
@@ -1205,4 +1227,4 @@ exception: boolean, };
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "684b5d564330d459"
+export const PROTOCOL_VERSION = "f8b75027ebf5376e"

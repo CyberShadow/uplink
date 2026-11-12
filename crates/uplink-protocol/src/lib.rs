@@ -648,11 +648,51 @@ pub enum Badge {
     Dot,
 }
 
-/// The badged home buckets, in order, and what is in each.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+/// The badged home buckets, in order, and what is in each; and the
+/// marks of the nav's places.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Badges {
     pub buckets: Vec<BadgedBucket>,
+    pub marks: Marks,
+}
+
+/// Of each place of the nav that has a mark (SPEC §12.14), the mark:
+/// those without are not listed. Folded places' are the client's.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Marks {
+    /// The icon's.
+    pub home: Mark,
+    pub labels: Vec<(mail::LabelId, Mark)>,
+    /// Of each mail account's All Mail.
+    pub accounts: Vec<(String, Mark)>,
+    pub rooms: Vec<(RoomId, Mark)>,
+    pub todos: Mark,
+    pub calendar: Mark,
+}
+
+/// Of the badged buckets' items in a place: how many of those of `count`
+/// buckets (a room by its messages that notify, or 1), and whether any of
+/// a `dot` bucket's is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Mark {
+    pub count: u32,
+    pub dot: bool,
+}
+
+impl Mark {
+    pub fn add(&mut self, badge: Badge, count: u32) {
+        match badge {
+            Badge::Count => self.count += count,
+            Badge::Dot => self.dot |= count > 0,
+        }
+    }
+
+    pub fn is_none(&self) -> bool {
+        *self == Mark::default()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]

@@ -84,6 +84,8 @@ fn declarations() -> String {
         HomeBucket,
         Badge,
         Badges,
+        Marks,
+        Mark,
         BadgedBucket,
         Activity,
         FoundMessage,

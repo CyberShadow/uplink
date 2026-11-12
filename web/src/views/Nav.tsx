@@ -2,10 +2,9 @@ import { signal } from '@preact/signals'
 import { useEffect, useRef, useState } from 'preact/hooks'
 import type { ComponentChildren, RefObject } from 'preact'
 import { useLocation } from 'preact-iso'
-import { type Mark, markOf } from '../favicon'
 import { duration } from '../format'
 import { keepFocus, returnFocus, useKeymap } from '../keymap'
-import type { Account, Label, ListingProgress, MailProvider, MatrixAccount, Room, RoomId } from '../generated/protocol'
+import type { Account, Label, ListingProgress, MailProvider, Mark, MatrixAccount, Room, RoomId } from '../generated/protocol'
 import { bySpaceOrder, moveSpace } from '../spaceOrder'
 import { useServices } from '../context'
 import { outboxCount, outboxNeedsAttention } from '../stores/drafts'
@@ -279,24 +278,31 @@ function roomsIn(node: RoomNode, seen = new Set<string>()): Room[] {
   return [node.room, ...node.children.flatMap((child) => roomsIn(child, seen))]
 }
 
-/** A count's look: as any; red, as what needs the user's attention; or
- * as a mention of them. */
-type Tone = 'plain' | 'alert' | 'mention'
+/** A count's look: as any, quietly; or red, as what needs the user's
+ * attention. */
+type Tone = 'plain' | 'alert'
 
-/** Rooms count, as Element's, their unread messages that notify, as
- * mentions if any mentions them; other unread make the name bold. */
-function roomBadge(rooms: readonly Room[]): { count: number; tone: Tone; bold: boolean } {
-  return {
-    count: rooms.reduce((n, room) => n + room.notifying, 0),
-    tone: rooms.some((room) => room.highlighted > 0) ? 'mention' : 'plain',
-    bold: rooms.some((room) => room.unread > 0),
+const NONE: Mark = { count: 0, dot: false }
+
+/** The strongest of `marks`, as a fold shows what it folds: their counts
+ * summed, else a dot if any has one. */
+export function strongest(marks: Iterable<Mark>): Mark {
+  let count = 0
+  let dot = false
+  for (const mark of marks) {
+    count += mark.count
+    dot ||= mark.dot
   }
+  return { count, dot }
 }
+
+const marked = (mark: Mark) => mark.count > 0 || mark.dot
 
 /** `open`: shown as a drawer, where the window is narrow. */
 export function Nav(props: { open: boolean }) {
-  const { mail, drafts, matrix, todos, home } = useServices()
+  const { mail, drafts, matrix, todos } = useServices()
   const { path, route } = useLocation()
+  const marks = useMarks()
   const nav = useRef<HTMLElement>(null)
   // The Matrix account a conversation is being started with.
   const [starting, setStarting] = useState<string | null>(null)
@@ -330,7 +336,7 @@ export function Nav(props: { open: boolean }) {
     depth = 0,
     tone: Tone = 'plain',
     bold = false,
-    mark: Mark = null,
+    mark: Mark = NONE,
   ) => {
     const current = shows(path, href)
     return (
@@ -339,17 +345,17 @@ export function Nav(props: { open: boolean }) {
         class={[current && styles.current, bold && styles.bold].filter(Boolean).join(' ') || undefined}
         aria-current={current ? 'page' : undefined}
         // What Alt+Shift+arrows move to (`step`).
-        data-unread={count > 0 || bold || mark !== null || undefined}
+        data-unread={count > 0 || bold || marked(mark) || undefined}
         style={{ '--depth': depth }}
       >
         {lead}
         <span class={styles.name}>{name}</span>
         <Count count={count} tone={tone} />
-        <HomeMark mark={mark} />
+        <PlaceMark mark={mark} />
       </a>
     )
   }
-  const item = (href: string, icon: IconName, name: string, count: number, alert = false, mark: Mark = null) => (
+  const item = (href: string, icon: IconName, name: string, count: number, alert = false, mark: Mark = NONE) => (
     <li key={href}>{link(href, <Icon name={icon} />, name, count, 0, alert ? 'alert' : 'plain', false, mark)}</li>
   )
   const labelItem = (account: Account, label: Label) => (
@@ -359,6 +365,10 @@ export function Nav(props: { open: boolean }) {
         <Icon name={labelIcon(label)} />,
         labelName(account, label),
         label.unread,
+        0,
+        'plain',
+        false,
+        marks.label(label),
       )}
     </li>
   )
@@ -387,11 +397,15 @@ export function Nav(props: { open: boolean }) {
             node.name,
             node.label.unread,
             depth,
+            'plain',
+            false,
+            folded ? strongest(labelsIn(node).map(marks.label)) : marks.label(node.label),
           )
         ) : (
           <span class={styles.parent} style={{ '--depth': depth }}>
             <Icon name={node.children.some((c) => c.label?.folder) ? 'folder' : 'tag'} />
             <span class={styles.name}>{node.name}</span>
+            {folded && <PlaceMark mark={strongest(labelsIn(node).map(marks.label))} />}
           </span>
         )}
         {node.children.length > 0 && !folded && (
@@ -443,29 +457,31 @@ export function Nav(props: { open: boolean }) {
   const roomNode = (node: RoomNode, depth: number, spaces?: readonly Room[]) => {
     const { room } = node
     if (linksTo(room)) {
-      const badge = roomBadge([room])
       return (
         <li key={room.id}>
           {link(
             roomPath(room.id),
             <RoomAvatar room={room} />,
             room.membership === 'invited' ? `${room.name} (invited)` : room.name,
-            badge.count,
+            0,
             depth,
-            badge.tone,
-            badge.bold,
+            'plain',
+            room.unread > 0,
+            marks.room(room),
           )}
         </li>
       )
     }
     const key = spaceFold(room)
     const folded = collapsed.value.has(key)
-    const badge = folded ? roomBadge(roomsIn(node)) : null
+    const within = folded ? roomsIn(node) : []
     const row = (
       <>
         <RoomAvatar room={room} />
-        <span class={styles.name}>{room.name}</span>
-        {badge && <Count count={badge.count} tone={badge.tone} />}
+        <span class={within.some((r) => r.unread > 0) ? `${styles.name} ${styles.bold}` : styles.name}>
+          {room.name}
+        </span>
+        {folded && <PlaceMark mark={strongest(within.map(marks.room))} />}
       </>
     )
     const { at, handlers } = spaces ? reorderable(room, spaces) : { at: undefined, handlers: {} }
@@ -519,7 +535,7 @@ export function Nav(props: { open: boolean }) {
       <ul>
         {views(mail.accounts.value ?? []).map((view) => {
           const [count, alert] = counts[view.href]!
-          return item(view.href, view.icon, view.name, count, alert, view.href === '/' ? markOf(home.badges.value) : null)
+          return item(view.href, view.icon, view.name, count, alert, marks.view(view.href, mail.accounts.value ?? []))
         })}
       </ul>
       {mail.accounts.value?.map((account) => (
@@ -530,9 +546,10 @@ export function Nav(props: { open: boolean }) {
           tooltip={account.id}
           status={!account.synced && <Syncing account={account.id} listing={account.listing} />}
           unread={inboxUnread(account)}
+          mark={marks.account(account.id)}
         >
           {navLabels(account).system.map((label) => labelItem(account, label))}
-          {item(allMailPath(account.id), 'mails', 'All Mail', 0)}
+          {item(allMailPath(account.id), 'mails', 'All Mail', 0, false, marks.account(account.id))}
           {labelTree(navLabels(account).user).map((node) => labelNode(account, node, 0))}
         </Section>
       ))}
@@ -548,7 +565,9 @@ export function Nav(props: { open: boolean }) {
             tooltip={account.id}
             label={`Rooms of ${account.mxid}`}
             status={!account.synced && <span class={styles.syncing}> (syncing)</span>}
-            unread={roomBadge(rooms).count}
+            unread={0}
+            bold={rooms.some((room) => room.unread > 0)}
+            mark={strongest(rooms.map(marks.room))}
           >
             {securityItem(account.id)}
             <NotificationsItem />
@@ -608,7 +627,7 @@ function Count(props: { count: number; tone: Tone }) {
     <span
       class={tone === 'plain' ? styles.count : `${styles.count} ${styles[tone]}`}
       title={
-        tone === 'alert' ? 'Something needs your attention' : tone === 'mention' ? 'You are mentioned' : undefined
+        tone === 'alert' ? 'Something needs your attention' : undefined
       }
     >
       {props.count}
@@ -616,18 +635,56 @@ function Count(props: { count: number; tone: Tone }) {
   )
 }
 
-/** Home's mark: as the app's icon has it (SPEC §12.14), the count of
- * what the count-badged buckets hold, in red; else a dot, while a
- * dot-badged one holds anything. */
-function HomeMark(props: { mark: Mark }) {
+/** A place's mark (SPEC §12.14): of the count buckets' items in it, in
+ * red; else a dot, while a dot bucket's item in it is unseen. */
+export function PlaceMark(props: { mark: Mark }) {
   const { mark } = props
-  if (mark === null) return null
-  if (mark.kind === 'dot') return <span class={styles.dot} title="Something to keep up with" />
-  return (
-    <span class={`${styles.count} ${styles.alert}`} title="Something needs your attention">
-      {mark.text}
-    </span>
-  )
+  if (mark.count > 0) {
+    return (
+      <span class={`${styles.count} ${styles.alert}`} title="Needs your attention">
+        {mark.count > 99 ? '99+' : mark.count}
+      </span>
+    )
+  }
+  if (mark.dot) return <span class={styles.dot} title="Something new" />
+  return null
+}
+
+/** The marks of the nav's places, as the server last said. */
+function useMarks() {
+  const { home } = useServices()
+  const marks = home.badges.value?.marks
+  const labels = new Map(marks?.labels)
+  const accounts = new Map(marks?.accounts)
+  const rooms = new Map(marks?.rooms)
+  const label = (label: Label) => labels.get(label.id) ?? NONE
+  return {
+    label,
+    room: (room: Room) => rooms.get(room.id) ?? NONE,
+    account: (account: string) => accounts.get(account) ?? NONE,
+    view(href: string, mailAccounts: readonly Account[]): Mark {
+      if (!marks) return NONE
+      switch (href) {
+        case '/':
+          return marks.home
+        case '/todos':
+          return marks.todos
+        case '/calendar':
+          return marks.calendar
+        case inboxPath():
+          return strongest(mailAccounts.flatMap((a) => a.labels.filter(isInbox)).map(label))
+        default:
+          return NONE
+      }
+    },
+  }
+}
+
+const isInbox = (label: Label) => label.system && label.external_id === 'INBOX'
+
+/** The labels of a node and those nested in it. */
+function labelsIn(node: LabelNode): Label[] {
+  return [...(node.label ? [node.label] : []), ...node.children.flatMap(labelsIn)]
 }
 
 /** A top-level space being dragged, and the one it is over: to go before
@@ -650,7 +707,7 @@ function droppedAfter(e: DragEvent): boolean {
 }
 
 export function inboxUnread(account: Account): number {
-  return account.labels.find((l) => l.system && l.external_id === 'INBOX')?.unread ?? 0
+  return account.labels.find(isInbox)?.unread ?? 0
 }
 
 /** An account's subtree, which its header folds; folded, the header
@@ -662,6 +719,8 @@ function Section(props: {
   label?: string
   status: ComponentChildren
   unread: number
+  bold?: boolean
+  mark: Mark
   children: ComponentChildren
 }) {
   const folded = collapsed.value.has(props.id)
@@ -676,9 +735,10 @@ function Section(props: {
           onClick={() => toggleCollapsed(props.id)}
         >
           <Icon name={folded ? 'chevron-right' : 'chevron-down'} />
-          <span class={styles.name}>{props.title}</span>
+          <span class={folded && props.bold ? `${styles.name} ${styles.bold}` : styles.name}>{props.title}</span>
           {props.status}
           {folded && props.unread > 0 && <span class={styles.count}>{props.unread}</span>}
+          {folded && <PlaceMark mark={props.mark} />}
         </button>
       </h2>
       {!folded && <ul>{props.children}</ul>}

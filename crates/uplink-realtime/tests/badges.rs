@@ -36,6 +36,7 @@ fn badges(todos: &[i64]) -> Badges {
                 .map(|&t| Activity::Todo { todo: TodoId(t) })
                 .collect(),
         }],
+        marks: Default::default(),
     }
 }
 
