@@ -327,6 +327,24 @@ describe('mail', () => {
     await waitFor(() => expect(icon()).toBe('/logo.svg'))
   })
 
+  it('marks Home in the nav as the icon is marked', async () => {
+    await start('/mail/work/INBOX')
+    const home = () => within(screen.getByRole('navigation')).getByRole('link', { name: /^Home/ })
+    expect(home().textContent).toBe('Home')
+    client.home.badges.value = {
+      buckets: [
+        { name: 'Immediate', badge: 'count', items: [] },
+        { name: 'Upkeep', badge: 'dot', items: [{ kind: 'todo', todo: 1 }] },
+      ],
+    }
+    await waitFor(() => expect(home().querySelector('[title="Something to keep up with"]')).not.toBeNull())
+    client.home.badges.value = {
+      buckets: [{ name: 'Immediate', badge: 'count', items: [{ kind: 'todo', todo: 1 }, { kind: 'todo', todo: 2 }] }],
+    }
+    await waitFor(() => expect(home().textContent).toBe('Home2'))
+    expect(home().dataset.unread).toBe('true')
+  })
+
   it('names in the window title what is open', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')

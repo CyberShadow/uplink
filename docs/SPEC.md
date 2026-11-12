@@ -3097,8 +3097,9 @@ make a dot; Backlog and Leisure are left for the user to come to. The
 icon counts the items of the buckets badged `count`, up to `99+`, in
 red at its bottom right; else, while a bucket badged `dot` holds
 anything, it has a dot; else it is the logo alone (`src/favicon.ts`, an
-SVG of the logo with the mark over it). The window's title says what is
-on show (§12.4), so it counts nothing of the rest.
+SVG of the logo with the mark over it). Home's link in the nav has the
+same mark: its count in red, its dot in the accent colour. The window's
+title says what is on show (§12.4), so it counts nothing of the rest.
 
 The server pushes what the badged buckets hold (`Badges`, §5.5): of
 each, as home lists it (`ListHome`), its items, up to `BADGE_LIMIT`

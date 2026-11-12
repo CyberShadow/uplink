@@ -151,6 +151,15 @@
   color: var(--error-fg);
 }
 
+.dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin: 0 4px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
 .mention {
   padding: 0 6px;
   border-radius: 8px;

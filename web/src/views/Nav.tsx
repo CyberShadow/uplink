@@ -2,6 +2,7 @@ import { signal } from '@preact/signals'
 import { useEffect, useRef, useState } from 'preact/hooks'
 import type { ComponentChildren, RefObject } from 'preact'
 import { useLocation } from 'preact-iso'
+import { type Mark, markOf } from '../favicon'
 import { duration } from '../format'
 import { keepFocus, returnFocus, useKeymap } from '../keymap'
 import type { Account, Label, ListingProgress, MailProvider, MatrixAccount, Room, RoomId } from '../generated/protocol'
@@ -294,7 +295,7 @@ function roomBadge(rooms: readonly Room[]): { count: number; tone: Tone; bold: b
 
 /** `open`: shown as a drawer, where the window is narrow. */
 export function Nav(props: { open: boolean }) {
-  const { mail, drafts, matrix, todos } = useServices()
+  const { mail, drafts, matrix, todos, home } = useServices()
   const { path, route } = useLocation()
   const nav = useRef<HTMLElement>(null)
   // The Matrix account a conversation is being started with.
@@ -329,6 +330,7 @@ export function Nav(props: { open: boolean }) {
     depth = 0,
     tone: Tone = 'plain',
     bold = false,
+    mark: Mark = null,
   ) => {
     const current = shows(path, href)
     return (
@@ -337,17 +339,18 @@ export function Nav(props: { open: boolean }) {
         class={[current && styles.current, bold && styles.bold].filter(Boolean).join(' ') || undefined}
         aria-current={current ? 'page' : undefined}
         // What Alt+Shift+arrows move to (`step`).
-        data-unread={count > 0 || bold || undefined}
+        data-unread={count > 0 || bold || mark !== null || undefined}
         style={{ '--depth': depth }}
       >
         {lead}
         <span class={styles.name}>{name}</span>
         <Count count={count} tone={tone} />
+        <HomeMark mark={mark} />
       </a>
     )
   }
-  const item = (href: string, icon: IconName, name: string, count: number, alert = false) => (
-    <li key={href}>{link(href, <Icon name={icon} />, name, count, 0, alert ? 'alert' : 'plain')}</li>
+  const item = (href: string, icon: IconName, name: string, count: number, alert = false, mark: Mark = null) => (
+    <li key={href}>{link(href, <Icon name={icon} />, name, count, 0, alert ? 'alert' : 'plain', false, mark)}</li>
   )
   const labelItem = (account: Account, label: Label) => (
     <li key={label.id}>
@@ -516,7 +519,7 @@ export function Nav(props: { open: boolean }) {
       <ul>
         {views(mail.accounts.value ?? []).map((view) => {
           const [count, alert] = counts[view.href]!
-          return item(view.href, view.icon, view.name, count, alert)
+          return item(view.href, view.icon, view.name, count, alert, view.href === '/' ? markOf(home.badges.value) : null)
         })}
       </ul>
       {mail.accounts.value?.map((account) => (
@@ -609,6 +612,20 @@ function Count(props: { count: number; tone: Tone }) {
       }
     >
       {props.count}
+    </span>
+  )
+}
+
+/** Home's mark: as the app's icon has it (SPEC §12.14), the count of
+ * what the count-badged buckets hold, in red; else a dot, while a
+ * dot-badged one holds anything. */
+function HomeMark(props: { mark: Mark }) {
+  const { mark } = props
+  if (mark === null) return null
+  if (mark.kind === 'dot') return <span class={styles.dot} title="Something to keep up with" />
+  return (
+    <span class={`${styles.count} ${styles.alert}`} title="Something needs your attention">
+      {mark.text}
     </span>
   )
 }
