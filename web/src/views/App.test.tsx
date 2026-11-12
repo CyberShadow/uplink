@@ -355,6 +355,23 @@ describe('mail', () => {
     expect(within(nav).getByRole('button', { name: /^work@example.com/ }).querySelector('[title="Needs your attention"]')!.textContent).toBe('2')
   })
 
+  it('sees a place on show while it has a dot, once each time the server says', async () => {
+    const inbox = server.labelId('work', 'INBOX')
+    const user = await start('/mail/work/INBOX')
+    // Nothing new: not seen.
+    client.home.badges.value = badges({ labels: [[inbox, { count: 2, dot: false }]] })
+    const nav = screen.getByRole('navigation')
+    await waitFor(() => expect(within(nav).getByRole('link', { name: /^Inbox/ }).textContent).toBe('Inbox32'))
+    expect(server.seen).toEqual([])
+    client.home.badges.value = badges({ home: { count: 0, dot: true }, labels: [[inbox, { count: 0, dot: true }]] })
+    await waitFor(() => expect(server.seen).toEqual([{ kind: 'label', label: inbox }]))
+    // Quietly.
+    expect(screen.queryByRole('status')).toBeNull()
+    // Home has the dot of whatever is unseen.
+    await user.click(within(nav).getByRole('link', { name: /^Home/ }))
+    await waitFor(() => expect(server.seen).toEqual([{ kind: 'label', label: inbox }, { kind: 'home' }]))
+  })
+
   it('names in the window title what is open', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')

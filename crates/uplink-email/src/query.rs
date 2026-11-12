@@ -540,7 +540,9 @@ pub fn count(
 
 /// Where the conversations `query` lists are, as the nav links to them
 /// (SPEC §12.14): how many have an entry with each label (in scope), and
-/// how many are of each account.
+/// how many are of each account. If `unseen`, only those whose latest
+/// entry came after each of their places was last seen (§12.15: the
+/// `seen` table's, of Home, their account's All Mail and their labels).
 #[derive(Debug, Default, PartialEq)]
 pub struct Places {
     pub labels: Vec<(LabelId, u64)>,
@@ -552,12 +554,28 @@ pub fn places(
     accounts: &[ConfiguredAccount],
     query: &Query,
     unknown: Unknown,
+    unseen: bool,
 ) -> Result<Places, ListError> {
     let (condition, scope) = compile(tx, accounts, query, unknown)?;
     if matches!(condition, Condition::Const(false)) {
         return Ok(Places::default());
     }
     let (from, condition) = newest(tx, &scope, condition)?;
+    let condition = match unseen {
+        false => condition,
+        true => format!(
+            "({condition}) AND e.id > coalesce((
+               SELECT max(s.mail) FROM seen s
+               WHERE s.place IN ('home', 'account:' || e.account_id)
+                  OR s.place IN (
+                       SELECT 'label:' || sl.label FROM mail_entry sm
+                       JOIN entry_label sl ON sl.entry = sm.id AND sl.desired
+                       WHERE sm.account_id = e.account_id
+                         AND (sm.id = e.id OR sm.thread_id = e.thread_id) AND {scope})
+             ), 0)",
+            scope = in_scope(&scope, "sm"),
+        ),
+    };
     let labels = tx
         .prepare(&format!(
             "SELECT el.label, count(DISTINCT e.id) FROM {from}

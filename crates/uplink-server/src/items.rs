@@ -15,8 +15,8 @@ use uplink_protocol::{
     mail::{EntryId, ListPosition},
     matrix::Room,
     todos::Todo,
-    Activity, Badge, BadgedBucket, Badges, ErrorCode, Mark, Marks, ServerError, ServerResponse,
-    BADGE_LIMIT,
+    Activity, Badge, BadgedBucket, Badges, ErrorCode, Mark, Marks, Place, ServerError,
+    ServerResponse, BADGE_LIMIT,
 };
 use uplink_query::{Query, Term};
 use uplink_storage::rusqlite::{Connection, Transaction};
@@ -98,6 +98,61 @@ impl From<Places> for Marks {
             rooms: marked(places.rooms),
             todos: places.todos,
             calendar: places.calendar,
+        }
+    }
+}
+
+/// When the places were last seen, by their keys (SPEC §12.15).
+struct Seen(std::collections::HashMap<String, crate::seen::Watermark>);
+
+impl Seen {
+    fn load(tx: &Transaction) -> anyhow::Result<Self> {
+        Ok(Self(crate::seen::all(tx)?.into_iter().collect()))
+    }
+
+    /// The latest of `kind` seen when any of `places` was last seen.
+    fn of(&self, places: &[Place], kind: fn(&crate::seen::Watermark) -> i64) -> Option<i64> {
+        places
+            .iter()
+            .filter_map(|place| self.0.get(&crate::seen::key(place)))
+            .map(kind)
+            .max()
+    }
+
+    /// What of `others` came since its places were last seen: a room by
+    /// its latest event, a to-do or an event by itself.
+    fn unseen(&self, others: &Others) -> Others {
+        let after = |seen: Option<i64>, id: i64| seen.is_none_or(|seen| id > seen);
+        Others {
+            rooms: others
+                .rooms
+                .iter()
+                .filter(|room| {
+                    let places = [Place::Home, Place::Room { room: room.id }];
+                    after(
+                        self.of(&places, |w| w.room_event),
+                        room.latest.map_or(0, |e| e.0),
+                    )
+                })
+                .cloned()
+                .collect(),
+            todos: others
+                .todos
+                .iter()
+                .filter(|todo| after(self.of(&[Place::Home, Place::Todos], |w| w.todo), todo.id.0))
+                .cloned()
+                .collect(),
+            events: others
+                .events
+                .iter()
+                .filter(|event| {
+                    after(
+                        self.of(&[Place::Home, Place::Calendar], |w| w.event),
+                        event.id.0,
+                    )
+                })
+                .cloned()
+                .collect(),
         }
     }
 }
@@ -250,15 +305,26 @@ impl Items {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
                 let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
                 let mut marks = Places::default();
+                let seen = Seen::load(&tx).map_err(internal)?;
                 let buckets = badged
                     .into_iter()
                     .map(|(badge, bucket)| {
                         let page = this.mail(&tx, &bucket.query, None, BADGE_LIMIT as u32)?;
                         let others = others(&tx, &rooms, &bucket.query, today, now)?;
-                        let places =
-                            mail::places(&tx, &this.mail_accounts, &bucket.query, Unknown::False)
-                                .map_err(list_error)?;
-                        marks.add(badge, &places, &others);
+                        // A dot is of what is unseen (SPEC §12.15).
+                        let unseen = badge == Badge::Dot;
+                        let places = mail::places(
+                            &tx,
+                            &this.mail_accounts,
+                            &bucket.query,
+                            Unknown::False,
+                            unseen,
+                        )
+                        .map_err(list_error)?;
+                        match unseen {
+                            true => marks.add(badge, &places, &seen.unseen(&others)),
+                            false => marks.add(badge, &places, &others),
+                        }
                         let mail = page
                             .conversations
                             .iter()
@@ -411,6 +477,7 @@ mod tests {
         let mut registry = Registry::new();
         uplink_matrix::register(&mut registry);
         uplink_todos::register(&mut registry);
+        crate::seen::register(&mut registry);
         let dispatcher = Dispatcher::new(
             uplink_storage::open(dir.path()).unwrap(),
             registry,
@@ -590,5 +657,35 @@ mod tests {
                 },
             }
         );
+
+        // A dot is of what is unseen: what is new in a place since it was
+        // seen, or in Home, which holds every bucket's.
+        items.configure_home(vec![bucket("Todo", "is:todo", Some(Badge::Dot))]);
+        let dots = || async {
+            let marks = items.badges().await.unwrap().marks;
+            (marks.home.dot, marks.todos.dot)
+        };
+        assert_eq!(dots().await, (true, true));
+        let seen = dispatcher
+            .dispatch(crate::seen::MarkSeen { place: Place::Todos })
+            .await
+            .unwrap();
+        assert_eq!(dots().await, (false, false));
+        todos
+            .create("Pay bills".into(), String::new(), None, None)
+            .await
+            .unwrap();
+        assert_eq!(dots().await, (true, true));
+        let home = dispatcher
+            .dispatch(crate::seen::MarkSeen { place: Place::Home })
+            .await
+            .unwrap();
+        assert_eq!(dots().await, (false, false));
+        // Undone, as any op: the new to-do is unseen again, as the To-dos
+        // were seen before it.
+        dispatcher.undo(home).await.unwrap();
+        assert_eq!(dots().await, (true, true));
+        dispatcher.undo(seen).await.unwrap();
+        assert_eq!(dots().await, (true, true));
     }
 }

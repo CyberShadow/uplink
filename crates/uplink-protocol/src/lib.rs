@@ -275,6 +275,10 @@ pub enum ClientRequest {
     KeepMatrixSent {
         item: MatrixSendId,
     },
+    /// The place has been looked at (SPEC §12.15): what is in it is seen.
+    MarkSeen {
+        place: Place,
+    },
     /// Move the room's read marker to `event`: it and everything before
     /// it are read.
     MarkRoomRead {
@@ -655,6 +659,27 @@ pub enum Badge {
 pub struct Badges {
     pub buckets: Vec<BadgedBucket>,
     pub marks: Marks,
+}
+
+/// A place of the nav, where items are (SPEC §12.14).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Place {
+    Home,
+    /// Every account's Inbox.
+    Inboxes,
+    Label {
+        label: mail::LabelId,
+    },
+    /// An account's All Mail.
+    Account {
+        account: String,
+    },
+    Room {
+        room: RoomId,
+    },
+    Todos,
+    Calendar,
 }
 
 /// Of each place of the nav that has a mark (SPEC §12.14), the mark:

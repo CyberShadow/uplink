@@ -4,7 +4,8 @@ import type { ComponentChildren, RefObject } from 'preact'
 import { useLocation } from 'preact-iso'
 import { duration } from '../format'
 import { keepFocus, returnFocus, useKeymap } from '../keymap'
-import type { Account, Label, ListingProgress, MailProvider, Mark, MatrixAccount, Room, RoomId } from '../generated/protocol'
+import type { Account, Label, ListingProgress, MailProvider, Mark, MatrixAccount, Place, Room, RoomId } from '../generated/protocol'
+import { isInbox, markOf, NONE, shows, strongest } from '../marks'
 import { bySpaceOrder, moveSpace } from '../spaceOrder'
 import { useServices } from '../context'
 import { outboxCount, outboxNeedsAttention } from '../stores/drafts'
@@ -85,10 +86,7 @@ export function views(accounts: readonly Account[]): View[] {
   ]
 }
 
-/** Whether `href`'s view, or something in it, is on show at `path`. */
-export function shows(path: string, href: string): boolean {
-  return path === href || path.startsWith(`${href}/`)
-}
+export { shows }
 
 /** A first sync's progress as seen: messages stored, by when. */
 export interface Sample {
@@ -281,20 +279,6 @@ function roomsIn(node: RoomNode, seen = new Set<string>()): Room[] {
 /** A count's look: as any, quietly; or red, as what needs the user's
  * attention. */
 type Tone = 'plain' | 'alert'
-
-const NONE: Mark = { count: 0, dot: false }
-
-/** The strongest of `marks`, as a fold shows what it folds: their counts
- * summed, else a dot if any has one. */
-export function strongest(marks: Iterable<Mark>): Mark {
-  let count = 0
-  let dot = false
-  for (const mark of marks) {
-    count += mark.count
-    dot ||= mark.dot
-  }
-  return { count, dot }
-}
 
 const marked = (mark: Mark) => mark.count > 0 || mark.dot
 
@@ -535,7 +519,7 @@ export function Nav(props: { open: boolean }) {
       <ul>
         {views(mail.accounts.value ?? []).map((view) => {
           const [count, alert] = counts[view.href]!
-          return item(view.href, view.icon, view.name, count, alert, marks.view(view.href, mail.accounts.value ?? []))
+          return item(view.href, view.icon, view.name, count, alert, marks.view(view.href))
         })}
       </ul>
       {mail.accounts.value?.map((account) => (
@@ -652,35 +636,28 @@ export function PlaceMark(props: { mark: Mark }) {
 
 /** The marks of the nav's places, as the server last said. */
 function useMarks() {
-  const { home } = useServices()
-  const marks = home.badges.value?.marks
-  const labels = new Map(marks?.labels)
-  const accounts = new Map(marks?.accounts)
-  const rooms = new Map(marks?.rooms)
-  const label = (label: Label) => labels.get(label.id) ?? NONE
+  const { home, mail } = useServices()
+  const badges = home.badges.value
+  const accounts = mail.accounts.value ?? []
+  const of = (place: Place) => markOf(badges, place, accounts)
   return {
-    label,
-    room: (room: Room) => rooms.get(room.id) ?? NONE,
-    account: (account: string) => accounts.get(account) ?? NONE,
-    view(href: string, mailAccounts: readonly Account[]): Mark {
-      if (!marks) return NONE
-      switch (href) {
-        case '/':
-          return marks.home
-        case '/todos':
-          return marks.todos
-        case '/calendar':
-          return marks.calendar
-        case inboxPath():
-          return strongest(mailAccounts.flatMap((a) => a.labels.filter(isInbox)).map(label))
-        default:
-          return NONE
-      }
+    label: (label: Label) => of({ kind: 'label', label: label.id }),
+    room: (room: Room) => of({ kind: 'room', room: room.id }),
+    account: (account: string) => of({ kind: 'account', account }),
+    view(href: string): Mark {
+      const place = VIEW_PLACES[href]
+      return place ? of(place) : NONE
     },
   }
 }
 
-const isInbox = (label: Label) => label.system && label.external_id === 'INBOX'
+/** The views above the accounts that are places. */
+const VIEW_PLACES: Record<string, Place> = {
+  '/': { kind: 'home' },
+  [inboxPath()]: { kind: 'inboxes' },
+  '/todos': { kind: 'todos' },
+  '/calendar': { kind: 'calendar' },
+}
 
 /** The labels of a node and those nested in it. */
 function labelsIn(node: LabelNode): Label[] {

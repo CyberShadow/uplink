@@ -46,6 +46,7 @@ mod badges;
 mod items;
 mod outbox;
 mod remote_image;
+mod seen;
 use remote_image::RemoteImages;
 
 /// How far a session may lag the live stream before it is disconnected.
@@ -225,6 +226,7 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
     uplink_email::image_rules::register(&mut registry);
     uplink_matrix::register(&mut registry);
     uplink_todos::register(&mut registry);
+    seen::register(&mut registry);
     let root = &config.data_dir;
     let mut writer = uplink_storage::open(root)?;
     uplink_email::mailbox::index_attachments(
@@ -1118,6 +1120,9 @@ impl Backend for Services {
             }
             ClientRequest::CancelMatrixSend { item } => self.matrix.cancel_send(item).await,
             ClientRequest::KeepMatrixSent { item } => self.matrix.keep_sent(item).await,
+            ClientRequest::MarkSeen { place } => {
+                self.dispatcher.answer(seen::MarkSeen { place }).await
+            }
             ClientRequest::MarkRoomRead { room, event } => self.matrix.mark_read(room, event).await,
             ClientRequest::SetTyping { room, typing } => self.matrix.set_typing(room, typing).await,
             ClientRequest::ListReceipts { room } => self.matrix.list_receipts(room).await,

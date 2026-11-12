@@ -1375,7 +1375,7 @@ pub(crate) mod service {
             let unknown = || crate::query::Unknown::False;
             let count = crate::query::count(&tx, &accounts, &query, unknown()).unwrap();
             let mut matching = crate::query::matching(&tx, &accounts, &query, unknown()).unwrap();
-            let places = crate::query::places(&tx, &accounts, &query, unknown()).unwrap();
+            let places = crate::query::places(&tx, &accounts, &query, unknown(), false).unwrap();
             drop(tx);
             let ServerResponse::Conversations { conversations, .. } =
                 mail.list_entries(list.into(), None, 10).await.unwrap()
@@ -1422,6 +1422,36 @@ pub(crate) mod service {
             listed.sort();
             assert_eq!(count, listed.len() as u64, "{list}");
             assert_eq!(matching, listed, "{list}");
+        }
+        // Of what is unseen (SPEC §12.15), those whose places were not seen
+        // since their latest entry came: here the Inbox's are seen.
+        {
+            let query = uplink_query::parse("account:a", 0).unwrap();
+            let accounts = [ConfiguredAccount {
+                id: "a".into(),
+                address: "a@x".into(),
+                provider: uplink_protocol::mail::MailProvider::Gmail,
+            }];
+            let places = |unseen| {
+                let mut conn = db.reader();
+                let tx = conn.transaction().unwrap();
+                let unknown = crate::query::Unknown::False;
+                crate::query::places(&tx, &accounts, &query, unknown, unseen).unwrap()
+            };
+            let all = places(false);
+            assert_eq!(places(true), all);
+            let inbox = db.label("a", "INBOX");
+            uplink_storage::open(db.dir.path())
+                .unwrap()
+                .execute(
+                    "INSERT INTO seen SELECT 'label:' || ?1, max(id), 0, 0, 0 FROM mail_entry",
+                    [inbox.0],
+                )
+                .unwrap();
+            let in_inbox = all.labels.iter().find(|(l, _)| *l == inbox).unwrap().1;
+            let unseen = places(true);
+            assert!(unseen.labels.iter().all(|(l, _)| *l != inbox));
+            assert_eq!(unseen.accounts, [("a".to_owned(), all.accounts[0].1 - in_inbox)]);
         }
         // Senders once each, as first seen; attachments of any.
         let ServerResponse::Conversations { conversations, .. } =

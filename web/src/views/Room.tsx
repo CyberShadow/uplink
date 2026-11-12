@@ -6,6 +6,7 @@
 
 import type { RefObject } from 'preact'
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
+import { useVisible } from '../marks'
 import { useLocation } from 'preact-iso'
 import type {
   GapId,
@@ -740,12 +741,7 @@ function MembershipControls(props: { room: Room }) {
 /** Marks the room read up to its latest event, while the tab is visible. */
 function useMarkRead(room: Room, events: readonly RoomEvent[] | null) {
   const { matrix } = useServices()
-  const [visible, setVisible] = useState(document.visibilityState === 'visible')
-  useEffect(() => {
-    const update = () => setVisible(document.visibilityState === 'visible')
-    document.addEventListener('visibilitychange', update)
-    return () => document.removeEventListener('visibilitychange', update)
-  }, [])
+  const visible = useVisible()
   const last = events?.at(-1)
   // What was marked, so that a room list reloaded meanwhile does not
   // mark it again.

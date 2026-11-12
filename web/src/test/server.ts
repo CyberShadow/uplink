@@ -7,6 +7,7 @@ import type { Requester } from '../connection'
 import { RequestError } from '../connection'
 import type {
   Attachment,
+  Place,
   Account,
   CalendarEvent,
   ClientRequest,
@@ -573,6 +574,8 @@ export class FakeServer implements Requester, Blobs {
   /** Rooms whose messages notify only if they mention the account, as
    * push rules may have it. */
   readonly quiet = new Set<RoomId>()
+  /** The places seen, in order (SPEC §12.15). */
+  readonly seen: Place[] = []
 
   /** What pages say of themselves, by URL, as the homeserver previews
    * them. */
@@ -1121,6 +1124,9 @@ export class FakeServer implements Requester, Blobs {
         return { type: 'dispatched', tx_log_id: this.editTodo(body.todo, body.edit, `Edited '${body.todo}'`) }
       case 'delete_todo':
         return { type: 'dispatched', tx_log_id: this.deleteTodo(body.todo) }
+      case 'mark_seen':
+        this.seen.push(body.place)
+        return this.dispatched('Seen', [])
       case 'mark_room_read':
         this.rooms.find((r) => r.id === body.room)!.read_up_to = this.marker(body.room, body.event)
         return this.dispatched('Read', [{ type: 'rooms_changed', rooms: [body.room] }])
