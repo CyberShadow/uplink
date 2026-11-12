@@ -33,6 +33,11 @@
   white-space: nowrap;
 }
 
+/* Done by a view being shown (SPEC §12.15): not the user's hand. */
+.shown .description {
+  color: var(--muted);
+}
+
 .undone .description {
   color: var(--muted);
   text-decoration: line-through;

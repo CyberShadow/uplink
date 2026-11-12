@@ -318,7 +318,10 @@ async fn unread_messages_that_notify_or_highlight_are_counted() {
     let room = db.room().await;
     assert_eq!((room.unread, room.notifying, room.highlighted), (3, 2, 1));
     let events = db.timeline().await;
-    db.matrix.mark_read(room.id, events[2].id).await.unwrap();
+    db.matrix
+        .mark_read(room.id, events[2].id, false)
+        .await
+        .unwrap();
     let room = db.room().await;
     assert_eq!((room.notifying, room.highlighted), (0, 0));
 }
@@ -480,7 +483,7 @@ async fn reading_moves_the_marker_and_undo_moves_it_back() {
     db.sync(&[("$1", "@bob:x"), ("$2", "@bob:x")], &[]).await;
     let room = db.room().await;
     let second = db.event("$2").await;
-    let read = match db.matrix.mark_read(room.id, second).await.unwrap() {
+    let read = match db.matrix.mark_read(room.id, second, false).await.unwrap() {
         ServerResponse::Dispatched { tx_log_id } => tx_log_id,
         other => panic!("unexpected {other:?}"),
     };

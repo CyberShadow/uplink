@@ -359,7 +359,11 @@ async fn messages_both_ways_in_an_encrypted_room() {
     assert_eq!(raw["content"]["answer"], 42);
 
     // Reading in uplink sends a receipt the other device sees.
-    uplink.matrix.mark_read(room.id, custom.id).await.unwrap();
+    uplink
+        .matrix
+        .mark_read(room.id, custom.id, false)
+        .await
+        .unwrap();
     assert_eq!(uplink.room(&room_id).await.unwrap().unread, 0);
     let phone_room = alice_phone.get_room(&room_id).unwrap();
     eventually("alice's other device to see the receipt", || async {

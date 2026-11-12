@@ -3193,9 +3193,10 @@ Two things are tracked of what comes in, as Thunderbird's "new" and
 All inboxes' list, a room, To-dos, Calendar, Home), sees everything in
 it, however much is on screen: a new message in a label is seen once
 the label is opened, though the message is not. Each place keeps when
-it was last seen, as the log's latest entry then (`Seen { place, at }`,
-desired state uplink alone keeps, §6.6); an item's activity is seen if
-any place it is in (§12.14; Home holds whatever its buckets do) was
+it was last seen (desired state uplink alone keeps, §6.6; V0042
+`seen`: of each kind, the latest id stored then, as ids are given in
+the order things come); an item's activity is seen if any place it is
+in (§12.14; Home holds whatever its buckets do) was
 seen after it was recorded. So a conversation seen in the Inbox is
 seen under its other labels too, and a reply to it is news again. The
 client dispatches `MarkSeen { place }` on showing a place whose mark
@@ -3232,11 +3233,15 @@ Telegram's do. Once on screen, it is read (V00xx:
 
 **Showing is not doing.** What a view dispatches by being shown, not by
 the user's hand — `MarkSeen`, `MarkRoomRead` and the fully-read
-marker's moves as messages come on screen — is logged and undoable as
-any op, quietly (no notice, §12.6), but recorded as shown
-(`tx_log.shown`): `z` passes over it (§12.5), and the history (§6.3)
-lists it dimmed. `e` on home's room, or "Mark as read", is the user's
-own.
+marker's moves as messages come on screen, and opening a conversation,
+which reads it (`ActOnConversations`) — is logged and undoable as any
+op, quietly (no notice, §12.6), but recorded as shown (V0043
+`tx_log.shown`, `LogEntry.shown`; the op says, `Op::shown`, and the
+requests that may be either carry `shown`): `z` passes over it (§12.5),
+as if it were not there, so that seeing what an undo brings back does
+not stop the rewinding; and the history (§6.3) lists it dimmed. Its
+undo is the user's. `e` on home's room, or "Mark as read", is the
+user's own.
 
 ## 13. Authentication & secrets
 

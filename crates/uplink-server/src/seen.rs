@@ -65,6 +65,10 @@ impl Op for MarkSeen {
             events: vec![],
         })
     }
+
+    fn shown(&self) -> bool {
+        true
+    }
 }
 
 impl Op for RestoreSeen {

@@ -353,6 +353,7 @@ async fn remote_label_changes_win_unless_a_local_change_is_pending() {
                 label: inbox,
                 desired: false,
             }],
+            shown: false,
         })
         .await
         .unwrap();
@@ -419,6 +420,7 @@ async fn set_labels_counts_conversations() {
                 desired: false,
             })
             .collect(),
+        shown: false,
     };
     let mut live = db.hub.subscribe();
     db.dispatcher
@@ -467,6 +469,7 @@ async fn set_labels_undo_redo() {
                 desired: false,
             })
             .collect(),
+        shown: false,
     };
     let mut live = db.hub.subscribe();
     // m3 is not in the inbox: archiving it changes nothing.
@@ -495,6 +498,7 @@ async fn set_labels_undo_redo() {
                 label: inbox,
                 desired: true,
             }],
+            shown: false,
         })
         .await
         .unwrap();
@@ -580,6 +584,7 @@ async fn an_entry_is_in_one_folder() {
         .dispatcher
         .dispatch(SetLabels {
             changes: vec![change("INBOX", false)],
+            shown: false,
         })
         .await
         .unwrap();
@@ -597,6 +602,7 @@ async fn an_entry_is_in_one_folder() {
     db.dispatcher
         .dispatch(SetLabels {
             changes: vec![change("Folder_1", true)],
+            shown: false,
         })
         .await
         .unwrap();
@@ -608,6 +614,7 @@ async fn an_entry_is_in_one_folder() {
     db.dispatcher
         .dispatch(SetLabels {
             changes: vec![change("TRASH", true), change("UNREAD", false)],
+            shown: false,
         })
         .await
         .unwrap();
@@ -619,6 +626,7 @@ async fn an_entry_is_in_one_folder() {
         .dispatcher
         .dispatch(SetLabels {
             changes: vec![change("Folder_1", true), change("Folder_2", true)],
+            shown: false,
         })
         .await
         .unwrap_err();
@@ -655,6 +663,7 @@ async fn undo_refuses_once_the_message_is_gone() {
                 label: db.label("a", "INBOX"),
                 desired: false,
             }],
+            shown: false,
         })
         .await
         .unwrap();
@@ -702,6 +711,7 @@ async fn pushed_changes_become_observed() {
     db.dispatcher
         .dispatch(SetLabels {
             changes: vec![change(inbox, false), change(starred, true)],
+            shown: false,
         })
         .await
         .unwrap();
@@ -709,6 +719,7 @@ async fn pushed_changes_become_observed() {
     db.dispatcher
         .dispatch(SetLabels {
             changes: vec![change(starred, false)],
+            shown: false,
         })
         .await
         .unwrap();
@@ -768,6 +779,7 @@ async fn pending_changes_keep_their_op_and_refusal() {
         .dispatcher
         .dispatch(SetLabels {
             changes: vec![change(m1, inbox, false), change(m2, inbox, false)],
+            shown: false,
         })
         .await
         .unwrap()
@@ -776,6 +788,7 @@ async fn pending_changes_keep_their_op_and_refusal() {
         .dispatcher
         .dispatch(SetLabels {
             changes: vec![change(m1, starred, true)],
+            shown: false,
         })
         .await
         .unwrap()
@@ -836,6 +849,7 @@ async fn pending_changes_keep_their_op_and_refusal() {
     db.dispatcher
         .dispatch(SetLabels {
             changes: vec![change(m1, starred, false)],
+            shown: false,
         })
         .await
         .unwrap();
@@ -843,6 +857,7 @@ async fn pending_changes_keep_their_op_and_refusal() {
         .dispatcher
         .dispatch(SetLabels {
             changes: vec![change(m1, starred, true)],
+            shown: false,
         })
         .await
         .unwrap()
@@ -1451,7 +1466,10 @@ pub(crate) mod service {
             let in_inbox = all.labels.iter().find(|(l, _)| *l == inbox).unwrap().1;
             let unseen = places(true);
             assert!(unseen.labels.iter().all(|(l, _)| *l != inbox));
-            assert_eq!(unseen.accounts, [("a".to_owned(), all.accounts[0].1 - in_inbox)]);
+            assert_eq!(
+                unseen.accounts,
+                [("a".to_owned(), all.accounts[0].1 - in_inbox)]
+            );
         }
         // Senders once each, as first seen; attachments of any.
         let ServerResponse::Conversations { conversations, .. } =
@@ -2073,7 +2091,10 @@ pub(crate) mod service {
                 .iter()
                 .map(|c| c.iter().map(|id| db.entry(id)).collect())
                 .collect();
-            async move { mail.act_on_conversations(conversations, action).await }
+            async move {
+                mail.act_on_conversations(conversations, action, false)
+                    .await
+            }
         };
         let rows = |label: &str| -> Vec<String> {
             db.label_rows()
@@ -2173,7 +2194,7 @@ pub(crate) mod service {
         );
         assert_eq!(
             code(
-                mail.act_on_conversations(vec![vec![EntryId(999)]], A::Archive)
+                mail.act_on_conversations(vec![vec![EntryId(999)]], A::Archive, false)
                     .await
             ),
             ErrorCode::NotFound

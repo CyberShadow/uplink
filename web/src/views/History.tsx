@@ -68,7 +68,11 @@ function Item(props: {
   return (
     <li
       ref={props.itemRef}
-      class={[styles.item, props.focused && styles.focused, undone && styles.undone].filter(Boolean).join(' ')}
+      class={[styles.item, props.focused && styles.focused, undone && styles.undone, entry.shown && styles.shown]
+        .filter(Boolean)
+        .join(' ')}
+      // Done by a view being shown, which `z` passes over (SPEC §12.15).
+      title={entry.shown ? 'Done by showing it' : undefined}
       aria-current={props.focused || undefined}
       onClick={props.onFocus}
     >

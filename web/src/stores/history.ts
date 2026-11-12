@@ -1,7 +1,8 @@
 // The user's ops, newest first, for undoing any of them (SPEC §6.3,
 // §12.4). Loaded once a connection starts, then kept current by applying
 // the entries that follow the load: a user's op goes on top, and an undo
-// marks the entry it undid. `z` rewinds it, one op a press.
+// marks the entry it undid. `z` rewinds it, one op a press, passing over
+// what views did by being shown.
 
 import { signal } from '@preact/signals'
 import type { HistoryEntry, LogEntry, TxLogId } from '../generated/protocol'
@@ -57,7 +58,10 @@ export class HistoryStore {
   }
 
   private async undoNext() {
-    const entries = this.entries.value ?? []
+    // Not what views did by being shown (SPEC §12.15), which comes of
+    // undoing too (a conversation back in the Inbox is seen): as if it
+    // were not listed.
+    const entries = (this.entries.value ?? []).filter((h) => !h.entry.shown)
     const rewind = this.rewind
     // Going on, it passes over what is undone, and the undos (each of
     // something older, which it passes over too): what was rewound, or

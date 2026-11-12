@@ -750,7 +750,7 @@ function useMarkRead(room: Room, events: readonly RoomEvent[] | null) {
   useEffect(() => {
     if (!visible || last === undefined || (read !== undefined && last.pos <= read) || marked.current === last.id) return
     marked.current = last.id
-    matrix.markRead(room.id, last.id)
+    matrix.markRead(room.id, last.id, true)
   }, [visible, last, read, room.id, matrix])
 }
 

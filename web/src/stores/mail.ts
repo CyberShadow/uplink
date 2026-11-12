@@ -674,10 +674,10 @@ export class MailStore {
     return all(threads).every((e) => e.labels.includes(this.systemLabel(e.account, 'SPAM').id))
   }
 
-  /** `quiet` leaves the notice alone, as when opening a conversation reads
-   * it. */
-  markRead(targets: Targets, read: boolean, quiet = false) {
-    return this.act(targets, { type: 'read', read }, quiet)
+  /** `shown`: by a conversation being opened, which reads it; quietly,
+   * leaving the notice alone, and `z` passes over it (SPEC §12.15). */
+  markRead(targets: Targets, read: boolean, shown = false) {
+    return this.act(targets, { type: 'read', read }, shown)
   }
 
   /** Marks the thread's entries unread from `entry` on, as Gmail's "Mark
@@ -709,12 +709,13 @@ export class MailStore {
     return this.act(targets, { type: 'label', label: label.id, add })
   }
 
-  private act(targets: Targets, action: ConversationAction, quiet = false) {
+  /** `shown`: done by a view being shown, quietly. */
+  private act(targets: Targets, action: ConversationAction, shown = false) {
     const conversations: ConversationSet =
       targets === 'matching'
         ? { type: 'matching', query: this.listQuery() }
         : { type: 'listed', conversations: targets.map((t) => t.entries.map((e) => e.id)) }
-    return this.ops.dispatch({ type: 'act_on_conversations', conversations, action }, quiet)
+    return this.ops.dispatch({ type: 'act_on_conversations', conversations, action, shown }, shown)
   }
 
   // ── messages ────────────────────────────────────────────────────────────

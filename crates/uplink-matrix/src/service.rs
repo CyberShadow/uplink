@@ -1225,7 +1225,7 @@ impl Matrix {
         self.dispatcher.answer(SetRoomTags { changes }).await
     }
 
-    pub async fn mark_read(&self, room: RoomId, event: RoomEventId) -> Response {
+    pub async fn mark_read(&self, room: RoomId, event: RoomEventId, shown: bool) -> Response {
         self.reader
             .read(move |conn| {
                 if rooms::event_in_room(conn, room, event).map_err(internal)? {
@@ -1239,6 +1239,7 @@ impl Matrix {
             .answer(MarkRead {
                 room,
                 up_to: Some(event),
+                shown,
             })
             .await
     }

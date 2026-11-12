@@ -174,6 +174,8 @@ pub enum ClientRequest {
     ActOnConversations {
         conversations: mail::ConversationSet,
         action: mail::ConversationAction,
+        /// Done by a view being shown (opening a conversation reads it).
+        shown: bool,
     },
     /// How many conversations `query` lists, as a search does.
     CountConversations {
@@ -284,6 +286,8 @@ pub enum ClientRequest {
     MarkRoomRead {
         room: RoomId,
         event: RoomEventId,
+        /// Done by the room being shown, as it is read.
+        shown: bool,
     },
     /// Tell the room the account is typing, or has stopped. Not an op:
     /// typing is of the moment.
@@ -792,6 +796,9 @@ pub struct LogEntry {
     pub undoes: Option<TxLogId>,
     /// What the entry changed, for clients to apply to their state.
     pub events: Vec<ServerEvent>,
+    /// Whether a view dispatched it by being shown, not by the user's
+    /// hand (SPEC §12.15): `z` passes over it.
+    pub shown: bool,
 }
 
 /// A user's op as the history lists it.
@@ -892,6 +899,7 @@ mod tests {
                 op_type: "t".into(),
                 undoes: None,
                 events: vec![],
+                shown: false,
             },
         };
         assert_eq!(
@@ -906,6 +914,7 @@ mod tests {
                     "op_type": "t",
                     "undoes": null,
                     "events": [],
+                    "shown": false,
                 },
             })
         );

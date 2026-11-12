@@ -123,6 +123,7 @@ describe('MailStore', () => {
         type: 'act_on_conversations',
         conversations: { type: 'listed', conversations: [[home.id], [work.id]] },
         action: { type: 'archive' },
+        shown: false,
       },
     ])
     expect(server.labelsOf(work.id)).not.toContain(server.labelId('work', 'INBOX'))

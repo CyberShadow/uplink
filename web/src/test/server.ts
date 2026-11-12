@@ -594,6 +594,8 @@ export class FakeServer implements Requester, Blobs {
     // Entries it commits are sent before it, as the server sends them
     // (`ServerResponse::position`).
     let answer: () => ServerResponse
+    // What a view did by being shown (SPEC §12.15) is logged as such.
+    this.showing = body.type === 'mark_seen' || ('shown' in body && body.shown)
     try {
       const response = this.answer(body)
       answer = () => response
@@ -601,6 +603,8 @@ export class FakeServer implements Requester, Blobs {
       answer = () => {
         throw error
       }
+    } finally {
+      this.showing = false
     }
     return new Promise((resolve, reject) => {
       this.channel.push(() => {
@@ -644,6 +648,9 @@ export class FakeServer implements Requester, Blobs {
       port2.postMessage(null)
     }
   }
+
+  /** Whether the request being answered was done by showing. */
+  private showing = false
 
   private answer(body: ClientRequest): ServerResponse {
     switch (body.type) {
@@ -1470,6 +1477,7 @@ export class FakeServer implements Requester, Blobs {
       op_type: 'test',
       undoes: this.undoing,
       events,
+      shown: source.type === 'user' && this.showing,
     }
     this.log.push(entry)
     this.channel.push(entry)

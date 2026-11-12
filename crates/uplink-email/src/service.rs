@@ -268,7 +268,12 @@ impl Mail {
                 added.chain(removed)
             })
             .collect();
-        self.dispatcher.answer(SetLabels { changes }).await
+        self.dispatcher
+            .answer(SetLabels {
+                changes,
+                shown: false,
+            })
+            .await
     }
 
     /// Does `action` to the conversations, each given as its entries in
@@ -277,6 +282,7 @@ impl Mail {
         &self,
         conversations: Vec<Vec<EntryId>>,
         action: ConversationAction,
+        shown: bool,
     ) -> Response {
         if conversations.is_empty() {
             return Err(error(
@@ -288,7 +294,7 @@ impl Mail {
             .reader
             .read(move |conn| actions::changes(conn, &conversations, &action))
             .await?;
-        self.dispatcher.answer(SetLabels { changes }).await
+        self.dispatcher.answer(SetLabels { changes, shown }).await
     }
 
     pub async fn always_show_images(&self, rule: ImageRule, always: bool) -> Response {
@@ -497,7 +503,12 @@ impl Mail {
                 "nothing refused is left to keep".into(),
             ));
         }
-        self.dispatcher.answer(SetLabels { changes }).await
+        self.dispatcher
+            .answer(SetLabels {
+                changes,
+                shown: false,
+            })
+            .await
     }
 }
 

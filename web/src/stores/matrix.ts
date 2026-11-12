@@ -325,9 +325,11 @@ export class MatrixStore {
     return this.ops.dispatch({ type: 'modify_room_tags', rooms: ids, add: each ? [] : [tag], remove: each ? [tag] : [] })
   }
 
-  /** Quietly: reading a room is not news. */
-  markRead(room: RoomId, event: RoomEventId) {
-    return this.ops.dispatch({ type: 'mark_room_read', room, event }, true)
+  /** Quietly: reading a room is not news. `shown`: by the room being
+   * shown, which `z` passes over (SPEC §12.15), rather than the user's
+   * hand. */
+  markRead(room: RoomId, event: RoomEventId, shown: boolean) {
+    return this.ops.dispatch({ type: 'mark_room_read', room, event, shown }, true)
   }
 
   private async query<T extends Response<'rooms' | 'timeline' | 'room_events' | 'edits' | 'receipts'>['type']>(

@@ -77,4 +77,27 @@ describe('HistoryStore', () => {
     await client.history.undoLast()
     expect(client.ops.notice.value).toEqual({ kind: 'failed', message: 'Nothing more to undo' })
   })
+
+  it('passes over what views did by being shown, as if it were not there', async () => {
+    for (const title of ['One', 'Two']) await client.todos.create(title)
+    client.reset()
+    await vi.waitFor(() => expect(listed()).toHaveLength(2))
+    const see = () => client.ops.dispatch({ type: 'mark_seen', place: { kind: 'todos' } }, true)
+    await see()
+    await client.history.undoLast()
+    expect(listed()).toEqual([
+      ['Undid it', false],
+      ['Seen', false],
+      ["Added 'Two'", true],
+      ["Added 'One'", false],
+    ])
+    expect(client.history.entries.value![1].entry.shown).toBe(true)
+    // Seen again, as undoing brings something back: it goes on.
+    await see()
+    await client.history.undoLast()
+    expect(listed()!.slice(-2)).toEqual([
+      ["Added 'Two'", true],
+      ["Added 'One'", true],
+    ])
+  })
 })

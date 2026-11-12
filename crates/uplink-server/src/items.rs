@@ -667,7 +667,9 @@ mod tests {
         };
         assert_eq!(dots().await, (true, true));
         let seen = dispatcher
-            .dispatch(crate::seen::MarkSeen { place: Place::Todos })
+            .dispatch(crate::seen::MarkSeen {
+                place: Place::Todos,
+            })
             .await
             .unwrap();
         assert_eq!(dots().await, (false, false));
@@ -687,5 +689,25 @@ mod tests {
         assert_eq!(dots().await, (true, true));
         dispatcher.undo(seen).await.unwrap();
         assert_eq!(dots().await, (true, true));
+        // Seeing is done by showing, which `z` passes over; its undo is
+        // the user's.
+        let log = Arc::new(uplink_tx_log::LogReader::new(
+            uplink_storage::open_reader(dir.path()).unwrap(),
+            10,
+        ));
+        let (_, history, _) = log.history(None, 4).await.unwrap();
+        let listed: Vec<_> = history
+            .iter()
+            .map(|h| (h.entry.description.as_str(), h.entry.shown))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("Not seen: To-dos", false),
+                ("Not seen: Home", false),
+                ("Seen: Home", true),
+                ("Added 'Pay bills'", false),
+            ]
+        );
     }
 }

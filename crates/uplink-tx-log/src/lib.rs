@@ -35,6 +35,12 @@ pub trait Op: Serialize + DeserializeOwned + Send + 'static {
     /// changed. Returning an error rolls the transaction back; return a
     /// [`Conflict`] when the state the op expects is not what it finds.
     fn apply(self, tx: &Transaction) -> Result<Applied>;
+
+    /// Whether a view dispatched it by being shown, not by the user's hand
+    /// (SPEC §12.15): `z` passes over it.
+    fn shown(&self) -> bool {
+        false
+    }
 }
 
 /// Outcome of [`Op::apply`].
@@ -110,10 +116,12 @@ struct Executed {
     /// `Some` exactly for ops.
     inverse: Option<Inverse>,
     events: Vec<ServerEvent>,
+    shown: bool,
 }
 
 fn execute<O: Op>(tx: &Transaction, op: O) -> Result<Executed> {
     let op_json = to_json(O::KIND, &op);
+    let shown = op.shown();
     let applied = op.apply(tx)?;
     Ok(Executed {
         kind: O::KIND,
@@ -121,6 +129,7 @@ fn execute<O: Op>(tx: &Transaction, op: O) -> Result<Executed> {
         description: applied.description,
         inverse: Some(applied.inverse),
         events: applied.events,
+        shown,
     })
 }
 
@@ -213,6 +222,7 @@ impl Dispatcher {
                             description: observed.description,
                             inverse: None,
                             events: observed.events,
+                            shown: false,
                         };
                         Ok((executed, None))
                     },
@@ -351,8 +361,8 @@ impl Inner {
             .query_row(
                 "INSERT INTO tx_log
                    (ts, account_id, description, op_type, op_json,
-                    inverse_type, inverse_json, events_json, undoes)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                    inverse_type, inverse_json, events_json, undoes, shown)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                  RETURNING id",
                 params![
                     ts,
@@ -364,6 +374,7 @@ impl Inner {
                     executed.inverse.as_ref().map(|i| &i.json),
                     events_json,
                     undoes.map(|u| u.0),
+                    executed.shown,
                 ],
                 |r| r.get(0),
             )
@@ -376,6 +387,7 @@ impl Inner {
             op_type: executed.kind.to_owned(),
             undoes,
             events: executed.events,
+            shown: executed.shown,
         })
     }
 }
@@ -438,7 +450,7 @@ impl LogReader {
             Some(since) if since <= head => {
                 let entries: Vec<LogEntry> = tx
                     .prepare(
-                        "SELECT id, ts, account_id, description, op_type, undoes, events_json
+                        "SELECT id, ts, account_id, description, op_type, undoes, events_json, shown
                          FROM tx_log WHERE id > ?1 ORDER BY id LIMIT ?2",
                     )?
                     .query_map(params![since.0, self.max_replay as i64 + 1], log_entry)?
@@ -477,7 +489,7 @@ impl LogReader {
         let head = as_of(&tx)?;
         let mut entries: Vec<HistoryEntry> = tx
             .prepare(
-                "SELECT id, ts, account_id, description, op_type, undoes, events_json, undone_by
+                "SELECT id, ts, account_id, description, op_type, undoes, events_json, shown, undone_by
                  FROM tx_log WHERE account_id IS NULL AND id < ?1 ORDER BY id DESC LIMIT ?2",
             )?
             .query_map(
@@ -485,7 +497,7 @@ impl LogReader {
                 |r| {
                     Ok(HistoryEntry {
                         entry: log_entry(r)?,
-                        undone_by: r.get::<_, Option<i64>>(7)?.map(TxLogId),
+                        undone_by: r.get::<_, Option<i64>>(8)?.map(TxLogId),
                     })
                 },
             )?
@@ -509,6 +521,7 @@ fn log_entry(r: &Row) -> uplink_storage::rusqlite::Result<LogEntry> {
         op_type: r.get(4)?,
         undoes: r.get::<_, Option<i64>>(5)?.map(TxLogId),
         events: serde_json::from_str(&events_json).expect("recorded events deserialize"),
+        shown: r.get(7)?,
     })
 }
 

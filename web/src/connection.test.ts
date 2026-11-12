@@ -40,6 +40,7 @@ function entry(id: number): LogEntry {
     id,
     ts: 0,
     source: { type: 'user' },
+    shown: false,
     description: `entry ${id}`,
     op_type: 'test',
     undoes: null,

@@ -840,11 +840,14 @@ pub fn undecryptable(
 // ── the read marker ───────────────────────────────────────────────────────
 
 /// Sets the room's read marker; `None` is before the first event.
+/// `shown`: by the room being shown (SPEC §12.15).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MarkRead {
     pub room: RoomId,
     pub up_to: Option<RoomEventId>,
+    #[serde(default)]
+    pub shown: bool,
 }
 
 impl Op for MarkRead {
@@ -875,9 +878,14 @@ impl Op for MarkRead {
             inverse: Inverse::of(&MarkRead {
                 room: self.room,
                 up_to: previous.map(RoomEventId),
+                shown: false,
             }),
             events,
         })
+    }
+
+    fn shown(&self) -> bool {
+        self.shown
     }
 }
 

@@ -1012,12 +1012,15 @@ impl Services {
         &self,
         conversations: ConversationSet,
         action: ConversationAction,
+        shown: bool,
     ) -> uplink_tx_log::answer::Response {
         let conversations = match conversations {
             ConversationSet::Listed { conversations } => conversations,
             ConversationSet::Matching { query } => self.items.matching(query).await?,
         };
-        self.mail.act_on_conversations(conversations, action).await
+        self.mail
+            .act_on_conversations(conversations, action, shown)
+            .await
     }
 }
 
@@ -1061,7 +1064,11 @@ impl Backend for Services {
             ClientRequest::ActOnConversations {
                 conversations,
                 action,
-            } => self.act_on_conversations(conversations, action).await,
+                shown,
+            } => {
+                self.act_on_conversations(conversations, action, shown)
+                    .await
+            }
             ClientRequest::CountConversations { query } => self.items.count(query).await,
             ClientRequest::ListDrafts => self.mail.list_drafts().await,
             ClientRequest::CreateDraft {
@@ -1123,7 +1130,9 @@ impl Backend for Services {
             ClientRequest::MarkSeen { place } => {
                 self.dispatcher.answer(seen::MarkSeen { place }).await
             }
-            ClientRequest::MarkRoomRead { room, event } => self.matrix.mark_read(room, event).await,
+            ClientRequest::MarkRoomRead { room, event, shown } => {
+                self.matrix.mark_read(room, event, shown).await
+            }
             ClientRequest::SetTyping { room, typing } => self.matrix.set_typing(room, typing).await,
             ClientRequest::ListReceipts { room } => self.matrix.list_receipts(room).await,
             ClientRequest::ListMembers { room } => {

@@ -680,6 +680,10 @@ fn set_label_row(
 #[serde(deny_unknown_fields)]
 pub struct SetLabels {
     pub changes: Vec<LabelChange>,
+    /// By a view being shown (SPEC §12.15): opening a conversation reads
+    /// it.
+    #[serde(default)]
+    pub shown: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -692,6 +696,10 @@ pub struct LabelChange {
 
 impl Op for SetLabels {
     const KIND: &'static str = "mail.set_labels";
+
+    fn shown(&self) -> bool {
+        self.shown
+    }
 
     fn apply(self, tx: &Transaction) -> Result<Applied> {
         let this = this_entry(tx)?;
@@ -804,7 +812,10 @@ impl Op for SetLabels {
             } else {
                 capitalize(&description.join(", "))
             },
-            inverse: Inverse::of(&SetLabels { changes: inverse }),
+            inverse: Inverse::of(&SetLabels {
+                changes: inverse,
+                shown: false,
+            }),
             events: [ServerEvent::LabelsChanged(LabelsChanged {
                 changes: events,
             })]
