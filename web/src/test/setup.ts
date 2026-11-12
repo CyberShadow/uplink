@@ -2,6 +2,9 @@ import { cleanup, configure } from '@testing-library/preact'
 import { afterEach } from 'vitest'
 import './intersection'
 
+// As index.html has it.
+document.head.insertAdjacentHTML('beforeend', '<link rel="icon" type="image/svg+xml" href="/logo.svg" />')
+
 // jsdom does no layout, nor media queries: the system's theme is light.
 Element.prototype.scrollIntoView = () => {}
 Element.prototype.scrollBy = () => {}

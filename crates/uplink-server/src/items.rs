@@ -10,8 +10,8 @@ use uplink_config::HomeBucket;
 use uplink_email::query::{self as mail, ListError, Unknown};
 use uplink_matrix::query::Rooms;
 use uplink_protocol::{
-    calendar::CalendarEvent, mail::ListPosition, matrix::Room, todos::Todo, ErrorCode, ServerError,
-    ServerResponse,
+    calendar::CalendarEvent, mail::ListPosition, matrix::Room, todos::Todo, Activity, Badge,
+    BadgedBucket, Badges, ErrorCode, ServerError, ServerResponse, BADGE_LIMIT,
 };
 use uplink_query::{Query, Term};
 use uplink_storage::rusqlite::{Connection, Transaction};
@@ -31,6 +31,14 @@ pub struct Items {
     matrix_accounts: Vec<uplink_matrix::service::ConfiguredAccount>,
     /// As configured, top to bottom; configured anew on reload.
     home: Arc<ArcSwap<Vec<HomeBucket>>>,
+}
+
+/// A bucket of the home view, its query less those before it.
+struct Bucket {
+    name: String,
+    badge: Option<Badge>,
+    text: String,
+    query: Query,
 }
 
 /// What a query matches of kinds other than mail.
@@ -60,12 +68,7 @@ impl Items {
         self.home.store(Arc::new(home));
     }
 
-    pub async fn list(
-        &self,
-        query: String,
-        after: Option<ListPosition>,
-        limit: u32,
-    ) -> Response {
+    pub async fn list(&self, query: String, after: Option<ListPosition>, limit: u32) -> Response {
         let (today, now) = checked(limit)?;
         let query = uplink_query::parse(&query, now).map_err(|e| invalid(e.0))?;
         let this = self.clone();
@@ -111,19 +114,7 @@ impl Items {
     /// may lack.
     pub async fn home(&self, limit: u32) -> Response {
         let (today, now) = checked(limit)?;
-        let mut before: Vec<&str> = vec![];
-        let mut buckets = vec![];
-        let configured = self.home.load_full();
-        for bucket in configured.iter() {
-            let text = std::iter::once(format!("({})", bucket.query))
-                .chain(before.iter().map(|q| format!("-({q})")))
-                .collect::<Vec<_>>()
-                .join(" ");
-            let query = uplink_query::parse(&text, now)
-                .expect("buckets' queries are checked as configured, so parse in parentheses");
-            before.push(&bucket.query);
-            buckets.push((bucket.name.clone(), text, query));
-        }
+        let buckets = self.buckets(now);
         let this = self.clone();
         self.reader
             .read(move |conn| {
@@ -133,12 +124,12 @@ impl Items {
                 let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
                 let buckets = buckets
                     .into_iter()
-                    .map(|(name, text, query)| {
-                        let page = this.mail(&tx, &query, None, limit)?;
-                        let others = others(&tx, &rooms, &query, today, now)?;
+                    .map(|bucket| {
+                        let page = this.mail(&tx, &bucket.query, None, limit)?;
+                        let others = others(&tx, &rooms, &bucket.query, today, now)?;
                         Ok(uplink_protocol::HomeBucket {
-                            name,
-                            query: text,
+                            name: bucket.name,
+                            query: bucket.text,
                             conversations: page.conversations,
                             more: page.next.is_some(),
                             rooms: others.rooms,
@@ -150,6 +141,75 @@ impl Items {
                 Ok(ServerResponse::Home { as_of, buckets })
             })
             .await
+    }
+
+    /// What the badged buckets hold (SPEC §12.14), as `home` lists them:
+    /// up to `BADGE_LIMIT` items each.
+    pub async fn badges(&self) -> Result<Badges, ServerError> {
+        let now = now();
+        let today = uplink_query::today(now);
+        let badged: Vec<_> = self
+            .buckets(now)
+            .into_iter()
+            .filter_map(|bucket| Some((bucket.badge?, bucket)))
+            .collect();
+        let this = self.clone();
+        self.reader
+            .read(move |conn| {
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
+                let buckets = badged
+                    .into_iter()
+                    .map(|(badge, bucket)| {
+                        let page = this.mail(&tx, &bucket.query, None, BADGE_LIMIT as u32)?;
+                        let others = others(&tx, &rooms, &bucket.query, today, now)?;
+                        let mail = page
+                            .conversations
+                            .iter()
+                            .map(|c| Activity::Mail { entry: c.latest.id });
+                        let rooms = others.rooms.iter().map(|r| Activity::Room {
+                            room: r.id,
+                            event: r.latest,
+                        });
+                        let todos = others.todos.iter().map(|t| Activity::Todo { todo: t.id });
+                        let events = others
+                            .events
+                            .iter()
+                            .map(|e| Activity::Event { event: e.id });
+                        let all = mail.chain(rooms).chain(todos).chain(events);
+                        Ok(BadgedBucket {
+                            name: bucket.name,
+                            badge,
+                            items: all.take(BADGE_LIMIT).collect(),
+                        })
+                    })
+                    .collect::<Result<_, ServerError>>()?;
+                Ok(Badges { buckets })
+            })
+            .await
+    }
+
+    /// The buckets, each with its query less those before it: so an item
+    /// is in the first that matches it.
+    fn buckets(&self, now: i64) -> Vec<Bucket> {
+        let mut before: Vec<String> = vec![];
+        let mut buckets = vec![];
+        for bucket in self.home.load_full().iter() {
+            let text = std::iter::once(format!("({})", bucket.query))
+                .chain(before.iter().map(|q| format!("-({q})")))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let query = uplink_query::parse(&text, now)
+                .expect("buckets' queries are checked as configured, so parse in parentheses");
+            before.push(bucket.query.clone());
+            buckets.push(Bucket {
+                name: bucket.name.clone(),
+                badge: bucket.badge,
+                text,
+                query,
+            });
+        }
+        buckets
     }
 
     fn mail(
@@ -222,11 +282,16 @@ fn checked(limit: u32) -> Result<(i64, i64), ServerError> {
     if !(1..=MAX_LIMIT).contains(&limit) {
         return Err(invalid(format!("limit must be between 1 and {MAX_LIMIT}")));
     }
-    let now = SystemTime::now()
+    let now = now();
+    Ok((uplink_query::today(now), now))
+}
+
+/// In ms since the epoch.
+fn now() -> i64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("the clock is after 1970")
-        .as_millis() as i64;
-    Ok((uplink_query::today(now), now))
+        .as_millis() as i64
 }
 
 #[cfg(test)]
@@ -336,18 +401,17 @@ mod tests {
 
         // An item is in the first bucket that matches it; a name no kind
         // has is false.
-        let bucket = |name: &str, query: &str| HomeBucket {
+        let bucket = |name: &str, query: &str, badge| HomeBucket {
             name: name.into(),
             query: query.into(),
+            badge,
         };
         items.configure_home(vec![
-            bucket("Now", "is:invite"),
-            bucket("Rent", "rent"),
-            bucket("Else", "tag:nowhere OR is:todo"),
+            bucket("Now", "is:invite", Some(Badge::Count)),
+            bucket("Rent", "rent", None),
+            bucket("Else", "tag:nowhere OR is:todo", Some(Badge::Dot)),
         ]);
-        let ServerResponse::Home { buckets, .. } =
-            items.home(10).await.unwrap()
-        else {
+        let ServerResponse::Home { buckets, .. } = items.home(10).await.unwrap() else {
             panic!()
         };
         let listed: Vec<_> = buckets
@@ -371,5 +435,25 @@ mod tests {
             "(tag:nowhere OR is:todo) -(is:invite) -(rent)"
         );
         assert!(!buckets[0].more);
+
+        // The badged ones, by their items' latest activity.
+        let room = buckets[0].rooms[0].id;
+        assert_eq!(
+            items.badges().await.unwrap(),
+            Badges {
+                buckets: vec![
+                    BadgedBucket {
+                        name: "Now".into(),
+                        badge: Badge::Count,
+                        items: vec![Activity::Room { room, event: None }],
+                    },
+                    BadgedBucket {
+                        name: "Else".into(),
+                        badge: Badge::Dot,
+                        items: vec![],
+                    },
+                ]
+            }
+        );
     }
 }

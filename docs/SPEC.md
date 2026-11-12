@@ -240,14 +240,17 @@ data_dir: /var/lib/uplink
 send_delay_secs: 10
 
 # The home view's buckets (§12.13), top to bottom, each a query (§8.7):
-# an item is in the first that matches it. Without `home`, these.
+# an item is in the first that matches it; `badge` shows it on the app's
+# icon (§12.14), by `count` or by a `dot`. Without `home`, these.
 home:
   - name: Immediate
     query: is:mention OR is:invite OR (is:dm is:unread) OR is:overdue
       OR due:today OR (in:inbox is:unread is:important)
+    badge: count
   - name: Upkeep
     query: (is:unread is:notifying -tag:lowpriority)
       OR (in:inbox -category:promotions -category:social)
+    badge: dot
   - name: Backlog
     query: is:starred OR is:todo
   - name: Leisure
@@ -936,6 +939,12 @@ moment (`SetTyping`) are not ops either: they answer `Done` and log
 nothing, and queries of state not logged (`ListReceipts`, `ListMembers`) are not
 positioned in the log, so a client loads again after one in flight when
 told of a change meanwhile.
+
+State derived from the log, which every session needs as it is, is
+pushed rather than asked for: the badges (§12.14), as `Badges { badges }`
+right after `Welcome`, and again whenever they change. The server
+derives them once, for every session (`uplink_realtime::Hub` keeps them),
+before it serves any.
 
 ### 5.6 Requests: local now, remote later
 
@@ -3062,6 +3071,28 @@ show it. Home is listed while on show, again when a log entry may move
 an item (mail's entries and labels, rooms, timelines, to-dos and
 calendars changed), and when `HomeChanged` says the buckets were
 configured anew; hidden, it is not kept current.
+
+### 12.14 Badges
+
+A bucket of home (§3.2) with a `badge` shows on the app's icon, as
+Gmail's, Element's and Discord's do, without their calling for the user
+at whatever is unread: by default, Immediate's are counted, and Upkeep's
+make a dot; Backlog and Leisure are left for the user to come to. The
+icon counts the items of the buckets badged `count`, up to `99+`, in
+red at its bottom right; else, while a bucket badged `dot` holds
+anything, it has a dot; else it is the logo alone (`src/favicon.ts`, an
+SVG of the logo with the mark over it). The window's title says what is
+on show (§12.4), so it counts nothing of the rest.
+
+The server pushes what the badged buckets hold (`Badges`, §5.5): of
+each, as home lists it (`ListHome`), its items, up to `BADGE_LIMIT`
+(100), each by its latest activity (`Activity`: mail by its
+conversation's latest entry, a room by its latest event, a to-do, an
+event), so that what comes of an item anew (a reply, a message) is
+another. It derives them anew after log entries (as many as came while
+it did, at once), when the buckets are configured anew, and each minute,
+as time alone moves items (into `due:today`, out of `newer_than:`); it
+pushes them only if they differ.
 
 ## 13. Authentication & secrets
 

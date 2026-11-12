@@ -83,6 +83,7 @@ async fn a_request_answered_later_holds_up_none_after_it() {
         other => panic!("expected a text frame, got {other:?}"),
     };
     assert!(matches!(recv().await, WsServerMsg::Welcome { .. }));
+    assert!(matches!(recv().await, WsServerMsg::Badges { .. }));
     let answered = |request_id| WsServerMsg::Response {
         request_id,
         body: ServerResponse::Done,

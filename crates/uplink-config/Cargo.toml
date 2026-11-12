@@ -5,6 +5,7 @@ edition = "2021"
 license.workspace = true
 
 [dependencies]
+uplink-protocol = { path = "../uplink-protocol" }
 uplink-query = { path = "../uplink-query" }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"

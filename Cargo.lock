@@ -4853,6 +4853,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "uplink-protocol",
  "uplink-query",
 ]
 

@@ -12,6 +12,9 @@ const connection = new Connection(url, {
   outdated: () => location.reload(),
   entry: (entry) => client.apply(entry),
   notice: (notice) => client.notice(notice),
+  badges: (badges) => {
+    client.home.badges.value = badges
+  },
 })
 
 render(<App client={client} status={connection.status} />, document.getElementById('app')!)

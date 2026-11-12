@@ -162,6 +162,7 @@ async fn session(
     // neither.
     let mut live = hub.subscribe();
     let mut notices = hub.notices();
+    let mut badges = hub.badges();
     let replay = backend.replay(since).await.map_err(|e| End::Close {
         code: CLOSE_INTERNAL_ERROR,
         reason: format!("reading log: {e:#}"),
@@ -174,6 +175,8 @@ async fn session(
         },
     )
     .await?;
+    let current = (**badges.borrow_and_update()).clone();
+    send(socket, &WsServerMsg::Badges { badges: current }).await?;
     for entry in replay.entries.into_iter().flatten() {
         send(socket, &WsServerMsg::Entry { entry }).await?;
     }
@@ -205,6 +208,11 @@ async fn session(
                 Err(RecvError::Lagged(_)) => {}
                 Err(RecvError::Closed) => unreachable!("hub outlives its sessions"),
             },
+            changed = badges.changed() => {
+                changed.expect("hub outlives its sessions");
+                let current = (**badges.borrow_and_update()).clone();
+                send(socket, &WsServerMsg::Badges { badges: current }).await?;
+            }
         }
     }
 }

@@ -3,6 +3,7 @@
 
 import { signal } from '@preact/signals'
 import type {
+  Badges,
   ClientRequest,
   LogEntry,
   Notice,
@@ -51,6 +52,9 @@ export interface Handlers {
   entry(entry: LogEntry): void
   /** A notice of the moment, live only (SPEC §5.5). */
   notice(notice: Notice): void
+  /** What the badged buckets hold, on connecting and as it changes
+   * (SPEC §12.14). */
+  badges(badges: Badges): void
 }
 
 export interface Requester {
@@ -208,6 +212,9 @@ export class Connection implements Requester {
         break
       case 'notice':
         this.handlers.notice(msg.notice)
+        break
+      case 'badges':
+        this.handlers.badges(msg.badges)
         break
       case 'response':
         this.settle(msg.request_id).resolve(msg.body)

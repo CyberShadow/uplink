@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+pub use uplink_protocol::Badge;
 
 // ── Config schema (SPEC §3.2) ─────────────────────────────────────────────────
 
@@ -28,34 +29,41 @@ fn default_send_delay_secs() -> u32 {
     10
 }
 
-/// A bucket of the home view: what `query` matches of every kind.
+/// A bucket of the home view: what `query` matches of every kind; if
+/// `badge`, it shows on the app's icon (SPEC §12.14).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HomeBucket {
     pub name: String,
     pub query: String,
+    #[serde(default)]
+    pub badge: Option<Badge>,
 }
 
-/// What needs doing now, what keeps things in order, what is to be done
-/// some day, and what is to be read at leisure.
+/// What needs doing now, counted on the icon; what keeps things in
+/// order, a dot there; what is to be done some day, and what is to be
+/// read at leisure.
 fn default_home() -> Vec<HomeBucket> {
-    let bucket = |name: &str, query: &str| HomeBucket {
+    let bucket = |name: &str, query: &str, badge| HomeBucket {
         name: name.into(),
         query: query.into(),
+        badge,
     };
     vec![
         bucket(
             "Immediate",
             "is:mention OR is:invite OR (is:dm is:unread) OR is:overdue OR due:today \
              OR (in:inbox is:unread is:important)",
+            Some(Badge::Count),
         ),
         bucket(
             "Upkeep",
             "(is:unread is:notifying -tag:lowpriority) \
              OR (in:inbox -category:promotions -category:social)",
+            Some(Badge::Dot),
         ),
-        bucket("Backlog", "is:starred OR is:todo"),
-        bucket("Leisure", "is:unread"),
+        bucket("Backlog", "is:starred OR is:todo", None),
+        bucket("Leisure", "is:unread", None),
     ]
 }
 
@@ -1030,6 +1038,11 @@ accounts:
             .unwrap()
             .home;
         assert_eq!(home.len(), 1);
+        assert_eq!(home[0].badge, None);
+        let badged = load("home:\n  - name: Now\n    query: is:mention\n    badge: count\n")
+            .unwrap()
+            .home;
+        assert_eq!(badged[0].badge, Some(Badge::Count));
         assert!(load("home: []\n").unwrap().home.is_empty());
         let refused = |home: &str| format!("{:#}", load(home).unwrap_err());
         assert!(
@@ -1039,6 +1052,10 @@ accounts:
         assert!(refused("home:\n  - name: ' '\n    query: x\n").contains("no name"));
         assert!(refused("home:\n  - name: A\n    query: ''\n").contains("no query"));
         assert!(refused("home:\n  - name: A\n    query: 'is:nonsense'\n").contains("bucket \"A\""));
+        assert!(
+            refused("home:\n  - name: A\n    query: x\n    badge: loud\n")
+                .contains("unknown variant")
+        );
     }
 
     #[test]

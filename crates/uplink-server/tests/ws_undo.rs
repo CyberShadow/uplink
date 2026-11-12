@@ -146,10 +146,12 @@ fn entry(msg: WsServerMsg) -> LogEntry {
 async fn hello(ws: &mut Ws, since: Option<TxLogId>) -> (TxLogId, bool) {
     let version = uplink_protocol::typescript::version().to_owned();
     send(ws, &WsClientMsg::Hello { version, since }).await;
-    match recv(ws).await {
+    let welcome = match recv(ws).await {
         WsServerMsg::Welcome { cursor, resumed } => (cursor, resumed),
         other => panic!("expected welcome, got {other:?}"),
-    }
+    };
+    assert!(matches!(recv(ws).await, WsServerMsg::Badges { .. }));
+    welcome
 }
 
 async fn undo(ws: &mut Ws, request_id: u64, id: TxLogId) -> WsServerMsg {

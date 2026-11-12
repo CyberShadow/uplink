@@ -24,7 +24,7 @@ export type WsServerMsg = { "type": "pong", seq: number, } | { "type": "welcome"
 /**
  * The most recent entry at the time of `Hello`.
  */
-cursor: TxLogId, resumed: boolean, } | { "type": "response", request_id: number, body: ServerResponse, } | { "type": "request_failed", request_id: number, error: ServerError, } | { "type": "entry", entry: LogEntry, } | { "type": "notice", notice: Notice, };
+cursor: TxLogId, resumed: boolean, } | { "type": "response", request_id: number, body: ServerResponse, } | { "type": "request_failed", request_id: number, error: ServerError, } | { "type": "entry", entry: LogEntry, } | { "type": "badges", badges: Badges, } | { "type": "notice", notice: Notice, };
 
 /**
  * A notice of the moment (SPEC §5.5).
@@ -282,6 +282,30 @@ query: string, conversations: Array<Conversation>,
  * Whether it lists more conversations than these.
  */
 more: boolean, rooms: Array<Room>, todos: Array<Todo>, events: Array<CalendarEvent>, };
+
+/**
+ * How a home bucket shows on the app's icon (SPEC §12.14): by how many
+ * items are in it, or by a dot while any is.
+ */
+export type Badge = "count" | "dot";
+
+/**
+ * The badged home buckets, in order, and what is in each.
+ */
+export type Badges = { buckets: Array<BadgedBucket>, };
+
+export type BadgedBucket = { name: string, badge: Badge, 
+/**
+ * Its items, each by its latest activity: up to `BADGE_LIMIT`, more
+ * than an icon counts (`99+`).
+ */
+items: Array<Activity>, };
+
+/**
+ * An item of a bucket, by its latest activity: what comes of it anew
+ * (a reply, a message) is another.
+ */
+export type Activity = { "kind": "mail", entry: EntryId, } | { "kind": "room", room: RoomId, event: RoomEventId | null, } | { "kind": "todo", todo: TodoId, } | { "kind": "event", event: EventId, };
 
 /**
  * A message a search found, in its room.
@@ -1142,4 +1166,4 @@ exception: boolean, };
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "245c5914ea410b77"
+export const PROTOCOL_VERSION = "0078a9a557ab3761"

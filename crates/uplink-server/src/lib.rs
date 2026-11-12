@@ -41,6 +41,7 @@ use uplink_storage::seal::MasterKey;
 use uplink_todos::service::Todos;
 use uplink_tx_log::{Dispatcher, LogReader, Registry, UndoError};
 
+mod badges;
 mod items;
 mod outbox;
 mod remote_image;
@@ -340,6 +341,12 @@ pub async fn serve_with_listener(
         basic_auth.clone(),
         state.services.clone(),
     ));
+
+    // Set before any session is served, which is sent them at once.
+    let hub = state.services.dispatcher.hub().clone();
+    let badges = state.services.items.badges().await;
+    hub.set_badges(badges.map_err(|e| anyhow::anyhow!("reading the badges: {}", e.message))?);
+    tokio::spawn(badges::keep(state.services.items.clone(), hub));
 
     let app = build_app(state);
 

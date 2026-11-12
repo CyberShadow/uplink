@@ -5,6 +5,7 @@ import type { Status } from '../connection'
 import type { Account } from '../generated/protocol'
 import { EMPTY } from '../compose/reply'
 import { ServicesContext, useServices } from '../context'
+import { useFavicon } from '../favicon'
 import { restoreFocus } from '../historyFocus'
 import { keepFocus, useKeymap } from '../keymap'
 import type { Client } from '../stores/client'
@@ -51,6 +52,7 @@ function Shell() {
   const [navOpen, setNavOpen] = useState(false)
   useEffect(() => setNavOpen(false), [path])
   useNotifications(path, route)
+  useFavicon(home.badges.value)
   // A view shown has the focus it had, if gone back or forward to; else
   // the focus it takes (a room's box), or none: not that of a field
   // outside it, as the search box, left from the view before. After its

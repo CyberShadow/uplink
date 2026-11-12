@@ -3,7 +3,7 @@
 // a log entry may change what they list.
 
 import { batch, computed, signal } from '@preact/signals'
-import type { CalendarEvent, Conversation, HomeBucket, LogEntry, Room, ServerEvent, Todo } from '../generated/protocol'
+import type { Badges, CalendarEvent, Conversation, HomeBucket, LogEntry, Room, ServerEvent, Todo } from '../generated/protocol'
 import type { Requester } from '../connection'
 import { conversationKey } from './mail'
 import { Loader, query } from './query'
@@ -81,6 +81,9 @@ export class HomeStore {
    * show; a row that leaves gives it to the next one still shown. */
   readonly focus = signal<string | null>(null)
   readonly error = signal<string | null>(null)
+  /** What the badged buckets hold, as the server last said (SPEC
+   * §12.14); `null` until it first has. */
+  readonly badges = signal<Badges | null>(null)
   /** Views showing it: while none is, it goes stale unqueried, and is
    * queried afresh once one is. */
   private shown = 0

@@ -80,6 +80,11 @@ pub enum WsServerMsg {
     Entry {
         entry: LogEntry,
     },
+    /// What the badged buckets hold (SPEC §12.14): right after `Welcome`,
+    /// and again whenever it changes.
+    Badges {
+        badges: Badges,
+    },
     /// What is only of the moment, as it happens: not logged, so not
     /// replayed. A client that reconnects forgets what notices told it
     /// (SPEC §5.5).
@@ -622,6 +627,57 @@ pub struct HomeBucket {
     pub rooms: Vec<matrix::Room>,
     pub todos: Vec<todos::Todo>,
     pub events: Vec<calendar::CalendarEvent>,
+}
+
+/// How a home bucket shows on the app's icon (SPEC §12.14): by how many
+/// items are in it, or by a dot while any is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum Badge {
+    Count,
+    Dot,
+}
+
+/// The badged home buckets, in order, and what is in each.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Badges {
+    pub buckets: Vec<BadgedBucket>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct BadgedBucket {
+    pub name: String,
+    pub badge: Badge,
+    /// Its items, each by its latest activity: up to `BADGE_LIMIT`, more
+    /// than an icon counts (`99+`).
+    pub items: Vec<Activity>,
+}
+
+/// The most items a badged bucket names.
+pub const BADGE_LIMIT: usize = 100;
+
+/// An item of a bucket, by its latest activity: what comes of it anew
+/// (a reply, a message) is another.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Activity {
+    /// A conversation, by its latest entry.
+    Mail {
+        entry: EntryId,
+    },
+    /// A room, by its latest event, if any.
+    Room {
+        room: RoomId,
+        event: Option<RoomEventId>,
+    },
+    Todo {
+        todo: TodoId,
+    },
+    Event {
+        event: calendar::EventId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]

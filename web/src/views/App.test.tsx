@@ -315,6 +315,18 @@ describe('mail', () => {
     expect(location.pathname).toBe('/')
   })
 
+  it('shows the badged buckets on the icon, as the server says they are', async () => {
+    await start('/mail/work/INBOX')
+    const icon = () => document.querySelector<HTMLLinkElement>('link[rel=icon]')!.getAttribute('href')
+    expect(icon()).toBe('/logo.svg')
+    client.home.badges.value = {
+      buckets: [{ name: 'Immediate', badge: 'count', items: [{ kind: 'todo', todo: 1 }] }],
+    }
+    await waitFor(() => expect(decodeURIComponent(icon()!)).toMatch(/>1<\/text><\/svg>$/))
+    client.home.badges.value = { buckets: [{ name: 'Immediate', badge: 'count', items: [] }] }
+    await waitFor(() => expect(icon()).toBe('/logo.svg'))
+  })
+
   it('names in the window title what is open', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')
