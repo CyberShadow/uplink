@@ -1080,7 +1080,8 @@ from `ListHistory` (a partial index on `tx_log(id) WHERE account_id IS
 NULL` keeps that quick however many observations syncing records), with
 Undo on each not yet undone, and Redo on undo entries. The client loads
 it once per connection and then applies the entries that follow: a
-user's op goes on top, an undo marks the entry it undid.
+user's op goes on top, an undo marks the entry it undid. What views did
+by being shown (§12.15) is listed dimmed.
 
 ### 6.4 Mass operations
 
@@ -1645,7 +1646,8 @@ leaves every room in). `is:mail`, `is:room`, `is:todo` and `is:event`
 name a kind. Words match, as in mail (by words, ignoring case, the last
 a prefix unless quoted), a room's name, a to-do's title and notes, and
 an event's subject, location and preview. Of rooms: `is:unread` (messages
-unread), `is:mention` (of those, one highlights), `is:notifying` (one
+unread), `is:mention` (one that highlights is unread, or after the
+fully-read marker and not yet shown, §12.15), `is:notifying` (one
 notifies, by the push rules: a muted room has none), `is:dm` (a direct
 chat, by `m.direct`, as the room was last synced: V0036
 `matrix_room.direct`), `is:invite`, `label:`/`tag:` (its tags, §9.5, by
@@ -2280,10 +2282,10 @@ which a verified device gives.
   push rules as its client evaluates them on sync (the SDK's push
   actions, of an encrypted event once decrypted, also late; V0032:
   `matrix_event.notify`, `highlight`; events stored before, and
-  backfilled ones, are neither). The nav counts, as Element, a room's
-  messages that notify, as a mention if any highlights; a room with
-  unread messages none of which notify is only bold; a folded space or
-  account sums its rooms'.
+  backfilled ones, are neither). The nav does not count them as
+  Element does: a room is bold while unread, and its mark (§12.14)
+  counts its messages that notify only while it is in a `count`
+  bucket.
 - **Browser notifications**: once the browser lets uplink notify (a nav
   item asks it to), the web client notifies when a room's messages that
   notify grow while the tab is hidden or another page shows: the room's
@@ -2291,8 +2293,10 @@ which a verified device gives.
   one per room, a click opening it. Those unread when the rooms are first
   loaded are not news.
 - The read marker is desired state (§6.6). Showing a room, in a visible
-  tab, marks it read up to its latest event (`MarkRoomRead`, quietly:
-  no notice). The sending loop pushes an `m.read` receipt for it.
+  tab, marks it read up to the latest message from others wholly on
+  screen (`MarkRoomRead`, quietly: no notice, and as shown, §12.15). The
+  sending loop pushes an `m.read` receipt for it. The fully-read marker
+  (§12.15) is kept and pushed alike, as `m.fully_read`.
   Receipts only move forward, so undoing a mark-read moves the marker
   back in uplink only.
 - The account's own receipts from other devices move the marker forward,
@@ -2766,7 +2770,8 @@ as a native list does), `Enter` chooses and `Esc` closes.
   redoes). As each undo is itself an op, pressing `z` again would undo
   that undo; instead, the history store keeps where the last press got
   to, and the next goes on to the op before it, passing over what is
-  undone and the undos (each of something older, passed over too). It
+  undone, the undos (each of something older, passed over too), and
+  what views did by being shown (§12.15: marking seen and read). It
   goes on only while the latest op is the one the last press left at the
   top: anything done since, in any tab, starts afresh from it. Presses
   are handled one after another, each from where the last got to. A
@@ -2949,7 +2954,7 @@ A room is laid out as Element's IRC layout lays it out: a line per
 event, its time (`HH:MM`; the date on hover), its sender (a small avatar
 and the name, in the colour Element gives that user id, cut to a column
 of its own), and what it says. A line marks each day, and one ("New")
-where the unread began when the room was opened. The header has the
+the fully-read marker (§12.15). It opens at its latest message. The header has the
 room's avatar, name, topic, its tags (a button that opens `l`'s
 picker), member count, whether it is encrypted, and the membership's
 buttons.
@@ -3123,28 +3128,115 @@ an item (mail's entries and labels, rooms, timelines, to-dos and
 calendars changed), and when `HomeChanged` says the buckets were
 configured anew; hidden, it is not kept current.
 
-### 12.14 Badges
+### 12.14 Badges and marks
 
 A bucket of home (§3.2) with a `badge` shows on the app's icon, as
 Gmail's, Element's and Discord's do, without their calling for the user
 at whatever is unread: by default, Immediate's are counted, and Upkeep's
-make a dot; Backlog and Leisure are left for the user to come to. The
-icon counts the items of the buckets badged `count`, up to `99+`, in
-red at its bottom right; else, while a bucket badged `dot` holds
-anything, it has a dot; else it is the logo alone (`src/favicon.ts`, an
-SVG of the logo with the mark over it). Home's link in the nav has the
-same mark: its count in red, its dot in the accent colour. The window's
-title says what is on show (§12.4), so it counts nothing of the rest.
+make a dot; Backlog and Leisure are left for the user to come to. A
+count is of all a bucket holds, until its items leave it (read, done,
+archived), as Slack's and Discord's counts of mentions stay until read;
+a dot is of what a bucket holds that is unseen (§12.15), as what is
+merely to be kept up with is news only until looked at. The icon counts
+the items of the buckets badged `count`, up to `99+`, in red at its
+bottom right; else, while a bucket badged `dot` holds anything unseen,
+it has a dot; else it is the logo alone (`src/favicon.ts`, an SVG of
+the logo with the mark over it). The window's title says what is on
+show (§12.4), so it counts nothing of the rest.
 
-The server pushes what the badged buckets hold (`Badges`, §5.5): of
-each, as home lists it (`ListHome`), its items, up to `BADGE_LIMIT`
-(100), each by its latest activity (`Activity`: mail by its
-conversation's latest entry, a room by its latest event, a to-do, an
-event), so that what comes of an item anew (a reply, a message) is
-another. It derives them anew after log entries (as many as came while
-it did, at once), when the buckets are configured anew, and each minute,
-as time alone moves items (into `due:today`, out of `newer_than:`); it
-pushes them only if they differ.
+Every place of the nav has a mark the same way, of the badged buckets'
+items in it: a red count of those of `count` buckets, else a dot (in
+the accent colour) while one of a `dot` bucket in it is unseen, else
+nothing. Home's is the icon's. A place is where the nav links to an
+item: a mail conversation is in each of its labels (Inbox and the
+others listed, All Mail, and All inboxes for Inbox), a room in its own
+link, a to-do in To-dos, an event in Calendar. A label counts its
+conversations; a room counts its messages that notify, or 1 if none
+does (an invitation, say). A folded space, label or account has the
+strongest mark of what it folds: the sum of their counts, else a dot if
+any has one.
+
+Besides its mark, a place says what is unread, as it always has, more
+quietly: a label its unread conversations, as a grey count (Gmail's);
+a room, with unread messages, its name in bold, and no count (the
+homeserver's notification counts, which Element shows, are the mark's
+now). The place on show has its background only, not bold, so that it
+is not taken for unread.
+
+The server derives and pushes them (`Badges`, §5.5), as home lists the
+buckets (`ListHome`): of each badged bucket, its items, up to
+`BADGE_LIMIT` (100), each by its latest activity (`Activity`: mail by
+its conversation's latest entry, a room by its latest event, a to-do,
+an event), so that what comes of an item anew (a reply, a message) is
+another; and the marks of the places, of all its items, unlimited: in
+one read per bucket, as the labels of the conversations it holds
+(distinct, not each conversation), its rooms, and whether it holds any
+to-do and any event, with, for its `dot`, those of what is unseen. It
+derives them anew after log entries (as many as came while it did, at
+once), when the buckets are configured anew, and each minute, as time
+alone moves items (into `due:today`, out of `newer_than:`); it pushes
+them only if they differ. The client sums folded places' marks itself,
+as the folds are its own.
+
+### 12.15 Seen and read
+
+Two things are tracked of what comes in, as Thunderbird's "new" and
+"unread", and Matrix's receipt and fully-read marker, are:
+
+- **Seen**: the user has looked where it is. It is news until then,
+  and the `dot` buckets' marks (§12.14) show only what is unseen.
+- **Read**: the user has gone through it. Mail is read once opened, as
+  before (`is:unread`, the provider's flag); a room's messages are read
+  as they are shown on screen (below).
+
+**Seen is of places.** Showing a place, in a visible tab (a label's or
+All inboxes' list, a room, To-dos, Calendar, Home), sees everything in
+it, however much is on screen: a new message in a label is seen once
+the label is opened, though the message is not. Each place keeps when
+it was last seen, as the log's latest entry then (`Seen { place, at }`,
+desired state uplink alone keeps, §6.6); an item's activity is seen if
+any place it is in (§12.14; Home holds whatever its buckets do) was
+seen after it was recorded. So a conversation seen in the Inbox is
+seen under its other labels too, and a reply to it is news again. The
+client dispatches `MarkSeen { place }` on showing a place whose mark
+has a dot, and on new activity in it while it shows; not otherwise, so
+that the log is not filled with visits.
+
+**Rooms open at their latest message**, as Element's and Discord's do,
+for seeing what goes on now and for writing; catching up and mentions
+have their own ways in. A room keeps two points, as Matrix does:
+
+- **The read marker** (`read_up_to`, the `m.read` receipt, as before,
+  §9.5) follows the latest message from others that has been wholly on
+  screen, in a visible tab, as Element's receipt does: not the latest
+  event, so that what was never shown stays unread. It only moves
+  forward. Opening a room shows its latest messages, so it is read up to
+  them, and its name is bold no more.
+- **The fully-read marker** (`m.fully_read`, desired state as the read
+  marker is, and pushed as room account data) is where catching up has
+  got to: it moves forward over what has been on screen without a gap
+  after it (as the timeline is scrolled down through, or up through and
+  back), or to the read marker when the user is done (`Esc` on the bar
+  below, or "Mark as read" there). The line "New" marks it in the
+  timeline (instead of where the unread began when the room was opened).
+
+While the fully-read marker is above what is on screen, a bar at the
+top says how many messages are after it, with "Jump to first unread"
+(`Shift+PageUp`, as Element's) and "Mark as read". A mention of the user
+(a message that highlights, §9.5) after the fully-read marker that has
+not been on screen is unread however the read marker moved: it counts
+in `is:mention`, so in Immediate's count; the bar says how many (`@ 2`)
+and jumps to the oldest of them, then the next (`Shift+PageDown`), as
+Telegram's do. Once on screen, it is read (V00xx:
+`matrix_event.shown`, set by `MarkRoomRead`'s `shown` mentions).
+
+**Showing is not doing.** What a view dispatches by being shown, not by
+the user's hand — `MarkSeen`, `MarkRoomRead` and the fully-read
+marker's moves as messages come on screen — is logged and undoable as
+any op, quietly (no notice, §12.6), but recorded as shown
+(`tx_log.shown`): `z` passes over it (§12.5), and the history (§6.3)
+lists it dimmed. `e` on home's room, or "Mark as read", is the user's
+own.
 
 ## 13. Authentication & secrets
 
