@@ -620,11 +620,10 @@ fn observe_labels(
 
 fn label_row(tx: &Transaction, entry: EntryId, label: LabelId) -> Result<Option<(bool, bool)>> {
     Ok(tx
-        .query_row(
+        .prepare_cached(
             "SELECT desired, observed FROM entry_label WHERE entry = ?1 AND label = ?2",
-            [entry.0, label.0],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
+        )?
+        .query_row([entry.0, label.0], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()?)
 }
 
@@ -639,8 +638,10 @@ fn set_label_row(
     observed: bool,
     by: Option<TxLogId>,
 ) -> Result<()> {
+    // Cached: an op may set many, and each statement's triggers are
+    // compiled with it.
     if desired || observed {
-        tx.execute(
+        tx.prepare_cached(
             "INSERT INTO entry_label (entry, label, desired, observed, desired_by)
              VALUES (?1, ?2, ?3, ?4, CASE WHEN ?3 != ?4 THEN ?5 END)
              ON CONFLICT (entry, label)
@@ -650,13 +651,17 @@ fn set_label_row(
                                  ELSE desired_by END,
                refused = CASE WHEN excluded.desired = excluded.observed OR ?5 IS NOT NULL
                               THEN NULL ELSE refused END",
-            params![entry.0, label.0, desired, observed, by.map(|b| b.0)],
-        )?;
+        )?
+        .execute(params![
+            entry.0,
+            label.0,
+            desired,
+            observed,
+            by.map(|b| b.0)
+        ])?;
     } else {
-        tx.execute(
-            "DELETE FROM entry_label WHERE entry = ?1 AND label = ?2",
-            [entry.0, label.0],
-        )?;
+        tx.prepare_cached("DELETE FROM entry_label WHERE entry = ?1 AND label = ?2")?
+            .execute([entry.0, label.0])?;
     }
     Ok(())
 }
@@ -693,24 +698,21 @@ impl Op for SetLabels {
         let mut inverse = vec![];
         let mut events = vec![];
         let mut accounts = BTreeSet::new();
-        // (label, desired) → entries changed
         // By change, the entries changed so, and their conversations.
         let mut groups: BTreeMap<(LabelId, bool), (usize, BTreeSet<Conversation>)> =
             BTreeMap::new();
-        let mut entries: Vec<EntryId> = vec![];
-        for change in &self.changes {
-            if !entries.contains(&change.entry) {
-                entries.push(change.entry);
-            }
+        // Each entry's changes, the entries in the order first changed.
+        let mut by_entry: Vec<(EntryId, Vec<LabelChange>)> = vec![];
+        let mut at: HashMap<EntryId, usize> = HashMap::new();
+        for &change in &self.changes {
+            let i = *at.entry(change.entry).or_insert_with(|| {
+                by_entry.push((change.entry, vec![]));
+                by_entry.len() - 1
+            });
+            by_entry[i].1.push(change);
         }
         let mut changes = vec![];
-        for entry in entries {
-            let requested: Vec<LabelChange> = self
-                .changes
-                .iter()
-                .filter(|c| c.entry == entry)
-                .copied()
-                .collect();
+        for (entry, requested) in by_entry {
             let implied = implied_by_folders(tx, entry, &requested)?;
             // Moving into a folder is leaving the other: described as one.
             let mut moved = false;
@@ -733,19 +735,13 @@ impl Op for SetLabels {
         }
         for (change, undescribed) in changes {
             let (entry_account, thread): (String, Option<String>) = tx
-                .query_row(
-                    "SELECT account_id, thread_id FROM mail_entry WHERE id = ?1",
-                    [change.entry.0],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
+                .prepare_cached("SELECT account_id, thread_id FROM mail_entry WHERE id = ?1")?
+                .query_row([change.entry.0], |r| Ok((r.get(0)?, r.get(1)?)))
                 .optional()?
                 .ok_or_else(|| Conflict("the message is no longer in its account".into()))?;
             let label_account: String = tx
-                .query_row(
-                    "SELECT account_id FROM label WHERE id = ?1",
-                    [change.label.0],
-                    |r| r.get(0),
-                )
+                .prepare_cached("SELECT account_id FROM label WHERE id = ?1")?
+                .query_row([change.label.0], |r| r.get(0))
                 .optional()?
                 .ok_or_else(|| Conflict("the label no longer exists".into()))?;
             ensure!(
@@ -827,25 +823,22 @@ fn implied_by_folders(
     requested: &[LabelChange],
 ) -> Result<Vec<LabelChange>> {
     let account: Option<String> = tx
-        .query_row(
-            "SELECT account_id FROM mail_entry WHERE id = ?1",
-            [entry.0],
-            |r| r.get(0),
-        )
+        .prepare_cached("SELECT account_id FROM mail_entry WHERE id = ?1")?
+        .query_row([entry.0], |r| r.get(0))
         .optional()?;
     // Refused below, as the entry is gone.
     let Some(account) = account else {
         return Ok(vec![]);
     };
     let folders: BTreeMap<LabelId, String> = tx
-        .prepare("SELECT id, external_id FROM label WHERE account_id = ?1 AND folder")?
+        .prepare_cached("SELECT id, external_id FROM label WHERE account_id = ?1 AND folder")?
         .query_map([&account], |r| Ok((LabelId(r.get(0)?), r.get(1)?)))?
         .collect::<Result<_, _>>()?;
     if folders.is_empty() {
         return Ok(vec![]);
     }
     let mut desired: BTreeSet<LabelId> = tx
-        .prepare(
+        .prepare_cached(
             "SELECT el.label FROM entry_label el JOIN label l ON l.id = el.label
              WHERE el.entry = ?1 AND el.desired AND l.folder",
         )?
@@ -887,9 +880,8 @@ fn implied_by_folders(
 /// Whether the label is a folder; a label gone is refused later.
 fn is_folder(tx: &Transaction, label: LabelId) -> Result<bool> {
     Ok(tx
-        .query_row("SELECT folder FROM label WHERE id = ?1", [label.0], |r| {
-            r.get(0)
-        })
+        .prepare_cached("SELECT folder FROM label WHERE id = ?1")?
+        .query_row([label.0], |r| r.get(0))
         .optional()?
         .unwrap_or(false))
 }
