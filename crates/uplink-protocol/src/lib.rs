@@ -170,6 +170,15 @@ pub enum ClientRequest {
         add: Vec<LabelId>,
         remove: Vec<LabelId>,
     },
+    /// Does `action` to the conversations, as one op.
+    ActOnConversations {
+        conversations: mail::ConversationSet,
+        action: mail::ConversationAction,
+    },
+    /// How many conversations `query` lists, as a search does.
+    CountConversations {
+        query: String,
+    },
     /// All drafts.
     ListDrafts,
     /// Create a draft, with revision 0.
@@ -454,6 +463,10 @@ pub enum ServerResponse {
         as_of: TxLogId,
         entries: Vec<mail::Entry>,
     },
+    /// Of `CountConversations`.
+    ConversationCount {
+        count: u64,
+    },
     Home {
         as_of: TxLogId,
         buckets: Vec<HomeBucket>,
@@ -600,8 +613,10 @@ impl ServerResponse {
             | Self::Todos { as_of, .. }
             | Self::Events { as_of, .. }
             | Self::History { as_of, .. } => Some(*as_of),
-            // Message content does not change; the rest is not logged.
+            // Message content does not change; a count is of the moment;
+            // the rest is not logged.
             Self::Message { .. }
+            | Self::ConversationCount { .. }
             | Self::Done
             | Self::Receipts { .. }
             | Self::Members { .. }

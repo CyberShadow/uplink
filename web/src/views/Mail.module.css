@@ -46,6 +46,26 @@
   background: none;
 }
 
+/* Gmail's, across the bar. */
+.banner {
+  flex-basis: 100%;
+  margin: 0 0 8px;
+  padding: 6px 12px;
+  border-radius: 4px;
+  background: var(--hover);
+  text-align: center;
+}
+
+.banner button {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
 .chosen,
 .place {
   color: var(--muted);

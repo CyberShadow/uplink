@@ -34,7 +34,8 @@ use uplink_config::{
 use uplink_email::{gmail, imap, m365, pop3, query::ConfiguredAccount, service::Mail};
 use uplink_matrix::service::Matrix;
 use uplink_protocol::{
-    mail::MailProvider, ClientRequest, ErrorCode, Notice, ServerError, ServerResponse, TxLogId,
+    mail::{ConversationAction, ConversationSet, MailProvider},
+    ClientRequest, ErrorCode, Notice, ServerError, ServerResponse, TxLogId,
 };
 use uplink_realtime::{Answer, Backend, Hub, Replay};
 use uplink_storage::seal::MasterKey;
@@ -997,6 +998,21 @@ impl Services {
     }
 }
 
+impl Services {
+    /// A query's conversations are those its search lists.
+    async fn act_on_conversations(
+        &self,
+        conversations: ConversationSet,
+        action: ConversationAction,
+    ) -> uplink_tx_log::answer::Response {
+        let conversations = match conversations {
+            ConversationSet::Listed { conversations } => conversations,
+            ConversationSet::Matching { query } => self.items.matching(query).await?,
+        };
+        self.mail.act_on_conversations(conversations, action).await
+    }
+}
+
 impl Backend for Services {
     async fn handle(&self, request: ClientRequest) -> Answer {
         // Those that wait on a homeserver return how they are answered:
@@ -1034,6 +1050,11 @@ impl Backend for Services {
                 add,
                 remove,
             } => self.mail.modify_labels(entries, add, remove).await,
+            ClientRequest::ActOnConversations {
+                conversations,
+                action,
+            } => self.act_on_conversations(conversations, action).await,
+            ClientRequest::CountConversations { query } => self.items.count(query).await,
             ClientRequest::ListDrafts => self.mail.list_drafts().await,
             ClientRequest::CreateDraft {
                 id,

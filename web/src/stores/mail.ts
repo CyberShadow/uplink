@@ -11,6 +11,8 @@ import type {
   CalendarEvent,
   ClientRequest,
   Conversation,
+  ConversationAction,
+  ConversationSet,
   Entry,
   EntryId,
   FoundMessage,
@@ -102,6 +104,10 @@ export interface Thread {
   entries: Item[]
 }
 
+/** What an action is done to: the threads, as listed, or every
+ * conversation the list's query lists. */
+export type Targets = Thread[] | 'matching'
+
 export function threadOf(conversation: Conversation): Thread {
   const { latest } = conversation
   return { account: latest.account, subject: latest.subject, entries: [...conversation.earlier, latest] }
@@ -141,6 +147,9 @@ export class MailStore {
   /** The conversation j/k move between and single actions apply to. */
   readonly focus = signal<string | null>(null)
   readonly selected = signal<ReadonlySet<string>>(new Set())
+  /** Whether actions apply to every conversation the list's query lists,
+   * rather than the selection; then all those loaded are selected. */
+  readonly matching = signal(false)
   readonly open = signal<Open | null>(null)
   readonly error = signal<string | null>(null)
   /** Whether senders' remote images are shown unasked, as changed since
@@ -334,6 +343,12 @@ export class MailStore {
       const last = after.at(-1)
       this.focus.value = next ? conversationKey(next) : last ? conversationKey(last) : null
     }
+    // Every match is selected, as more are loaded too.
+    if (this.matching.value) {
+      this.selected.value = keys
+      this.matching.value = keys.size > 0
+      return
+    }
     const selected = this.selected.value
     if ([...selected].some((key) => !keys.has(key))) {
       this.selected.value = new Set([...selected].filter((key) => keys.has(key)))
@@ -389,7 +404,7 @@ export class MailStore {
     batch(() => {
       this.list.value = { view, loaded: false, conversations: [], next: null, scope: null, found: null }
       this.focus.value = null
-      this.selected.value = new Set()
+      this.select(new Set())
     })
     this.listLoad = null
     this.listStale = true
@@ -487,21 +502,55 @@ export class MailStore {
     const limit =
       load === 'reload' ? Math.min(Math.max(list.conversations.length, PAGE), MAX_PAGE) : PAGE
     const after = load === 'reload' ? null : list.next
-    const entries = (query: string): ClientRequest => ({ type: 'list_entries', query, after, limit })
-    switch (list.view.kind) {
+    const { view } = list
+    switch (view.kind) {
       // Of every kind, so names of every kind's.
       case 'search':
-        return { type: 'list_items', query: list.view.query, after, limit }
+        return { type: 'list_items', query: view.query, after, limit }
       case 'message':
-        return { type: 'list_message_entries', message: list.view.message }
-      case 'all':
-        return entries(`account:${quoted(list.view.account)}`)
-      case 'inbox':
-        return entries('in:inbox')
-      case 'label': {
-        const label = this.labelOf(list.view)
-        return label ? entries(`account:${quoted(list.view.account)} label:${quoted(label.name)}`) : null
+        return { type: 'list_message_entries', message: view.message }
+      default: {
+        const query = this.queryOf(view)
+        return query === null ? null : { type: 'list_entries', query, after, limit }
       }
+    }
+  }
+
+  /** The query a list of a label, an account or the Inboxes is; `null`
+   * if the view's label does not exist. */
+  private queryOf(view: View & { kind: 'search' | 'all' | 'inbox' | 'label' }): string | null {
+    switch (view.kind) {
+      case 'search':
+        return view.query
+      case 'all':
+        return `account:${quoted(view.account)}`
+      case 'inbox':
+        return 'in:inbox'
+      case 'label': {
+        const label = this.labelOf(view)
+        return label ? `account:${quoted(view.account)} label:${quoted(label.name)}` : null
+      }
+    }
+  }
+
+  /** The query of the list on show, which lists more than are loaded. */
+  private listQuery(): string {
+    const { view } = this.list.value!
+    if (view.kind === 'message') throw new Error('a message by itself is of no query')
+    const query = this.queryOf(view)
+    if (query === null) throw new Error('the list lists nothing')
+    return query
+  }
+
+  /** How many conversations the list's query lists, loaded or not;
+   * `null` if it could not be counted. */
+  async count(): Promise<number | null> {
+    try {
+      const response = await query(this.server, { type: 'count_conversations', query: this.listQuery() }, 'conversation_count')
+      return Number(response.count)
+    } catch (error) {
+      this.error.value = (error as Error).message
+      return null
     }
   }
 
@@ -553,25 +602,44 @@ export class MailStore {
   toggleSelected(key: string) {
     const selected = new Set(this.selected.value)
     if (!selected.delete(key)) selected.add(key)
-    this.selected.value = selected
+    this.select(selected)
   }
 
+  /** Selects the loaded conversations. */
   selectAll() {
-    this.selected.value = new Set((this.list.value?.conversations ?? []).map(conversationKey))
+    this.select(new Set((this.list.value?.conversations ?? []).map(conversationKey)))
+  }
+
+  /** Selects every conversation the list's query lists, loaded or not. */
+  selectMatching() {
+    batch(() => {
+      this.selectAll()
+      this.matching.value = true
+    })
   }
 
   selectNone() {
-    this.selected.value = new Set()
+    this.select(new Set())
   }
 
   /** Selects the loaded conversations with an entry that has the system
    * label `externalId`, or with `having` false, those without. */
   selectHaving(externalId: string, having: boolean) {
-    this.selected.value = new Set(
-      (this.list.value?.conversations ?? [])
-        .filter((c) => this.having(threadOf(c), externalId) === having)
-        .map(conversationKey),
+    this.select(
+      new Set(
+        (this.list.value?.conversations ?? [])
+          .filter((c) => this.having(threadOf(c), externalId) === having)
+          .map(conversationKey),
+      ),
     )
+  }
+
+  /** Selects the conversations, and so no longer every match. */
+  private select(selected: ReadonlySet<string>) {
+    batch(() => {
+      this.selected.value = selected
+      this.matching.value = false
+    })
   }
 
   /** Whether an entry of the thread has the system label `externalId`. */
@@ -581,103 +649,71 @@ export class MailStore {
   }
 
   // ── ops ─────────────────────────────────────────────────────────────────
-  // On conversations, as Gmail's are: on all their entries, but for
-  // starring and marking unread, which take the latest.
+  // On conversations, as Gmail's are (SPEC §12.8): the server does them,
+  // to the threads given, or, `'matching'`, to every one the list's query
+  // lists. Which way a toggle goes is the caller's: what it shows.
 
-  archive(threads: Thread[]) {
-    return this.modify(all(threads), (account) => ({
-      add: [],
-      remove: [this.systemLabel(account, 'INBOX').id],
-    }))
+  archive(targets: Targets) {
+    return this.act(targets, { type: 'archive' })
   }
 
-  /** Moves the threads to Trash, which hides them elsewhere. */
-  trash(threads: Thread[]) {
-    return this.modify(all(threads), (account) => ({ add: [this.systemLabel(account, 'TRASH').id], remove: [] }))
+  /** Moves them to Trash, which hides them elsewhere. */
+  trash(targets: Targets) {
+    return this.act(targets, { type: 'trash' })
   }
 
-  /** Reports the threads as spam, or, if all are spam already, moves them
-   * back to the Inbox, as Gmail's "Not spam" does. */
-  toggleSpam(threads: Thread[]) {
-    const spam = this.spam(threads)
-    return this.modify(all(threads), (account) => {
-      const label = this.systemLabel(account, 'SPAM').id
-      return spam ? { add: [this.systemLabel(account, 'INBOX').id], remove: [label] } : { add: [label], remove: [] }
-    })
+  /** Reports them as spam, or, not spam, moves them back to the Inbox. */
+  setSpam(targets: Targets, spam: boolean) {
+    return this.act(targets, { type: 'spam', spam })
   }
 
-  /** Whether every entry of the threads is spam, so that `toggleSpam`
-   * moves them back. */
+  /** Whether every entry of the threads is spam, which "Not spam" takes
+   * back. */
   spam(threads: Thread[]): boolean {
     return all(threads).every((e) => e.labels.includes(this.systemLabel(e.account, 'SPAM').id))
   }
 
-  /** Read marks every entry; unread, the latest. `quiet` leaves the notice
-   * alone, as when opening a conversation reads it. */
-  markRead(threads: Thread[], read: boolean, quiet = false) {
-    const unread = (account: string) => this.systemLabel(account, 'UNREAD').id
-    if (read) {
-      const items = all(threads).filter((e) => e.labels.includes(unread(e.account)))
-      return this.modify(items, (account) => ({ add: [], remove: [unread(account)] }), quiet)
-    }
-    return this.modify(latest(threads), (account) => ({ add: [unread(account)], remove: [] }), quiet)
+  /** `quiet` leaves the notice alone, as when opening a conversation reads
+   * it. */
+  markRead(targets: Targets, read: boolean, quiet = false) {
+    return this.act(targets, { type: 'read', read }, quiet)
   }
 
   /** Marks the thread's entries unread from `entry` on, as Gmail's "Mark
    * unread from here" does. */
   markUnreadFrom(thread: Thread, entry: EntryId) {
-    const items = all([thread])
-    const from = items.findIndex((e) => e.id === entry)
-    const unread = (account: string) => this.systemLabel(account, 'UNREAD').id
-    return this.modify(items.slice(from), (account) => ({ add: [unread(account)], remove: [] }))
-  }
-
-  /** If every thread has a star, unstars them all; else stars the latest
-   * entry of those without. */
-  toggleStar(threads: Thread[]) {
-    const star = (account: string) => this.systemLabel(account, 'STARRED').id
-    if (threads.every((t) => this.having(t, 'STARRED'))) {
-      const items = all(threads).filter((e) => e.labels.includes(star(e.account)))
-      return this.modify(items, (account) => ({ add: [], remove: [star(account)] }))
-    }
-    const unstarred = threads.filter((t) => !this.having(t, 'STARRED'))
-    return this.modify(latest(unstarred), (account) => ({ add: [star(account)], remove: [] }))
-  }
-
-  markImportant(threads: Thread[], important: boolean) {
-    return this.modify(all(threads), (account) => {
-      const label = this.systemLabel(account, 'IMPORTANT').id
-      return important ? { add: [label], remove: [] } : { add: [], remove: [label] }
+    const from = thread.entries.findIndex((e) => e.id === entry)
+    return this.ops.dispatch({
+      type: 'modify_labels',
+      entries: thread.entries.slice(from).map((e) => e.id),
+      add: [this.systemLabel(thread.account, 'UNREAD').id],
+      remove: [],
     })
   }
 
-  /** Moves the threads, which are of `to`'s account, from `from` to `to`,
-   * as Gmail's "Move to" does. */
-  move(threads: Thread[], from: Label, to: Label) {
-    return this.modify(all(threads), () => ({ add: [to.id], remove: [from.id] }))
+  setStar(targets: Targets, star: boolean) {
+    return this.act(targets, { type: 'star', star })
   }
 
-  /** Adds `label` to the threads, or removes it if each has it already. */
-  toggleLabel(threads: Thread[], label: Label) {
-    const each = threads.every((t) => t.entries.some((e) => e.labels.includes(label.id)))
-    return this.modify(all(threads), () => (each ? { add: [], remove: [label.id] } : { add: [label.id], remove: [] }))
+  markImportant(targets: Targets, important: boolean) {
+    return this.act(targets, { type: 'important', important })
   }
 
-  /** One op per account, since labels belong to one; none for no entries. */
-  private async modify(
-    items: AccountItem[],
-    labels: (account: string) => { add: LabelId[]; remove: LabelId[] },
-    quiet = false,
-  ) {
-    const byAccount = Map.groupBy(items, (e) => e.account)
-    await Promise.all(
-      [...byAccount].map(([account, own]) =>
-        this.ops.dispatch(
-          { type: 'modify_labels', entries: own.map((e) => e.id), ...labels(account) },
-          quiet,
-        ),
-      ),
-    )
+  /** Moves them from `from` to `to`, as Gmail's "Move to" does. */
+  move(targets: Targets, from: Label, to: Label) {
+    return this.act(targets, { type: 'move', from: from.id, to: to.id })
+  }
+
+  setLabel(targets: Targets, label: Label, add: boolean) {
+    return this.act(targets, { type: 'label', label: label.id, add })
+  }
+
+  private act(targets: Targets, action: ConversationAction, quiet = false) {
+    const conversations: ConversationSet =
+      targets === 'matching'
+        ? { type: 'matching', query: this.listQuery() }
+        : { type: 'listed', conversations: targets.map((t) => t.entries.map((e) => e.id)) }
+    return this.ops.dispatch({ type: 'act_on_conversations', conversations, action }, quiet)
   }
 
   // ── messages ────────────────────────────────────────────────────────────
@@ -712,6 +748,3 @@ function all(threads: Thread[]): AccountItem[] {
   return threads.flatMap((t) => t.entries.map((e) => ({ ...e, account: t.account })))
 }
 
-function latest(threads: Thread[]): AccountItem[] {
-  return threads.map((t) => ({ ...t.entries.at(-1)!, account: t.account }))
-}

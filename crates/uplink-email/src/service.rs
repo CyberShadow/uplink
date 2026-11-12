@@ -1,6 +1,7 @@
 //! Answers the mail requests of the WebSocket protocol (SPEC §5.4).
 
 use crate::{
+    actions,
     compose::{
         self, AttachToDraft, CancelSend, DeleteDraft, DetachFromDraft, EditDraft, KeepSent,
         PutDraft, SendDraft,
@@ -18,7 +19,7 @@ use std::{
 };
 use uplink_protocol::{
     compose::{BlobId, DraftAttachmentId, DraftContent, DraftId, OutboxId, Splice, UploadedBlob},
-    mail::{EntryId, LabelId, ListPosition, MessageContent, MessageId},
+    mail::{ConversationAction, EntryId, LabelId, ListPosition, MessageContent, MessageId},
     ErrorCode, ServerError, ServerResponse, TxLogId,
 };
 use uplink_storage::rusqlite::{Connection, OptionalExtension};
@@ -251,6 +252,26 @@ impl Mail {
                 added.chain(removed)
             })
             .collect();
+        self.dispatcher.answer(SetLabels { changes }).await
+    }
+
+    /// Does `action` to the conversations, each given as its entries in
+    /// the list's scope, as one op (SPEC §12.8).
+    pub async fn act_on_conversations(
+        &self,
+        conversations: Vec<Vec<EntryId>>,
+        action: ConversationAction,
+    ) -> Response {
+        if conversations.is_empty() {
+            return Err(error(
+                ErrorCode::Conflict,
+                "no conversation to act on".into(),
+            ));
+        }
+        let changes = self
+            .reader
+            .read(move |conn| actions::changes(conn, &conversations, &action))
+            .await?;
         self.dispatcher.answer(SetLabels { changes }).await
     }
 

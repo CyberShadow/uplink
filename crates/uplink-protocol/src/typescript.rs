@@ -90,6 +90,8 @@ fn declarations() -> String {
         ErrorCode,
         LogEntry,
         ListScope,
+        ConversationSet,
+        ConversationAction,
         HistoryEntry,
         Source,
         ServerEvent,

@@ -107,21 +107,26 @@ describe('MailStore', () => {
     expect(mail.list.value!.next).toBeNull()
   })
 
-  it('applies one op per account', async () => {
+  it('acts on the conversations of several accounts as one op', async () => {
     server.addAccount('home')
-    server.deliver('work', 'Report at work')
-    server.deliver('home', 'Report at home')
+    const work = server.deliver('work', 'Report at work')
+    const home = server.deliver('home', 'Report at home')
     mail.reset()
     mail.show({ kind: 'search', query: 'report' })
     await vi.waitFor(() => expect(subjects()).toHaveLength(2))
     mail.selectAll()
 
     await mail.archive(mail.targets.value.map(threadOf))
-    const ops = server.requests.filter((r) => r.type === 'modify_labels')
+    const ops = server.requests.filter((r) => r.type === 'act_on_conversations')
     expect(ops).toEqual([
-      expect.objectContaining({ remove: [server.labelId('home', 'INBOX')] }),
-      expect.objectContaining({ remove: [server.labelId('work', 'INBOX')] }),
+      {
+        type: 'act_on_conversations',
+        conversations: { type: 'listed', conversations: [[home.id], [work.id]] },
+        action: { type: 'archive' },
+      },
     ])
+    expect(server.labelsOf(work.id)).not.toContain(server.labelId('work', 'INBOX'))
+    expect(server.labelsOf(home.id)).not.toContain(server.labelId('home', 'INBOX'))
     // A search lists entries whatever their labels.
     expect(subjects()).toHaveLength(2)
   })

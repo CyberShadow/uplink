@@ -495,28 +495,7 @@ pub fn conversations(
     after: Option<ListPosition>,
     limit: u32,
 ) -> Result<Page, ListError> {
-    let mut compiler = Compiler {
-        tx,
-        accounts,
-        unknown,
-        hiding: vec![],
-        anywhere: false,
-    };
-    let condition = compiler.condition(query, true)?;
-    let scope = match (compiler.anywhere, compiler.hiding) {
-        (true, _) => ListScope::Except { labels: vec![] },
-        (false, mut hiding) if !hiding.is_empty() => {
-            hiding.sort();
-            hiding.dedup();
-            ListScope::Within { labels: hiding }
-        }
-        (false, _) => ListScope::Except {
-            labels: tx
-                .prepare("SELECT id FROM label WHERE external_id IN ('TRASH', 'SPAM') ORDER BY id")?
-                .query_map([], |r| Ok(LabelId(r.get(0)?)))?
-                .collect::<Result<_, _>>()?,
-        },
-    };
+    let (condition, scope) = compile(tx, accounts, query, unknown)?;
     let conversations = match condition {
         // Of none, as a query of other kinds is: nothing to look for.
         Condition::Const(false) => vec![],
@@ -539,6 +518,101 @@ pub fn conversations(
     })
 }
 
+/// How many conversations `query` lists.
+pub fn count(
+    tx: &Transaction,
+    accounts: &[ConfiguredAccount],
+    query: &Query,
+    unknown: Unknown,
+) -> Result<u64, ListError> {
+    let (condition, scope) = compile(tx, accounts, query, unknown)?;
+    if matches!(condition, Condition::Const(false)) {
+        return Ok(0);
+    }
+    let (from, condition) = newest(tx, &scope, condition)?;
+    let count: i64 = tx.query_row(
+        &format!("SELECT count(*) FROM {from} WHERE {condition}"),
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(count as u64)
+}
+
+/// The entries of every conversation `query` lists, in its scope, each
+/// conversation's oldest first.
+pub fn matching(
+    tx: &Transaction,
+    accounts: &[ConfiguredAccount],
+    query: &Query,
+    unknown: Unknown,
+) -> Result<Vec<Vec<EntryId>>, ListError> {
+    let (condition, scope) = compile(tx, accounts, query, unknown)?;
+    if matches!(condition, Condition::Const(false)) {
+        return Ok(vec![]);
+    }
+    let (from, condition) = newest(tx, &scope, condition)?;
+    let newest = tx
+        .prepare(&format!(
+            "SELECT e.id, e.account_id, e.thread_id FROM {from} WHERE {condition}"
+        ))?
+        .query_map([], |r| {
+            Ok((
+                EntryId(r.get(0)?),
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut members = tx.prepare(&format!(
+        "SELECT e.id FROM mail_entry e
+         WHERE e.account_id = ?1 AND e.thread_id = ?2 AND {}
+         ORDER BY e.received_at, e.id",
+        in_scope(&scope, "e")
+    ))?;
+    Ok(newest
+        .into_iter()
+        .map(|(id, account, thread)| match thread {
+            Some(thread) => members
+                .query_map(params![account, thread], |r| Ok(EntryId(r.get(0)?)))?
+                .collect(),
+            None => Ok(vec![id]),
+        })
+        .collect::<Result<_, uplink_storage::rusqlite::Error>>()?)
+}
+
+/// The query made SQL: the condition an entry meets, and the scope of the
+/// conversations it lists.
+fn compile(
+    tx: &Transaction,
+    accounts: &[ConfiguredAccount],
+    query: &Query,
+    unknown: Unknown,
+) -> Result<(Condition, ListScope), ListError> {
+    let mut compiler = Compiler {
+        tx,
+        accounts,
+        unknown,
+        hiding: vec![],
+        anywhere: false,
+    };
+    let condition = compiler.condition(query, true)?;
+    let scope = match (compiler.anywhere, compiler.hiding) {
+        (true, _) => ListScope::Except { labels: vec![] },
+        (false, mut hiding) if !hiding.is_empty() => {
+            hiding.sort();
+            hiding.dedup();
+            ListScope::Within { labels: hiding }
+        }
+        (false, _) => ListScope::Except {
+            labels: tx
+                .prepare("SELECT id FROM label WHERE external_id IN ('TRASH', 'SPAM') ORDER BY id")?
+                .query_map([], |r| Ok(LabelId(r.get(0)?)))?
+                .collect::<Result<_, _>>()?,
+        },
+    };
+    Ok((condition, scope))
+}
+
 /// The conversations with an entry in scope that meets `condition`,
 /// newest first, after `after`. A conversation is listed by its newest
 /// entry in scope, which need not meet it itself (a reply in Sent, to a
@@ -550,6 +624,33 @@ fn page(
     after: Option<ListPosition>,
     limit: u32,
 ) -> Result<Vec<Conversation>> {
+    let (from, condition) = newest(tx, scope, condition)?;
+    // Positions compare as (received_at, entry); the first page starts
+    // after the greatest possible one.
+    let after = after.unwrap_or(ListPosition {
+        received_at: i64::MAX,
+        entry: EntryId(i64::MAX),
+    });
+    let mut latest = tx.prepare(&format!(
+        "SELECT {ENTRY_COLUMNS}
+         FROM {from}
+         JOIN message m ON m.id = e.message
+         WHERE {condition}
+           AND (e.received_at, e.id) < (?1, ?2)
+         ORDER BY e.received_at DESC, e.id DESC
+         LIMIT ?3"
+    ))?;
+    let latest = latest
+        .query_map(params![after.received_at, after.entry.0, limit], entry_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    let latest = with_labels(tx, latest)?;
+    conversations_of(tx, scope, latest)
+}
+
+/// `FROM …` and `WHERE …` of the newest entries in scope of the
+/// conversations with an entry in scope that meets `condition`, naming
+/// them `e`.
+fn newest(tx: &Transaction, scope: &ListScope, condition: Condition) -> Result<(String, String)> {
     let scope_sql = |x: &str| in_scope(scope, x);
     let mut conjuncts = match condition {
         Condition::And(all) => all,
@@ -680,26 +781,7 @@ fn page(
             )
         }
     };
-    // Positions compare as (received_at, entry); the first page starts
-    // after the greatest possible one.
-    let after = after.unwrap_or(ListPosition {
-        received_at: i64::MAX,
-        entry: EntryId(i64::MAX),
-    });
-    let mut latest = tx.prepare(&format!(
-        "SELECT {ENTRY_COLUMNS}
-         FROM {from}
-         JOIN message m ON m.id = e.message
-         WHERE {condition}
-           AND (e.received_at, e.id) < (?1, ?2)
-         ORDER BY e.received_at DESC, e.id DESC
-         LIMIT ?3"
-    ))?;
-    let latest = latest
-        .query_map(params![after.received_at, after.entry.0, limit], entry_row)?
-        .collect::<Result<Vec<_>, _>>()?;
-    let latest = with_labels(tx, latest)?;
-    conversations_of(tx, scope, latest)
+    Ok((from, condition))
 }
 
 /// The conversations whose newest entries in scope are `latest`.

@@ -1357,6 +1357,45 @@ pub(crate) mod service {
             };
             assert_eq!(paged.len(), conversations.len(), "{list}");
         }
+        // Counted, and resolved to their entries, as listed.
+        for list in [
+            "account:a label:INBOX",
+            "account:a",
+            "account:a label:TRASH",
+            "x2",
+        ] {
+            let query = uplink_query::parse(list, 0).unwrap();
+            let accounts = [ConfiguredAccount {
+                id: "a".into(),
+                address: "a@x".into(),
+                provider: uplink_protocol::mail::MailProvider::Gmail,
+            }];
+            let mut conn = db.reader();
+            let tx = conn.transaction().unwrap();
+            let unknown = || crate::query::Unknown::False;
+            let count = crate::query::count(&tx, &accounts, &query, unknown()).unwrap();
+            let mut matching = crate::query::matching(&tx, &accounts, &query, unknown()).unwrap();
+            drop(tx);
+            let ServerResponse::Conversations { conversations, .. } =
+                mail.list_entries(list.into(), None, 10).await.unwrap()
+            else {
+                panic!()
+            };
+            let mut listed: Vec<Vec<EntryId>> = conversations
+                .iter()
+                .map(|c| {
+                    c.earlier
+                        .iter()
+                        .map(|m| m.id)
+                        .chain([c.latest.id])
+                        .collect()
+                })
+                .collect();
+            matching.sort();
+            listed.sort();
+            assert_eq!(count, listed.len() as u64, "{list}");
+            assert_eq!(matching, listed, "{list}");
+        }
         // Senders once each, as first seen; attachments of any.
         let ServerResponse::Conversations { conversations, .. } =
             list("INBOX", None, 1).await.unwrap()
@@ -1924,6 +1963,131 @@ pub(crate) mod service {
                 )
                 .unwrap(),
         )
+    }
+
+    /// Actions on conversations change each of their entries, but for
+    /// marking unread and starring, which take the latest (SPEC §12.8).
+    #[tokio::test]
+    async fn act_on_conversations() {
+        use uplink_protocol::mail::ConversationAction as A;
+        let db = Db::new();
+        let mail = mail_with(&db).await;
+        let act = |conversations: &[&[&str]], action: A| {
+            let mail = mail.clone();
+            let conversations = conversations
+                .iter()
+                .map(|c| c.iter().map(|id| db.entry(id)).collect())
+                .collect();
+            async move { mail.act_on_conversations(conversations, action).await }
+        };
+        let rows = |label: &str| -> Vec<String> {
+            db.label_rows()
+                .into_iter()
+                .filter(|r| r.1 == label && r.2)
+                .map(|r| r.0)
+                .collect()
+        };
+        // m1, m3 and m5 are unread; m2, the latest of [m2, m1] by when it
+        // came, whichever order they are given in.
+        act(&[&["m2", "m1"], &["m4"]], A::Read { read: false })
+            .await
+            .unwrap();
+        assert_eq!(rows("UNREAD"), ["m1", "m2", "m3", "m4", "m5"]);
+        act(&[&["m1", "m2"], &["m3"]], A::Read { read: true })
+            .await
+            .unwrap();
+        assert_eq!(rows("UNREAD"), ["m4", "m5"]);
+        // A star for the latest of each conversation without one.
+        act(&[&["m1", "m2"]], A::Star { star: true }).await.unwrap();
+        act(&[&["m1", "m2"], &["m3"]], A::Star { star: true })
+            .await
+            .unwrap();
+        assert_eq!(rows("STARRED"), ["m2", "m3"]);
+        act(&[&["m1", "m2", "m3"]], A::Star { star: false })
+            .await
+            .unwrap();
+        assert!(rows("STARRED").is_empty());
+        act(&[&["m1", "m2"]], A::Spam { spam: true }).await.unwrap();
+        act(&[&["m1", "m2"]], A::Archive).await.unwrap();
+        assert_eq!(rows("SPAM"), ["m1", "m2"]);
+        assert_eq!(rows("INBOX"), ["m3", "m4", "m5"]);
+        // Not spam: back in the Inbox.
+        act(&[&["m1", "m2"]], A::Spam { spam: false })
+            .await
+            .unwrap();
+        assert!(rows("SPAM").is_empty());
+        assert_eq!(rows("INBOX"), ["m1", "m2", "m3", "m4", "m5"]);
+        let label = db.label("a", "Label_1");
+        act(&[&["m1"], &["m2"]], A::Label { label, add: true })
+            .await
+            .unwrap();
+        assert_eq!(rows("Label_1"), ["m1", "m2"]);
+        let inbox = db.label("a", "INBOX");
+        act(
+            &[&["m2"]],
+            A::Move {
+                from: label,
+                to: inbox,
+            },
+        )
+        .await
+        .unwrap();
+        act(
+            &[&["m1"]],
+            A::Move {
+                from: inbox,
+                to: label,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(rows("Label_1"), ["m1"]);
+        assert_eq!(rows("INBOX"), ["m2", "m3", "m4", "m5"]);
+        act(&[&["m5"]], A::Trash).await.unwrap();
+        assert_eq!(rows("TRASH"), ["m5"]);
+
+        let code = |r: Result<ServerResponse, uplink_protocol::ServerError>| r.unwrap_err().code;
+        let other = db.label("b", "INBOX");
+        assert_eq!(code(act(&[], A::Archive).await), ErrorCode::Conflict);
+        assert_eq!(code(act(&[&[]], A::Archive).await), ErrorCode::Invalid);
+        assert_eq!(
+            code(
+                act(
+                    &[&["m1"]],
+                    A::Label {
+                        label: other,
+                        add: true
+                    }
+                )
+                .await
+            ),
+            ErrorCode::Invalid
+        );
+        assert_eq!(
+            code(
+                act(
+                    &[&["m1"]],
+                    A::Move {
+                        from: inbox,
+                        to: inbox
+                    }
+                )
+                .await
+            ),
+            ErrorCode::Invalid
+        );
+        assert_eq!(
+            code(
+                mail.act_on_conversations(vec![vec![EntryId(999)]], A::Archive)
+                    .await
+            ),
+            ErrorCode::NotFound
+        );
+        // The account has no IMPORTANT to mark.
+        assert_eq!(
+            code(act(&[&["m1"]], A::Important { important: true }).await),
+            ErrorCode::Invalid
+        );
     }
 
     #[tokio::test]

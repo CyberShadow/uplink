@@ -77,7 +77,10 @@ export function Home() {
   const star = (row: Row) => {
     switch (row.kind) {
       case 'mail':
-        return mail.toggleStar([threadOf(row.conversation)])
+      {
+        const thread = threadOf(row.conversation)
+        return mail.setStar([thread], !mail.having(thread, 'STARRED'))
+      }
       case 'room':
         return matrix.toggleTag([row.room], FAVOURITE)
       case 'todo':
@@ -153,7 +156,12 @@ export function Home() {
         ))}
       </div>
       {picking?.kind === 'mail' && (
-        <LabelPicker targets={[threadOf(picking.conversation)]} close={() => setPicking(null)} />
+        <LabelPicker
+          targets={[threadOf(picking.conversation)]}
+          acting={[threadOf(picking.conversation)]}
+          close={() => setPicking(null)}
+          done={() => {}}
+        />
       )}
       {picking?.kind === 'room' && <RoomTagPicker rooms={[picking.room]} close={() => setPicking(null)} />}
     </section>

@@ -603,6 +603,39 @@ describe('mail', () => {
       await screen.findByText('No messages.')
     })
 
+    it('selects every match, loaded or not, counted, and acts on them all', async () => {
+      for (let i = 0; i < PAGE; i++) server.deliver('work', `Bulk ${i}`)
+      const user = await start('/mail/work/INBOX')
+      await user.click(selectAll())
+      expect(rows()).toHaveLength(PAGE)
+      const offer = await toolbar().findByRole('button', { name: `Select all ${PAGE + 3} conversations in this list` })
+      expect(toolbar().getByText(`All ${PAGE} conversations shown are selected.`, { exact: false })).toBeTruthy()
+      await user.click(offer)
+      expect(toolbar().getByText(`${PAGE + 3} selected`)).toBeTruthy()
+      // Flagging adds a to-do each: of those shown only.
+      expect((toolbar().getByRole('button', { name: 'Flag for follow-up' }) as HTMLButtonElement).disabled).toBe(true)
+      // Clearing it selects none.
+      await user.click(toolbar().getByRole('button', { name: 'Clear selection' }))
+      expect(client.mail.selected.value.size).toBe(0)
+      await user.click(selectAll())
+      await user.click(await toolbar().findByRole('button', { name: /^Select all \d+ conversations/ }))
+
+      await user.click(toolbar().getByRole('button', { name: 'Mark as read' }))
+      // Loaded or not, none is unread.
+      const unread = async () => {
+        const response = await server.request({ type: 'list_entries', query: 'label:UNREAD', after: null, limit: 500 })
+        return response.type === 'conversations' ? response.conversations.length : null
+      }
+      await waitFor(async () => expect(await unread()).toBe(0))
+      expect(server.requests.findLast((r) => r.type === 'act_on_conversations')).toMatchObject({
+        conversations: { type: 'matching', query: 'account:"work" label:"INBOX"' },
+        action: { type: 'read', read: true },
+      })
+      // Done, none are selected.
+      expect(client.mail.selected.value.size).toBe(0)
+      expect(toolbar().queryByRole('button', { name: 'Clear selection' })).toBeNull()
+    })
+
     it('labels the selection from its picker', async () => {
       const user = await start('/mail/work/INBOX')
       await user.keyboard('xjx')

@@ -75,6 +75,7 @@ function isResendable(body: ClientRequest): boolean {
   switch (body.type) {
     case 'list_accounts':
     case 'list_entries':
+    case 'count_conversations':
     case 'list_items':
     case 'list_home':
     case 'load_message':
@@ -106,6 +107,7 @@ function isResendable(body: ClientRequest): boolean {
       return true
     case 'undo':
     case 'modify_labels':
+    case 'act_on_conversations':
     case 'always_show_images':
     case 'delete_draft':
     case 'attach_to_draft':

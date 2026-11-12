@@ -10,8 +10,11 @@ use uplink_config::HomeBucket;
 use uplink_email::query::{self as mail, ListError, Unknown};
 use uplink_matrix::query::Rooms;
 use uplink_protocol::{
-    calendar::CalendarEvent, mail::ListPosition, matrix::Room, todos::Todo, Activity, Badge,
-    BadgedBucket, Badges, ErrorCode, ServerError, ServerResponse, BADGE_LIMIT,
+    calendar::CalendarEvent,
+    mail::{EntryId, ListPosition},
+    matrix::Room,
+    todos::Todo,
+    Activity, Badge, BadgedBucket, Badges, ErrorCode, ServerError, ServerResponse, BADGE_LIMIT,
 };
 use uplink_query::{Query, Term};
 use uplink_storage::rusqlite::{Connection, Transaction};
@@ -62,6 +65,35 @@ impl Items {
             matrix_accounts,
             home: Arc::new(ArcSwap::from_pointee(home)),
         }
+    }
+
+    /// How many conversations `query` lists, as `list` lists them.
+    pub async fn count(&self, query: String) -> Response {
+        let query = uplink_query::parse(&query, now()).map_err(|e| invalid(e.0))?;
+        let this = self.clone();
+        self.reader
+            .read(move |conn| {
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                this.check_names(&tx, &query)?;
+                let count = mail::count(&tx, &this.mail_accounts, &query, Unknown::False)
+                    .map_err(list_error)?;
+                Ok(ServerResponse::ConversationCount { count })
+            })
+            .await
+    }
+
+    /// The entries of every conversation `query` lists, as `list` lists
+    /// them, each conversation's oldest first.
+    pub async fn matching(&self, query: String) -> Result<Vec<Vec<EntryId>>, ServerError> {
+        let query = uplink_query::parse(&query, now()).map_err(|e| invalid(e.0))?;
+        let this = self.clone();
+        self.reader
+            .read(move |conn| {
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                this.check_names(&tx, &query)?;
+                mail::matching(&tx, &this.mail_accounts, &query, Unknown::False).map_err(list_error)
+            })
+            .await
     }
 
     pub fn configure_home(&self, home: Vec<HomeBucket>) {
@@ -219,12 +251,8 @@ impl Items {
         after: Option<ListPosition>,
         limit: u32,
     ) -> Result<mail::Page, ServerError> {
-        mail::conversations(tx, &self.mail_accounts, query, Unknown::False, after, limit).map_err(
-            |e| match e {
-                ListError::Invalid(e) => invalid(e.0),
-                ListError::Internal(e) => internal(e),
-            },
-        )
+        mail::conversations(tx, &self.mail_accounts, query, Unknown::False, after, limit)
+            .map_err(list_error)
     }
 
     /// Fails on a label or account no kind has: a misspelt name lists
@@ -278,6 +306,13 @@ fn invalid(why: String) -> ServerError {
 }
 
 /// Today, as days since 1970-01-01, and now, in ms, for a `limit` checked.
+fn list_error(e: ListError) -> ServerError {
+    match e {
+        ListError::Invalid(e) => invalid(e.0),
+        ListError::Internal(e) => internal(e),
+    }
+}
+
 fn checked(limit: u32) -> Result<(i64, i64), ServerError> {
     if !(1..=MAX_LIMIT).contains(&limit) {
         return Err(invalid(format!("limit must be between 1 and {MAX_LIMIT}")));
@@ -398,6 +433,24 @@ mod tests {
         assert_eq!(refused(list("tag:work").await), "no label or tag work");
         assert_eq!(refused(list("account:nobody").await), "no account nobody");
         assert!(refused(items.list("x".into(), None, 0).await).starts_with("limit"));
+        // Counted, and resolved to conversations, as listed: a room's tag
+        // is no mail's, and a name no kind has is refused.
+        assert!(matches!(
+            items.count("tag:home".into()).await.unwrap(),
+            ServerResponse::ConversationCount { count: 0 }
+        ));
+        assert_eq!(
+            items.matching("tag:home".into()).await.unwrap(),
+            Vec::<Vec<EntryId>>::new()
+        );
+        assert_eq!(
+            refused(items.count("tag:work".into()).await),
+            "no label or tag work"
+        );
+        assert_eq!(
+            items.matching("tag:work".into()).await.unwrap_err().message,
+            "no label or tag work"
+        );
 
         // An item is in the first bucket that matches it; a name no kind
         // has is false.

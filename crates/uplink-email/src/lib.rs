@@ -2,6 +2,7 @@
 //! the provider sync tasks (SPEC §8).
 
 pub mod account;
+pub mod actions;
 pub mod compose;
 pub mod gmail;
 pub mod image_senders;

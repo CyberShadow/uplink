@@ -137,6 +137,55 @@ pub enum ListScope {
     Except { labels: Vec<LabelId> },
 }
 
+/// Conversations to act on (SPEC §12.8).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ConversationSet {
+    /// As a list shows them: each its entries in the list's scope.
+    Listed { conversations: Vec<Vec<EntryId>> },
+    /// Every conversation `query` lists, as a search does (SPEC §8.7),
+    /// as far as its scope goes, when the op is done.
+    Matching { query: String },
+}
+
+/// What is done to conversations, as Gmail's actions do (SPEC §12.8): to
+/// each of their entries, but for marking unread and starring, which
+/// take the latest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ConversationAction {
+    /// Out of the Inbox.
+    Archive,
+    /// Into Trash.
+    Trash,
+    /// Into Spam; or, not spam, out of it and into the Inbox.
+    Spam {
+        spam: bool,
+    },
+    /// Read, every entry; unread, the latest.
+    Read {
+        read: bool,
+    },
+    /// The latest entry of each conversation without a star gets one; or
+    /// every star goes.
+    Star {
+        star: bool,
+    },
+    Important {
+        important: bool,
+    },
+    /// Adds a label of the conversations' account, or removes it.
+    Label {
+        label: LabelId,
+        add: bool,
+    },
+    /// Out of `from` into `to`, labels of the conversations' account.
+    Move {
+        from: LabelId,
+        to: LabelId,
+    },
+}
+
 /// Where a page of a message list ends: its last conversation's latest
 /// entry. Lists run newest first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

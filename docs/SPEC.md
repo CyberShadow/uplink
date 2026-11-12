@@ -866,6 +866,9 @@ than it buffers is closed; the client reconnects and resumes.
   matches change, only the server knows, so the client reloads it. A
   query that does not parse, or names a label or account there is none
   of, is `Invalid`, with why.
+- `CountConversations { query }` — how many conversations a query
+  lists, as a search does, loaded or not: the toolbar's offer to select
+  every match.
 - `ListConversation { entry }` — the entries of the entry's conversation,
   in Trash and Spam too (the client keeps the list's scope), oldest
   first: the conversation view's.
@@ -905,8 +908,12 @@ than it buffers is closed; the client reconnects and resumes.
   is still to send; each with its state. The server lists both kinds in
   one read, so as of one log position.
 - One request per op kind the client can dispatch, answered with the
-  tx_log id: `ModifyLabels { entries, add, remove }` covers archive,
-  label, mark read and star; `CreateDraft`, `EditDraft { draft, revision,
+  tx_log id: `ActOnConversations { conversations, action }` does an
+  action to conversations (§12.8), as one `SetLabels` op: the
+  conversations as a list shows them (each its entries in the list's
+  scope), or every one a query lists, as a search does, when the op is
+  done; `ModifyLabels { entries, add, remove }` changes labels of
+  entries (mark unread from a message on); `CreateDraft`, `EditDraft { draft, revision,
   splice }`, `DeleteDraft`, `SendDraft`, `CancelSend { item }`,
   `KeepSent { item }` (§6.7, §7); `KeepObserved { op }` — a refused
   change taken back to what the provider has (§6.6); `AlwaysShowImages
@@ -2692,7 +2699,12 @@ all or none (some selected, it selects none), with a menu of which to
 select (`*` and a letter's), and, while some are selected, buttons to
 archive, report spam (or not spam), delete, mark read or unread, flag,
 move and label them, and a menu to star and mark important or not (as
-each is not). Above a conversation, a toolbar does the same to it, after
+each is not). With every conversation loaded selected and more to load,
+it offers, as Gmail does, to select every one the list's query lists,
+counted (`CountConversations`) when offered. Actions then apply to all
+of them, as the server finds them when it does them (but flagging, which
+adds a to-do each, is disabled), and leave
+none selected. Above a conversation, a toolbar does the same to it, after
 a button back to the list, and says where it is in the list (`3 of 50`,
 or `of many` while more are to load), with buttons to the newer and the
 older one (not on a phone, as Gmail's app has none).
@@ -2818,8 +2830,12 @@ compose window.
 Actions apply to conversations (§4), from the list and from the
 conversation view, to their entries in the list's scope, as Gmail's do:
 archive, delete, spam, label, move, mark important and mark read to all
-of them; mark unread to the latest. Star: if each has a star, every
-star goes; else the latest of those without one gets one. Each message
+of them; mark unread to the latest. Star: the latest of each without a
+star gets one; unstar: every star goes. The server does them
+(`ActOnConversations`), so that an action on every match, of which the
+client has loaded a page, is the same; which way a toggle goes is the
+client's, as its button says: star if not each has one, else unstar;
+report spam unless each entry is spam, else not spam. Each message
 in the view has a star of its own. A row is unread if any entry is,
 names its senders (`me` for the account's own address; by first names
 if several), counts its messages, and shows the user's labels of any.

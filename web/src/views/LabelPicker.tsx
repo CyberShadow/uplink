@@ -1,5 +1,5 @@
 import type { Account, Label } from '../generated/protocol'
-import type { Thread } from '../stores/mail'
+import type { Targets, Thread } from '../stores/mail'
 import { useServices } from '../context'
 import { labelName, navLabels } from './Nav'
 import { type Check, Picker } from './Picker'
@@ -53,8 +53,9 @@ function MixedAccounts(props: { name: string; close: () => void }) {
   )
 }
 
-/** Toggles a user label on `targets` (`l`); folders are moved to instead. */
-export function LabelPicker(props: { targets: Thread[]; close: () => void }) {
+/** Toggles a user label (`l`): on `acting`, as `targets`, those shown, have
+ * it; folders are moved to instead. `done` follows the choice. */
+export function LabelPicker(props: { targets: Thread[]; acting: Targets; close: () => void; done: () => void }) {
   const { mail } = useServices()
   const account = useTargetAccount(props.targets)
   if (!account) return <MixedAccounts name="Label" close={props.close} />
@@ -69,16 +70,26 @@ export function LabelPicker(props: { targets: Thread[]; close: () => void }) {
       placeholder="Label as…"
       labels={navLabels(account).user.filter((l) => !l.folder)}
       check={check}
-      choose={(label) => mail.toggleLabel(props.targets, label)}
+      choose={(label) => {
+        mail.setLabel(props.acting, label, check(label) !== 'all')
+        props.done()
+      }}
       close={props.close}
     />
   )
 }
 
-/** Moves `targets` out of the label on show, or else the Inbox, into a
+/** Moves `acting` out of the label on show, or else the Inbox, into a
  * user label or the Inbox (`v`); or, if the account has folders, into
- * another folder. */
-export function MovePicker(props: { targets: Thread[]; from: string | null; close: () => void }) {
+ * another folder. `targets`, those shown, name the account; `done`
+ * follows the choice. */
+export function MovePicker(props: {
+  targets: Thread[]
+  acting: Targets
+  from: string | null
+  close: () => void
+  done: () => void
+}) {
   const { mail } = useServices()
   const account = useTargetAccount(props.targets)
   if (!account) return <MixedAccounts name="Move to" close={props.close} />
@@ -93,7 +104,10 @@ export function MovePicker(props: { targets: Thread[]; from: string | null; clos
       name="Move to"
       placeholder="Move to…"
       labels={targets.filter((l) => l !== from)}
-      choose={(label) => mail.move(props.targets, from, label)}
+      choose={(label) => {
+        mail.move(props.acting, from, label)
+        props.done()
+      }}
       close={props.close}
     />
   )

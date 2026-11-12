@@ -3,7 +3,7 @@ import { useLocation } from 'preact-iso'
 import type { Conversation, Entry, EntryId, Label, MessageContent, Sender } from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus, lines, useKeymap } from '../keymap'
-import { conversationKey, hasEntry, inScope, threadOf, type MailStore, type Thread, type View } from '../stores/mail'
+import { conversationKey, hasEntry, inScope, threadOf, type MailStore, type Targets, type Thread, type View } from '../stores/mail'
 import { respond, type Response } from '../compose/reply'
 import { allMailPath, inboxPath, mailPath, searchPath } from './App'
 import { Found } from './Found'
@@ -88,8 +88,11 @@ export function Mail(props: Props) {
     opened && shown && shown.length > 0
       ? { account: opened.latest.account, subject: shown.at(-1)!.subject, entries: shown }
       : null
+  // Those shown, which toggles go by; and what actions are done to.
   const targets: Thread[] =
     openId === null ? mail.targets.value.map(threadOf) : openThread ? [openThread] : []
+  const matching = openId === null && mail.matching.value
+  const acting: Targets = matching ? 'matching' : targets
 
   useEffect(() => {
     if (opened) mail.focusOn(opened)
@@ -115,42 +118,62 @@ export function Mail(props: Props) {
     if (to) open(to)
     else backToList()
   }
-  const ifTargets = (action: (targets: Thread[]) => void) => () => {
-    if (targets.length > 0) action(targets)
+  const ifTargets = (action: () => void) => () => {
+    if (targets.length > 0) action()
+  }
+  // Actions on every match leave none selected.
+  const done = () => {
+    if (openId !== null) backToList()
+    else if (matching) mail.selectNone()
   }
   // A message by itself has no list: back is where it was opened from.
   const backToList = view.kind === 'message' ? () => history.back() : () => route(pathFor())
 
   const common: Actions = {
-    archive: ifTargets((t) => {
-      mail.archive(t)
-      if (openId !== null) backToList()
+    archive: ifTargets(() => {
+      mail.archive(acting)
+      done()
     }),
-    markRead: ifTargets((t) => mail.markRead(t, true)),
-    markUnread: ifTargets((t) => {
-      mail.markRead(t, false)
-      if (openId !== null) backToList()
+    markRead: ifTargets(() => {
+      mail.markRead(acting, true)
+      if (matching) mail.selectNone()
     }),
-    delete: ifTargets((t) => {
-      mail.trash(t)
-      if (openId !== null) backToList()
+    markUnread: ifTargets(() => {
+      mail.markRead(acting, false)
+      done()
     }),
-    spam: ifTargets((t) => {
-      mail.toggleSpam(t)
-      if (openId !== null) backToList()
+    delete: ifTargets(() => {
+      mail.trash(acting)
+      done()
     }),
-    star: ifTargets((t) => mail.toggleStar(t)),
-    important: ifTargets((t) => mail.markImportant(t, true)),
-    notImportant: ifTargets((t) => mail.markImportant(t, false)),
+    spam: ifTargets(() => {
+      mail.setSpam(acting, !mail.spam(targets))
+      done()
+    }),
+    star: ifTargets(() => {
+      mail.setStar(acting, !targets.every((t) => mail.having(t, 'STARRED')))
+      if (matching) mail.selectNone()
+    }),
+    important: ifTargets(() => {
+      mail.markImportant(acting, true)
+      if (matching) mail.selectNone()
+    }),
+    notImportant: ifTargets(() => {
+      mail.markImportant(acting, false)
+      if (matching) mail.selectNone()
+    }),
     label: ifTargets(() => setPicking('label')),
     move: ifTargets(() => setPicking('move')),
-    // Unflags a conversation's flagged messages, or else flags its latest.
-    flag: ifTargets((t) => {
-      for (const thread of t) {
-        const flagged = thread.entries.filter((e) => todos.flagged.value.has(e.message))
-        const messages = flagged.length > 0 ? flagged.map((e) => e.message) : [thread.entries.at(-1)!.message]
-        for (const message of new Set(messages)) todos.toggleFlag(message, thread.subject ?? '(no subject)')
-      }
+    // Unflags a conversation's flagged messages, or else flags its latest:
+    // a to-do each, so of those shown, not every match.
+    ...(!matching && {
+      flag: ifTargets(() => {
+        for (const thread of targets) {
+          const flagged = thread.entries.filter((e) => todos.flagged.value.has(e.message))
+          const messages = flagged.length > 0 ? flagged.map((e) => e.message) : [thread.entries.at(-1)!.message]
+          for (const message of new Set(messages)) todos.toggleFlag(message, thread.subject ?? '(no subject)')
+        }
+      }),
     }),
   }
   useKeymap(
@@ -230,10 +253,14 @@ export function Mail(props: Props) {
           {list?.loaded && !opened ? 'This conversation is not in the list.' : 'Loading…'}
         </p>
       )}
-      {picking === 'label' && <LabelPicker targets={targets} close={() => setPicking(null)} />}
+      {picking === 'label' && (
+        <LabelPicker targets={targets} acting={acting} close={() => setPicking(null)} done={done} />
+      )}
       {picking === 'move' && (
         <MovePicker
           targets={targets}
+          acting={acting}
+          done={done}
           from={view.kind === 'label' ? view.label : null}
           close={() => setPicking(null)}
         />
@@ -270,19 +297,12 @@ function counted(name: string, unread: number): string {
 
 /** What the keys, and the toolbar, do to the targets. */
 type Actions = Record<
-  | 'archive'
-  | 'markRead'
-  | 'markUnread'
-  | 'delete'
-  | 'spam'
-  | 'star'
-  | 'important'
-  | 'notImportant'
-  | 'label'
-  | 'move'
-  | 'flag',
+  'archive' | 'markRead' | 'markUnread' | 'delete' | 'spam' | 'star' | 'important' | 'notImportant' | 'label' | 'move',
   () => void
->
+> & {
+  /** Not of every match: each flag is a to-do. */
+  flag?: () => void
+}
 
 /** An icon button of a toolbar; `null` disables it. */
 function ToolButton(props: { label: string; icon: IconName; action: (() => void) | null }) {
@@ -322,7 +342,7 @@ function ThreadActions(props: { mail: MailStore; actions: Actions; threads: Thre
         ) : (
           <ToolButton label="Mark as unread" icon="mail" action={actions.markUnread} />
         )}
-        <ToolButton label={flagged ? 'Unflag' : 'Flag for follow-up'} icon="flag" action={actions.flag} />
+        <ToolButton label={flagged ? 'Unflag' : 'Flag for follow-up'} icon="flag" action={actions.flag ?? null} />
       </span>
       <span class={styles.group}>
         <ToolButton label="Move to" icon="folder" action={actions.move} />
@@ -348,8 +368,15 @@ function ThreadActions(props: { mail: MailStore; actions: Actions; threads: Thre
  * of which to select, and, while some are, what to do to them. */
 function ListToolbar(props: { mail: MailStore; actions: Actions }) {
   const { mail, actions } = props
-  const conversations = mail.list.value!.conversations
+  const list = mail.list.value!
+  const { conversations } = list
   const chosen = conversations.filter((c) => mail.selected.value.has(conversationKey(c))).map(threadOf)
+  const matching = mail.matching.value
+  // With all those loaded selected, and more to load, Gmail's offer to
+  // select every match; and once they are, a way back.
+  const offer = !matching && chosen.length === conversations.length && list.next !== null
+  const count = useCount(mail, list.view, offer || matching)
+  const all = count === null ? 'all' : `all ${count.toLocaleString()}`
   return (
     <div class={styles.toolbar} role="toolbar" aria-label="Selection">
       <span class={styles.select}>
@@ -380,11 +407,45 @@ function ListToolbar(props: { mail: MailStore; actions: Actions }) {
       {chosen.length > 0 && (
         <>
           <ThreadActions mail={mail} actions={actions} threads={chosen} />
-          <span class={styles.chosen}>{chosen.length} selected</span>
+          <span class={styles.chosen}>
+            {matching ? (count === null ? 'All' : count.toLocaleString()) : chosen.length} selected
+          </span>
         </>
+      )}
+      {offer && (
+        <p class={styles.banner}>
+          All {chosen.length} conversations shown are selected.{' '}
+          <button type="button" onMouseDown={keepFocus} onClick={() => mail.selectMatching()}>
+            Select {all} conversations in this list
+          </button>
+        </p>
+      )}
+      {matching && (
+        <p class={styles.banner}>
+          {all[0].toUpperCase() + all.slice(1)} conversations in this list are selected.{' '}
+          <button type="button" onMouseDown={keepFocus} onClick={() => mail.selectNone()}>
+            Clear selection
+          </button>
+        </p>
       )}
     </div>
   )
+}
+
+/** How many conversations the list of `view` lists, loaded or not, while
+ * `wanted`; `null` until counted. Counted again each time it is wanted,
+ * not as the list changes: a count may take a while. */
+function useCount(mail: MailStore, view: View, wanted: boolean): number | null {
+  const [counted, setCounted] = useState<{ view: View; count: number | null } | null>(null)
+  useEffect(() => {
+    if (!wanted) return
+    let current = true
+    mail.count().then((count) => current && setCounted({ view, count }))
+    return () => {
+      current = false
+    }
+  }, [mail, view, wanted])
+  return counted?.view === view ? counted.count : null
 }
 
 /** Where the open conversation is in its list: `count` is `null` while
@@ -578,7 +639,7 @@ function ConversationView(props: {
         mail.markUnreadFrom(thread, entry.id)
         back()
       },
-      spam: mail.having(alone, 'SPAM') ? null : leaving(() => mail.toggleSpam([alone])),
+      spam: mail.having(alone, 'SPAM') ? null : leaving(() => mail.setSpam([alone], true)),
       showOriginal: () => window.open(rawPath(entry.id), '_blank', 'noopener'),
       download: () => {
         const link = document.createElement('a')
@@ -834,7 +895,7 @@ function Star(props: { mail: MailStore; thread: Thread }) {
       onMouseDown={keepFocus}
       onClick={(event) => {
         event.stopPropagation()
-        mail.toggleStar([thread])
+        mail.setStar([thread], !starred)
       }}
     >
       <Icon name="star" filled={starred} />

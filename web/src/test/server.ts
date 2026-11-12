@@ -644,6 +644,63 @@ export class FakeServer implements Requester, Blobs {
         this.undoableLabels(id, changes)
         return { type: 'dispatched', tx_log_id: id }
       }
+      case 'act_on_conversations': {
+        // As the server's actions.rs does them (SPEC §12.8).
+        const { conversations, action } = body
+        const listed =
+          conversations.type === 'listed'
+            ? conversations.conversations
+            : this.matching(conversations.query).map((c) => [...c.earlier.map((m) => m.id), c.latest.id])
+        if (listed.length === 0) throw new RequestError({ code: 'conflict', message: 'no conversation to act on' })
+        const changes: LabelState[] = []
+        for (const ids of listed) {
+          const entries = ids
+            .map((id) => this.entries.find((e) => e.id === id)!)
+            .sort((a, b) => a.received_at - b.received_at || a.id - b.id)
+          const system = (externalId: string) => this.labelId(entries[0].account, externalId)
+          const each = (label: LabelId, desired: boolean) => {
+            for (const e of entries) changes.push(...this.maybe(this.setLabel(e.id, label, desired)))
+          }
+          const latest = (label: LabelId, desired: boolean) =>
+            changes.push(...this.maybe(this.setLabel(entries.at(-1)!.id, label, desired)))
+          switch (action.type) {
+            case 'archive':
+              each(system('INBOX'), false)
+              break
+            case 'trash':
+              each(system('TRASH'), true)
+              break
+            case 'spam':
+              each(system('SPAM'), action.spam)
+              if (!action.spam) each(system('INBOX'), true)
+              break
+            case 'read':
+              if (action.read) each(system('UNREAD'), false)
+              else latest(system('UNREAD'), true)
+              break
+            case 'star':
+              if (!action.star) each(system('STARRED'), false)
+              else if (!entries.some((e) => e.labels.includes(system('STARRED')))) latest(system('STARRED'), true)
+              break
+            case 'important':
+              each(system('IMPORTANT'), action.important)
+              break
+            case 'label':
+              each(action.label, action.add)
+              break
+            case 'move':
+              each(action.to, true)
+              each(action.from, false)
+              break
+          }
+        }
+        const count = listed.reduce((n, ids) => n + ids.length, 0)
+        const id = this.commit({ type: 'user' }, `Changed ${count} messages`, [{ type: 'labels_changed', changes }])
+        this.undoableLabels(id, changes)
+        return { type: 'dispatched', tx_log_id: id }
+      }
+      case 'count_conversations':
+        return { type: 'conversation_count', count: this.matching(body.query).length }
       case 'always_show_images': {
         const sender = body.sender.toLowerCase()
         if (body.always) this.imageSenders.add(sender)
@@ -1157,6 +1214,11 @@ export class FakeServer implements Requester, Blobs {
       next: more && last ? { received_at: last.received_at, entry: last.id } : null,
       scope,
     }
+  }
+
+  /** Every conversation `query` lists, loaded or not. */
+  private matching(query: string): Conversation[] {
+    return this.listEntries(query, null, Infinity).conversations
   }
 
   /** Mail as `listEntries` lists it; of other kinds, those whose text has
