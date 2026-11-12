@@ -23,7 +23,7 @@ import { useServices } from '../context'
 import { focusShown, keepFocus, lines, pages, useKeymap } from '../keymap'
 import styles from './Room.module.css'
 import { RoomAvatar } from './RoomAvatar'
-import { date } from '../format'
+import { date, dateTime, time } from '../format'
 import { TEXT, displayName, sendSummary, senderColor, shown } from '../matrix'
 import { mention } from './Autocomplete'
 import { EventRow, type Line, type LineActions, lineActions, MembershipRun, type Reacting, reveal, type Overlay } from './RoomEvent'
@@ -758,17 +758,34 @@ function useMarkRead(room: Room, events: readonly RoomEvent[] | null) {
   }, [visible, last, read, room.id, matrix])
 }
 
+/** A message being sent, at the end of the timeline as it will be once
+ * synced back. Going out as wanted, it says so by a spinner where its
+ * time will be, and has its time once sent; otherwise it says, in words,
+ * what is to be done about it. */
 function Pending(props: { item: MatrixSend }) {
   const { item } = props
+  const state = matrixSendState(item)
+  const going = item.wanted && (item.state === 'queued' || item.state === 'sending')
+  const quiet = item.wanted && item.state !== 'refused'
   return (
-    <li class={`${styles.row} ${styles.pending}`}>
-      <span class={styles.time} />
+    <li class={[styles.row, going && styles.sending, !quiet && styles.pending].filter(Boolean).join(' ')}>
+      {going ? (
+        <span class={styles.time}>
+          <span class={styles.spinner} role="img" aria-label={state} title={state} />
+        </span>
+      ) : (
+        <time class={styles.time} dateTime={new Date(item.queued_at).toISOString()} title={dateTime(item.queued_at)}>
+          {time(item.queued_at)}
+        </time>
+      )}
       <span class={styles.sender} />
       <div class={styles.content}>
-        <span class={styles.body}>{sendSummary(item.content)}</span>{' '}
-        <span class={styles.muted}>{matrixSendState(item)}</span>
-        <MatrixSendActions item={item} class={styles.cancel} />
+        <span class={styles.body}>{sendSummary(item.content)}</span>
+        {!quiet && <span class={styles.muted}> {state}</span>}
       </div>
+      <span class={styles.sendActions}>
+        <MatrixSendActions item={item} compact />
+      </span>
     </li>
   )
 }
@@ -793,19 +810,31 @@ export function matrixSendState(item: MatrixSend): string {
 
 /** Cancelling a message being sent, or accepting that one sent could not
  * be undone (keeping it sent). */
-export function MatrixSendActions(props: { item: MatrixSend; class?: string }) {
+export function MatrixSendActions(props: { item: MatrixSend; compact?: boolean }) {
   const { item } = props
   const { matrix } = useServices()
   if (item.wanted && item.state !== 'sent') {
-    return (
-      <button type="button" class={props.class} onMouseDown={keepFocus} onClick={() => matrix.cancelSend(item.id)}>
+    // Compact, in its line, as an ×, shown on hover (Room.module.css).
+    return props.compact ? (
+      <button
+        type="button"
+        class={styles.cancel}
+        aria-label="Cancel"
+        title="Cancel sending"
+        onMouseDown={keepFocus}
+        onClick={() => matrix.cancelSend(item.id)}
+      >
+        <Icon name="x" />
+      </button>
+    ) : (
+      <button type="button" onMouseDown={keepFocus} onClick={() => matrix.cancelSend(item.id)}>
         Cancel
       </button>
     )
   }
   if (!item.wanted && item.state === 'sent' && (!item.retractable || item.error !== null)) {
     return (
-      <button type="button" class={props.class} onMouseDown={keepFocus} onClick={() => matrix.keepSent(item.id)}>
+      <button type="button" onMouseDown={keepFocus} onClick={() => matrix.keepSent(item.id)}>
         OK
       </button>
     )

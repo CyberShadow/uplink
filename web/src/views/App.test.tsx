@@ -1658,7 +1658,7 @@ describe('matrix', () => {
     const box = screen.getByRole('textbox', { name: 'Message Lounge' })
     expect(document.activeElement).toBe(box)
     await user.keyboard('First line{Shift>}{Enter}{/Shift}second line{Enter}')
-    expect(await screen.findByText('Waiting to send')).toBeTruthy()
+    expect(await screen.findByRole('img', { name: 'Waiting to send' })).toBeTruthy()
     expect(screen.getByText('First line second line')).toBeTruthy()
     expect((box as HTMLTextAreaElement).value).toBe('')
     expect(server.requests).toContainEqual({ type: 'send_matrix_message', room: room.id, content: text('First line\nsecond line') })
@@ -1666,7 +1666,7 @@ describe('matrix', () => {
     expect(screen.queryByRole('status')).toBeNull()
 
     server.echo(server.matrixSends[0].id)
-    await waitFor(() => expect(screen.queryByText('Waiting to send')).toBeNull())
+    await waitFor(() => expect(screen.queryByRole('img', { name: 'Waiting to send' })).toBeNull())
     expect(screen.getByText('First line second line')).toBeTruthy()
   })
 })
@@ -1846,7 +1846,7 @@ describe('room timeline', () => {
     })
     await within(line('Lunch?')).findByRole('button', { name: '👍 2', pressed: true })
     // Not listed apart while it goes out.
-    expect(within(timeline()).queryByText('Waiting to send')).toBeNull()
+    expect(within(timeline()).queryByRole('img', { name: 'Waiting to send' })).toBeNull()
 
     server.change(room.id, event, {
       reactions: [

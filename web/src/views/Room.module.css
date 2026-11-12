@@ -714,8 +714,86 @@ button.sender:hover .name {
   color: var(--muted);
 }
 
+/* A message going out: its body dims, and a spinner shows where its time
+   will be, if it takes a moment; most go out before they would. */
+.sending .body {
+  animation: dim 0.2s 0.4s both;
+}
+
+.spinner {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-left: 4px;
+  border: 1.5px solid var(--muted);
+  border-top-color: transparent;
+  border-radius: 50%;
+  vertical-align: -1px;
+  animation:
+    appear 0.2s 0.4s both,
+    spin 0.8s linear infinite;
+}
+
+@keyframes dim {
+  to {
+    color: var(--muted);
+  }
+}
+
+@keyframes appear {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: appear 0.2s 0.4s both;
+  }
+}
+
+/* No taller than the line, so that what shows in it moves nothing. */
+.sendActions {
+  display: flex;
+  align-items: center;
+  height: var(--line-height);
+}
+
+.sendActions > button {
+  display: inline-flex;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sendActions > button:hover {
+  color: var(--fg);
+}
+
+/* Of the line hovered, or that has the focus; always, where nothing hovers. */
 .cancel {
-  margin-left: 8px;
+  visibility: hidden;
+}
+
+.row:hover .cancel,
+.row:focus-within .cancel {
+  visibility: visible;
+}
+
+@media (hover: none) {
+  .cancel {
+    visibility: visible;
+  }
 }
 
 .composer {
