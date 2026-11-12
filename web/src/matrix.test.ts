@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { links, permalink } from './matrix'
+import { links, permalink, roomLink } from './matrix'
 
 describe('links', () => {
   it('of HTML, are its links, not what the text says', () => {
@@ -18,6 +18,15 @@ describe('links', () => {
 })
 
 describe('permalink', () => {
+  it('links to a room by its address, or by its id by way of the account\'s server', () => {
+    expect(roomLink({ room_id: '!abc:example.org', alias: '#hall:example.org' }, '@me:home.org')).toBe(
+      'https://matrix.to/#/%23hall%3Aexample.org',
+    )
+    const link = roomLink({ room_id: '!abc:example.org', alias: null }, '@me:home.org')
+    expect(link).toBe('https://matrix.to/#/!abc%3Aexample.org?via=home.org')
+    expect(permalink(link)).toEqual({ type: 'room', id: '!abc:example.org' })
+  })
+
   it('is what a matrix.to link names: a user, or a room', () => {
     expect(permalink('https://matrix.to/#/@bob:example.org')).toEqual({ type: 'user', id: '@bob:example.org' })
     expect(permalink('https://matrix.to/#/%40bob%3Aexample.org')).toEqual({ type: 'user', id: '@bob:example.org' })

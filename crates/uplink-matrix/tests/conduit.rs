@@ -1941,7 +1941,9 @@ async fn rooms_are_created_direct_chats_started_and_rooms_joined_by_address() {
             .await,
     );
     assert_eq!(joined_lobby, lobby.room_id());
-    listed(joined_lobby).await;
+    let listed_lobby = listed(joined_lobby).await;
+    // Its address, which the homeserver made canonical as it made it.
+    assert_eq!(listed_lobby.alias.as_deref(), Some("#lobby:localhost"));
     let resolved = uplink
         .matrix
         .resolve_alias("mx", "#lobby:localhost")

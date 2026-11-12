@@ -89,6 +89,8 @@ pub struct Room {
     pub children: Vec<String>,
     /// `m.room.topic`, if set and not empty.
     pub topic: Option<String>,
+    /// Its address (`m.room.canonical_alias`), if it has one.
+    pub alias: Option<String>,
     /// How many members have joined, as the homeserver counts them.
     pub joined_members: u64,
     /// Of a space, where the user puts it among the top-level spaces

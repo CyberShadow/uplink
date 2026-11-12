@@ -236,6 +236,15 @@ export function linkify(text: string): Array<{ text: string; href: string | null
 
 const URL = /\bhttps?:\/\/[^\s<>]+/g
 
+/** A `matrix.to` link to the room: by its address, if it has one;
+ * else by its id, by way of the account's homeserver (`me`'s), which is
+ * in it, as a room id of version 12 names none. */
+export function roomLink(room: { room_id: string; alias: string | null }, me: string): string {
+  if (room.alias !== null) return `https://matrix.to/#/${encodeURIComponent(room.alias)}`
+  const via = me.slice(me.indexOf(':') + 1)
+  return `https://matrix.to/#/${encodeURIComponent(room.room_id)}?via=${encodeURIComponent(via)}`
+}
+
 /** What a `matrix.to` link names: a user, or a room, by its id or an
  * alias; `null` of other links, and of links to an event. */
 export type Permalink = { type: 'user'; id: string } | { type: 'room'; id: string }

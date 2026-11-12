@@ -269,6 +269,7 @@ mod tests {
                         space_order: None,
                         tags: vec!["u.home".into()],
                         topic: None,
+                        alias: None,
                         pinned: vec![],
                         may_pin: false,
                         joined_members: 1,

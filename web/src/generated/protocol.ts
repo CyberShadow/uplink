@@ -780,6 +780,10 @@ children: Array<string>,
  */
 topic: string | null, 
 /**
+ * Its address (`m.room.canonical_alias`), if it has one.
+ */
+alias: string | null, 
+/**
  * How many members have joined, as the homeserver counts them.
  */
 joined_members: number, 
@@ -1124,4 +1128,4 @@ exception: boolean, };
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "06ad2b3722e4f1ce"
+export const PROTOCOL_VERSION = "d34758ecfed10012"

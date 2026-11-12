@@ -2940,7 +2940,11 @@ buttons.
   the server's refusal, and opens the room once listed.
 - **Room info**, a panel beside the timeline that the member count in
   the header opens, as Element's right panel: the name and topic, a form
-  if the account may change either; a box to invite a user by id; and
+  if the account may change either; the room's address
+  (`m.room.canonical_alias`, as synced), its id, and a `matrix.to` link
+  to it (by its address, else by its id `?via=` the account's
+  homeserver), each with a button to copy it; a box to invite a user by
+  id; and
   the members (`ListMembers`) by membership (joined, invited, asking to
   join, banned; not those who left), each by power then name, with
   their role (Owner, a creator of a room of version 12; Admin, 100;

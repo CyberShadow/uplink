@@ -2142,6 +2142,12 @@ describe('room timeline', () => {
         { type: 'name', name: 'Parlour' },
       ]),
     )
+    // Its id, and a link to it, to copy.
+    expect(within(info2).getByText('!lounge:example.org')).toBeTruthy()
+    expect(within(info2).queryByText('Address')).toBeNull()
+    await user.click(within(info2).getByRole('button', { name: 'Copy link' }))
+    expect(await navigator.clipboard.readText()).toBe('https://matrix.to/#/!lounge%3Aexample.org?via=example.org')
+    expect(within(info2).getByRole('button', { name: 'Copy link' }).textContent).toBe('Copied')
     await user.click(within(info2).getByRole('button', { name: 'Close room info' }))
     expect(screen.queryByRole('complementary', { name: 'Room info' })).toBeNull()
   })

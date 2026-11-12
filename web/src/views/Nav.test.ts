@@ -68,6 +68,7 @@ describe('roomTree', () => {
     avatar: null,
     children: [],
     topic: null,
+    alias: null,
     joined_members: 2,
     notifying: 0,
     highlighted: 0,

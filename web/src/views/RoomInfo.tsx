@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import type { MemberAction, MemberInfo, Room, RoomPowers } from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus } from '../keymap'
-import { MEMBER_ACTIONS, displayName, senderColor } from '../matrix'
+import { MEMBER_ACTIONS, displayName, roomLink, senderColor } from '../matrix'
 import styles from './RoomInfo.module.css'
 import { MemberAvatar } from './RoomEvent'
 import { useOpenJoined } from './RoomStarter'
@@ -36,6 +36,7 @@ export function RoomInfo(props: { room: Room; close: () => void; openMember: (us
       ) : (
         <>
           <Settings room={room} powers={joined ? state.powers : null} />
+          <Address room={room} />
           {joined && state.powers.invite && <Invite room={room} />}
           <MemberList room={room} members={state.members} open={props.openMember} />
         </>
@@ -78,6 +79,43 @@ function Settings(props: { room: Room; powers: RoomPowers | null }) {
         </button>
       </div>
     </form>
+  )
+}
+
+/** The room's address and id, and a link to it, to copy. */
+function Address(props: { room: Room }) {
+  const { room } = props
+  const { matrix } = useServices()
+  const me = matrix.accounts.value!.find((a) => a.id === room.account)!.mxid
+  return (
+    <dl class={styles.address}>
+      {room.alias !== null && <Copyable term="Address" value={room.alias} />}
+      <Copyable term="Room ID" value={room.room_id} />
+      <Copyable term="Link" value={roomLink(room, me)} />
+    </dl>
+  )
+}
+
+function Copyable(props: { term: string; value: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <>
+      <dt>{props.term}</dt>
+      <dd>
+        <code>{props.value}</code>
+        <button
+          type="button"
+          class={styles.small}
+          aria-label={`Copy ${props.term.toLowerCase()}`}
+          onClick={async () => {
+            await navigator.clipboard.writeText(props.value)
+            setCopied(true)
+          }}
+        >
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </dd>
+    </>
   )
 }
 

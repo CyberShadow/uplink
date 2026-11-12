@@ -439,6 +439,7 @@ impl Syncer {
             space_order: order(&room).await?,
             tags: tags(&room).await?,
             topic: room.topic().filter(|t| !t.trim().is_empty()),
+            alias: room.canonical_alias().map(|a| a.to_string()),
             pinned: room
                 .pinned_event_ids()
                 .unwrap_or_default()
