@@ -240,20 +240,22 @@ export function EventRow(
   )
 }
 
-/** Members' read receipts, at the line's end: a few avatars, and how
- * many more. */
+/** Members' read receipts, at the line's end, in a column as wide on
+ * every line (`--readers-width`): as many avatars as fit, or one fewer
+ * and how many more. */
 const READERS_SHOWN = 3
 
 function Readers(props: { room: Room; readers: readonly MemberReceipt[] }) {
   const { readers } = props
   if (readers.length === 0) return <span />
   const names = readers.map((r) => displayName(r.member.user, r.member.name))
+  const shown = readers.length > READERS_SHOWN ? READERS_SHOWN - 1 : READERS_SHOWN
   return (
     <span class={styles.readers} title={`Read by ${names.join(', ')}`} aria-label={`Read by ${names.join(', ')}`}>
-      {readers.slice(0, READERS_SHOWN).map((r) => (
-        <MemberAvatar key={r.member.user} room={props.room} user={r.member.user} name={displayName(r.member.user, r.member.name)} />
+      {readers.slice(0, shown).map((r, i) => (
+        <MemberAvatar key={r.member.user} room={props.room} user={r.member.user} name={names[i]} />
       ))}
-      {readers.length > READERS_SHOWN && <span class={styles.muted}>+{readers.length - READERS_SHOWN}</span>}
+      {readers.length > shown && <span class={styles.muted}>+{readers.length - shown}</span>}
     </span>
   )
 }

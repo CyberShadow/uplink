@@ -109,7 +109,10 @@
 .row {
   position: relative;
   display: grid;
-  grid-template-columns: 5ch var(--name-width) minmax(0, 1fr) auto;
+  /* The last column is the read receipts' (or a message being sent's
+     ×), as wide on every line, so that receipts coming and going move
+     no text. */
+  grid-template-columns: 5ch var(--name-width) minmax(0, 1fr) var(--readers-width);
   column-gap: 8px;
   /* A line's columns align on its first line, whatever follows: media
      too. */
@@ -117,6 +120,8 @@
   padding: 1px 16px;
   line-height: var(--line-height);
   --line-height: 21px;
+  /* Three avatars (`.memberAvatar`), or two and a count. */
+  --readers-width: 44px;
 }
 
 .row:hover,
@@ -558,8 +563,14 @@ button.sender:hover .name {
 .readers {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 1px;
   height: var(--line-height);
+}
+
+.readers .muted {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
 }
 
 .typing {
