@@ -23,6 +23,9 @@ importers:
       emojibase-data:
         specifier: 18.0.0
         version: 18.0.0(emojibase@18.0.0)
+      linkifyjs:
+        specifier: 4.4.0
+        version: 4.4.0
       preact:
         specifier: ^10.26.9
         version: 10.29.2

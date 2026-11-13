@@ -3,7 +3,7 @@
 // reactions and actions, state events summarized, and anything else as
 // its JSON.
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import type {
   MatrixSend,
@@ -23,6 +23,7 @@ import {
   displayName,
   json,
   linkify,
+  linkifyMessage,
   links,
   media,
   mxcPath,
@@ -508,6 +509,7 @@ function Html(props: { room: Room; html: string; openMember: (user: string) => v
   const root = useRef<HTMLSpanElement>(null)
   const { matrix } = useServices()
   const follow = useFollow(props.room, props.openMember)
+  const html = useMemo(() => linkifyMessage(props.html), [props.html])
   useLayoutEffect(() => {
     for (const anchor of root.current!.querySelectorAll('a[href]')) {
       const link = permalink(anchor.getAttribute('href')!)
@@ -522,7 +524,7 @@ function Html(props: { room: Room; html: string; openMember: (user: string) => v
       if (color && COLOR.test(color)) element.style.color = color
       if (background && COLOR.test(background)) element.style.backgroundColor = background
     }
-  }, [props.html, matrix, props.room])
+  }, [html, matrix, props.room])
   return (
     <span
       ref={root}
@@ -533,7 +535,7 @@ function Html(props: { room: Room; html: string; openMember: (user: string) => v
         const link = permalink(target.closest('a[href]')?.getAttribute('href') ?? '')
         if (link && follow(link)) event.preventDefault()
       }}
-      dangerouslySetInnerHTML={{ __html: props.html }}
+      dangerouslySetInnerHTML={{ __html: html }}
     />
   )
 }

@@ -501,6 +501,18 @@ describe('mail', () => {
     expect(screen.getByText(/> Lunch\?/)).toBeTruthy()
   })
 
+  it('links the web and email addresses of a plain-text message', async () => {
+    const mail = server.deliver('work', 'Links')
+    server.text.set(mail.message, 'See dlang.org, or write to bob@example.com.')
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('{Enter}')
+    const site = await screen.findByRole('link', { name: 'dlang.org' })
+    expect(site.getAttribute('href')).toBe('https://dlang.org')
+    expect(site.getAttribute('target')).toBe('_blank')
+    expect(screen.getByRole('link', { name: 'bob@example.com' }).getAttribute('href')).toBe('mailto:bob@example.com')
+    expect(site.closest('pre')!.textContent).toBe('See dlang.org, or write to bob@example.com.')
+  })
+
   it('shows a forward whole', async () => {
     const forward = server.deliver('work', 'Fwd: Lunch')
     server.text.set(forward.message, 'See below.\n\nOn Mon, Alice wrote:\n> Lunch?')

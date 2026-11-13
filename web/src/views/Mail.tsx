@@ -20,6 +20,7 @@ import { Found } from './Found'
 import { HtmlBody, QuoteToggle } from './HtmlBody'
 import { MenuButton } from './Menu'
 import { forwards, splitText } from './quote'
+import { linkify } from '../linkify'
 import { LabelPicker, MovePicker } from './LabelPicker'
 import { composePath } from './Outgoing'
 import { messagePath } from './Todos'
@@ -872,9 +873,32 @@ function TextBody(props: { text: string; fold: boolean }) {
   const [written, quote] = props.fold ? splitText(props.text) : [props.text, null]
   return (
     <>
-      <pre class={styles.body}>{written}</pre>
+      <pre class={styles.body}>
+        <Linked text={written} />
+      </pre>
       {quote !== null && <QuoteToggle shown={shown} toggle={() => setShown(!shown)} />}
-      {quote !== null && shown && <pre class={styles.body}>{quote}</pre>}
+      {quote !== null && shown && (
+        <pre class={styles.body}>
+          <Linked text={quote} />
+        </pre>
+      )}
+    </>
+  )
+}
+
+/** Plain text, its web and email addresses linked. */
+function Linked(props: { text: string }) {
+  return (
+    <>
+      {linkify(props.text).map((part, i) =>
+        part.href === null ? (
+          part.text
+        ) : (
+          <a key={i} href={part.href} target="_blank" rel="noopener noreferrer">
+            {part.text}
+          </a>
+        ),
+      )}
     </>
   )
 }

@@ -1,5 +1,6 @@
 // What Matrix events and sends say, as the views show it (SPEC §9).
 
+import { type Linked, linkify as linkifyText, linkifyHtml } from './linkify'
 import type { MatrixContent, MemberAction, RoomEvent, RoomId, RoomPreview } from './generated/protocol'
 
 /** Message types of text: shown as such, and edited. */
@@ -248,22 +249,31 @@ function membershipSummary(event: RoomEvent, target: string, content: Content, p
   }
 }
 
-/** Plain text, in parts: links to what look like URLs, and the rest. */
-export function linkify(text: string): Array<{ text: string; href: string | null }> {
-  const parts: Array<{ text: string; href: string | null }> = []
+/** A message's plain text, in parts: links to what look like web and
+ * email addresses, and to the users and rooms of addresses of theirs
+ * (`@alice:example.org`, `#room:example.org`), as `matrix.to` links,
+ * which are shown as pills; and the rest. */
+export function linkify(text: string): Linked {
+  const parts: Linked = []
   let last = 0
-  for (const match of text.matchAll(URL)) {
-    // Not the punctuation that ends the sentence it is in.
-    const url = match[0].replace(/[.,:;!?)\]'"]+$/, '')
-    if (match.index > last) parts.push({ text: text.slice(last, match.index), href: null })
-    parts.push({ text: url, href: url })
-    last = match.index + url.length
+  for (const match of text.matchAll(ADDRESS)) {
+    parts.push(...linkifyText(text.slice(last, match.index)))
+    parts.push({ text: match[0], href: `https://matrix.to/#/${encodeURIComponent(match[0])}` })
+    last = match.index + match[0].length
   }
-  if (last < text.length) parts.push({ text: text.slice(last), href: null })
+  parts.push(...linkifyText(text.slice(last)))
   return parts
 }
 
-const URL = /\bhttps?:\/\/[^\s<>]+/g
+/** A user's or room's address, as a word of its own (not in a URL): of
+ * a server by its name, with a dot, or by its IPv6 address, and its port,
+ * if any. Linkify would take the server's name for a web address. */
+const ADDRESS = /(?<=^|[\s(<[{"'])[@#][^\s:]+:(?:[\dA-Za-z-]+(?:\.[\dA-Za-z-]+)+|\[[\dA-Fa-f:.]+\])(?::\d+)?/g
+
+/** A message's HTML, its text linked as `linkify` links it. */
+export function linkifyMessage(html: string): string {
+  return linkifyHtml(html, linkify)
+}
 
 /** A `matrix.to` link to the room: by its address, if it has one;
  * else by its id, by way of the account's homeserver (`me`'s), which is
@@ -304,8 +314,12 @@ export function permalink(href: string): Permalink | null {
  * the HTML says: bridges put their network's markup there (Slack's
  * `<http://dlang.org|dlang.org>`). */
 export function links(body: string, html: string | null): string[] {
-  if (html === null) return linkify(body).flatMap((part) => (part.href === null ? [] : [part.href]))
-  const anchors = new DOMParser().parseFromString(html, 'text/html').querySelectorAll('a[href]')
-  return [...anchors].map((a) => a.getAttribute('href')!).filter((href) => /^https?:\/\//.test(href))
+  const hrefs =
+    html === null
+      ? linkify(body).flatMap((part) => (part.href === null ? [] : [part.href]))
+      : [...new DOMParser().parseFromString(linkifyMessage(html), 'text/html').querySelectorAll('a[href]')].map(
+          (a) => a.getAttribute('href')!,
+        )
+  return hrefs.filter((href) => /^https?:\/\//.test(href))
 }
 

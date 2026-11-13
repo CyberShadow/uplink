@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { gist, links, mxcPath, permalink, roomLink } from './matrix'
+import { gist, linkify, links, mxcPath, permalink, roomLink } from './matrix'
 import type { RoomPreview } from './generated/protocol'
 
 describe('gist', () => {
@@ -30,11 +30,34 @@ describe('links', () => {
     expect(links(body, html)).toEqual(['http://dlang.org'])
   })
 
-  it('of text, are its URLs', () => {
-    expect(links('See https://example.org/a, and http://example.com.', null)).toEqual([
+  it('of text, are its web addresses', () => {
+    expect(links('See https://example.org/a, and example.com; mail a@b.org.', null)).toEqual([
       'https://example.org/a',
-      'http://example.com',
+      'https://example.com',
     ])
+  })
+
+  it('of HTML, are also the web addresses of its text', () => {
+    expect(links('See *dlang.org*', 'See <b>dlang.org</b>')).toEqual(['https://dlang.org'])
+  })
+})
+
+describe('linkify', () => {
+  it("links users' and rooms' addresses to them, not their servers", () => {
+    expect(linkify('Ask @alice:example.org, in #room:matrix.org:8448.')).toEqual([
+      { text: 'Ask ', href: null },
+      { text: '@alice:example.org', href: 'https://matrix.to/#/%40alice%3Aexample.org' },
+      { text: ', in ', href: null },
+      { text: '#room:matrix.org:8448', href: 'https://matrix.to/#/%23room%3Amatrix.org%3A8448' },
+      { text: '.', href: null },
+    ])
+  })
+
+  it('links addresses only as words of their own', () => {
+    const url = 'https://matrix.to/#/@alice:example.org'
+    expect(linkify(url)).toEqual([{ text: url, href: url }])
+    expect(linkify('@bob: hi')).toEqual([{ text: '@bob: hi', href: null }])
+    expect(linkify('bob@example.com')).toEqual([{ text: 'bob@example.com', href: 'mailto:bob@example.com' }])
   })
 })
 
