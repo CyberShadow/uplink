@@ -11,6 +11,7 @@ import type {
   Place,
   Account,
   CalendarEvent,
+  TimeZone,
   EventDetails,
   ClientRequest,
   Conversation,
@@ -123,6 +124,8 @@ export class FakeServer implements Requester, Blobs {
   private nextAttachment = 1
 
   readonly calendar: CalendarEvent[] = []
+  /** The calendar's time zones, as configured. */
+  timeZones: TimeZone[] = []
   /** Of events, what else they have. */
   private readonly eventDetails = new Map<number, Partial<Omit<EventDetails, 'event' | 'raw'>>>()
   readonly todos: Todo[] = []
@@ -247,6 +250,12 @@ export class FakeServer implements Requester, Blobs {
     this.calendar.push(event)
     this.eventDetails.set(event.id, details)
     return event
+  }
+
+  /** The calendar is configured with `zones`, as the config file says. */
+  configureTimeZones(zones: TimeZone[]) {
+    this.timeZones = zones
+    this.client.notice({ type: 'calendar_configured' })
   }
 
   /** Says that `account`'s calendar changed. */
@@ -1171,6 +1180,7 @@ export class FakeServer implements Requester, Blobs {
           events: this.calendar
             .filter((e) => e.start < body.to && (e.end > body.from || e.start >= body.from))
             .sort((a, b) => a.start - b.start),
+          time_zones: this.timeZones,
         }
       case 'list_todos':
         return { type: 'todos', as_of: this.head(), todos: this.sortedTodos() }

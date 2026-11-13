@@ -256,6 +256,13 @@ home:
   - name: Leisure
     query: is:unread
 
+# The calendar (§10.2): its week's hours also in these time zones (IANA
+# names), in columns left of the browser's own. None, without it.
+calendar:
+  time_zones:
+    - label: Office
+      zone: Europe/Berlin
+
 accounts:
   # — Gmail — with the user's own Google Cloud project (Desktop app OAuth
   # client); scope gmail.modify (read, label, send; no permanent delete).
@@ -2538,7 +2545,12 @@ events in a row above the hours, timed events at local times and side
 by side where they overlap. The days' heads and all-day rows line up
 across the week (a grid's rows) and stay as the hours scroll; the
 hours are ticked in a column on the left; today is tinted, and the
-time a line across it. A week opens at 08:00, this week at an hour
+time a line across it. The hours are ticked in the browser's time
+zone and, in columns left of it, in those of `calendar.time_zones`
+(§3.2), each headed by its label: as Outlook's extra time zones, for
+the office's hours and UTC. (A zone's ticks are as of the week's first
+day, or today: a change of daylight saving time within the week is not
+followed.) Config changes apply at once (`CalendarConfigured`). A week opens at 08:00, this week at an hour
 before now. `/calendar/agenda/<date>`: the days with events in the
 fortnight from the date. Recurring events are marked ↻, changed
 occurrences ↻*. As Outlook shows them, an event cancelled (but still

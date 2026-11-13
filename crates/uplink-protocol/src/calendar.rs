@@ -109,6 +109,17 @@ pub enum AttendeeKind {
     Resource,
 }
 
+/// A time zone the week's hours are also shown in (SPEC §10.2), beside
+/// the browser's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct TimeZone {
+    /// What its column is headed.
+    pub label: String,
+    /// Its IANA name, e.g. `Europe/Berlin`.
+    pub zone: String,
+}
+
 /// An account's calendar changed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]

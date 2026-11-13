@@ -13,6 +13,7 @@ anyhow = "1"
 notify = "6"
 tokio = { version = "1", features = ["sync"] }
 tracing = "0.1"
+jiff = { version = "0.2.43", default-features = false, features = ["std", "tzdb-bundle-always"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -29,7 +29,7 @@ cursor: TxLogId, resumed: boolean, } | { "type": "response", request_id: number,
 /**
  * A notice of the moment (SPEC §5.5).
  */
-export type Notice = { "type": "home_changed" } | { "type": "typing" } & Typing | { "type": "receipts_changed" } & ReceiptsChanged | { "type": "security_changed" } & SecurityChanged;
+export type Notice = { "type": "home_changed" } | { "type": "calendar_configured" } | { "type": "typing" } & Typing | { "type": "receipts_changed" } & ReceiptsChanged | { "type": "security_changed" } & SecurityChanged;
 
 /**
  * Who is typing in the room, but the account: all of them, each time.
@@ -296,7 +296,11 @@ gaps: Array<TimelineGap>,
  * which follow it. With the events, so that one synced back
  * shows in one place or the other, never both or neither.
  */
-sends: Array<MatrixSend> | null, } | { "type": "room_events", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, } | { "type": "edits", as_of: TxLogId, room: RoomId, event: RoomEventId, edits: Array<RoomEvent>, } | { "type": "room_search", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, more: boolean, } | { "type": "url_preview", preview: UrlPreview | null, } | { "type": "pinned", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, } | { "type": "thread", as_of: TxLogId, room: RoomId, root: RoomEvent, replies: Array<RoomEvent>, } | { "type": "receipts", room: RoomId, receipts: Array<MemberReceipt>, } | { "type": "matrix_room_joined", room_id: string, } | { "type": "room_alias_resolved", room_id: string, } | { "type": "members", room: RoomId, members: Array<MemberInfo>, powers: RoomPowers, } | { "type": "todos", as_of: TxLogId, todos: Array<Todo>, } | { "type": "events", as_of: TxLogId, events: Array<CalendarEvent>, } | { "type": "event", as_of: TxLogId, details: EventDetails, } | { "type": "history", as_of: TxLogId, entries: Array<HistoryEntry>, 
+sends: Array<MatrixSend> | null, } | { "type": "room_events", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, } | { "type": "edits", as_of: TxLogId, room: RoomId, event: RoomEventId, edits: Array<RoomEvent>, } | { "type": "room_search", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, more: boolean, } | { "type": "url_preview", preview: UrlPreview | null, } | { "type": "pinned", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, } | { "type": "thread", as_of: TxLogId, room: RoomId, root: RoomEvent, replies: Array<RoomEvent>, } | { "type": "receipts", room: RoomId, receipts: Array<MemberReceipt>, } | { "type": "matrix_room_joined", room_id: string, } | { "type": "room_alias_resolved", room_id: string, } | { "type": "members", room: RoomId, members: Array<MemberInfo>, powers: RoomPowers, } | { "type": "todos", as_of: TxLogId, todos: Array<Todo>, } | { "type": "events", as_of: TxLogId, events: Array<CalendarEvent>, 
+/**
+ * The time zones configured to show the hours in too.
+ */
+time_zones: Array<TimeZone>, } | { "type": "event", as_of: TxLogId, details: EventDetails, } | { "type": "history", as_of: TxLogId, entries: Array<HistoryEntry>, 
 /**
  * Whether there are earlier ones than those listed.
  */
@@ -1329,9 +1333,23 @@ export type Attendee = { person: Person, kind: AttendeeKind, response: EventResp
 export type AttendeeKind = "required" | "optional" | "resource";
 
 /**
+ * A time zone the week's hours are also shown in (SPEC §10.2), beside
+ * the browser's.
+ */
+export type TimeZone = { 
+/**
+ * What its column is headed.
+ */
+label: string, 
+/**
+ * Its IANA name, e.g. `Europe/Berlin`.
+ */
+zone: string, };
+
+/**
  * An account's calendar changed.
  */
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "3015e0a59f22d132"
+export const PROTOCOL_VERSION = "854ad2a9e7f2bdc1"

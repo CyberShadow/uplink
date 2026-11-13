@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
-import type { Attendee, CalendarEvent, EventDetails, EventResponse, ShowAs } from '../generated/protocol'
+import type { Attendee, CalendarEvent, EventDetails, EventResponse, ShowAs, TimeZone } from '../generated/protocol'
 import { useServices } from '../context'
 import { useTitle } from '../title'
 import { date as dateString, dateTime, time } from '../format'
@@ -131,7 +131,7 @@ export function Calendar(props: { view?: string; date?: string; event?: string }
         {events === null ? (
           <p class={styles.placeholder}>Loading…</p>
         ) : view === 'week' ? (
-          <Week days={days} events={events} link={link} opened={opened} />
+          <Week days={days} events={events} zones={calendar.timeZones.value} link={link} opened={opened} />
         ) : (
           <Agenda days={days} events={events} link={link} opened={opened} />
         )}
@@ -196,12 +196,75 @@ function tooltip(event: CalendarEvent): string {
 
 type Link = (event: CalendarEvent) => string
 
-function Week(props: { days: Date[]; events: readonly CalendarEvent[]; link: Link; opened: number | null }) {
+/** The hour's tick, in `zone` (the browser's, if none): of the hour
+ * starting at `ms`. With other zones on show, compact: `13`, or `13:30`
+ * in a zone off by a half hour. */
+function tick(ms: number, zone: string | undefined, compact: boolean): string {
+  const parts = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: zone })
+    .formatToParts(ms)
+  const part = (type: string) => parts.find((p) => p.type === type)!.value
+  return compact && part('minute') === '00' ? part('hour') : `${part('hour')}:${part('minute')}`
+}
+
+/** The browser's time zone, briefly: `UTC`, `CET`, `GMT+1`. */
+function localZoneName(at: number): string {
+  return new Intl.DateTimeFormat('en-GB', { timeZoneName: 'short' })
+    .formatToParts(at)
+    .find((p) => p.type === 'timeZoneName')!.value
+}
+
+/** The hours, ticked: in the configured zones, then the browser's, each
+ * as of `day` (a change of daylight saving time within the week is not
+ * followed). */
+function Gutter(props: { day: Date; zones: readonly TimeZone[] }) {
+  const compact = props.zones.length > 0
+  const columns: { label: string; zone: string | undefined }[] = [
+    ...props.zones.map((z) => ({ label: z.label, zone: z.zone })),
+    { label: localZoneName(props.day.getTime()), zone: undefined },
+  ]
+  return (
+    <div class={styles.gutter} aria-hidden="true">
+      {columns.map(({ label, zone }, i) => (
+        <ol key={i} title={zone ?? label} style={{ height: `${24 * HOUR_PX}px` }}>
+          {Array.from({ length: 23 }, (_, h) => (
+            <li key={h} style={{ top: `${(h + 1) * HOUR_PX}px` }}>
+              {tick(props.day.getTime() + (h + 1) * HOUR, zone, compact)}
+            </li>
+          ))}
+        </ol>
+      ))}
+    </div>
+  )
+}
+
+/** The labels of the gutter's columns, above it, when there are several. */
+function ZoneLabels(props: { day: Date; zones: readonly TimeZone[] }) {
+  if (props.zones.length === 0) return <div class={styles.corner} />
+  return (
+    <div class={styles.corner}>
+      {[...props.zones.map((z) => z.label), localZoneName(props.day.getTime())].map((label, i) => (
+        <span key={i} title={label}>
+          {label}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function Week(props: {
+  days: Date[]
+  events: readonly CalendarEvent[]
+  zones: readonly TimeZone[]
+  link: Link
+  opened: number | null
+}) {
   const now = useNow()
   const week = useRef<HTMLDivElement>(null)
   const first = props.days[0].getTime()
   const last = addDays(props.days[props.days.length - 1], 1).getTime()
   const thisWeek = first <= now && now < last
+  // The day the hours are ticked as of: today, this week.
+  const reference = thisWeek ? midnight(dateString(new Date(now))) : props.days[0]
   // Opens at the working day, or, this week, at an hour before now: below
   // the heads, which stay, the hours start where the week does.
   useLayoutEffect(() => {
@@ -210,13 +273,14 @@ function Week(props: { days: Date[]; events: readonly CalendarEvent[]; link: Lin
     week.current!.scrollTop = hour * HOUR_PX - HOUR_PX / 4
   }, [first, thisWeek])
   return (
-    <div class={styles.week} ref={week} style={{ '--hour': `${HOUR_PX}px` }}>
-      <div class={styles.corner} />
-      <ol class={styles.gutter} aria-hidden="true" style={{ height: `${24 * HOUR_PX}px` }}>
-        {Array.from({ length: 23 }, (_, i) => (
-          <li key={i} style={{ top: `${(i + 1) * HOUR_PX}px` }}>{`${String(i + 1).padStart(2, '0')}:00`}</li>
-        ))}
-      </ol>
+    <div
+      class={styles.week}
+      ref={week}
+      style={{ '--hour': `${HOUR_PX}px`, '--zones': props.zones.length + 1 }}
+      data-zones={props.zones.length > 0 ? 'several' : undefined}
+    >
+      <ZoneLabels day={reference} zones={props.zones} />
+      <Gutter day={reference} zones={props.zones} />
       {props.days.map((day, column) => {
         const on = props.events.filter((e) => isOn(e, day))
         const start = day.getTime()

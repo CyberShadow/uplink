@@ -60,6 +60,9 @@ export class Client {
       case 'home_changed':
         this.home.changed()
         break
+      case 'calendar_configured':
+        this.calendar.configured()
+        break
       case 'typing':
       case 'receipts_changed':
       case 'security_changed':

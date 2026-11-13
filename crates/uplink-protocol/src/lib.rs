@@ -99,6 +99,8 @@ pub enum WsServerMsg {
 pub enum Notice {
     /// The home view's buckets were configured anew: list it again.
     HomeChanged,
+    /// The calendar was configured anew (its time zones): list it again.
+    CalendarConfigured,
     Typing(matrix::Typing),
     ReceiptsChanged(matrix::ReceiptsChanged),
     /// The account's devices, their trust or its key backup changed.
@@ -595,6 +597,8 @@ pub enum ServerResponse {
     Events {
         as_of: TxLogId,
         events: Vec<calendar::CalendarEvent>,
+        /// The time zones configured to show the hours in too.
+        time_zones: Vec<calendar::TimeZone>,
     },
     Event {
         as_of: TxLogId,

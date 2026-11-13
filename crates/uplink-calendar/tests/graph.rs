@@ -66,7 +66,7 @@ impl Setup {
         );
         Self {
             alice: Credentials::new(http.clone(), oauth::grant(&account), key),
-            calendar: Calendar::new(uplink_storage::open_reader(dir.path()).unwrap()),
+            calendar: Calendar::new(uplink_storage::open_reader(dir.path()).unwrap(), vec![]),
             sync,
             http,
             base,

@@ -44,6 +44,16 @@ home:
   - name: Leisure
     query: is:unread
 
+# The calendar's week shows the hours in the browser's time zone; these
+# add columns of them in other zones (IANA names), left of it. Changes
+# apply without a restart.
+# calendar:
+#   time_zones:
+#     - label: Home
+#       zone: Europe/Lisbon
+#     - label: Office
+#       zone: Europe/Berlin
+
 # Add accounts below (and drop the `[]`), then restart `uplink serve`.
 accounts: []
 

@@ -211,4 +211,19 @@ describe('calendar', () => {
     const review = within(day('Tuesday 2026-11-10')).getByRole('link', { name: /Review/ })
     expect(review.getAttribute('href')).toBe('/calendar/agenda/2026-11-10/2')
   })
+
+  it('ticks the hours in the time zones configured too, left of the browser\'s', async () => {
+    await start('/calendar/week/2026-11-11')
+    const week = await screen.findByRole('region', { name: 'Calendar' })
+    await waitFor(() => expect(within(week).getByText('08:00')).toBeTruthy())
+    server.configureTimeZones([
+      { label: 'Office', zone: 'Europe/Berlin' },
+      { label: 'India', zone: 'Asia/Kolkata' },
+    ])
+    // Monday 08:00 here (UTC−5) is 14:00 in Berlin and 18:30 in India.
+    await waitFor(() => expect(within(week).getByText('Office')).toBeTruthy())
+    const columns = [...week.querySelectorAll('[aria-hidden] ol')].map((ol) => [...ol.children].map((li) => li.textContent))
+    expect(columns.map((ticks) => ticks[7])).toEqual(['14', '18:30', '08'])
+    expect([...week.querySelectorAll('[class*=corner] span')].map((e) => e.textContent)).toEqual(['Office', 'India', 'GMT-5'])
+  })
 })

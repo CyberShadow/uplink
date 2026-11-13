@@ -284,7 +284,10 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
             config.home.clone(),
         ),
         todos: Todos::new(dispatcher.clone(), uplink_storage::open_reader(root)?),
-        calendar: Calendar::new(uplink_storage::open_reader(root)?),
+        calendar: Calendar::new(
+            uplink_storage::open_reader(root)?,
+            config.calendar.time_zones.clone(),
+        ),
         matrix: Matrix::new(
             dispatcher.clone(),
             uplink_storage::open_reader(root)?,
@@ -477,6 +480,16 @@ async fn handle_config_changed(
             }
             Err(e) => {
                 tracing::error!("config: home reload failed, keeping old config: {e:#}");
+            }
+        },
+        ConfigSection::Calendar => match Config::load(config_path) {
+            Ok(cfg) => {
+                services.calendar.configure(cfg.calendar.time_zones);
+                services.dispatcher.hub().notify(Notice::CalendarConfigured);
+                info!("config: calendar reloaded");
+            }
+            Err(e) => {
+                tracing::error!("config: calendar reload failed, keeping old config: {e:#}");
             }
         },
         ConfigSection::Accounts => {
@@ -1363,7 +1376,7 @@ mod tests {
                 outbox: Outbox::new(reader()),
                 items: items::Items::new(reader(), vec![], vec![], vec![]),
                 todos: Todos::new(dispatcher.clone(), reader()),
-                calendar: Calendar::new(reader()),
+                calendar: Calendar::new(reader(), vec![]),
                 reader: Arc::new(LogReader::new(reader(), 16)),
                 dispatcher,
             };

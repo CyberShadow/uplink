@@ -68,6 +68,11 @@ pkgs.testers.nixosTest {
       };
     };
 
+    # Alice's office is in Berlin; her colleagues' meetings, in New York.
+    services.uplink.settings.calendar.time_zones = [
+      { label = "Berlin"; zone = "Europe/Berlin"; }
+      { label = "NY"; zone = "America/New_York"; }
+    ];
     services.uplink.settings.accounts = [
       {
         id = "alice-work";

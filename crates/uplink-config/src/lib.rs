@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
-pub use uplink_protocol::Badge;
+pub use uplink_protocol::{calendar::TimeZone, Badge};
 
 // ── Config schema (SPEC §3.2) ─────────────────────────────────────────────────
 
@@ -23,6 +23,18 @@ pub struct Config {
     /// the first whose query matches it.
     #[serde(default = "default_home")]
     pub home: Vec<HomeBucket>,
+    #[serde(default)]
+    pub calendar: CalendarConfig,
+}
+
+/// How the calendar shows (SPEC §10.2).
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CalendarConfig {
+    /// Time zones the week's hours are also shown in, left to right,
+    /// beside the browser's.
+    #[serde(default)]
+    pub time_zones: Vec<TimeZone>,
 }
 
 fn default_send_delay_secs() -> u32 {
@@ -427,7 +439,22 @@ impl Config {
             account.place(&config.data_dir);
         }
         config.check_home().context("in home")?;
+        config.check_calendar().context("in calendar")?;
         Ok(config)
+    }
+
+    /// Fails on a time zone not of the IANA database, or without a label.
+    fn check_calendar(&self) -> Result<()> {
+        for zone in &self.calendar.time_zones {
+            anyhow::ensure!(
+                !zone.label.trim().is_empty(),
+                "time zone {} has no label",
+                zone.zone
+            );
+            jiff::tz::TimeZone::get(&zone.zone)
+                .with_context(|| format!("time zone {:?}", zone.zone))?;
+        }
+        Ok(())
     }
 
     /// Fails on a bucket without a name, or of a name another has, or
@@ -472,6 +499,7 @@ pub enum ConfigSection {
     /// Restart required.
     SendDelay,
     Home,
+    Calendar,
 }
 
 #[derive(Debug, Clone)]
@@ -499,6 +527,9 @@ pub fn diff_config_sections(old: &Config, new: &Config) -> Vec<ConfigSection> {
     }
     if old.home != new.home {
         changed.push(ConfigSection::Home);
+    }
+    if old.calendar != new.calendar {
+        changed.push(ConfigSection::Calendar);
     }
     // M3+: per-account add/remove/modify diffing
     if old.accounts != new.accounts {
@@ -707,6 +738,36 @@ mod tests {
         );
     }
     use std::io::Write;
+
+    #[test]
+    fn calendar_time_zones_are_of_the_iana_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = |zones: &str| {
+            let path = dir.path().join("uplink.yaml");
+            std::fs::write(
+                &path,
+                format!(
+                    "server: {{ bind: \"127.0.0.1:1\", basic_auth: {{ user: a, password_bcrypt: x }} }}\n\
+                     data_dir: data\ncalendar:\n  time_zones: {zones}\n"
+                ),
+            )
+            .unwrap();
+            Config::load(&path)
+        };
+        let ok =
+            config("[{ label: Office, zone: Europe/Berlin }, { label: UTC, zone: UTC }]").unwrap();
+        assert_eq!(
+            ok.calendar
+                .time_zones
+                .iter()
+                .map(|z| z.zone.as_str())
+                .collect::<Vec<_>>(),
+            ["Europe/Berlin", "UTC"]
+        );
+        let err = config("[{ label: Office, zone: Europe/Berlinn }]").unwrap_err();
+        assert!(format!("{err:#}").contains("Europe/Berlinn"), "{err:#}");
+        assert!(config("[{ label: \" \", zone: UTC }]").is_err());
+    }
 
     /// Happy-path: verbatim SPEC §3.2 example (with all account kinds).
     #[test]
@@ -1095,7 +1156,22 @@ data_dir: /tmp/uplink
             send_delay_secs: 10,
             accounts: vec![],
             home: default_home(),
+            calendar: CalendarConfig::default(),
         }
+    }
+
+    #[test]
+    fn diff_detects_calendar_change() {
+        let old = base_config();
+        let mut new = old.clone();
+        new.calendar.time_zones.push(TimeZone {
+            label: "UTC".into(),
+            zone: "UTC".into(),
+        });
+        assert_eq!(
+            diff_config_sections(&old, &new),
+            vec![ConfigSection::Calendar]
+        );
     }
 
     #[test]

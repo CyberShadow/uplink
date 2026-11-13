@@ -2,7 +2,7 @@
 // a query and refreshed when a log entry says a calendar changed.
 
 import { signal } from '@preact/signals'
-import type { CalendarEvent, EventDetails, EventId, LogEntry } from '../generated/protocol'
+import type { CalendarEvent, EventDetails, EventId, LogEntry, TimeZone } from '../generated/protocol'
 import { RequestError, type Requester } from '../connection'
 import { Loader, query } from './query'
 
@@ -18,6 +18,8 @@ export class CalendarStore {
   /** Its events, by start; `null` until they are in. */
   readonly events = signal<readonly CalendarEvent[] | null>(null)
   readonly error = signal<string | null>(null)
+  /** The time zones configured to tick the hours in too. */
+  readonly timeZones = signal<readonly TimeZone[]>([])
 
   private loader = new Loader(async () => {
     const range = this.range.value
@@ -25,7 +27,10 @@ export class CalendarStore {
     try {
       const response = await query(this.server, { type: 'list_events', ...range }, 'events')
       // The range may have changed meanwhile; then another load follows.
-      if (this.range.value === range) this.events.value = response.events
+      if (this.range.value === range) {
+        this.events.value = response.events
+        this.timeZones.value = response.time_zones
+      }
     } catch (error) {
       this.error.value = (error as Error).message
     }
@@ -75,6 +80,11 @@ export class CalendarStore {
   reset() {
     this.loader.invalidate()
     this.openedLoader.invalidate()
+  }
+
+  /** The calendar was configured anew. */
+  configured() {
+    this.loader.invalidate()
   }
 
   apply(entry: LogEntry) {

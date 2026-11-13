@@ -182,6 +182,7 @@ fn declarations() -> String {
         Person,
         Attendee,
         AttendeeKind,
+        TimeZone,
         CalendarChanged,
     );
     out

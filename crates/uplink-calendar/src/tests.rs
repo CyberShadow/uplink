@@ -23,7 +23,7 @@ impl Db {
             Registry::new(),
             Arc::new(Hub::new(64)),
         );
-        let calendar = Calendar::new(uplink_storage::open_reader(dir.path()).unwrap());
+        let calendar = Calendar::new(uplink_storage::open_reader(dir.path()).unwrap(), vec![]);
         Self {
             _dir: dir,
             dispatcher,
