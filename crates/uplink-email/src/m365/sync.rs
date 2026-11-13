@@ -196,6 +196,22 @@ impl Provider for M365Sync {
         }
 
         let mut labels = labels;
+        // The first listing (or one resumed: delta links are recorded only
+        // as it ends) says how many messages it is storing, for its
+        // progress; what is new is fetched in batches, each recorded.
+        if state.folders.is_empty() && !new.is_empty() {
+            let total = known.len() - removed.len() + new.len();
+            account
+                .observe(MailboxObserved {
+                    labels: labels.take(),
+                    sync_state: Some(mailbox::SyncState::Listing {
+                        state: serde_json::to_value(&state).expect("sync state serializes"),
+                        total: Some(u32::try_from(total).unwrap_or(u32::MAX)),
+                    }),
+                    ..observed()
+                })
+                .await?;
+        }
         let mut new = new;
         // Oldest first, so the newest are the last recorded.
         new.sort_by(|a, b| {
