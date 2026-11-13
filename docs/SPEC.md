@@ -1879,7 +1879,11 @@ nor IPv6 ones carrying such an IPv4 one: mapped, compatible, NAT64's or
 6to4's; checked as names
 resolve and at each of at most 5 redirects, with no HTTP proxy to resolve
 past the check), so that a mail cannot make the server reach what only
-it can. It serves only `image/*` responses, of at most 16 MB, within
+it can; but for the hosts in `remote_images.private_hosts`, exact names
+the user trusts mail's images of (an intranet's), fetched from at
+whatever they resolve to, as of the next connection to them. Refused, it
+says so: `<host> resolves only to addresses not of the public internet
+(<addresses>)`, not as a failure of DNS. It serves only `image/*` responses, of at most 16 MB, within
 30 s, with `nosniff`, `Content-Security-Policy: sandbox` (an SVG opened
 as a page runs nothing in uplink's origin) and a day's private caching;
 anything else is a 502.

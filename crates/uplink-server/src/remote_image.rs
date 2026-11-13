@@ -2,8 +2,10 @@
 //! sender learns of uplink's server instead of the user's browser: its
 //! address, and a fixed user agent; none of the browser's headers or
 //! cookies. Only public addresses are fetched from: a mail must not make
-//! the server reach what only it can (its network, a cloud's metadata).
+//! the server reach what only it can (its network, a cloud's metadata);
+//! but for the hosts the user names (`remote_images.private_hosts`).
 
+use arc_swap::ArcSwap;
 use axum::{
     http::{header, StatusCode},
     response::{IntoResponse, Response},
@@ -13,6 +15,7 @@ use reqwest::{
     redirect, Url,
 };
 use std::{
+    collections::HashSet,
     net::{IpAddr, SocketAddr},
     sync::Arc,
     time::Duration,
@@ -31,16 +34,23 @@ const MAX_REDIRECTS: usize = 5;
 pub struct RemoteImages {
     client: reqwest::Client,
     admits: fn(IpAddr) -> bool,
+    /// Names fetched from whatever they resolve to, as [`host_name`] has
+    /// them; shared with the resolver, and swapped as the config changes.
+    private_hosts: Arc<ArcSwap<HashSet<String>>>,
 }
 
 impl RemoteImages {
     /// `admits`: [`public`], but for tests.
     pub fn new(admits: fn(IpAddr) -> bool) -> Self {
+        let private_hosts = Arc::new(ArcSwap::from_pointee(HashSet::new()));
         let client = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             // A proxy would resolve names itself, past `admits`.
             .no_proxy()
-            .dns_resolver(Arc::new(Admitted(admits)))
+            .dns_resolver(Arc::new(Admitted {
+                admits,
+                private_hosts: private_hosts.clone(),
+            }))
             .redirect(redirect::Policy::custom(move |attempt| {
                 if attempt.previous().len() >= MAX_REDIRECTS {
                     attempt.error("too many redirects")
@@ -54,7 +64,19 @@ impl RemoteImages {
             .timeout(TIMEOUT)
             .build()
             .expect("the client's settings are valid");
-        Self { client, admits }
+        Self {
+            client,
+            admits,
+            private_hosts,
+        }
+    }
+
+    /// The hosts fetched from though their addresses are not public, as
+    /// of the next connection: one open to a host taken off may serve
+    /// until it idles out.
+    pub fn set_private_hosts(&self, hosts: &[String]) {
+        self.private_hosts
+            .store(Arc::new(hosts.iter().map(|h| host_name(h)).collect()));
     }
 
     /// The image at `url`, as a response never shown by the browser as a
@@ -207,7 +229,7 @@ impl std::fmt::Display for NotAdmitted {
         write!(
             f,
             "{} resolves only to addresses not of the public internet ({}), \
-             which images are not fetched from",
+             which images are not fetched from but for remote_images.private_hosts",
             self.name,
             refused.join(", ")
         )
@@ -216,17 +238,30 @@ impl std::fmt::Display for NotAdmitted {
 
 impl std::error::Error for NotAdmitted {}
 
-/// Resolves names to their admitted addresses only.
-struct Admitted(fn(IpAddr) -> bool);
+/// A host name as compared: lowercase, without a trailing dot.
+fn host_name(name: &str) -> String {
+    name.trim().trim_end_matches('.').to_ascii_lowercase()
+}
+
+/// Resolves names to their admitted addresses only, but for the private
+/// hosts, whose addresses are all admitted.
+struct Admitted {
+    admits: fn(IpAddr) -> bool,
+    private_hosts: Arc<ArcSwap<HashSet<String>>>,
+}
 
 impl Resolve for Admitted {
     fn resolve(&self, name: Name) -> Resolving {
-        let admits = self.0;
+        let admits = self.admits;
+        let private = self
+            .private_hosts
+            .load()
+            .contains(&host_name(name.as_str()));
         Box::pin(async move {
             let (addrs, refused): (Vec<SocketAddr>, Vec<SocketAddr>) =
                 tokio::net::lookup_host((name.as_str(), 0))
                     .await?
-                    .partition(|a| admits(a.ip()));
+                    .partition(|a| private || admits(a.ip()));
             if addrs.is_empty() {
                 let mut refused: Vec<IpAddr> = refused.iter().map(SocketAddr::ip).collect();
                 refused.dedup();
@@ -309,9 +344,34 @@ mod tests {
         assert!(
             body.starts_with("localhost resolves only to addresses not of the public internet (")
                 && body.contains("127.0.0.1")
-                && body.ends_with("), which images are not fetched from"),
+                && body.ends_with(
+                    "), which images are not fetched from but for remote_images.private_hosts"
+                ),
             "{body}"
         );
+    }
+
+    /// A private host is fetched from at its private addresses, named in
+    /// any case; others, and its addresses named themselves, are not.
+    #[tokio::test]
+    async fn private_hosts_are_fetched_from() {
+        let origin = origin().await;
+        let images = RemoteImages::new(public);
+        images.set_private_hosts(&["LocalHost.".to_owned()]);
+        let at_localhost = || format!("http://localhost:{}/a.png", origin.port());
+        let response = images.get(at_localhost().parse().unwrap()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = images
+            .get(format!("http://{origin}/a.png").parse().unwrap())
+            .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        // Taken off the list, it is not fetched from: a client's own (one
+        // already connected may reuse its connection until idle).
+        let images = RemoteImages::new(public);
+        images.set_private_hosts(&["localhost".to_owned()]);
+        images.set_private_hosts(&[]);
+        let response = images.get(at_localhost().parse().unwrap()).await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     }
 
     #[tokio::test]

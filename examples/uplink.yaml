@@ -54,6 +54,15 @@ home:
 #     - label: Office
 #       zone: Europe/Berlin
 
+# Mail's remote images are fetched by the server, from public addresses
+# only, so that a mail cannot make it reach your network. Hosts named here
+# are fetched from though they resolve to private addresses (e.g. your
+# intranet's GitLab, whose notifications have images): exact names, and
+# any mail's images of them are fetched. Changes apply without a restart.
+# remote_images:
+#   private_hosts:
+#     - git.example.org
+
 # Add accounts below (and drop the `[]`), then restart `uplink serve`.
 accounts: []
 

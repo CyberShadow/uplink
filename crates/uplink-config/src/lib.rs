@@ -25,6 +25,8 @@ pub struct Config {
     pub home: Vec<HomeBucket>,
     #[serde(default)]
     pub calendar: CalendarConfig,
+    #[serde(default)]
+    pub remote_images: RemoteImagesConfig,
 }
 
 /// How the calendar shows (SPEC §10.2).
@@ -35,6 +37,17 @@ pub struct CalendarConfig {
     /// beside the browser's.
     #[serde(default)]
     pub time_zones: Vec<TimeZone>,
+}
+
+/// How mail's remote images are fetched (SPEC §8.9).
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteImagesConfig {
+    /// Hosts fetched from though they resolve to addresses not of the
+    /// public internet (an intranet's): exact names, any mail's images of
+    /// which make the server reach them.
+    #[serde(default)]
+    pub private_hosts: Vec<String>,
 }
 
 fn default_send_delay_secs() -> u32 {
@@ -568,6 +581,7 @@ pub enum ConfigSection {
     SendDelay,
     Home,
     Calendar,
+    RemoteImages,
 }
 
 #[derive(Debug, Clone)]
@@ -598,6 +612,9 @@ pub fn diff_config_sections(old: &Config, new: &Config) -> Vec<ConfigSection> {
     }
     if old.calendar != new.calendar {
         changed.push(ConfigSection::Calendar);
+    }
+    if old.remote_images != new.remote_images {
+        changed.push(ConfigSection::RemoteImages);
     }
     // M3+: per-account add/remove/modify diffing
     if old.accounts != new.accounts {
@@ -1267,6 +1284,7 @@ data_dir: /tmp/uplink
             accounts: vec![],
             home: default_home(),
             calendar: CalendarConfig::default(),
+            remote_images: RemoteImagesConfig::default(),
         }
     }
 
@@ -1290,6 +1308,19 @@ data_dir: /tmp/uplink
         let mut new = old.clone();
         new.home.pop();
         assert_eq!(diff_config_sections(&old, &new), vec![ConfigSection::Home]);
+    }
+
+    #[test]
+    fn diff_detects_remote_images_change() {
+        let old = base_config();
+        let mut new = old.clone();
+        new.remote_images
+            .private_hosts
+            .push("git.example.org".into());
+        assert_eq!(
+            diff_config_sections(&old, &new),
+            vec![ConfigSection::RemoteImages]
+        );
     }
 
     #[test]
