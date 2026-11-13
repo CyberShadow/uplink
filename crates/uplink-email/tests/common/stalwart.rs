@@ -31,14 +31,6 @@ pub struct Stalwart {
     _server: tokio::process::Child,
 }
 
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
 /// Whom a Stalwart knows, and how it signs them in.
 pub enum Directory<'a> {
     /// Alice and Bob, by password.
@@ -93,7 +85,7 @@ fields.email = "email""#
             rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
         std::fs::write(dir.join("cert.pem"), cert.pem()).unwrap();
         std::fs::write(dir.join("key.pem"), key_pair.serialize_pem()).unwrap();
-        let (imap, smtp, pop3, http) = (free_port(), free_port(), free_port(), free_port());
+        let ([imap, smtp, pop3, http], _picking) = super::free_ports().await;
         let d = dir.display();
         let config = format!(
             r#"
@@ -165,7 +157,7 @@ enable = true
         };
         for _ in 0..300 {
             let mut up = true;
-            for port in [imap, smtp, pop3] {
+            for port in [imap, smtp, pop3, http] {
                 up &= tokio::net::TcpStream::connect(("127.0.0.1", port))
                     .await
                     .is_ok();

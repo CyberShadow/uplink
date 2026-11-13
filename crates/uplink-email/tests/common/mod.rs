@@ -351,11 +351,7 @@ pub async fn start_emulate(
         .expect("UPLINK_EMULATE must name the emulate binary (the dev shell sets it)");
     let config_file = dir.join(format!("emulate-{service}.yaml"));
     std::fs::write(&config_file, config).unwrap();
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
+    let ([port], _picking) = free_ports().await;
     let child = tokio::process::Command::new(emulate)
         .args(["start", "--service", service, "--port", &port.to_string()])
         .arg("--config")
@@ -378,6 +374,19 @@ pub async fn start_emulate(
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     panic!("emulate did not start");
+}
+
+/// `N` distinct ports free on 127.0.0.1, for a server of the test's to
+/// listen on; and a lock no other test picks ports while held, to hold
+/// until the server listens on them: else another test could be handed
+/// them too, and connect to this test's server.
+pub async fn free_ports<const N: usize>() -> ([u16; N], tokio::sync::MutexGuard<'static, ()>) {
+    static PICKING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let picking = PICKING.lock().await;
+    // All bound at once, to be distinct.
+    let listeners: [_; N] =
+        std::array::from_fn(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap());
+    (listeners.map(|l| l.local_addr().unwrap().port()), picking)
 }
 
 /// Runs `uplink oauth init`'s flow, signing in on emulate's form as a

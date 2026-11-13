@@ -306,6 +306,10 @@ async fn start_emulate(dir: &Path) -> (String, tokio::process::Child) {
         "microsoft:\n  users:\n    - email: alice@example.com\n      name: Alice\n",
     )
     .unwrap();
+    // Ports picked and listened on one test at a time, so that no two
+    // tests are handed the same.
+    static PICKING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _picking = PICKING.lock().await;
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
