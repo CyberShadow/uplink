@@ -7,6 +7,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use reqwest::{header, Method, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Duration;
 use uplink_config::M365AccountConfig;
 use uplink_storage::seal::MasterKey;
 
@@ -43,6 +44,9 @@ pub struct Message {
     pub conversation_id: Option<String>,
     /// RFC 3339.
     pub received_date_time: String,
+    /// Graph gives `null` for some messages (seen in a folder's delta), which
+    /// are taken as read rather than failing the folder's whole page.
+    #[serde(deserialize_with = "read_unless_false")]
     pub is_read: bool,
     pub flag: Flag,
     pub importance: Importance,
@@ -70,6 +74,11 @@ pub enum Importance {
     Low,
     Normal,
     High,
+}
+
+/// `isRead`, of which `null` is read.
+fn read_unless_false<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    Ok(Option::<bool>::deserialize(d)?.unwrap_or(true))
 }
 
 /// An item of a delta page: a message as it is now, or one that left the
@@ -348,13 +357,19 @@ impl Graph {
     }
 
     /// Sends a request, refreshing the access token once if it is refused.
+    /// A GET that Graph answers with a server error or 429 is sent again,
+    /// after the `Retry-After` it asks for or a backoff: Graph answers so
+    /// now and then, and a failure fails the whole sync round, of which
+    /// the first lists the mailbox.
     async fn send<B: Serialize>(
         &self,
         method: Method,
         url: &str,
         body: Option<&B>,
     ) -> Result<reqwest::Response> {
-        for retry in [false, true] {
+        let mut refreshed = false;
+        let mut attempt = 1;
+        loop {
             let mut request = self
                 .http
                 .request(method.clone(), url)
@@ -367,14 +382,38 @@ impl Graph {
                 .send()
                 .await
                 .with_context(|| format!("{method} {url}"))?;
-            if response.status() == StatusCode::UNAUTHORIZED && !retry {
+            let status = response.status();
+            if status == StatusCode::UNAUTHORIZED && !refreshed {
+                refreshed = true;
                 self.credentials.invalidate().await;
+                continue;
+            }
+            if method == Method::GET
+                && attempt < GET_ATTEMPTS
+                && (status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS)
+            {
+                let wait = retry_after(&response)
+                    .unwrap_or(Duration::from_secs(1 << (attempt - 1)))
+                    .min(MAX_RETRY_WAIT);
+                tracing::info!("GET {url}: Graph answered {status}; again in {wait:?}");
+                tokio::time::sleep(wait).await;
+                attempt += 1;
                 continue;
             }
             return Ok(response);
         }
-        unreachable!("the second attempt returns")
     }
+}
+
+/// How many times a GET is sent while Graph answers it with a server
+/// error or 429.
+const GET_ATTEMPTS: u32 = 5;
+const MAX_RETRY_WAIT: Duration = Duration::from_secs(60);
+
+/// The wait a response's `Retry-After` asks for, in seconds.
+fn retry_after(response: &reqwest::Response) -> Option<Duration> {
+    let secs = response.headers().get(header::RETRY_AFTER)?.to_str().ok()?;
+    secs.trim().parse().ok().map(Duration::from_secs)
 }
 
 /// What Graph made of a message to send: refused for a 4xx other than
@@ -475,5 +514,21 @@ mod tests {
         };
         assert_eq!(m.flag.flag_status, FlagStatus::Flagged);
         assert_eq!(m.importance, Importance::High);
+    }
+
+    #[test]
+    fn messages_whose_read_state_is_null_are_read() {
+        let page: DeltaPage<Delta> = serde_json::from_str(
+            r#"{"value": [
+                {"id": "b", "parentFolderId": "f", "conversationId": "c",
+                 "receivedDateTime": "2026-11-03T10:00:00Z", "isRead": null,
+                 "flag": {"flagStatus": "notFlagged"}, "importance": "normal"}
+            ]}"#,
+        )
+        .unwrap();
+        let Delta::Message(m) = &page.value[0] else {
+            panic!("a message")
+        };
+        assert!(m.is_read);
     }
 }
