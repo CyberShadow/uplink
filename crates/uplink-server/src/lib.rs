@@ -332,6 +332,9 @@ pub async fn serve_with_listener(
         services,
         remote_images: RemoteImages::new(remote_image::public),
     };
+    state
+        .remote_images
+        .set_private_hosts(&config.remote_images.private_hosts);
 
     let (tx, rx) = tokio::sync::broadcast::channel::<ConfigChanged>(16);
 
@@ -343,6 +346,7 @@ pub async fn serve_with_listener(
         tls_holder.clone(),
         basic_auth.clone(),
         state.services.clone(),
+        state.remote_images.clone(),
     ));
 
     // Set before any session is served, which is sent them at once.
@@ -394,6 +398,7 @@ async fn config_reload_task(
     tls_holder: Option<Arc<ArcSwap<ServerConfig>>>,
     basic_auth: Arc<ArcSwap<BasicAuthConfig>>,
     services: Services,
+    remote_images: RemoteImages,
 ) {
     loop {
         match rx.recv().await {
@@ -404,6 +409,7 @@ async fn config_reload_task(
                     tls_holder.as_ref(),
                     &basic_auth,
                     &services,
+                    &remote_images,
                 )
                 .await;
             }
@@ -421,6 +427,7 @@ async fn handle_config_changed(
     tls_holder: Option<&Arc<ArcSwap<ServerConfig>>>,
     basic_auth: &Arc<ArcSwap<BasicAuthConfig>>,
     services: &Services,
+    remote_images: &RemoteImages,
 ) {
     match event.section {
         ConfigSection::Tls => match Config::load(config_path) {
@@ -477,6 +484,15 @@ async fn handle_config_changed(
             }
             Err(e) => {
                 tracing::error!("config: home reload failed, keeping old config: {e:#}");
+            }
+        },
+        ConfigSection::RemoteImages => match Config::load(config_path) {
+            Ok(cfg) => {
+                remote_images.set_private_hosts(&cfg.remote_images.private_hosts);
+                info!("config: remote_images reloaded");
+            }
+            Err(e) => {
+                tracing::error!("config: remote_images reload failed, keeping old config: {e:#}");
             }
         },
         ConfigSection::Accounts => {
