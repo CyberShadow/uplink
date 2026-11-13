@@ -10,7 +10,7 @@ import { useSeen } from '../marks'
 import { restoreFocus } from '../historyFocus'
 import { keepFocus, useKeymap } from '../keymap'
 import type { Client } from '../stores/client'
-import { Calendar, calendarPath, today } from './Calendar'
+import { Calendar, calendarPath, defaultView, today } from './Calendar'
 import { Help, WhichKey } from './Help'
 import { Icon } from './Icon'
 import { History } from './History'
@@ -96,7 +96,7 @@ function Shell() {
     up: () => route('/'),
     goHistory: () => route('/history'),
     undo: () => history.undoLast(),
-    goCalendar: () => route(calendarPath('week', today())),
+    goCalendar: () => route(calendarPath(defaultView(), today())),
     compose: async () => {
       const id = account()
       if (!id) return

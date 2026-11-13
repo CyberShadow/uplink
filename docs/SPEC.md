@@ -2540,7 +2540,9 @@ cannot be previewed shows none.
 
 ### 10.2 Display
 
-`/calendar/week/<date>`: the week from Monday, a column a day, all-day
+`/calendar/day/<date>`: a day, as a week's column; the calendar opens
+in it on a phone (narrower than 700px), which a week's seven columns
+would not fit. `/calendar/week/<date>`: the week from Monday, a column a day, all-day
 events in a row above the hours, timed events at local times and side
 by side where they overlap. The days' heads and all-day rows line up
 across the week (a grid's rows) and stay as the hours scroll; the
@@ -2562,8 +2564,8 @@ on a phone), with what `get_event` has, and a button to join its
 online meeting; `Esc` closes it. Home's agenda and search's events
 link to it so. All-day events are on their (UTC) dates, which
 are the same days wherever one is; timed events are shown in the
-browser's time zone. `j`/`k` move by week or fortnight, `t` goes to
-today, `w` and `a` switch views, `g c` goes to the calendar.
+browser's time zone. `j`/`k` move by day, week or fortnight, `t` goes
+to today, `d`, `w` and `a` switch views, `g c` goes to the calendar.
 
 ### 10.3 No write in MVP
 

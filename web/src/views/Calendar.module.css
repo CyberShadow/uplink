@@ -65,7 +65,7 @@
   flex: 1;
   min-width: 0;
   display: grid;
-  grid-template-columns: var(--gutter) repeat(7, minmax(88px, 1fr));
+  grid-template-columns: var(--gutter) repeat(var(--days), minmax(88px, 1fr));
   grid-template-rows: var(--head) auto auto;
   overflow: auto;
 }

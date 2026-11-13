@@ -19,7 +19,16 @@ const SHORT_PX = 32
 /** The hour a week not of today opens at. */
 const WORKDAY_START = 8
 
-export type CalendarView = 'week' | 'agenda'
+export type CalendarView = 'day' | 'week' | 'agenda'
+
+/** How many days each view shows. */
+const SPAN: Record<CalendarView, number> = { day: 1, week: 7, agenda: AGENDA_DAYS }
+
+/** The view the calendar opens in: a day on a phone, which a week's
+ * columns would not fit, else the week. */
+export function defaultView(): CalendarView {
+  return matchMedia('(max-width: 700px)').matches ? 'day' : 'week'
+}
 
 /** The view from `date`; with `event`, that event opened. */
 export function calendarPath(view: CalendarView, date: string, event?: number): string {
@@ -77,16 +86,23 @@ function isOn(event: CalendarEvent, day: Date): boolean {
   return event.start < end && (event.end > start || (event.end === event.start && event.start >= start))
 }
 
-/** The week or agenda from `date`, of every account's calendar; with
+function viewOf(name: string | undefined): CalendarView {
+  if (name === undefined) return defaultView()
+  if (name === 'day' || name === 'week' || name === 'agenda') return name
+  throw new Error(`no calendar view ${name}`)
+}
+
+/** The day, week or agenda from `date`, of every account's calendar; with
  * `event`, that event opened beside it. */
 export function Calendar(props: { view?: string; date?: string; event?: string }) {
   const { calendar } = useServices()
   const { route } = useLocation()
-  const view: CalendarView = props.view === 'agenda' ? 'agenda' : 'week'
+  const view = viewOf(props.view)
   const date = props.date ?? today()
   const opened = props.event === undefined ? null : Number(props.event)
   const first = view === 'week' ? weekStart(midnight(date)) : midnight(date)
-  const days = Array.from({ length: view === 'week' ? 7 : AGENDA_DAYS }, (_, i) => addDays(first, i))
+  const span = SPAN[view]
+  const days = Array.from({ length: span }, (_, i) => addDays(first, i))
   const from = first.getTime()
   const to = addDays(first, days.length).getTime()
   // All-day events are on UTC days, which may start before the local ones.
@@ -99,16 +115,17 @@ export function Calendar(props: { view?: string; date?: string; event?: string }
   const go = (target: Date, inView = view) => route(calendarPath(inView, dateString(target)))
   const closed = calendarPath(view, date)
   useKeymap({
-    next: () => go(addDays(first, view === 'week' ? 7 : AGENDA_DAYS)),
-    previous: () => go(addDays(first, view === 'week' ? -7 : -AGENDA_DAYS)),
+    next: () => go(addDays(first, span)),
+    previous: () => go(addDays(first, -span)),
     today: () => go(new Date()),
+    dayView: () => route(calendarPath('day', date, opened ?? undefined)),
     weekView: () => route(calendarPath('week', date, opened ?? undefined)),
     agendaView: () => route(calendarPath('agenda', date, opened ?? undefined)),
     ...(opened !== null && { up: () => route(closed) }),
   })
 
   const events = calendar.events.value
-  const title = `${view === 'week' ? 'Week of' : 'From'} ${dateString(first)}`
+  const title = { day: dayName(first), week: `Week of ${dateString(first)}`, agenda: `From ${dateString(first)}` }[view]
   useTitle(title, 'Calendar')
   const link = (event: CalendarEvent) => calendarPath(view, date, event.id)
   return (
@@ -116,9 +133,18 @@ export function Calendar(props: { view?: string; date?: string; event?: string }
       <header class={styles.header}>
         <h1>{title}</h1>
         <nav class={styles.controls}>
-          <a href={calendarPath(view, dateString(addDays(first, view === 'week' ? -7 : -AGENDA_DAYS)))}>‹</a>
-          <a href={calendarPath(view, today())}>Today</a>
-          <a href={calendarPath(view, dateString(addDays(first, view === 'week' ? 7 : AGENDA_DAYS)))}>›</a>
+          <a href={calendarPath(view, dateString(addDays(first, -span)))} aria-label="Previous" title="Previous (k)">
+            ‹
+          </a>
+          <a href={calendarPath(view, today())} title="Today (t)">
+            Today
+          </a>
+          <a href={calendarPath(view, dateString(addDays(first, span)))} aria-label="Next" title="Next (j)">
+            ›
+          </a>
+          <a href={calendarPath('day', date)} aria-current={view === 'day' ? 'page' : undefined}>
+            Day
+          </a>
           <a href={calendarPath('week', date)} aria-current={view === 'week' ? 'page' : undefined}>
             Week
           </a>
@@ -130,7 +156,7 @@ export function Calendar(props: { view?: string; date?: string; event?: string }
       <div class={styles.body}>
         {events === null ? (
           <p class={styles.placeholder}>Loading…</p>
-        ) : view === 'week' ? (
+        ) : view !== 'agenda' ? (
           <Week days={days} events={events} zones={calendar.timeZones.value} link={link} opened={opened} />
         ) : (
           <Agenda days={days} events={events} link={link} opened={opened} />
@@ -276,7 +302,7 @@ function Week(props: {
     <div
       class={styles.week}
       ref={week}
-      style={{ '--hour': `${HOUR_PX}px`, '--zones': props.zones.length + 1 }}
+      style={{ '--hour': `${HOUR_PX}px`, '--zones': props.zones.length + 1, '--days': props.days.length }}
       data-zones={props.zones.length > 0 ? 'several' : undefined}
     >
       <ZoneLabels day={reference} zones={props.zones} />

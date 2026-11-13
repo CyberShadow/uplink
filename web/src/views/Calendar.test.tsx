@@ -226,4 +226,16 @@ describe('calendar', () => {
     expect(columns.map((ticks) => ticks[7])).toEqual(['14', '18:30', '08'])
     expect([...week.querySelectorAll('[class*=corner] span')].map((e) => e.textContent)).toEqual(['Office', 'India', 'GMT-5'])
   })
+
+  it('shows a day, moving by day, and switches to it with d', async () => {
+    const user = await start('/calendar/week/2026-11-11')
+    await user.keyboard('d')
+    expect(location.pathname).toBe('/calendar/day/2026-11-11')
+    await screen.findByRole('heading', { name: 'Wednesday 2026-11-11', level: 1 })
+    await user.keyboard('k')
+    expect(location.pathname).toBe('/calendar/day/2026-11-10')
+    await waitFor(() => expect(timed('Tuesday 2026-11-10')).toHaveLength(3))
+    expect(screen.queryByRole('region', { name: 'Monday 2026-11-09' })).toBeNull()
+    expect(screen.getByRole('link', { name: 'Day' }).getAttribute('aria-current')).toBe('page')
+  })
 })

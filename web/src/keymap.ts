@@ -68,6 +68,7 @@ export type Action =
   | 'goHistory'
   | 'goCalendar'
   | 'today'
+  | 'dayView'
   | 'weekView'
   | 'agendaView'
   | 'search'
@@ -118,8 +119,8 @@ function nav(action: Action, key: string, label: string, help: string): Binding 
 }
 
 export const KEYMAP: Binding[] = [
-  { action: 'next', keys: ['j'], label: 'j', help: 'Next conversation (in a room: the newer message; in the calendar: the next week or agenda)', repeats: true },
-  { action: 'previous', keys: ['k'], label: 'k', help: 'Previous conversation (in a room: the older message; in the calendar: the previous week or agenda)', repeats: true },
+  { action: 'next', keys: ['j'], label: 'j', help: 'Next conversation (in a room: the newer message; in the calendar: the next day, week or agenda)', repeats: true },
+  { action: 'previous', keys: ['k'], label: 'k', help: 'Previous conversation (in a room: the older message; in the calendar: the previous day, week or agenda)', repeats: true },
   { action: 'lineDown', keys: ['ArrowDown'], label: '↓', help: 'Down a line, as j (in a list)', repeats: true },
   { action: 'lineUp', keys: ['ArrowUp'], label: '↑', help: 'Up a line, as k (in a list)', repeats: true },
   { action: 'pageUp', keys: ['PageUp'], label: 'PgUp', help: "Scroll up a page (in a room, its box's too)", repeats: true },
@@ -186,6 +187,7 @@ export const KEYMAP: Binding[] = [
   { action: 'goHistory', ...go('z'), help: 'Go to History (undo anything)' },
   { action: 'goCalendar', ...go('c'), help: 'Go to the calendar' },
   { action: 'today', keys: ['t'], label: 't', help: 'Today (in the calendar)' },
+  { action: 'dayView', keys: ['d'], label: 'd', help: 'Day view (in the calendar)' },
   { action: 'weekView', keys: ['w'], label: 'w', help: 'Week view (in the calendar)' },
   { action: 'agendaView', keys: ['a'], label: 'a', help: 'Agenda view (in the calendar)' },
   { action: 'search', keys: ['/'], label: '/', help: 'Search' },
