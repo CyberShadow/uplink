@@ -31,14 +31,14 @@ describe('links', () => {
   })
 
   it('of text, are its web addresses', () => {
-    expect(links('See https://example.org/a, and example.com; mail a@b.org.', null)).toEqual([
+    expect(links('See https://example.org/a, and www.example.com; mail a@b.org.', null)).toEqual([
       'https://example.org/a',
-      'https://example.com',
+      'https://www.example.com',
     ])
   })
 
   it('of HTML, are also the web addresses of its text', () => {
-    expect(links('See *dlang.org*', 'See <b>dlang.org</b>')).toEqual(['https://dlang.org'])
+    expect(links('See *www.dlang.org*', 'See <b>www.dlang.org</b>')).toEqual(['https://www.dlang.org'])
   })
 })
 

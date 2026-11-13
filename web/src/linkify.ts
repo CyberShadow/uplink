@@ -3,14 +3,16 @@ import { find } from 'linkifyjs'
 /** Text, in parts: links, and the rest. */
 export type Linked = Array<{ text: string; href: string | null }>
 
-/** Plain text, in parts: links to what look like web addresses, with
- * their scheme or without (`www.example.org`, `dlang.org`), and email
- * addresses; and the rest. Of the schemes, only those of the web and of
- * mail: no `file:` links. */
+/** Plain text, in parts: links to what look like web addresses, and
+ * email addresses; and the rest. A web address is linked with its scheme
+ * or of a `www.` host, as Thunderbird links them: a name with a dot and
+ * no scheme is as likely a file's (`README.md`). Of the schemes, only
+ * those of the web and of mail: no `file:` links. */
 export function linkify(text: string): Linked {
   const parts: Linked = []
   let last = 0
   for (const link of find(text, { defaultProtocol: 'https' })) {
+    if (link.type === 'url' && !/^(?:[a-z][\da-z+.-]*:|www\.)/i.test(link.value)) continue
     if (!SCHEME.test(link.href)) continue
     if (link.start > last) parts.push({ text: text.slice(last, link.start), href: null })
     parts.push({ text: link.value, href: link.href })

@@ -2,16 +2,20 @@ import { describe, expect, it } from 'vitest'
 import { linkify, linkifyHtml } from './linkify'
 
 describe('linkify', () => {
-  it('links web addresses, with their scheme or without, and email addresses', () => {
-    expect(linkify('See www.example.org/a(b), dlang.org! Or mail bob@example.com.')).toEqual([
+  it('links web addresses, of their scheme or of a www. host, and email addresses', () => {
+    expect(linkify('See www.example.org/a(b), https://dlang.org! Or mail bob@example.com.')).toEqual([
       { text: 'See ', href: null },
       { text: 'www.example.org/a(b)', href: 'https://www.example.org/a(b)' },
       { text: ', ', href: null },
-      { text: 'dlang.org', href: 'https://dlang.org' },
+      { text: 'https://dlang.org', href: 'https://dlang.org' },
       { text: '! Or mail ', href: null },
       { text: 'bob@example.com', href: 'mailto:bob@example.com' },
       { text: '.', href: null },
     ])
+  })
+
+  it('does not link names with a dot, as of files', () => {
+    expect(linkify('foo README.md main.py dlang.org foo')).toEqual([{ text: 'foo README.md main.py dlang.org foo', href: null }])
   })
 
   it('leaves out the punctuation around a link', () => {
@@ -35,17 +39,18 @@ describe('linkify', () => {
 
 describe('linkifyHtml', () => {
   it('links text, not that of links or code', () => {
-    const html = '<b>See dlang.org</b> <a href="https://x.org">y.org</a> <code>z.org</code> <pre>w.org</pre> v.org'
+    const html =
+      '<b>See www.dlang.org</b> <a href="https://x.org">www.y.org</a> <code>www.z.org</code> <pre>www.w.org</pre> www.v.org'
     expect(linkifyHtml(html, linkify)).toBe(
-      '<b>See <a href="https://dlang.org" target="_blank" rel="noopener noreferrer">dlang.org</a></b> ' +
-        '<a href="https://x.org">y.org</a> <code>z.org</code> <pre>w.org</pre> ' +
-        '<a href="https://v.org" target="_blank" rel="noopener noreferrer">v.org</a>',
+      '<b>See <a href="https://www.dlang.org" target="_blank" rel="noopener noreferrer">www.dlang.org</a></b> ' +
+        '<a href="https://x.org">www.y.org</a> <code>www.z.org</code> <pre>www.w.org</pre> ' +
+        '<a href="https://www.v.org" target="_blank" rel="noopener noreferrer">www.v.org</a>',
     )
   })
 
   it('escapes the text it links', () => {
-    expect(linkifyHtml('&lt;b&gt; x.org', linkify)).toBe(
-      '&lt;b&gt; <a href="https://x.org" target="_blank" rel="noopener noreferrer">x.org</a>',
+    expect(linkifyHtml('&lt;b&gt; www.x.org', linkify)).toBe(
+      '&lt;b&gt; <a href="https://www.x.org" target="_blank" rel="noopener noreferrer">www.x.org</a>',
     )
   })
 })
