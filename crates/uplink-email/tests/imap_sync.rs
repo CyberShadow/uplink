@@ -350,9 +350,15 @@ async fn signs_in_by_xoauth2() {
         "Message-ID: <oauth@uplink.test>\r\nFrom: {ALICE}\r\nTo: {ALICE}\r\n\
          Date: Tue, 3 Nov 2026 10:00:00 +0000\r\nSubject: oauth 1\r\n\r\nhi\r\n"
     );
-    smtp::send(account.login(), &sign_in, &stalwart.tls, raw.as_bytes())
-        .await
-        .unwrap();
+    smtp::send(
+        account.login(),
+        &account.smtp,
+        &sign_in,
+        &stalwart.tls,
+        raw.as_bytes(),
+    )
+    .await
+    .unwrap();
     eventually("the message to arrive", || async {
         let mut alice = session::connect(&account, &sign_in, &stalwart.tls)
             .await

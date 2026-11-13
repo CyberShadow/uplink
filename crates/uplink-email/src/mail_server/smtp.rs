@@ -10,17 +10,18 @@ use mail_send::{
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_rustls::TlsConnector;
-use uplink_config::{Login, Security};
+use uplink_config::{Login, MailServer, Security};
 
 /// How long the server may take to answer.
 const TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Submits `raw` (RFC 5322, as built) from the account to whom its To,
-/// Cc and Bcc name; Bcc is not in what they receive. Which step failed
+/// Submits `raw` (RFC 5322, as built) from the account, by its SMTP
+/// server `smtp`, to whom its To, Cc and Bcc name; Bcc is not in what they receive. Which step failed
 /// says whether the message may have gone out: only once all of it is
 /// written, and before the server's answer, may it have.
 pub async fn send(
     account: Login<'_>,
+    smtp: &MailServer,
     sign_in: &SignIn,
     tls: &TlsConnector,
     raw: &[u8],
@@ -34,10 +35,10 @@ pub async fn send(
         Secret::Password(password) => Credentials::new(user, password),
         Secret::AccessToken(token) => Credentials::new_xoauth2(user, token),
     };
-    let host = &account.smtp.host;
+    let host = &smtp.host;
     let connected =
-        SmtpClientBuilder::new_with_tls_connector(host.clone(), account.smtp_port(), tls.clone())
-            .implicit_tls(account.smtp.security == Security::Tls)
+        SmtpClientBuilder::new_with_tls_connector(host.clone(), smtp.smtp_port(), tls.clone())
+            .implicit_tls(smtp.security == Security::Tls)
             .credentials(credentials)
             .timeout(TIMEOUT)
             .connect()

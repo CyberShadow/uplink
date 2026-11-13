@@ -57,6 +57,8 @@ MVP:
 - M365 send via Graph (`/me/sendMail`).
 - IMAP accounts send by SMTP submission (password or XOAUTH2), the copy
   filed in Sent (SPEC §8.11).
+- JMAP accounts send by `EmailSubmission`, the copy filed in Sent as the
+  server accepts it (SPEC §8.13).
 - Compose: plain text + WYSIWYG (TipTap) producing HTML.
 
 Deferred:
@@ -75,6 +77,9 @@ MVP:
 - Any POP3 server, polled every 60 s: mail downloaded, labels kept in
   uplink only; deleting from the server after download opt-in per
   account (SPEC §8.12).
+- Any JMAP server, its changes told by its event source, polled every
+  30 s besides; mailboxes are labels, as Gmail's, the Archive its All
+  Mail (SPEC §8.13).
 - Per-account configuration via single YAML file.
 
 Deferred:
@@ -89,7 +94,6 @@ Deferred:
 - Deciding an SMTP send of unknown outcome in the outbox ("send again",
   "it went out"; SPEC §8.11).
 - Gmail push: API notifications via Cloud Pub/Sub, pulled over REST (SPEC §8.1).
-- JMAP support.
 - Server-side filters/rules.
 - S/MIME and PGP signature verification (read-only).
 - Composing signed/encrypted mail.

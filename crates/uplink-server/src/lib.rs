@@ -31,7 +31,7 @@ use uplink_calendar::service::Calendar;
 use uplink_config::{
     AccountConfig, BasicAuthConfig, Config, ConfigChanged, ConfigSection, Watcher,
 };
-use uplink_email::{gmail, imap, m365, pop3, query::ConfiguredAccount, service::Mail};
+use uplink_email::{gmail, imap, jmap, m365, pop3, query::ConfiguredAccount, service::Mail};
 use uplink_matrix::service::Matrix;
 use uplink_protocol::{
     mail::{ConversationAction, ConversationSet, MailProvider},
@@ -188,6 +188,12 @@ pub fn start_syncs(config: &Config, services: &Services) -> Result<()> {
                 info!(account = account.id, "starting POP3 sync");
                 tokio::spawn(sync.run());
             }
+            AccountConfig::Jmap(account) => {
+                let sync =
+                    jmap::sync::task(account, key.clone(), http.clone(), dispatcher.clone(), root)?;
+                info!(account = account.id, "starting JMAP sync");
+                tokio::spawn(sync.run());
+            }
             AccountConfig::Matrix(account) => {
                 let sync = uplink_matrix::sync::Sync::new(
                     account,
@@ -258,6 +264,11 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
                 address: pop3.address.clone(),
                 provider: MailProvider::Pop3,
             }),
+            AccountConfig::Jmap(jmap) => Some(ConfiguredAccount {
+                id: jmap.id.clone(),
+                address: jmap.address.clone(),
+                provider: MailProvider::Jmap,
+            }),
             AccountConfig::Matrix(_) => None,
         })
         .collect();
@@ -272,7 +283,8 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
             AccountConfig::Gmail(_)
             | AccountConfig::M365(_)
             | AccountConfig::Imap(_)
-            | AccountConfig::Pop3(_) => None,
+            | AccountConfig::Pop3(_)
+            | AccountConfig::Jmap(_) => None,
         })
         .collect();
     Ok(Services {

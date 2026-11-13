@@ -172,6 +172,7 @@ async fn sends_mail_by_smtp_and_files_it_in_sent() {
     );
     uplink_email::mail_server::smtp::send(
         bob.login(),
+        &bob.smtp,
         &stalwart.sign_in(bob.login()),
         &stalwart.tls,
         answer.as_bytes(),

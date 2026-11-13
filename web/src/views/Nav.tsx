@@ -39,6 +39,7 @@ const PROVIDER: Record<MailProvider, string> = {
   m365: 'Outlook',
   imap: 'Server',
   pop3: 'Server',
+  jmap: 'Server',
 }
 
 /** The account's system labels worth listing, then its own; All Mail goes

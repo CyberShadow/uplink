@@ -13,6 +13,7 @@ use crate::{
         self, build_message, now_ms, Due, File, ReplyContext, SendFailed, SendNotFound,
         SendOutcome, SendStarted, SendSucceeded, SentCopy,
     },
+    mailbox::ObservedLabel,
     parse::{parse, Parsed},
 };
 use anyhow::{Context, Result};
@@ -249,6 +250,28 @@ impl Account {
                      WHERE el.entry = ?1 AND el.desired ORDER BY l.id",
                 )?
                 .query_map([entry.0], |r| r.get(0))?
+                .collect::<Result<_, _>>()?)
+        })
+        .await
+    }
+
+    /// The account's labels as recorded, by external id.
+    pub async fn labels(&self) -> Result<Vec<ObservedLabel>> {
+        let id = self.id.clone();
+        self.read(move |conn| {
+            Ok(conn
+                .prepare(
+                    "SELECT external_id, name, system, folder FROM label
+                     WHERE account_id = ?1 ORDER BY external_id",
+                )?
+                .query_map([id], |r| {
+                    Ok(ObservedLabel {
+                        external_id: r.get(0)?,
+                        name: r.get(1)?,
+                        system: r.get(2)?,
+                        folder: r.get(3)?,
+                    })
+                })?
                 .collect::<Result<_, _>>()?)
         })
         .await

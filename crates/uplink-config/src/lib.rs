@@ -117,6 +117,7 @@ pub enum AccountConfig {
     M365(M365AccountConfig),
     Imap(ImapAccountConfig),
     Pop3(Pop3AccountConfig),
+    Jmap(JmapAccountConfig),
     Matrix(MatrixAccountConfig),
 }
 
@@ -127,6 +128,7 @@ impl AccountConfig {
             AccountConfig::M365(account) => &account.id,
             AccountConfig::Imap(account) => &account.id,
             AccountConfig::Pop3(account) => &account.id,
+            AccountConfig::Jmap(account) => &account.id,
             AccountConfig::Matrix(account) => &account.id,
         }
     }
@@ -144,6 +146,12 @@ impl AccountConfig {
                 ..
             })
             | AccountConfig::Pop3(Pop3AccountConfig {
+                id,
+                oauth,
+                password_file,
+                ..
+            })
+            | AccountConfig::Jmap(JmapAccountConfig {
                 id,
                 oauth,
                 password_file,
@@ -272,7 +280,6 @@ impl ImapAccountConfig {
             id: &self.id,
             address: &self.address,
             user: self.user.as_deref().unwrap_or(&self.address),
-            smtp: &self.smtp,
             oauth: self.oauth.as_ref(),
             password_file: &self.password_file,
         }
@@ -314,7 +321,6 @@ impl Pop3AccountConfig {
             id: &self.id,
             address: &self.address,
             user: self.user.as_deref().unwrap_or(&self.address),
-            smtp: &self.smtp,
             oauth: self.oauth.as_ref(),
             password_file: &self.password_file,
         }
@@ -326,24 +332,73 @@ impl Pop3AccountConfig {
     }
 }
 
-/// What an account at a mail server, IMAP or POP3, signs in and sends
-/// with.
+/// How an account at a mail server, IMAP, POP3 or JMAP, signs in.
 #[derive(Debug, Clone, Copy)]
 pub struct Login<'a> {
     pub id: &'a str,
     pub address: &'a str,
     /// The name the servers know the account by.
     pub user: &'a str,
-    pub smtp: &'a MailServer,
-    /// XOAUTH2 if set, else the password `uplink password` sealed.
+    /// An OAuth access token if set, else the password `uplink password`
+    /// sealed.
     pub oauth: Option<&'a OAuthConfig>,
     pub password_file: &'a Path,
 }
 
-impl Login<'_> {
-    /// The SMTP server's port: 465, or 587 for STARTTLS, unless set.
-    pub fn smtp_port(&self) -> u16 {
-        self.smtp.port_or(465, 587)
+/// An account at a mail server that speaks JMAP (RFC 8620, 8621; SPEC
+/// §8.13): read, filed and sent from by it alone.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JmapAccountConfig {
+    pub id: String,
+    pub address: String,
+    /// The name the server knows the account by, if not its address.
+    #[serde(default)]
+    pub user: Option<String>,
+    /// The JMAP session resource: for most servers
+    /// `https://<host>/.well-known/jmap`.
+    pub session_url: HttpsUrl,
+    /// How uplink signs in: with an OAuth access token (`Bearer`) if set,
+    /// else with the password `uplink password --account <id>` sealed
+    /// (`Basic`).
+    #[serde(default)]
+    pub oauth: Option<OAuthConfig>,
+    /// `<data_dir>/accounts/<id>.password`.
+    #[serde(skip)]
+    pub password_file: PathBuf,
+}
+
+impl JmapAccountConfig {
+    pub fn login(&self) -> Login<'_> {
+        Login {
+            id: &self.id,
+            address: &self.address,
+            user: self.user.as_deref().unwrap_or(&self.address),
+            oauth: self.oauth.as_ref(),
+            password_file: &self.password_file,
+        }
+    }
+}
+
+/// A URL of `https:`: credentials and mail go in no other.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+pub struct HttpsUrl(String);
+
+impl HttpsUrl {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for HttpsUrl {
+    type Error = String;
+
+    fn try_from(url: String) -> Result<Self, String> {
+        match url.strip_prefix("https://") {
+            Some(rest) if !rest.is_empty() => Ok(Self(url)),
+            _ => Err(format!("{url} is not an https: URL")),
+        }
     }
 }
 
@@ -359,6 +414,12 @@ pub struct MailServer {
 }
 
 impl MailServer {
+    /// As the account's SMTP server, its port: 465, or 587 for STARTTLS,
+    /// unless set.
+    pub fn smtp_port(&self) -> u16 {
+        self.port_or(465, 587)
+    }
+
     /// `port`, else the protocol's port for TLS or for STARTTLS.
     fn port_or(&self, tls: u16, starttls: u16) -> u16 {
         self.port.unwrap_or(match self.security {
@@ -729,6 +790,7 @@ mod tests {
                 "alice-m365",
                 "alice-mail",
                 "alice-pop",
+                "alice-jmap",
                 "alice-matrix"
             ]
         );
@@ -862,7 +924,7 @@ accounts:
         // The address signs in, over TLS from the start, with the password
         // `uplink password` seals.
         assert_eq!(i.login().user, "alice@example.org");
-        assert_eq!((i.imap_port(), i.login().smtp_port()), (993, 465));
+        assert_eq!((i.imap_port(), i.smtp.smtp_port()), (993, 465));
         assert_eq!(i.imap.security, Security::Tls);
         assert_eq!(i.oauth, None);
         assert_eq!(
@@ -975,7 +1037,7 @@ accounts:
             panic!("expected imap account");
         };
         assert_eq!(i.login().user, "alice");
-        assert_eq!((i.imap_port(), i.login().smtp_port()), (143, 2525));
+        assert_eq!((i.imap_port(), i.smtp.smtp_port()), (143, 2525));
         let oauth = i.oauth.as_ref().unwrap();
         assert_eq!(oauth.client_secret, None);
         assert_eq!(
@@ -1018,7 +1080,7 @@ accounts:
             panic!("expected pop3 account");
         };
         assert!(!old.delete_after_download);
-        assert_eq!((old.pop3_port(), old.login().smtp_port()), (995, 587));
+        assert_eq!((old.pop3_port(), old.smtp.smtp_port()), (995, 587));
         assert_eq!(old.login().user, "alice@example.org");
         assert_eq!(
             old.password_file,
@@ -1028,7 +1090,46 @@ accounts:
             panic!("expected pop3 account");
         };
         assert!(older.delete_after_download);
-        assert_eq!((older.pop3_port(), older.login().smtp_port()), (110, 465));
+        assert_eq!((older.pop3_port(), older.smtp.smtp_port()), (110, 465));
+    }
+
+    #[test]
+    fn jmap_accounts_name_their_session_over_https() {
+        let yaml = r#"
+server:
+  basic_auth:
+    user: alice
+    password_bcrypt: "$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+data_dir: /tmp/uplink
+accounts:
+  - id: home
+    kind: jmap
+    address: alice@example.org
+    session_url: https://mail.example.org/.well-known/jmap
+"#;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(yaml.as_bytes()).unwrap();
+        let cfg = Config::load(f.path()).unwrap();
+        let AccountConfig::Jmap(ref j) = cfg.accounts[0] else {
+            panic!("expected jmap account");
+        };
+        assert_eq!(
+            j.session_url.as_str(),
+            "https://mail.example.org/.well-known/jmap"
+        );
+        // The address signs in, with the password `uplink password` seals.
+        assert_eq!(j.login().user, "alice@example.org");
+        assert_eq!(j.oauth, None);
+        assert_eq!(
+            j.password_file,
+            PathBuf::from("/tmp/uplink/accounts/home.password")
+        );
+
+        // Nothing goes in the clear.
+        let plain = yaml.replace("https://mail", "http://mail");
+        std::fs::write(f.path(), plain).unwrap();
+        let err = format!("{:#}", Config::load(f.path()).unwrap_err());
+        assert!(err.contains("not an https: URL"), "{err}");
     }
 
     #[test]

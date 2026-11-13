@@ -97,6 +97,14 @@ accounts: []
   #   smtp:
   #     host: smtp.example.net
 
+  # — A mail account read by JMAP (Stalwart, Fastmail, …) — its session
+  # URL, over https; then `uplink password --account alice-jmap`, or, with
+  # an `oauth` block, `uplink oauth init`.
+  # - id: alice-jmap
+  #   kind: jmap
+  #   address: alice@example.com
+  #   session_url: "https://mail.example.com/.well-known/jmap"
+
   # — Matrix — run `uplink matrix pair --account alice-matrix`.
   # - id: alice-matrix
   #   kind: matrix

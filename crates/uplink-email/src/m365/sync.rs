@@ -404,7 +404,7 @@ impl M365Sync {
         folders: &[Folder],
         seen: impl Iterator<Item = &Seen>,
     ) -> Result<Option<Vec<ObservedLabel>>> {
-        let recorded = recorded_labels(account).await?;
+        let recorded = account.labels().await?;
         let mut categories: BTreeSet<String> = recorded
             .iter()
             .filter(|l| l.external_id.starts_with(CATEGORY))
@@ -575,29 +575,6 @@ async fn known_folders(account: &Account) -> Result<HashMap<String, Option<Strin
                      FROM mail_entry e WHERE e.account_id = ?1",
                 )?
                 .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .collect::<Result<_, _>>()?)
-        })
-        .await
-}
-
-/// The account's labels as recorded, by external id.
-async fn recorded_labels(account: &Account) -> Result<Vec<ObservedLabel>> {
-    let id = account.id.clone();
-    account
-        .read(move |conn| {
-            Ok(conn
-                .prepare(
-                    "SELECT external_id, name, system, folder FROM label
-                     WHERE account_id = ?1 ORDER BY external_id",
-                )?
-                .query_map([id], |r| {
-                    Ok(ObservedLabel {
-                        external_id: r.get(0)?,
-                        name: r.get(1)?,
-                        system: r.get(2)?,
-                        folder: r.get(3)?,
-                    })
-                })?
                 .collect::<Result<_, _>>()?)
         })
         .await

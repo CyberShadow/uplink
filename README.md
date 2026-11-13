@@ -157,7 +157,7 @@ uplink is young. What it connects to so far:
 
 |          | Supported                                   | Planned                                    |
 |----------|---------------------------------------------|--------------------------------------------|
-| Mail     | Gmail, Microsoft 365, any IMAP or POP3 server | JMAP                                     |
+| Mail     | Gmail, Microsoft 365, any IMAP, POP3 or JMAP server |                                    |
 | Calendar | Microsoft 365 (viewing)                     | Editing; Google Calendar, CalDAV, iCalendar feeds |
 | Chat     | Matrix, and every network bridged to it     |                                            |
 | To-dos   | uplink's own                                | Google Tasks, Microsoft To Do, CalDAV      |
@@ -301,6 +301,23 @@ up the same way. uplink then downloads the mail, within a minute of its
 arrival, and keeps its labels itself: nothing you do to it in uplink
 reaches the server. The mail is left on the server for other clients,
 unless the account says `delete_after_download: true`.
+
+### Connecting a JMAP account (Stalwart, Fastmail, …)
+
+A server that speaks JMAP takes the JMAP account of the example (`kind:
+jmap`), with its `session_url`: for most servers
+`https://<host>/.well-known/jmap`. Set the password as for an IMAP
+account (`uplink password --account alice-jmap`), or give it an `oauth`
+block and run `uplink oauth init`.
+
+Mailboxes are labels, as in Gmail: a message can be in several. The
+server's Sent, Drafts, Trash and Junk are uplink's, and its Archive is
+All Mail: archiving takes a message out of the Inbox, and a message left
+in no mailbox goes into the Archive (made if there is none). Read and
+starred are the `$seen` and `$flagged` keywords, and other keywords are
+labels. Changes arrive as they happen, as the server tells of them.
+Sent mail goes by the server's own submission, which files the copy in
+Sent.
 
 ### Connecting a Matrix account
 

@@ -7,6 +7,7 @@ pub mod compose;
 pub mod gmail;
 pub mod image_rules;
 pub mod imap;
+pub mod jmap;
 pub mod m365;
 pub mod mail_server;
 pub mod mailbox;

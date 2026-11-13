@@ -54,6 +54,8 @@ pub enum MailProvider {
     Imap,
     /// Any mail server, by POP3 and SMTP.
     Pop3,
+    /// Any mail server, by JMAP.
+    Jmap,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]

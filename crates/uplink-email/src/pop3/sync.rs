@@ -168,7 +168,14 @@ impl Provider for Pop3Sync {
 
     /// Submits the message by SMTP, then files it in Sent.
     async fn send(&self, account: &Account, mail: Outgoing<'_>) -> Result<SentCopy, SendError> {
-        smtp::send(self.config.login(), &self.sign_in, &self.tls, mail.raw).await?;
+        smtp::send(
+            self.config.login(),
+            &self.config.smtp,
+            &self.sign_in,
+            &self.tls,
+            mail.raw,
+        )
+        .await?;
         // If it cannot be filed, it stays listed as waiting for its copy,
         // which is so.
         if let Err(e) = file_sent(account, &mail).await {

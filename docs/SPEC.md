@@ -26,7 +26,7 @@ rather than enumerated. Anything left intentionally open is in §15.
 5. [Wire protocol (WebSocket)](#5-wire-protocol-websocket)
 6. [Transaction log & undo](#6-transaction-log--undo)
 7. [Drafts](#7-drafts)
-8. [Email pipeline (Gmail + M365)](#8-email-pipeline-gmail--m365)
+8. [Email pipeline (Gmail, M365, IMAP, POP3, JMAP)](#8-email-pipeline-gmail-m365-imap-pop3-jmap)
 9. [Matrix pipeline](#9-matrix-pipeline)
 10. [Calendar pipeline](#10-calendar-pipeline)
 11. [TODOs](#11-todos)
@@ -123,8 +123,9 @@ Quick references so the reader doesn't have to flip:
   event types render as raw JSON.
 - E2EE on the client — server decrypts, client receives plaintext.
 - SPA-side Matrix device-verification UI. Pairing is a CLI subcommand.
-- SMTP send for Gmail and M365: Gmail sends via Gmail API, M365 via Graph;
-  SMTP serves IMAP and POP3 accounts only (§8.11).
+- SMTP send for Gmail, M365 and JMAP: Gmail sends via Gmail API, M365 via
+  Graph, JMAP by `EmailSubmission`; SMTP serves IMAP and POP3 accounts
+  only (§8.11).
 - Drafts on the wire (only local drafts in MVP).
 - Calendar write (M365 read-only). Google Calendar, CalDAV, ICS feeds: out.
 - TODO backends other than local SQLite.
@@ -300,6 +301,14 @@ accounts:
     address: alice@example.net
     pop3: { host: pop.example.net }
     smtp: { host: smtp.example.net }
+
+  # — A mail server by JMAP (§8.13) — its session resource, over https;
+  # signed in as IMAP is (`user`, the password `uplink password` sealed,
+  # or `oauth`), by HTTP's Basic or Bearer.
+  - id: alice-jmap
+    kind: jmap
+    address: alice@example.com
+    session_url: "https://mail.example.com/.well-known/jmap"
 
   # — Matrix — the device is created once by `uplink matrix pair` (§9.4).
   # No password in YAML.
@@ -1241,6 +1250,10 @@ that a cancel knows whether it can still be fulfilled locally. Then:
   - Graph the same way, its copy filed in Sent Items. As Graph sends a
     draft created first, by its id (§8.4), sending it again is safe
     regardless: a draft already sent is not sent twice.
+  - JMAP the same way: the message is imported as a draft first, and
+    submitted by its id, its copy moved to Sent as the server accepts
+    it (§8.13); before a draft is submitted again, its submissions are
+    asked for, so it is not submitted twice.
   - SMTP (IMAP and POP3 accounts) not so: the copy in Sent is filed by
     uplink once the server accepted the message, so its absence shows
     nothing, and the send stays unknown until a copy turns up or the
@@ -1380,7 +1393,7 @@ sent, remove it once acknowledged, and re-send pending edits on startup.
 
 ---
 
-## 8. Email pipeline (Gmail, M365, IMAP, POP3)
+## 8. Email pipeline (Gmail, M365, IMAP, POP3, JMAP)
 
 ### 8.1 Gmail — receive
 
@@ -1994,6 +2007,97 @@ the start, port 995, or by `STLS`, 110; signed in by `USER`/`PASS` or
   account's does (§8.11).
 - Polled every 60 s: each poll signs in anew, which providers may limit.
   A server without `UIDL` cannot be synced (the step fails, saying so).
+
+### 8.13 JMAP
+
+Any mail server that speaks JMAP (RFC 8620, core; RFC 8621, mail; e.g.
+Stalwart, Fastmail, Cyrus): kind `jmap`, read, filed and sent from by
+JMAP alone. The client is uplink's own, on the server's shared `reqwest`
+one, as Gmail's and Graph's are: `jmap-client` (Stalwart's crate) makes
+an HTTP client per request, cannot trust another root, and keeps the
+credentials it was built with, which an OAuth token outlives.
+
+- **Session**: `session_url` (`https:` only; most servers' is
+  `https://<host>/.well-known/jmap`) names the API, blob and event
+  source URLs and the mail account (its primary one); a server without
+  the core, mail and submission capabilities is refused. The session is
+  fetched anew once a response's `sessionState` differs from it.
+- **Sign-in**: the user name (the address unless `user` says otherwise)
+  and the password `uplink password` seals, by HTTP's `Basic`; or, with
+  `oauth`, an access token, by `Bearer` (§13.7). What signs in is kept
+  until a 401, after which the next request reads the password anew, or
+  refreshes the token.
+- **Mailboxes are labels**, as Gmail's are (§8.1): an email may be in
+  several, and adding one leaves the others. Those of a role take the
+  ids of the Gmail labels that mean the same: `inbox` → `INBOX`, `sent`
+  → `SENT`, `drafts` → `DRAFT`, `trash` → `TRASH`, `junk` → `SPAM`; the
+  rest are `mailbox:<id>` (by the server's id, which a rename keeps),
+  named by their path (`Parent/Child`). Virtual mailboxes (`all`,
+  `flagged`) are left out. Trash and Spam are as Gmail's: trashing adds
+  `TRASH` and leaves the Inbox, where other clients then show it too.
+- **The Archive is All Mail**, not a label: JMAP keeps every email in
+  some mailbox, so one in the Archive (role `archive`) alone is in no
+  label, as an archived Gmail message is. A push that would leave an
+  email in no mailbox puts it in the Archive (made, by `Mailbox/set`, if
+  the server has none); one that gives an email in the Archive another
+  mailbox takes it out. Archiving (removing `INBOX`) therefore files the
+  email in the Archive, and its undo takes it out again.
+- **State labels**: `$seen` unset is `UNREAD`, `$flagged` is `STARRED`;
+  other keywords are labels `kw:<keyword>`, but for those of clients'
+  conventions (`$answered`, `$forwarded`, …).
+- **Entries** are emails, keyed by their ids, which JMAP keeps as an
+  email moves; threads are the server's (`threadId`; Stalwart's, as
+  Gmail's, join a reply only of its subject).
+- **A step** is one request: the mailboxes (all of them, each step, as
+  they are few; the labels are recorded where they differ), and the
+  emails' changes since the recorded state (`Email/changes`, at most 50),
+  with the changed emails' mailboxes and keywords (`Email/get`, by
+  back-reference). An email new to uplink, created or updated, is
+  downloaded (its blob, 4 at once) and recorded as received at its
+  `receivedAt`; one it has is relabelled; one destroyed is removed. More
+  changes than a step takes are taken by the next at once. A state the
+  server can no longer calculate changes from (`cannotCalculateChanges`)
+  lists the emails anew. A step that changes nothing records nothing.
+- **Listing**, the first sync or a state lost, is Gmail's (§8.1): the
+  state as it began is recorded (`account.sync_state`:
+  `{"emails": <state>, "listing_before": <entry>}`), the emails are
+  listed newest first (`Email/query` by `receivedAt`, 500 a page, each
+  after the last one's id, by `anchor`, so that emails gone meanwhile
+  shift nothing), the new ones fetched 50 a step, and the ones known
+  before it began relabelled; at its end, what was not listed is
+  removed and the state recorded (`{"emails": <state>}`), from which the
+  polls after it record what changed meanwhile. A listing interrupted
+  resumes, listing anew and fetching only what it has not; so does one
+  whose anchor is gone (`anchorNotFound`).
+- **Push**: each email's keywords and mailboxes are patched (`Email/set`,
+  `keywords/<k>` and `mailboxIds/<id>`, so that what other clients
+  changed meanwhile stays), its mailboxes read just before for the
+  Archive's rule; a `notFound` is left for the next step to remove, any
+  other error is a refusal.
+- **Event source** (RFC 8620 §7.3): a connection of its own tells of
+  changes to emails and mailboxes as they happen, waking the sync task
+  (`Provider::changed`), which takes a step as for a poll; so does the
+  watch's (re)beginning. It asks for a ping a minute (Stalwart pings
+  every 30 s at least), and one silent for 5 minutes is taken for lost;
+  a watch that fails begins anew 30 s later, polling going on meanwhile
+  (every 30 s). The watch begins as the task first waits. (Stalwart
+  tells nothing of an `Email/import`; of mail delivered, it does.)
+- **Sending** (§6.7): the message is uploaded and imported into Drafts
+  (`Email/import`, `$draft` and `$seen`), which is recorded
+  (`SendDrafted`), then submitted (`EmailSubmission/set`, the envelope
+  the server's: From, and To, Cc and Bcc; the server takes Bcc out of
+  what it delivers, and the copy keeps it), from the identity of the
+  account's address, else of its domain (`*@domain`), the copy moved
+  from Drafts to Sent as the server accepts it (`onSuccessUpdateEmail`):
+  the draft is the copy (`SentCopy::Id`). Before a draft recorded is
+  submitted again, its submissions are asked for (`EmailSubmission/query`
+  by `emailIds`): one there means it went out. A failure before the
+  submission did not send it; a submission refused (`notCreated`), or a
+  draft gone, is a refusal; an answer lost is an unknown outcome,
+  settled by the copy in Sent once synced, or else sent again after 5
+  minutes, which finds the submission if it was made (`FILES_SENT`).
+- **Connection**: HTTP's, kept by the client; a request may take a
+  minute, a blob ten.
 
 ---
 
@@ -3427,7 +3531,7 @@ rather than requested per sign-in:
   file the attacker must also exfiltrate (a backup that leaves it out
   leaves the tokens sealed).
 - Costs: ~50 LOC. Worth it.
-- IMAP and POP3 accounts' passwords are sealed the same way
+- IMAP, POP3 and JMAP accounts' passwords are sealed the same way
   (`accounts/<id>.password`, by `uplink password --account <id>`,
   which reads it from the terminal or standard input): the server needs
   the password itself to sign in, so it cannot be hashed, and none is
@@ -3456,12 +3560,13 @@ into `uplink matrix pair` once.
   cert; existing connections continue with the old.
 - BYO cert. No ACME in MVP — user can use `certbot` or Caddy as a
   reverse-proxy for cert acquisition if needed.
-- Mail servers (§8.10–8.11) are verified as browsers verify sites
+- Mail servers (§8.10–8.13) are verified as browsers verify sites
   (`rustls-platform-verifier`: the system's roots).
 
-### 13.7 OAuth flow (IMAP, POP3 and SMTP)
+### 13.7 OAuth flow (IMAP, POP3, SMTP and JMAP)
 
-For servers that sign in by XOAUTH2, an account's `oauth` names the
+For servers that sign in by XOAUTH2 (or, JMAP's, by a `Bearer` token),
+an account's `oauth` names the
 provider's client and endpoints (`client_id`, optional `client_secret`,
 `auth_url`, `token_url`, `scope`, which must ask for a refresh token,
 e.g. `offline_access`). `uplink oauth init --account <id>` runs the
@@ -3906,15 +4011,19 @@ request).
   gives it a `joinUrl`), and takes what Graph sets itself of someone
   else's meeting (`organizer`, `responseStatus`, `isCancelled`), so that
   tests and screenshots can seed one.
-- **IMAP, POP3 and SMTP:** Stalwart (single-binary Rust mail server,
-  from nixpkgs; IMAP, POP3, SMTP and JMAP), a real server rather than a
-  fake. The Rust tests (`tests/imap_sync.rs`, `tests/pop3_sync.rs`, the
-  server in `tests/common/stalwart.rs`) start one per test
+- **IMAP, POP3, SMTP and JMAP:** Stalwart (single-binary Rust mail
+  server, from nixpkgs; IMAP, POP3, SMTP and JMAP), a real server rather
+  than a fake. The Rust tests (`tests/imap_sync.rs`, `tests/pop3_sync.rs`,
+  `tests/jmap_sync.rs`, the server in `tests/common/stalwart.rs`) start
+  one per test
   (`UPLINK_STALWART`), its users in its in-memory directory and its TLS
   by a certificate the test makes and trusts, and play other mail
   clients over IMAP: delivering by `APPEND`, flagging, moving and
   expunging; mail uplink sends goes through its SMTP to the other
-  user's Inbox. Its folders have special-use attributes but no Archive,
+  user's Inbox; over JMAP, by `Email/import`, `Email/set` and
+  `EmailSubmission`, its JMAP on an HTTPS listener whose URLs
+  (`http.url`) name `localhost`. Its folders have special-use attributes
+  but no Archive,
   which uplink then makes. XOAUTH2 is tested with emulate's Google as
   the OAuth provider: `uplink oauth init`'s flow runs on the account's
   own `oauth` settings, the browser played on emulate's sign-in form,
