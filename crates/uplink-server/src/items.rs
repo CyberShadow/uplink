@@ -394,7 +394,10 @@ impl Items {
         for term in uplink_query::terms(query) {
             match term {
                 Term::Label(name) => {
-                    let known = mail::label_known(tx, name).map_err(internal)?
+                    let known = uplink_query::CATEGORIES
+                        .iter()
+                        .any(|c| c.eq_ignore_ascii_case(name))
+                        || mail::label_known(tx, name).map_err(internal)?
                         || uplink_matrix::query::tag_known(tx, name).map_err(internal)?;
                     if !known {
                         return Err(invalid(format!("no label or tag {name}")));
@@ -567,6 +570,12 @@ mod tests {
         let refused = |response: Response| response.unwrap_err().message;
         assert_eq!(refused(list("tag:work").await), "no label or tag work");
         assert_eq!(refused(list("account:nobody").await), "no account nobody");
+        // Gmail's categories, though no account has them, list nothing.
+        assert!(names(list("category:promotions").await).is_empty());
+        assert_eq!(
+            refused(list("category:junk").await),
+            "no label or tag CATEGORY_JUNK"
+        );
         assert!(refused(items.list("x".into(), None, 0).await).starts_with("limit"));
         // Counted, and resolved to conversations, as listed: a room's tag
         // is no mail's, and a name no kind has is refused.
