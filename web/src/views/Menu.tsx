@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import { keepFocus, useEscape } from '../keymap'
 import { Icon, type IconName } from './Icon'
 import styles from './Menu.module.css'
+import { useOpensAbove } from './popover'
 
 export interface MenuItem {
   label: string
@@ -12,12 +13,14 @@ export interface MenuItem {
 }
 
 /** `groups`: the items, separated between groups. The menu opens below
- * the button, aligned with its end, or with `start`, its start, as a
+ * the button (above, if cut off there: `useOpensAbove`), aligned with its end, or with `start`, its start, as a
  * button at the start of a bar needs. The button is its `icon`, or
  * without one, a button of its label, as in a line of text. */
 export function MenuButton(props: { label: string; icon?: IconName; groups: MenuItem[][]; start?: true }) {
   const [open, setOpen] = useState(false)
   const root = useRef<HTMLSpanElement>(null)
+  const menu = useRef<HTMLUListElement>(null)
+  const above = useOpensAbove(menu, open)
   useEffect(() => {
     if (!open) return
     // Anywhere else closes it, as Escape does.
@@ -43,7 +46,12 @@ export function MenuButton(props: { label: string; icon?: IconName; groups: Menu
         {props.icon ? <Icon name={props.icon} /> : `${props.label} ▾`}
       </button>
       {open && (
-        <ul class={[styles.menu, props.start && styles.start].filter(Boolean).join(' ')} role="menu" aria-label={props.label}>
+        <ul
+          ref={menu}
+          class={[styles.menu, props.start && styles.start, above && styles.above].filter(Boolean).join(' ')}
+          role="menu"
+          aria-label={props.label}
+        >
           {props.groups.flatMap((group, i) => [
             ...(i > 0 ? [<li key={`separator-${i}`} role="separator" class={styles.separator} />] : []),
             ...group.map((item) => (

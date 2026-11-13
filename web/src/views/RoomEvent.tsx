@@ -38,6 +38,7 @@ import {
 } from '../matrix'
 import { Icon } from './Icon'
 import { MenuButton, type MenuItem } from './Menu'
+import { useOpensAbove } from './popover'
 import { fileSize } from './size'
 import { roomPath } from './Room'
 import styles from './Room.module.css'
@@ -782,6 +783,7 @@ function ReactButton(props: {
   const root = useRef<HTMLSpanElement>(null)
   const input = useRef<HTMLInputElement>(null)
   const picker = useRef<HTMLDivElement>(null)
+  const above = useOpensAbove(picker, open !== null)
   const close = () => {
     setOpen(null)
     setTyped('')
@@ -818,7 +820,7 @@ function ReactButton(props: {
       {open !== null && (
         <div
           ref={picker}
-          class={styles.picker}
+          class={above ? `${styles.picker} ${styles.above}` : styles.picker}
           role="dialog"
           aria-label="React"
           // Left by the focus (Tab, a click elsewhere), it closes.

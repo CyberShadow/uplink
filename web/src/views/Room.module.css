@@ -634,6 +634,11 @@ button.sender:hover .name {
   box-shadow: 0 2px 8px rgb(0 0 0 / 0.3);
 }
 
+.picker.above {
+  top: auto;
+  bottom: 100%;
+}
+
 .picker button {
   padding: 2px 4px;
   border: none;

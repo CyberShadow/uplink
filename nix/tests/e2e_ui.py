@@ -139,6 +139,23 @@ def matrix(page):
     # Sent, and synced back: no longer pending, but in the timeline.
     expect(timeline.locator("[class*=pending]")).to_have_count(0, timeout=15000)
     expect(timeline.get_by_text("Hello from uplink")).to_have_count(1)
+    # The latest message's menu and reactions, at the timeline's bottom,
+    # open above it, not cut off by the timeline.
+    line = timeline.get_by_role("listitem").filter(has_text="Hello from uplink")
+    scroller = timeline.locator("xpath=..")
+
+    def shown_whole(popover):
+        box, clip = popover.bounding_box(), scroller.bounding_box()
+        assert clip["y"] <= box["y"] and box["y"] + box["height"] <= clip["y"] + clip["height"], (box, clip)
+
+    for button, popover in [("Options", line.get_by_role("menu", name="Options")), ("React", line.get_by_role("dialog", name="React"))]:
+        line.hover()
+        line.get_by_role("button", name=button, exact=True).click()
+        expect(popover).to_be_visible()
+        shown_whole(popover)
+        page.screenshot(path=f"{SHOTS}/room-{button.lower()}.png")
+        line.get_by_role("button", name=button, exact=True).click()
+        expect(popover).to_have_count(0)
     timeline.locator("summary", has_text="org.example.custom").click()
     expect(timeline).to_contain_text('"answer": 42')
     page.screenshot(path=f"{SHOTS}/room.png")

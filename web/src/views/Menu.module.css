@@ -40,6 +40,12 @@
   left: 0;
 }
 
+.above {
+  top: auto;
+  bottom: 100%;
+  margin: 0 0 4px;
+}
+
 .menu button {
   display: flex;
   align-items: center;
