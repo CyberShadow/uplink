@@ -2973,7 +2973,9 @@ buttons.
 - **Messages** show as last edited, marked `(edited)`; a click lists the
   edits (`ListEdits`). Their HTML is the server's sanitized
   `formatted_body` (§9.2), with its colours (`data-mx-color`), and
-  spoilers revealed on click; plain text has its URLs linked. Links to
+  spoilers revealed on click, code blocks with a button copying their
+  text (on hover, at their bottom right, as the line's actions cover its
+  top), as Element's; plain text has its URLs linked. Links to
   users and rooms (`matrix.to`, but those to events) show as pills, those
   of plain text named as the room's members and the account's rooms are:
   a click on a user's opens their profile, on a room's the room, if the
