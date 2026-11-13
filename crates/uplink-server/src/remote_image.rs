@@ -4,6 +4,8 @@
 //! cookies. Only public addresses are fetched from: a mail must not make
 //! the server reach what only it can (its network, a cloud's metadata);
 //! but for the hosts the user names (`remote_images.private_hosts`).
+//! Those of `remote_images.direct_hosts` the browser loads itself,
+//! redirected to them: the app's CSP lets them through.
 
 use arc_swap::ArcSwap;
 use axum::{
@@ -37,6 +39,8 @@ pub struct RemoteImages {
     /// Names fetched from whatever they resolve to, as [`host_name`] has
     /// them; shared with the resolver, and swapped as the config changes.
     private_hosts: Arc<ArcSwap<HashSet<String>>>,
+    /// Names whose images are redirected to, as [`host_name`] has them.
+    direct_hosts: Arc<ArcSwap<HashSet<String>>>,
 }
 
 impl RemoteImages {
@@ -68,7 +72,27 @@ impl RemoteImages {
             client,
             admits,
             private_hosts,
+            direct_hosts: Arc::new(ArcSwap::from_pointee(HashSet::new())),
         }
+    }
+
+    /// The hosts whose images the browser loads itself.
+    pub fn set_direct_hosts(&self, hosts: &[String]) {
+        self.direct_hosts
+            .store(Arc::new(hosts.iter().map(|h| host_name(h)).collect()));
+    }
+
+    /// The app's CSP's `img-src`: its own images, `data:` ones, and the
+    /// direct hosts' over HTTPS. A mail's frame, inheriting the app's
+    /// policy, loads no others directly, whatever its own lets through.
+    pub fn app_img_src(&self) -> String {
+        let mut hosts: Vec<String> = self.direct_hosts.load().iter().cloned().collect();
+        hosts.sort();
+        ["'self'".to_owned(), "data:".to_owned()]
+            .into_iter()
+            .chain(hosts.into_iter().map(|h| format!("https://{h}")))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// The hosts fetched from though their addresses are not public, as
@@ -83,6 +107,23 @@ impl RemoteImages {
     /// page of uplink's origin, where an SVG one could run its scripts.
     pub async fn get(&self, url: Url) -> Response {
         // Names are judged as they resolve; addresses are not resolved.
+        if let Some(url::Host::Domain(host)) = url.host() {
+            if self.direct_hosts.load().contains(&host_name(host)) {
+                // As the app's CSP lets through: HTTPS only.
+                let mut url = url.clone();
+                if url.scheme() == "http" && url.set_scheme("https").is_err() {
+                    return (StatusCode::FORBIDDEN, "not fetched from").into_response();
+                }
+                return (
+                    StatusCode::TEMPORARY_REDIRECT,
+                    [
+                        (header::LOCATION, url.to_string()),
+                        (header::CACHE_CONTROL, "no-store".to_owned()),
+                    ],
+                )
+                    .into_response();
+            }
+        }
         if !fetchable(&url, self.admits) {
             return (StatusCode::FORBIDDEN, "not fetched from").into_response();
         }
@@ -349,6 +390,32 @@ mod tests {
                 ),
             "{body}"
         );
+    }
+
+    /// A direct host's images are redirected to, over HTTPS, as the app's
+    /// CSP has it; those of others are fetched.
+    #[tokio::test]
+    async fn direct_hosts_are_redirected_to() {
+        let origin = origin().await;
+        let images = RemoteImages::new(|_| true);
+        assert_eq!(images.app_img_src(), "'self' data:");
+        images.set_direct_hosts(&["Git.Example.".to_owned(), "a.example".to_owned()]);
+        assert_eq!(
+            images.app_img_src(),
+            "'self' data: https://a.example https://git.example"
+        );
+        let response = images
+            .get("http://git.example/u/1.png?width=48".parse().unwrap())
+            .await;
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(
+            response.headers()[header::LOCATION],
+            "https://git.example/u/1.png?width=48"
+        );
+        let response = images
+            .get(format!("http://{origin}/a.png").parse().unwrap())
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     /// A private host is fetched from at its private addresses, named in

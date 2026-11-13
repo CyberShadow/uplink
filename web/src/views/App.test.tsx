@@ -433,7 +433,7 @@ describe('mail', () => {
     expect(screen.getByText(/1 likely tracker blocked\./)).toBeTruthy()
     await user.click(screen.getByRole('button', { name: 'Show them' }))
     // By the host's path, exactly: not the pixel's.
-    expect(frame.srcdoc).toContain(`img-src data: ${location.origin}/api/remote-image/t.example;`)
+    expect(frame.srcdoc).toContain(`img-src data: ${location.origin}/api/remote-image/t.example https://t.example;`)
     expect(screen.queryByText(/not shown/)).toBeNull()
   })
 
@@ -448,7 +448,8 @@ describe('mail', () => {
     await user.keyboard('j{Enter}')
     let frame = (await screen.findByTitle('Message body')) as HTMLIFrameElement
     const csp = () => frame.srcdoc.match(/img-src ([^;]*);/)![1]
-    const origin = location.origin
+    // Through the server, or where it redirects to.
+    const shown = (host: string) => `${location.origin}/api/remote-image/${host} https://${host}`
     expect(csp()).toBe('data:')
     await user.click(screen.getByRole('button', { name: 'Always show ▾' }))
     expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
@@ -458,22 +459,22 @@ describe('mail', () => {
       'Hosted at b.example (1 image), from anyone',
     ])
     await user.click(screen.getByRole('menuitem', { name: 'Hosted at a.example (2 images), from anyone' }))
-    await waitFor(() => expect(csp()).toBe(`data: ${origin}/api/remote-image/a.example`))
+    await waitFor(() => expect(csp()).toBe(`data: ${shown('a.example')}`))
     expect(screen.getByText(/Some remote images are not shown\./)).toBeTruthy()
     // Whoever's mail they are in, as the server says.
     await user.keyboard('u')
     await user.keyboard('k{Enter}')
     await screen.findByRole('heading', { name: 'Another' })
     frame = (await screen.findByTitle('Message body')) as HTMLIFrameElement
-    expect(csp()).toBe(`data: ${origin}/api/remote-image/a.example`)
+    expect(csp()).toBe(`data: ${shown('a.example')}`)
     // All of a sender's.
     await user.click(screen.getByRole('button', { name: 'Always show ▾' }))
     await user.click(screen.getByRole('menuitem', { name: 'From bob@example.org' }))
-    await waitFor(() => expect(csp()).toBe(`data: ${origin}/api/remote-image/a.example ${origin}/api/remote-image/c.example`))
+    await waitFor(() => expect(csp()).toBe(`data: ${shown('a.example')} ${shown('c.example')}`))
     expect(screen.queryByText(/not shown/)).toBeNull()
     await user.click(within(frame.closest('section')!).getByRole('button', { name: 'More' }))
     await user.click(screen.getByRole('menuitem', { name: "Don't always show images from bob@example.org" }))
-    await waitFor(() => expect(csp()).toBe(`data: ${origin}/api/remote-image/a.example`))
+    await waitFor(() => expect(csp()).toBe(`data: ${shown('a.example')}`))
     await user.click(within(frame.closest('section')!).getByRole('button', { name: 'More' }))
     await user.click(screen.getByRole('menuitem', { name: "Don't always show images hosted at a.example" }))
     await waitFor(() => expect(csp()).toBe('data:'))
