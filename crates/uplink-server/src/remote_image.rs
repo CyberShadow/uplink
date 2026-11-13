@@ -87,7 +87,14 @@ impl RemoteImages {
             .header(header::ACCEPT, "image/*")
             .send()
             .await
-            .map_err(|e| format!("fetching: {:#}", anyhow::Error::from(e)))?
+            .map_err(|e| {
+                let e = anyhow::Error::from(e);
+                // Said alone: within reqwest's chain it reads as DNS failing.
+                match e.chain().find_map(|e| e.downcast_ref::<NotAdmitted>()) {
+                    Some(refused) => refused.to_string(),
+                    None => format!("fetching: {e:#}"),
+                }
+            })?
             .error_for_status()
             .map_err(|e| e.to_string())?;
         let mime = response
@@ -184,6 +191,31 @@ fn fetchable(url: &Url, admits: fn(IpAddr) -> bool) -> bool {
         }
 }
 
+/// A name that resolved to addresses none of which are fetched from.
+#[derive(Debug)]
+struct NotAdmitted {
+    name: String,
+    refused: Vec<IpAddr>,
+}
+
+impl std::fmt::Display for NotAdmitted {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        if self.refused.is_empty() {
+            return write!(f, "{} has no address", self.name);
+        }
+        let refused: Vec<String> = self.refused.iter().map(IpAddr::to_string).collect();
+        write!(
+            f,
+            "{} resolves only to addresses not of the public internet ({}), \
+             which images are not fetched from",
+            self.name,
+            refused.join(", ")
+        )
+    }
+}
+
+impl std::error::Error for NotAdmitted {}
+
 /// Resolves names to their admitted addresses only.
 struct Admitted(fn(IpAddr) -> bool);
 
@@ -191,12 +223,18 @@ impl Resolve for Admitted {
     fn resolve(&self, name: Name) -> Resolving {
         let admits = self.0;
         Box::pin(async move {
-            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((name.as_str(), 0))
-                .await?
-                .filter(|a| admits(a.ip()))
-                .collect();
+            let (addrs, refused): (Vec<SocketAddr>, Vec<SocketAddr>) =
+                tokio::net::lookup_host((name.as_str(), 0))
+                    .await?
+                    .partition(|a| admits(a.ip()));
             if addrs.is_empty() {
-                return Err(format!("{} has no address fetched from", name.as_str()).into());
+                let mut refused: Vec<IpAddr> = refused.iter().map(SocketAddr::ip).collect();
+                refused.dedup();
+                return Err(NotAdmitted {
+                    name: name.as_str().to_owned(),
+                    refused,
+                }
+                .into());
             }
             Ok(Box::new(addrs.into_iter()) as Addrs)
         })
@@ -257,6 +295,23 @@ mod tests {
             .unwrap_or_default();
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         (status, warning, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    #[tokio::test]
+    async fn names_of_no_public_address_are_said_to_be() {
+        let images = RemoteImages::new(public);
+        let response = images
+            .get("http://localhost:1/a.png".parse().unwrap())
+            .await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8_lossy(&body);
+        assert!(
+            body.starts_with("localhost resolves only to addresses not of the public internet (")
+                && body.contains("127.0.0.1")
+                && body.ends_with("), which images are not fetched from"),
+            "{body}"
+        );
     }
 
     #[tokio::test]
