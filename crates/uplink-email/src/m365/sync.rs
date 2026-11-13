@@ -134,6 +134,10 @@ impl Provider for M365Sync {
                         }
                     }
                     Delta::Removed { id, .. } => left.push((id, folder.external_id.clone())),
+                    // Fetched whole, as those doubtful are.
+                    Delta::Changed { id } => {
+                        doubtful.insert(id);
+                    }
                 }
             }
             if full {
