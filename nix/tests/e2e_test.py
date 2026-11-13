@@ -105,6 +105,13 @@ with subtest("a reply written in the UI is sent after the delay, in the thread")
 with subtest("a Matrix invitation is joined from the UI; the room shows messages, raw JSON, and sends"):
     room = matrix(bob, "POST", "/createRoom", {"name": "Planning", "invite": ["@alice:localhost"]})["room_id"]
     matrix(bob, "PUT", f"/rooms/{room}/send/m.room.message/1", {"msgtype": "m.text", "body": "Hi from Bob"})
+    long = "echo " + "x" * 300
+    matrix(bob, "PUT", f"/rooms/{room}/send/m.room.message/code", {
+        "msgtype": "m.text",
+        "body": f"```\n{long}\n```",
+        "format": "org.matrix.custom.html",
+        "formatted_body": f"<pre><code>{long}\n</code></pre>",
+    })
     matrix(bob, "PUT", f"/rooms/{room}/send/org.example.custom/2", {"answer": 42})
     ui("matrix")
 

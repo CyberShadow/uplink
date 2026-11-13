@@ -1927,6 +1927,21 @@ describe('room timeline', () => {
     within(timeline()).getByText('erin left')
   })
 
+  it('copies a code block by its button', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    server.receive(room.id, {
+      body: '```\nls -l\ncd /\n```',
+      html: '<p>Try:</p><pre><code>ls -l\ncd /\n</code></pre>',
+    })
+    const user = await start(`/rooms/${room.id}`)
+    const line = (await within(timeline()).findByText('Try:')).closest('li')!
+    await user.click(within(line).getByRole('button', { name: 'Copy code' }))
+    expect(await navigator.clipboard.readText()).toBe('ls -l\ncd /\n')
+    expect(within(line).getByRole('button', { name: 'Copied' })).toBeTruthy()
+    expect(line.querySelectorAll('pre')).toHaveLength(1)
+  })
+
   it('shows HTML, media, and edits with their history', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')

@@ -284,6 +284,38 @@ button.sender:hover .name {
   padding: 0;
 }
 
+.codeBlock {
+  position: relative;
+}
+
+/* At the bottom: the line's actions show over its top. */
+.copyCode {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  opacity: 0;
+}
+
+.codeBlock:hover .copyCode,
+.copyCode:focus-within {
+  opacity: 1;
+}
+
+.copyCode button {
+  display: flex;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.copyCode button:hover {
+  color: var(--fg);
+}
+
 .html img {
   max-width: 100%;
   max-height: 240px;

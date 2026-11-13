@@ -129,6 +129,19 @@ def matrix(page):
     timeline = page.get_by_role("list", name="Timeline")
     expect(timeline).to_contain_text("Hi from Bob")
     expect(timeline).to_contain_text("org.example.custom")
+    # A code block's copy button shows on hover, at its bottom right,
+    # where it stays as the block scrolls.
+    pre = timeline.locator("pre", has_text="echo x")
+    pre.hover()
+    copy = timeline.get_by_role("button", name="Copy code")
+    expect(copy).to_be_visible()
+    pre.evaluate("pre => { pre.scrollLeft = pre.scrollWidth }")
+    box, button = pre.bounding_box(), copy.bounding_box()
+    assert box["x"] + box["width"] - 40 <= button["x"] and button["x"] + button["width"] <= box["x"] + box["width"], (box, button)
+    assert box["y"] + box["height"] - 10 <= button["y"] + button["height"] <= box["y"] + box["height"], (box, button)
+    # The line's actions, over its top, leave it to be clicked.
+    copy.click(trial=True)
+    pre.locator("xpath=ancestor::li[1]").screenshot(path=f"{SHOTS}/room-code.png")
     # Joined, the room's box has the focus.
     expect(page.get_by_role("textbox", name="Message Planning")).to_be_focused()
     page.keyboard.type("Hello from uplink")

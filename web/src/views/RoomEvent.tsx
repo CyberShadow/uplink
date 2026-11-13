@@ -3,6 +3,7 @@
 // reactions and actions, state events summarized, and anything else as
 // its JSON.
 
+import { render } from 'preact'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import type {
@@ -526,6 +527,27 @@ function Html(props: { room: Room; html: string; openMember: (user: string) => v
       if (background && COLOR.test(background)) element.style.backgroundColor = background
     }
   }, [html, matrix, props.room])
+  // Each code block with a button copying it, as Element's, beside it
+  // rather than in it, so that it stays as the block scrolls. Of the HTML
+  // only: moving a block resets its scrolling.
+  useLayoutEffect(() => {
+    const blocks = [...root.current!.querySelectorAll('pre')].map((pre) => {
+      const block = document.createElement('div')
+      block.className = styles.codeBlock
+      pre.replaceWith(block)
+      const button = document.createElement('span')
+      button.className = styles.copyCode
+      block.append(pre, button)
+      render(<CopyCode code={pre} />, button)
+      return { block, pre, button }
+    })
+    return () => {
+      for (const { block, pre, button } of blocks) {
+        render(null, button)
+        block.replaceWith(pre)
+      }
+    }
+  }, [html])
   return (
     <span
       ref={root}
@@ -538,6 +560,26 @@ function Html(props: { room: Room; html: string; openMember: (user: string) => v
       }}
       dangerouslySetInnerHTML={{ __html: html }}
     />
+  )
+}
+
+/** Copies the code block's text. */
+function CopyCode(props: { code: HTMLElement }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      type="button"
+      aria-label={copied ? 'Copied' : 'Copy code'}
+      title={copied ? 'Copied' : 'Copy code'}
+      onMouseDown={keepFocus}
+      onClick={async () => {
+        await navigator.clipboard.writeText(props.code.textContent!)
+        setCopied(true)
+      }}
+      onMouseLeave={() => setCopied(false)}
+    >
+      <Icon name={copied ? 'check' : 'copy'} />
+    </button>
   )
 }
 
