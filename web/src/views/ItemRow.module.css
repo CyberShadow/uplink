@@ -45,8 +45,10 @@
   text-overflow: ellipsis;
 }
 
+/* The row's colour (`--row-fg`, a list's that has read rows recede),
+   within the muted rest. */
 .subject {
-  color: var(--fg);
+  color: var(--row-fg, var(--fg));
 }
 
 .badge {

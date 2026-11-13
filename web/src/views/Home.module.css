@@ -95,12 +95,16 @@
   padding: 0;
 }
 
-/* A row's cells are `ItemRow`'s; unread, it stands out, as mail's. */
+/* A row's cells are `ItemRow`'s; read, it recedes, unread, it stands
+   out, as a list of mail's rows (`--row-fg`: its text's colour, which
+   its subject keeps within what is muted). */
 .row {
+  --row-fg: var(--read-fg);
   padding: 4px 16px 4px 12px;
   border-bottom: 1px solid var(--line);
   border-left: 4px solid transparent;
   background: var(--read-bg);
+  color: var(--row-fg);
   cursor: pointer;
 }
 
@@ -109,6 +113,7 @@
 }
 
 .unread {
+  --row-fg: var(--fg);
   background: var(--unread-bg);
 }
 
