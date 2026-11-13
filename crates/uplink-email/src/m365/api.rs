@@ -92,6 +92,12 @@ pub enum Delta {
         _removed: serde_json::Value,
     },
     Message(Message),
+    /// A message changed, with only some of its properties: Graph gives
+    /// those that changed (seen: `isRead` alone), whatever is selected.
+    /// It is fetched whole.
+    Changed {
+        id: String,
+    },
 }
 
 /// A page of a delta query, of `T`s.
@@ -530,5 +536,17 @@ mod tests {
             panic!("a message")
         };
         assert!(m.is_read);
+    }
+
+    #[test]
+    fn messages_of_only_their_changes_are_changed() {
+        let page: DeltaPage<Delta> = serde_json::from_str(
+            r##"{"value": [
+                {"@odata.type": "#microsoft.graph.message", "id": "b",
+                 "parentFolderId": "f", "isRead": true}
+            ]}"##,
+        )
+        .unwrap();
+        assert!(matches!(&page.value[0], Delta::Changed { id } if id == "b"));
     }
 }
