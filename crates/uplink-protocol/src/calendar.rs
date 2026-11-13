@@ -27,6 +27,86 @@ pub struct CalendarEvent {
     pub recurring: bool,
     /// An occurrence of a series changed from what the series says.
     pub exception: bool,
+    /// Cancelled by its organizer, but still on the calendar.
+    pub cancelled: bool,
+    pub show_as: ShowAs,
+    /// The user's answer to it.
+    pub response: EventResponse,
+}
+
+/// How an event has the user's time shown to others (Graph `showAs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ShowAs {
+    Free,
+    Tentative,
+    Busy,
+    /// Out of office.
+    Oof,
+    WorkingElsewhere,
+    Unknown,
+}
+
+/// An answer to a meeting request (Graph `responseType`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum EventResponse {
+    /// None asked for, as of an appointment.
+    None,
+    /// The user organizes it.
+    Organizer,
+    TentativelyAccepted,
+    Accepted,
+    Declined,
+    NotResponded,
+}
+
+/// What a calendar shows of an event opened: all it has, as the provider
+/// has it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct EventDetails {
+    pub event: CalendarEvent,
+    pub organizer: Option<Person>,
+    pub attendees: Vec<Attendee>,
+    /// The body, sanitized, if it is HTML. It may refer to remote images,
+    /// which clients should not load unasked, as of a message's.
+    pub body_html: Option<String>,
+    /// The body, if it is text.
+    pub body_text: Option<String>,
+    pub remote_images: Vec<crate::mail::RemoteHost>,
+    /// Where to join its online meeting.
+    pub join_url: Option<String>,
+    /// Where the provider's web app shows it.
+    pub web_link: Option<String>,
+    /// The provider's JSON of it, indented.
+    pub raw: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Person {
+    /// The address, if it has no name.
+    pub name: String,
+    pub address: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Attendee {
+    pub person: Person,
+    pub kind: AttendeeKind,
+    pub response: EventResponse,
+}
+
+/// Graph `attendeeType`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum AttendeeKind {
+    Required,
+    Optional,
+    /// A room or equipment.
+    Resource,
 }
 
 /// An account's calendar changed.

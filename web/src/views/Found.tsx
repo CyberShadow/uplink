@@ -76,7 +76,7 @@ export function Found(props: { found: Items }) {
           <ul>
             {events.map((event) => (
               <li key={event.id}>
-                <a class={ROW} href={calendarPath('agenda', date(new Date(event.start)))}>
+                <a class={ROW} href={calendarPath('agenda', date(new Date(event.start)), event.id)}>
                   <EventCells event={event} />
                 </a>
               </li>

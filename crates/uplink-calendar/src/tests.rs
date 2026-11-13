@@ -1,6 +1,9 @@
 use crate::{service::Calendar, CalendarObserved, ObservedEvent};
 use std::sync::Arc;
-use uplink_protocol::{ErrorCode, ServerEvent, ServerResponse};
+use uplink_protocol::{
+    calendar::{EventResponse, ShowAs},
+    ErrorCode, ServerEvent, ServerResponse,
+};
 use uplink_realtime::Hub;
 use uplink_tx_log::{Dispatcher, Registry};
 
@@ -75,6 +78,9 @@ fn event(id: &str, subject: &str, start: i64, end: i64) -> ObservedEvent {
         start,
         end,
         all_day: false,
+        cancelled: false,
+        show_as: ShowAs::Busy,
+        response: EventResponse::Organizer,
         raw: "{}".into(),
     }
 }

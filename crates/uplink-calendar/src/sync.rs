@@ -15,6 +15,7 @@ use std::{
 };
 use uplink_config::M365AccountConfig;
 use uplink_email::m365::api::Graph;
+use uplink_protocol::calendar::{EventResponse, ShowAs};
 use uplink_storage::rusqlite::{Connection, OptionalExtension};
 use uplink_tx_log::Dispatcher;
 
@@ -80,6 +81,14 @@ struct Event {
     end: DateTime,
     #[serde(default)]
     is_all_day: bool,
+    is_cancelled: bool,
+    show_as: ShowAs,
+    response_status: ResponseStatus,
+}
+
+#[derive(Deserialize)]
+struct ResponseStatus {
+    response: EventResponse,
 }
 
 #[derive(Deserialize)]
@@ -264,6 +273,9 @@ fn observed(item: serde_json::Value) -> Result<ObservedEvent> {
             .unwrap_or_default(),
         preview: event.body_preview.unwrap_or_default(),
         all_day: event.is_all_day,
+        cancelled: event.is_cancelled,
+        show_as: event.show_as,
+        response: event.response_status.response,
         external_id: event.id,
         raw,
     })

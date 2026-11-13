@@ -11,6 +11,7 @@ import type {
   Place,
   Account,
   CalendarEvent,
+  EventDetails,
   ClientRequest,
   Conversation,
   Draft,
@@ -122,6 +123,8 @@ export class FakeServer implements Requester, Blobs {
   private nextAttachment = 1
 
   readonly calendar: CalendarEvent[] = []
+  /** Of events, what else they have. */
+  private readonly eventDetails = new Map<number, Partial<Omit<EventDetails, 'event' | 'raw'>>>()
   readonly todos: Todo[] = []
   private nextTodo = 1
   private matrixAccounts: MatrixAccount[] = []
@@ -217,7 +220,14 @@ export class FakeServer implements Requester, Blobs {
 
   /** Adds an event to `account`'s calendar, as syncing would, without
    * saying so; {@link calendarSynced} does. Times are ISO strings. */
-  addEvent(account: string, subject: string, start: string, end: string, more: Partial<CalendarEvent> = {}): CalendarEvent {
+  addEvent(
+    account: string,
+    subject: string,
+    start: string,
+    end: string,
+    more: Partial<CalendarEvent> = {},
+    details: Partial<Omit<EventDetails, 'event' | 'raw'>> = {},
+  ): CalendarEvent {
     const event: CalendarEvent = {
       id: this.calendar.length + 1,
       account,
@@ -229,9 +239,13 @@ export class FakeServer implements Requester, Blobs {
       all_day: false,
       recurring: false,
       exception: false,
+      cancelled: false,
+      show_as: 'busy',
+      response: 'organizer',
       ...more,
     }
     this.calendar.push(event)
+    this.eventDetails.set(event.id, details)
     return event
   }
 
@@ -1130,6 +1144,26 @@ export class FakeServer implements Requester, Blobs {
           as_of: this.head(),
           entries: this.sorted().filter((e) => e.message === body.message).map((e) => ({ ...e })),
         }
+      case 'get_event': {
+        const event = this.calendar.find((e) => e.id === body.event)
+        if (!event) throw new RequestError({ code: 'not_found', message: `no event ${body.event}` })
+        return {
+          type: 'event',
+          as_of: this.head(),
+          details: {
+            event,
+            organizer: null,
+            attendees: [],
+            body_html: null,
+            body_text: null,
+            remote_images: [],
+            join_url: null,
+            web_link: null,
+            raw: JSON.stringify({ subject: event.subject }, null, 2),
+            ...this.eventDetails.get(event.id),
+          },
+        }
+      }
       case 'list_events':
         return {
           type: 'events',

@@ -6,6 +6,7 @@ history and the outbox have something in them.
 """
 
 import os
+from datetime import datetime, time as dtime, timedelta
 from urllib.parse import quote
 
 from playwright.sync_api import expect, sync_playwright
@@ -120,12 +121,13 @@ def views(page, theme):
 
 
 def calendar(page, theme):
+    # Tuesday of the week seeded, mid-morning: the week opens an hour
+    # before, at the working day, its time marked.
+    today = datetime.now()
+    page.clock.install(time=datetime.combine(today - timedelta(days=today.weekday() - 1), dtime(10, 40)))
     page.goto(URL + "/calendar")
-    expect(page.get_by_text("Roadmap review")).to_be_visible(timeout=10000)
-    # The working day, rather than the small hours.
-    page.get_by_text("Standup").first.evaluate("e => e.scrollIntoView({block: 'start'})")
-    page.mouse.move(700, 400)
-    page.mouse.wheel(0, -80)
+    page.get_by_role("link", name="Roadmap review").click()
+    expect(page.get_by_role("link", name="Join online meeting")).to_be_visible(timeout=10000)
     shoot(page, "calendar", theme)
 
 

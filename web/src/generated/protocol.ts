@@ -252,7 +252,7 @@ shown: boolean,
 /**
  * Caught up on too: the user is done with it (SPEC §12.15).
  */
-fully: boolean, } | { "type": "mark_room_fully_read", room: RoomId, event: RoomEventId, } | { "type": "set_typing", room: RoomId, typing: boolean, } | { "type": "list_receipts", room: RoomId, } | { "type": "list_members", room: RoomId, } | { "type": "list_pinned", room: RoomId, } | { "type": "list_thread", room: RoomId, root: RoomEventId, } | { "type": "search_room", room: RoomId, query: string, before: RoomEventId | null, limit: number, } | { "type": "preview_url", room: RoomId, event: RoomEventId, url: string, } | { "type": "create_matrix_room", account: string, room: NewRoom, } | { "type": "start_direct_chat", account: string, user: string, } | { "type": "join_matrix_room", account: string, room: string, } | { "type": "resolve_room_alias", account: string, alias: string, } | { "type": "get_matrix_security", account: string, } | { "type": "recover_matrix", account: string, recovery: string, } | { "type": "verify_matrix_device", account: string, device: string | null, } | { "type": "answer_verification", account: string, flow_id: string, answer: VerificationAnswer, } | { "type": "import_room_keys", account: string, blob: BlobId, passphrase: string, } | { "type": "change_membership", room: RoomId, change: MembershipChange, } | { "type": "order_spaces", changes: Array<SpaceOrderChange>, } | { "type": "modify_room_tags", rooms: Array<RoomId>, add: Array<string>, remove: Array<string>, } | { "type": "list_events", from: number, to: number, } | { "type": "list_todos" } | { "type": "create_todo", title: string, notes: string, due: string | null, message: MessageId | null, } | { "type": "edit_todo", todo: TodoId, edit: TodoEdit, } | { "type": "delete_todo", todo: TodoId, };
+fully: boolean, } | { "type": "mark_room_fully_read", room: RoomId, event: RoomEventId, } | { "type": "set_typing", room: RoomId, typing: boolean, } | { "type": "list_receipts", room: RoomId, } | { "type": "list_members", room: RoomId, } | { "type": "list_pinned", room: RoomId, } | { "type": "list_thread", room: RoomId, root: RoomEventId, } | { "type": "search_room", room: RoomId, query: string, before: RoomEventId | null, limit: number, } | { "type": "preview_url", room: RoomId, event: RoomEventId, url: string, } | { "type": "create_matrix_room", account: string, room: NewRoom, } | { "type": "start_direct_chat", account: string, user: string, } | { "type": "join_matrix_room", account: string, room: string, } | { "type": "resolve_room_alias", account: string, alias: string, } | { "type": "get_matrix_security", account: string, } | { "type": "recover_matrix", account: string, recovery: string, } | { "type": "verify_matrix_device", account: string, device: string | null, } | { "type": "answer_verification", account: string, flow_id: string, answer: VerificationAnswer, } | { "type": "import_room_keys", account: string, blob: BlobId, passphrase: string, } | { "type": "change_membership", room: RoomId, change: MembershipChange, } | { "type": "order_spaces", changes: Array<SpaceOrderChange>, } | { "type": "modify_room_tags", rooms: Array<RoomId>, add: Array<string>, remove: Array<string>, } | { "type": "list_events", from: number, to: number, } | { "type": "get_event", event: EventId, } | { "type": "list_todos" } | { "type": "create_todo", title: string, notes: string, due: string | null, message: MessageId | null, } | { "type": "edit_todo", todo: TodoId, edit: TodoEdit, } | { "type": "delete_todo", todo: TodoId, };
 
 export type ServerResponse = { "type": "undone", tx_log_id: TxLogId, } | { "type": "dispatched", tx_log_id: TxLogId, } | { "type": "done" } | { "type": "matrix_security", security: MatrixSecurity, } | { "type": "room_keys_imported", imported: number, total: number, } | { "type": "accounts", as_of: TxLogId, accounts: Array<Account>, } | { "type": "conversations", as_of: TxLogId, conversations: Array<Conversation>, 
 /**
@@ -296,7 +296,7 @@ gaps: Array<TimelineGap>,
  * which follow it. With the events, so that one synced back
  * shows in one place or the other, never both or neither.
  */
-sends: Array<MatrixSend> | null, } | { "type": "room_events", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, } | { "type": "edits", as_of: TxLogId, room: RoomId, event: RoomEventId, edits: Array<RoomEvent>, } | { "type": "room_search", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, more: boolean, } | { "type": "url_preview", preview: UrlPreview | null, } | { "type": "pinned", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, } | { "type": "thread", as_of: TxLogId, room: RoomId, root: RoomEvent, replies: Array<RoomEvent>, } | { "type": "receipts", room: RoomId, receipts: Array<MemberReceipt>, } | { "type": "matrix_room_joined", room_id: string, } | { "type": "room_alias_resolved", room_id: string, } | { "type": "members", room: RoomId, members: Array<MemberInfo>, powers: RoomPowers, } | { "type": "todos", as_of: TxLogId, todos: Array<Todo>, } | { "type": "events", as_of: TxLogId, events: Array<CalendarEvent>, } | { "type": "history", as_of: TxLogId, entries: Array<HistoryEntry>, 
+sends: Array<MatrixSend> | null, } | { "type": "room_events", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, } | { "type": "edits", as_of: TxLogId, room: RoomId, event: RoomEventId, edits: Array<RoomEvent>, } | { "type": "room_search", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, more: boolean, } | { "type": "url_preview", preview: UrlPreview | null, } | { "type": "pinned", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, } | { "type": "thread", as_of: TxLogId, room: RoomId, root: RoomEvent, replies: Array<RoomEvent>, } | { "type": "receipts", room: RoomId, receipts: Array<MemberReceipt>, } | { "type": "matrix_room_joined", room_id: string, } | { "type": "room_alias_resolved", room_id: string, } | { "type": "members", room: RoomId, members: Array<MemberInfo>, powers: RoomPowers, } | { "type": "todos", as_of: TxLogId, todos: Array<Todo>, } | { "type": "events", as_of: TxLogId, events: Array<CalendarEvent>, } | { "type": "event", as_of: TxLogId, details: EventDetails, } | { "type": "history", as_of: TxLogId, entries: Array<HistoryEntry>, 
 /**
  * Whether there are earlier ones than those listed.
  */
@@ -1268,7 +1268,65 @@ recurring: boolean,
 /**
  * An occurrence of a series changed from what the series says.
  */
-exception: boolean, };
+exception: boolean, 
+/**
+ * Cancelled by its organizer, but still on the calendar.
+ */
+cancelled: boolean, show_as: ShowAs, 
+/**
+ * The user's answer to it.
+ */
+response: EventResponse, };
+
+/**
+ * How an event has the user's time shown to others (Graph `showAs`).
+ */
+export type ShowAs = "free" | "tentative" | "busy" | "oof" | "workingElsewhere" | "unknown";
+
+/**
+ * An answer to a meeting request (Graph `responseType`).
+ */
+export type EventResponse = "none" | "organizer" | "tentativelyAccepted" | "accepted" | "declined" | "notResponded";
+
+/**
+ * What a calendar shows of an event opened: all it has, as the provider
+ * has it.
+ */
+export type EventDetails = { event: CalendarEvent, organizer: Person | null, attendees: Array<Attendee>, 
+/**
+ * The body, sanitized, if it is HTML. It may refer to remote images,
+ * which clients should not load unasked, as of a message's.
+ */
+body_html: string | null, 
+/**
+ * The body, if it is text.
+ */
+body_text: string | null, remote_images: Array<RemoteHost>, 
+/**
+ * Where to join its online meeting.
+ */
+join_url: string | null, 
+/**
+ * Where the provider's web app shows it.
+ */
+web_link: string | null, 
+/**
+ * The provider's JSON of it, indented.
+ */
+raw: string, };
+
+export type Person = { 
+/**
+ * The address, if it has no name.
+ */
+name: string, address: string | null, };
+
+export type Attendee = { person: Person, kind: AttendeeKind, response: EventResponse, };
+
+/**
+ * Graph `attendeeType`.
+ */
+export type AttendeeKind = "required" | "optional" | "resource";
 
 /**
  * An account's calendar changed.
@@ -1276,4 +1334,4 @@ exception: boolean, };
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "a4dd00d26ffc776e"
+export const PROTOCOL_VERSION = "3015e0a59f22d132"

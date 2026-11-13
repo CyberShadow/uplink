@@ -3,12 +3,14 @@
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  min-width: 0;
 }
 
 .header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 16px;
+  gap: 8px 16px;
   padding: 8px 16px;
   border-bottom: 1px solid var(--line);
 }
@@ -36,79 +38,253 @@
   background: var(--selected);
 }
 
+/* The view, and the event opened beside it. */
+.body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
 .placeholder {
+  flex: 1;
   padding: 16px;
   color: var(--muted);
 }
 
+/* ── week ── */
+
+/* A column of hours, then the days'; each day's head, all-day events and
+ * hours in rows across the week (the days' subgrids), so that the heads
+ * and the hours line up whatever is in them. Heads and all-day events
+ * stay as the hours scroll. */
 .week {
+  --head: 30px;
+  --gutter: 44px;
+  flex: 1;
+  min-width: 0;
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: var(--gutter) repeat(7, minmax(88px, 1fr));
+  grid-template-rows: var(--head) auto auto;
   overflow: auto;
 }
 
+.corner {
+  grid-column: 1;
+  grid-row: 1 / 3;
+  position: sticky;
+  top: 0;
+  left: 0;
+  z-index: 3;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+
+.gutter {
+  grid-column: 1;
+  grid-row: 3;
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  border-right: 1px solid var(--line);
+}
+
+.gutter li {
+  position: absolute;
+  right: 6px;
+  transform: translateY(-50%);
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .day {
+  grid-row: 1 / 4;
+  display: grid;
+  grid-template-rows: subgrid;
   border-right: 1px solid var(--line);
   min-width: 0;
 }
 
-.day h2,
-.agenda h2 {
-  margin: 0;
-  padding: 6px 8px;
-  font-size: 13px;
-  font-weight: 500;
-  border-bottom: 1px solid var(--line);
-  position: sticky;
-  top: 0;
-  background: var(--bg);
-  z-index: 1;
+.today {
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
 }
 
-.day h2.today,
-.agenda h2.today {
+.day h2 {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: 0;
+  padding: 0 8px;
+  line-height: var(--head);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: var(--bg);
+}
+
+.day h2[aria-current='date'] {
   color: var(--accent);
+  font-weight: 600;
 }
 
 .allDay {
+  position: sticky;
+  top: var(--head);
+  z-index: 2;
   list-style: none;
   margin: 0;
   padding: 2px;
   min-height: 24px;
   border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.allDay .event {
+  display: block;
+  margin-bottom: 2px;
 }
 
 .hours {
+  position: relative;
+  /* A line every hour, fainter every half. */
+  background:
+    repeating-linear-gradient(transparent 0 calc(var(--hour) - 1px), var(--line) calc(var(--hour) - 1px) var(--hour)),
+    repeating-linear-gradient(
+      transparent 0 calc(var(--hour) / 2 - 1px),
+      color-mix(in srgb, var(--line) 50%, transparent) calc(var(--hour) / 2 - 1px) calc(var(--hour) / 2)
+    );
+}
+
+.hours ul {
   list-style: none;
   margin: 0;
   padding: 0;
-  position: relative;
-  /* A line every hour. */
-  background: repeating-linear-gradient(var(--bg) 0 39px, var(--line) 39px 40px);
 }
+
+.hours li {
+  position: absolute;
+  box-sizing: border-box;
+  padding: 0 1px 1px 0;
+}
+
+.hours .event {
+  display: block;
+  height: 100%;
+}
+
+.hours .short {
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The time: a line across today, from a dot at its start. */
+.now {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  height: 2px;
+  margin-top: -1px;
+  background: var(--error-fg);
+  pointer-events: none;
+}
+
+.now::before {
+  content: '';
+  position: absolute;
+  left: -5px;
+  top: -4px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--error-fg);
+}
+
+/* ── events ── */
 
 .event {
   box-sizing: border-box;
   overflow: hidden;
   padding: 1px 4px;
-  margin-bottom: 2px;
   border-radius: 4px;
   font-size: 12px;
+  color: inherit;
+  text-decoration: none;
   background: var(--selected);
   border-left: 3px solid var(--accent);
 }
 
-.hours .event {
-  position: absolute;
-  margin: 0;
+.event:hover {
+  filter: brightness(0.97);
+}
+
+.event.opened {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.tentative {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--selected) 0 6px,
+    color-mix(in srgb, var(--selected) 40%, var(--bg)) 6px 12px
+  );
+}
+
+.free {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+}
+
+.declined {
+  opacity: 0.55;
+  border-left-color: var(--muted);
+}
+
+.cancelled {
+  opacity: 0.6;
+  border-left-color: var(--muted);
+}
+
+.cancelled .subject,
+h2.cancelled {
+  text-decoration: line-through;
 }
 
 .location {
   color: var(--muted);
 }
 
+/* ── agenda ── */
+
 .agenda {
+  flex: 1;
+  min-width: 0;
   overflow: auto;
+}
+
+.agenda h2 {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0;
+  padding: 6px 8px;
+  font-size: 13px;
+  font-weight: 500;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.agenda h2[aria-current='date'] {
+  color: var(--accent);
 }
 
 .agenda ul {
@@ -117,14 +293,156 @@
   padding: 0;
 }
 
-.agendaEvent {
+.agenda .agendaEvent {
   display: grid;
   grid-template-columns: 120px 1fr;
   gap: 12px;
   padding: 4px 16px;
+  font-size: inherit;
+  border-radius: 0;
   border-bottom: 1px solid var(--line);
+}
+
+.agenda .agendaEvent:not(.tentative, .opened) {
+  background: none;
 }
 
 .when {
   color: var(--muted);
+}
+
+/* ── the event opened ── */
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: none;
+  box-sizing: border-box;
+  width: min(380px, 40%);
+  padding: 8px 16px 16px;
+  overflow: auto;
+  border-left: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.pane p {
+  margin: 0;
+}
+
+.paneHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.paneHeader h2 {
+  margin: 4px 0 0;
+  font-size: 18px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.paneHeader a {
+  color: var(--muted);
+  font-size: 22px;
+  line-height: 1;
+  text-decoration: none;
+}
+
+.cancelledNote {
+  padding: 4px 8px;
+  border-radius: 4px;
+  color: var(--error-fg);
+  background: var(--error-bg);
+}
+
+.join {
+  align-self: flex-start;
+  padding: 6px 14px;
+  border-radius: 6px;
+  color: var(--bg);
+  background: var(--accent);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.external {
+  align-self: flex-start;
+  color: var(--accent);
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 0;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.pane h3 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.attendees {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.accepted {
+  color: var(--ok);
+}
+
+.refused {
+  color: var(--error-fg);
+}
+
+.description {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.raw summary {
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.raw pre {
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* On a phone, the event opened covers the calendar. */
+@media (max-width: 700px) {
+  .pane {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    width: auto;
+    border-left: none;
+  }
 }

@@ -1203,6 +1203,7 @@ impl Backend for Services {
             }
             ClientRequest::ListTodos => self.todos.list().await,
             ClientRequest::ListEvents { from, to } => self.calendar.list(from, to).await,
+            ClientRequest::GetEvent { event } => self.calendar.get(event).await,
             ClientRequest::CreateTodo {
                 title,
                 notes,

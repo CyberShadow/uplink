@@ -1,0 +1,219 @@
+From 7e550931ea50604e61f741ef860be0ac129dac7f Mon Sep 17 00:00:00 2001
+From: Vladimir Panteleev <git@cy.md>
+Date: Fri, 13 Nov 2026 22:28:31 +0000
+Subject: [PATCH] feat(microsoft): Graph calendar: meetings' attendees,
+ organizer, answer, HTML body and online meeting
+
+An event keeps its body's content type, showAs and attendees as given, and
+isOnlineMeeting gives it an onlineMeeting.joinUrl. What Graph sets itself
+of a meeting someone else organizes (organizer, responseStatus,
+isCancelled), the emulator takes too, to seed one; events have a webLink.
+---
+ packages/@emulators/microsoft/README.md       |  2 +
+ .../microsoft/src/__tests__/calendar.test.ts  | 32 +++++++++++
+ packages/@emulators/microsoft/src/calendar.ts | 53 ++++++++++++++++---
+ packages/@emulators/microsoft/src/entities.ts | 13 +++++
+ .../microsoft/src/routes/calendar.ts          | 14 ++++-
+ 5 files changed, 107 insertions(+), 7 deletions(-)
+
+diff --git a/packages/@emulators/microsoft/README.md b/packages/@emulators/microsoft/README.md
+index 2688285..64b1c55 100644
+--- a/packages/@emulators/microsoft/README.md
++++ b/packages/@emulators/microsoft/README.md
+@@ -63,6 +63,8 @@ Each user's mailbox starts with the well-known folders (Inbox, Drafts, Sent Item
+ 
+ Events live in the user's one calendar. Times are UTC: requests give them with `timeZone: "UTC"` (others are refused), and responses give them so, as with `Prefer: outlook.timezone="UTC"`. A series' `recurrence` may follow a `daily`, `weekly`, `absoluteMonthly` or `absoluteYearly` pattern, over an `endDate`, `numbered` or `noEnd` range (expanded three years ahead). Changing or deleting one of its occurrences, by the occurrence's id, makes an exception of it.
+ 
++An event keeps its `body` (`text` or `html`), `showAs` and `attendees` as given; `isOnlineMeeting: true` gives it an `onlineMeeting.joinUrl` at the emulator. What Graph sets itself of a meeting someone else organizes, the emulator takes too, to seed one: its `organizer`, the user's `responseStatus` (`notResponded` by default, `organizer` for the user's own) and `isCancelled`.
++
+ `calendarView` lists the events overlapping `startDateTime`–`endDateTime`, series as their occurrences and exceptions. Its `delta` lists them, then, from its `@odata.deltaLink`, those changed since, and as `@removed` those deleted, cancelled or moved out of the window. An unknown delta token answers 410 `SyncStateNotFound`.
+ 
+ ## Seed Configuration
+diff --git a/packages/@emulators/microsoft/src/__tests__/calendar.test.ts b/packages/@emulators/microsoft/src/__tests__/calendar.test.ts
+index f8a15a3..d20f874 100644
+--- a/packages/@emulators/microsoft/src/__tests__/calendar.test.ts
++++ b/packages/@emulators/microsoft/src/__tests__/calendar.test.ts
+@@ -193,4 +193,36 @@ describe("Microsoft Graph calendar", () => {
+     });
+     expect(relative.status).toBe(400);
+   });
++
++  it("keeps a meeting's attendees, organizer, answer, body and online meeting", async () => {
++    const own = await create({ subject: "Plain", start: utc("2026-11-10T09:00:00"), end: utc("2026-11-10T10:00:00") });
++    expect([own.organizer.emailAddress.address, own.responseStatus.response, own.showAs]).toEqual([ALICE, "organizer", "busy"]);
++    expect([own.isOnlineMeeting, own.onlineMeeting, own.isCancelled]).toEqual([false, null, false]);
++    const attendees = [{ emailAddress: { name: "Bob", address: "bob@example.com" }, type: "required", status: { response: "accepted" } }];
++    const meeting = await create({
++      subject: "Sync",
++      start: utc("2026-11-11T09:00:00"),
++      end: utc("2026-11-11T10:00:00"),
++      body: { contentType: "html", content: "<p>Agenda</p>" },
++      organizer: { emailAddress: { name: "Bob", address: "bob@example.com" } },
++      attendees,
++      showAs: "tentative",
++      isOnlineMeeting: true,
++    });
++    expect(meeting.organizer.emailAddress).toEqual({ name: "Bob", address: "bob@example.com" });
++    expect([meeting.responseStatus.response, meeting.showAs, meeting.body]).toEqual([
++      "notResponded",
++      "tentative",
++      { contentType: "html", content: "<p>Agenda</p>" },
++    ]);
++    expect(meeting.attendees).toEqual(attendees);
++    expect(meeting.onlineMeeting.joinUrl).toBe(`${base}/meet/${meeting.id}`);
++    await json(`/v1.0/me/events/${meeting.id}`, {
++      method: "PATCH",
++      body: JSON.stringify({ isCancelled: true, responseStatus: { response: "declined" } }),
++    });
++    const listed = (await json(`/v1.0/me/calendarView?${WINDOW}`)).value.find((e: any) => e.id === meeting.id);
++    expect([listed.isCancelled, listed.responseStatus.response]).toEqual([true, "declined"]);
++    expect((await request("/v1.0/me/events", { method: "POST", body: JSON.stringify({ ...meeting, showAs: "away" }) })).status).toBe(400);
++  });
+ });
+diff --git a/packages/@emulators/microsoft/src/calendar.ts b/packages/@emulators/microsoft/src/calendar.ts
+index 9c7cbb2..6c815c9 100644
+--- a/packages/@emulators/microsoft/src/calendar.ts
++++ b/packages/@emulators/microsoft/src/calendar.ts
+@@ -8,6 +8,8 @@ const DAY = 86_400_000;
+ const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+ export const PATTERNS = ["daily", "weekly", "absoluteMonthly", "absoluteYearly"];
+ export const RANGES = ["endDate", "noEnd", "numbered"];
++const SHOW_AS = ["free", "tentative", "busy", "oof", "workingElsewhere", "unknown"];
++const RESPONSES = ["none", "organizer", "tentativelyAccepted", "accepted", "declined", "notResponded"];
+ 
+ /** Advances the calendar's change counter; delta tokens hold its values. */
+ export function nextCalendarChange(store: Store, email: string): number {
+@@ -125,15 +127,21 @@ export function formatEvent(
+     originalStart: instance ? `${instance.originalStart}Z` : null,
+     subject: fields.subject,
+     bodyPreview: fields.body.slice(0, 255),
+-    body: { contentType: "text", content: fields.body },
++    body: { contentType: fields.body_type, content: fields.body },
+     start: graphTime(fields.start),
+     end: graphTime(fields.end),
+     isAllDay: fields.is_all_day,
+     location: { displayName: fields.location },
+     recurrence: instance ? null : event.recurrence,
+-    isCancelled: false,
+-    showAs: "busy",
+-    organizer: { emailAddress: { address: event.user_email } },
++    isCancelled: fields.is_cancelled,
++    showAs: fields.show_as,
++    responseStatus: { response: fields.response, time: "0001-01-01T00:00:00Z" },
++    organizer: { emailAddress: fields.organizer ?? { name: event.user_email, address: event.user_email } },
++    attendees: fields.attendees,
++    isOnlineMeeting: fields.join_url !== null,
++    onlineMeetingProvider: fields.join_url !== null ? "teamsForBusiness" : "unknown",
++    onlineMeeting: fields.join_url !== null ? { joinUrl: fields.join_url } : null,
++    webLink: `https://outlook.office365.com/owa/?itemid=${encodeURIComponent(instance?.id ?? event.event_id)}&exvsurl=1&path=/calendar/item`,
+   };
+ }
+ 
+@@ -160,6 +168,13 @@ export function instancesOf(event: MicrosoftEvent): Instance[] {
+       body: event.body,
+       location: event.location,
+       is_all_day: event.is_all_day,
++      body_type: event.body_type,
++      show_as: event.show_as,
++      is_cancelled: event.is_cancelled,
++      response: event.response,
++      organizer: event.organizer,
++      attendees: event.attendees,
++      join_url: event.join_url,
+       start: originalStart,
+       end: utcString(utcMs(originalStart) + duration),
+       ...exception,
+@@ -217,9 +232,35 @@ export function fieldsOf(body: Record<string, unknown>): Partial<MicrosoftEventF
+     fields.subject = body.subject;
+   }
+   if ("body" in body) {
+-    const content = (body.body as { content?: unknown } | null)?.content;
+-    if (typeof content !== "string") return null;
++    const { content, contentType = "text" } = (body.body ?? {}) as { content?: unknown; contentType?: unknown };
++    if (typeof content !== "string" || (contentType !== "text" && contentType !== "html")) return null;
+     fields.body = content;
++    fields.body_type = contentType;
++  }
++  if ("showAs" in body) {
++    if (!SHOW_AS.includes(body.showAs as string)) return null;
++    fields.show_as = body.showAs as string;
++  }
++  if ("attendees" in body) {
++    if (!Array.isArray(body.attendees)) return null;
++    fields.attendees = body.attendees;
++  }
++  // What Graph sets itself, of a meeting someone else organizes, the
++  // emulator takes too, to seed one: its organizer, the user's answer, and
++  // that it was cancelled.
++  if ("organizer" in body) {
++    const address = (body.organizer as { emailAddress?: { name?: unknown; address?: unknown } } | null)?.emailAddress;
++    if (typeof address?.address !== "string") return null;
++    fields.organizer = { name: typeof address.name === "string" ? address.name : address.address, address: address.address };
++  }
++  if ("responseStatus" in body) {
++    const response = (body.responseStatus as { response?: unknown } | null)?.response;
++    if (!RESPONSES.includes(response as string)) return null;
++    fields.response = response as string;
++  }
++  if ("isCancelled" in body) {
++    if (typeof body.isCancelled !== "boolean") return null;
++    fields.is_cancelled = body.isCancelled;
+   }
+   if ("location" in body) {
+     const name = (body.location as { displayName?: unknown } | null)?.displayName;
+diff --git a/packages/@emulators/microsoft/src/entities.ts b/packages/@emulators/microsoft/src/entities.ts
+index 8f5d440..8f11cea 100644
+--- a/packages/@emulators/microsoft/src/entities.ts
++++ b/packages/@emulators/microsoft/src/entities.ts
+@@ -72,6 +72,19 @@ export interface MicrosoftEventFields {
+   start: string;
+   end: string;
+   is_all_day: boolean;
++  body_type: "text" | "html";
++  /** Graph `showAs`: free, tentative, busy, oof, workingElsewhere. */
++  show_as: string;
++  is_cancelled: boolean;
++  /** The user's answer, Graph `responseStatus.response`: none,
++   * organizer, tentativelyAccepted, accepted, declined, notResponded. */
++  response: string;
++  /** Who organizes it, if not the user. */
++  organizer: { name: string; address: string } | null;
++  /** Graph attendees, as given. */
++  attendees: unknown[];
++  /** The online meeting's, if it is one. */
++  join_url: string | null;
+ }
+ 
+ /** A Graph recurrence: its pattern and range, as Graph has them. */
+diff --git a/packages/@emulators/microsoft/src/routes/calendar.ts b/packages/@emulators/microsoft/src/routes/calendar.ts
+index 424ed01..98f48e6 100644
+--- a/packages/@emulators/microsoft/src/routes/calendar.ts
++++ b/packages/@emulators/microsoft/src/routes/calendar.ts
+@@ -79,14 +79,26 @@ export function calendarRoutes({ app, store, baseUrl }: RouteContext): void {
+     if (recurrence !== null && !isSupportedRecurrence(recurrence)) {
+       return invalid(c, "The emulator expands daily, weekly, absoluteMonthly and absoluteYearly patterns only.");
+     }
++    if ("isOnlineMeeting" in body && typeof body.isOnlineMeeting !== "boolean") {
++      return invalid(c, "isOnlineMeeting is a boolean.");
++    }
++    const eventId = generateGraphId("AAMkEvent");
+     const event = ms.events.insert({
+-      event_id: generateGraphId("AAMkEvent"),
++      event_id: eventId,
+       user_email: email,
+       ical_uid: generateGraphId("040000008200E00074C5B7101A82E008"),
+       subject: "",
+       body: "",
+       location: "",
+       is_all_day: false,
++      body_type: "text",
++      show_as: "busy",
++      is_cancelled: false,
++      response: fields.organizer ? "notResponded" : "organizer",
++      organizer: null,
++      attendees: [],
++      // As a Teams meeting's, at the emulator.
++      join_url: body.isOnlineMeeting === true ? `${baseUrl}/meet/${eventId}` : null,
+       ...fields,
+       start: fields.start,
+       end: fields.end,

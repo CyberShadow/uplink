@@ -2,15 +2,16 @@
 //! account's synced from a Graph calendar view by its sync task, and
 //! served to clients.
 
+pub mod details;
 pub mod service;
 pub mod sync;
 #[cfg(test)]
 mod tests;
 
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use serde::Serialize;
 use uplink_protocol::{
-    calendar::{CalendarChanged, CalendarEvent, EventId},
+    calendar::{CalendarChanged, CalendarEvent, EventId, EventResponse, ShowAs},
     ServerEvent,
 };
 use uplink_query::{text_matches, Kind, Query, Term};
@@ -48,6 +49,9 @@ pub struct ObservedEvent {
     pub start: i64,
     pub end: i64,
     pub all_day: bool,
+    pub cancelled: bool,
+    pub show_as: ShowAs,
+    pub response: EventResponse,
     /// The provider's JSON of it; not in the log, which records what
     /// changed rather than the provider's every word.
     #[serde(skip)]
@@ -81,13 +85,15 @@ impl Observation for CalendarObserved {
             tx.execute(
                 "INSERT INTO calendar_event
                    (account_id, external_id, series, exception, subject, location, preview,
-                    start_ts, end_ts, all_day, raw)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                    start_ts, end_ts, all_day, cancelled, show_as, response, raw)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
                  ON CONFLICT (account_id, external_id) DO UPDATE SET
                    series = excluded.series, exception = excluded.exception,
                    subject = excluded.subject, location = excluded.location,
                    preview = excluded.preview, start_ts = excluded.start_ts,
-                   end_ts = excluded.end_ts, all_day = excluded.all_day, raw = excluded.raw",
+                   end_ts = excluded.end_ts, all_day = excluded.all_day,
+                   cancelled = excluded.cancelled, show_as = excluded.show_as,
+                   response = excluded.response, raw = excluded.raw",
                 params![
                     account,
                     event.external_id,
@@ -99,6 +105,9 @@ impl Observation for CalendarObserved {
                     event.start,
                     event.end,
                     event.all_day,
+                    event.cancelled,
+                    name(event.show_as),
+                    name(event.response),
                     event.raw,
                 ],
             )?;
@@ -201,29 +210,65 @@ fn term_matches(event: &CalendarEvent, term: &Term) -> bool {
     }
 }
 
+/// A provider's name of a value, as the protocol has it.
+fn name<T: Serialize>(value: T) -> String {
+    match serde_json::to_value(value).expect("serializes") {
+        serde_json::Value::String(name) => name,
+        other => unreachable!("{other} is not a name"),
+    }
+}
+
+/// The value of a name [`name`] gave.
+fn named<T: serde::de::DeserializeOwned>(name: String) -> Result<T> {
+    serde_json::from_value(serde_json::Value::String(name.clone()))
+        .with_context(|| format!("{name} names no value"))
+}
+
+const EVENT_COLUMNS: &str = "id, account_id, subject, location, preview, start_ts, end_ts, all_day,
+     series IS NOT NULL, exception, cancelled, show_as, response";
+
+fn event_of(r: &uplink_storage::rusqlite::Row) -> Result<CalendarEvent> {
+    Ok(CalendarEvent {
+        id: EventId(r.get(0)?),
+        account: r.get(1)?,
+        subject: r.get(2)?,
+        location: r.get(3)?,
+        preview: r.get(4)?,
+        start: r.get(5)?,
+        end: r.get(6)?,
+        all_day: r.get(7)?,
+        recurring: r.get(8)?,
+        exception: r.get(9)?,
+        cancelled: r.get(10)?,
+        show_as: named(r.get(11)?)?,
+        response: named(r.get(12)?)?,
+    })
+}
+
 /// The events overlapping `from`–`to` (ms), by start.
 pub fn events_between(tx: &Transaction, from: i64, to: i64) -> Result<Vec<CalendarEvent>> {
-    Ok(tx
-        .prepare(
-            "SELECT id, account_id, subject, location, preview, start_ts, end_ts, all_day,
-                    series IS NOT NULL, exception
-             FROM calendar_event
-             WHERE start_ts < ?2 AND (end_ts > ?1 OR (end_ts = start_ts AND start_ts >= ?1))
-             ORDER BY start_ts, id",
-        )?
-        .query_map([from, to], |r| {
-            Ok(CalendarEvent {
-                id: EventId(r.get(0)?),
-                account: r.get(1)?,
-                subject: r.get(2)?,
-                location: r.get(3)?,
-                preview: r.get(4)?,
-                start: r.get(5)?,
-                end: r.get(6)?,
-                all_day: r.get(7)?,
-                recurring: r.get(8)?,
-                exception: r.get(9)?,
-            })
-        })?
-        .collect::<Result<_, _>>()?)
+    let mut statement = tx.prepare(&format!(
+        "SELECT {EVENT_COLUMNS}
+         FROM calendar_event
+         WHERE start_ts < ?2 AND (end_ts > ?1 OR (end_ts = start_ts AND start_ts >= ?1))
+         ORDER BY start_ts, id"
+    ))?;
+    let mut rows = statement.query([from, to])?;
+    let mut events = vec![];
+    while let Some(row) = rows.next()? {
+        events.push(event_of(row)?);
+    }
+    Ok(events)
+}
+
+/// The event, and its provider's JSON; `None` if there is none of `id`.
+pub fn event(tx: &Transaction, id: EventId) -> Result<Option<(CalendarEvent, String)>> {
+    let mut statement = tx.prepare(&format!(
+        "SELECT {EVENT_COLUMNS}, raw FROM calendar_event WHERE id = ?1"
+    ))?;
+    let mut rows = statement.query([id.0])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    Ok(Some((event_of(row)?, row.get(13)?)))
 }

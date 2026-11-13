@@ -100,6 +100,7 @@ function isResendable(body: ClientRequest): boolean {
     case 'list_conversation':
     case 'list_todos':
     case 'list_events':
+    case 'get_event':
     case 'list_history':
     case 'create_draft':
     case 'edit_draft':

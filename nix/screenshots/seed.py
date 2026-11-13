@@ -104,8 +104,18 @@ def utc(t):
     return {"dateTime": t.strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": "UTC"}
 
 
-def event(subject, start, minutes, location=None, recurrence=None):
-    body = {"subject": subject, "start": utc(start), "end": utc(start + timedelta(minutes=minutes))}
+def person(name, address):
+    return {"emailAddress": {"name": name, "address": address}}
+
+
+def attendee(name, address, response, kind="required"):
+    return {**person(name, address), "type": kind, "status": {"response": response, "time": "0001-01-01T00:00:00Z"}}
+
+
+def event(subject, start, minutes, location=None, recurrence=None, **more):
+    """An event; `more`, Graph's fields of it as they are (for a meeting of
+    someone else's, those Graph sets, as emulate takes them to seed)."""
+    body = {"subject": subject, "start": utc(start), "end": utc(start + timedelta(minutes=minutes)), **more}
     if location:
         body["location"] = {"displayName": location}
     if recurrence:
@@ -222,11 +232,27 @@ event("Standup", monday.replace(hour=9, minute=30), 15, recurrence={
     "range": {"type": "numbered", "startDate": monday.strftime("%Y-%m-%d"), "numberOfOccurrences": 5},
 })
 event("Focus time", monday.replace(hour=13), 120)
-event("Roadmap review", monday + timedelta(days=1, hours=14), 60, location="Room 4B")
+DANIEL = ("Daniel Okafor", "daniel@example.org")
+SOFIA = ("Sofia Marquez", "sofia@example.org")
+event("Roadmap review", monday + timedelta(days=1, hours=14), 60, location="Room 4B",
+      organizer=person(*DANIEL), responseStatus={"response": "accepted"}, isOnlineMeeting=True,
+      attendees=[attendee(*DANIEL, "organizer"), attendee("Alice", "alice@example.org", "accepted"),
+                 attendee(*SOFIA, "tentativelyAccepted"), attendee("Priya Raman", "priya@example.org", "none"),
+                 attendee("Room 4B", "room-4b@example.org", "accepted", "resource")],
+      body={"contentType": "html", "content":
+            "<p>Hi all,</p><p>Let's walk through the Q4 roadmap before it goes to the leadership review.</p>"
+            "<p><b>Agenda</b></p><ol><li>Where we are on Q3 commitments</li><li>Q4 themes and staffing</li>"
+            "<li>Open questions</li></ol><p>Slides: <a href=\"https://docs.example.org/q4-roadmap\">"
+            "Q4 roadmap</a></p>"})
 event("1:1 with Daniel", monday + timedelta(days=2, hours=11), 30)
-event("Design critique", monday + timedelta(days=3, hours=15), 60, location="Studio")
-event("Team lunch", monday + timedelta(days=4, hours=12, minutes=30), 60, location="Café Lumen")
-event("Incident review", monday + timedelta(days=2, hours=16), 45)
+event("Design critique", monday + timedelta(days=3, hours=15), 60, location="Studio",
+      organizer=person(*SOFIA), showAs="tentative", attendees=[attendee(*SOFIA, "organizer")])
+event("Team lunch", monday + timedelta(days=4, hours=12, minutes=30), 60, location="Café Lumen", showAs="free")
+event("Canceled: Incident review", monday + timedelta(days=2, hours=16), 45,
+      organizer=person("Incident Bot", "incidents@example.org"), isCancelled=True,
+      responseStatus={"response": "accepted"})
+event("Vendor demo", monday + timedelta(days=3, hours=10), 60, organizer=person("Sam Lee", "sam@vendor.example"),
+      responseStatus={"response": "declined"})
 
 machine.wait_for_unit("conduit.service")
 machine.wait_for_open_port(6167)
@@ -352,7 +378,7 @@ def count(query):
 
 
 eventually("the mail to be synced", lambda: count("SELECT count(*) FROM message") >= 12, timeout=120)
-eventually("the calendar to be synced", lambda: count("SELECT count(*) FROM calendar_event") >= 6, timeout=120)
+eventually("the calendar to be synced", lambda: count("SELECT count(*) FROM calendar_event") >= 11, timeout=120)
 eventually("the rooms to be synced", lambda: count("SELECT count(*) FROM matrix_room") >= 12, timeout=120)
 
 machine.succeed("uplink-shots >&2")

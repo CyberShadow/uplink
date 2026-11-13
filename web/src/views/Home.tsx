@@ -49,7 +49,7 @@ export function Home() {
       case 'todo':
         return route(row.todo.message === null ? '/todos' : messagePath(row.todo.message))
       case 'event':
-        return route(calendarPath('agenda', date(new Date(row.event.start))))
+        return route(calendarPath('agenda', date(new Date(row.event.start)), row.event.id))
       case 'mail':
         mail.focus.value = conversationKey(row.conversation)
         return route(searchPath(row.query, row.conversation.latest.id))
@@ -203,7 +203,7 @@ function Agenda(props: { events: CalendarEvent[] }) {
         const when = event.all_day ? 'All day' : time(event.start)
         return (
           <li key={event.id}>
-            <a href={calendarPath('agenda', day)}>
+            <a href={calendarPath('agenda', day, event.id)}>
               <span class={styles.day}>{day <= today ? 'Today' : 'Tomorrow'}</span> {when}{' '}
               <span class={styles.subject}>{event.subject}</span>
             </a>

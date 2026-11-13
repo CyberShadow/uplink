@@ -1,7 +1,7 @@
 import { signal } from '@preact/signals'
 import { render, screen, waitFor, within } from '@testing-library/preact'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Client } from '../stores/client'
 import { FakeServer } from '../test/server'
 import { App } from './App'
@@ -21,6 +21,10 @@ beforeEach(() => {
   server.addEvent('work', 'Late call', '2026-11-16T03:00:00Z', '2026-11-16T04:00:00Z')
   client = new Client(server)
   server.attach(client)
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 async function start(path: string) {
@@ -52,7 +56,7 @@ describe('calendar', () => {
     expect([standup.style.left, standup.style.width]).toEqual(['50%', '50%'])
     expect([review.style.left, review.style.width]).toEqual(['0%', '50%'])
     expect(lunch.style.width).toBe('100%')
-    expect(lunch.style.top).toBe(`${12 * 40}px`)
+    expect(lunch.style.top).toBe(`${12 * 48}px`)
     // An all-day event is on its date, though that starts earlier in UTC.
     expect(allDay('Thursday 2026-11-12')).toEqual(['Offsite'])
     expect(allDay('Wednesday 2026-11-11')).toEqual([])
@@ -114,5 +118,97 @@ describe('calendar', () => {
     await user.keyboard('gc')
     expect(location.pathname).toBe(`/calendar/week/${today()}`)
     expect(screen.getByRole('link', { name: 'Calendar' }).getAttribute('aria-current')).toBe('page')
+  })
+
+  it('heads the days alike, ticks the hours, and marks the time today', async () => {
+    // Tuesday 11:30 here.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-11-10T16:30:00Z'))
+    await start('/calendar/week/2026-11-11')
+    const week = await screen.findByRole('region', { name: 'Calendar' })
+    const heads = await within(week).findAllByRole('heading', { level: 2 })
+    expect(heads.map((h) => h.textContent)).toEqual(['Mon 9', 'Tue 10', 'Wed 11', 'Thu 12', 'Fri 13', 'Sat 14', 'Sun 15'])
+    expect(heads[1].getAttribute('aria-current')).toBe('date')
+    expect(heads[1].title).toBe('Tuesday 2026-11-10')
+    expect(screen.getByText('08:00')).toBeTruthy()
+    const now = within(day('Tuesday 2026-11-10')).getByTitle('Now, 11:30')
+    expect(now.style.top).toBe(`${11.5 * 48}px`)
+    expect(within(day('Monday 2026-11-09')).queryByTitle(/^Now/)).toBeNull()
+  })
+
+  it('shows what an event is, opened, and closes it with Esc', async () => {
+    const planning = server.addEvent(
+      'work',
+      'Planning',
+      '2026-11-11T19:00:00Z',
+      '2026-11-11T20:00:00Z',
+      { response: 'notResponded', show_as: 'tentative', location: 'Room 4' },
+      {
+        organizer: { name: 'Bob', address: 'bob@example.com' },
+        attendees: [
+          { person: { name: 'Alice', address: 'alice@example.com' }, kind: 'required', response: 'none' },
+          { person: { name: 'Room 4', address: 'room4@example.com' }, kind: 'resource', response: 'accepted' },
+        ],
+        body_text: 'Notes: https://example.org/notes',
+        join_url: 'https://meet.example.org/123',
+        web_link: 'https://outlook.example.org/item',
+      },
+    )
+    const user = await start('/calendar/week/2026-11-11')
+    await waitFor(() => expect(timed('Wednesday 2026-11-11')).toHaveLength(1))
+    await user.click(screen.getByRole('link', { name: /Planning/ }))
+    expect(location.pathname).toBe(`/calendar/week/2026-11-11/${planning.id}`)
+    const pane = await screen.findByRole('complementary', { name: 'Event' })
+    await within(pane).findByRole('heading', { name: 'Planning' })
+    expect(within(pane).getByText('Wednesday 2026-11-11, 14:00–15:00')).toBeTruthy()
+    expect(within(pane).getByRole('link', { name: 'Join online meeting' }).getAttribute('href')).toBe(
+      'https://meet.example.org/123',
+    )
+    expect(within(pane).getByRole('link', { name: 'https://example.org/notes' })).toBeTruthy()
+    expect(within(pane).getByRole('link', { name: 'Open in Outlook' })).toBeTruthy()
+    const facts = [...pane.querySelectorAll('dt, dd')].map((e) => e.textContent)
+    expect(facts).toEqual(['Where', 'Room 4', 'Organizer', 'Bob', 'You', 'Not responded', 'Shown as', 'Tentative'])
+    expect(
+      within(within(pane).getByRole('region', { name: 'Attendees' }))
+        .getAllByRole('listitem')
+        .map((e) => e.textContent),
+    ).toEqual(['Alice', 'Room 4 (resource) · accepted'])
+    expect(within(pane).getByText(/"subject": "Planning"/)).toBeTruthy()
+    // As the week does, it shows as it changes.
+    server.calendar[server.calendar.length - 1].subject = 'Planning, moved'
+    server.calendarSynced('work')
+    await within(pane).findByRole('heading', { name: 'Planning, moved' })
+    await user.keyboard('{Escape}')
+    expect(location.pathname).toBe('/calendar/week/2026-11-11')
+    expect(screen.queryByRole('complementary', { name: 'Event' })).toBeNull()
+  })
+
+  it('shows an event cancelled or declined as such, and one gone as gone', async () => {
+    server.addEvent('work', 'Canceled: Retro', '2026-11-11T19:00:00Z', '2026-11-11T20:00:00Z', {
+      cancelled: true,
+      response: 'accepted',
+    })
+    server.addEvent('work', 'Offsite prep', '2026-11-11T21:00:00Z', '2026-11-11T22:00:00Z', { response: 'declined' })
+    await start('/calendar/week/2026-11-11')
+    const [retro, prep] = await waitFor(() => {
+      const events = within(day('Wednesday 2026-11-11')).getAllByRole('link')
+      expect(events).toHaveLength(2)
+      return events
+    })
+    expect(retro.title).toBe('Canceled: Retro\nCancelled · Accepted · shown as Busy')
+    expect(prep.title).toBe('Offsite prep\nDeclined · shown as Busy')
+
+    history.replaceState(null, '', '/calendar/agenda/2026-11-11/99')
+    dispatchEvent(new PopStateEvent('popstate'))
+    await screen.findByText('This event is no longer on the calendar.')
+  })
+
+  it('opens an event found from home or search in the agenda', async () => {
+    await start('/calendar/agenda/2026-11-10/2')
+    const pane = await screen.findByRole('complementary', { name: 'Event' })
+    await within(pane).findByRole('heading', { name: 'Review' })
+    expect(within(pane).getByText('Tuesday 2026-11-10, 10:00–11:00')).toBeTruthy()
+    const review = within(day('Tuesday 2026-11-10')).getByRole('link', { name: /Review/ })
+    expect(review.getAttribute('href')).toBe('/calendar/agenda/2026-11-10/2')
   })
 })

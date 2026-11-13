@@ -176,6 +176,12 @@ fn declarations() -> String {
         TodosChanged,
         EventId,
         CalendarEvent,
+        ShowAs,
+        EventResponse,
+        EventDetails,
+        Person,
+        Attendee,
+        AttendeeKind,
         CalendarChanged,
     );
     out

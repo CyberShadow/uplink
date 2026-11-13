@@ -148,7 +148,7 @@ function Shell() {
           <Route path="/todos" component={Todos} />
           <Route path="/history" component={History} />
           <Route path="/calendar" component={Calendar} />
-          <Route path="/calendar/:view/:date" component={Calendar} />
+          <Route path="/calendar/:view/:date/:event?" component={Calendar} />
           <Route path="/compose/:draft" component={Compose} />
           <Route path="/drafts" component={Drafts} />
           <Route path="/outbox" component={Outbox} />

@@ -571,6 +571,9 @@ CREATE TABLE calendar_event (
   start_ts        INTEGER NOT NULL,         -- ms since the epoch, UTC
   end_ts          INTEGER NOT NULL,
   all_day         INTEGER NOT NULL,         -- then start/end are UTC midnights
+  cancelled       INTEGER NOT NULL,         -- isCancelled (V0046)
+  show_as         TEXT NOT NULL,            -- showAs: free, tentative, busy, …
+  response        TEXT NOT NULL,            -- responseStatus.response
   raw             TEXT NOT NULL,            -- the event's Graph JSON
   UNIQUE (account_id, external_id)
 );
@@ -2517,18 +2520,35 @@ cannot be previewed shows none.
   duplicate Graph's expansion and its exceptions handling, and calendar
   view delta takes no `$select` to ask for masters anyway.
 - **Storage**: the instance's Graph JSON in `calendar_event.raw`, and the
-  fields shown in columns (§4.3). The earlier plan to keep `.ics` files
+  fields shown in columns (§4.3): among them its status, which the
+  week shows (`isCancelled`, `showAs`, `responseStatus.response`;
+  V0046). The earlier plan to keep `.ics` files
   is dropped: Graph has no iCalendar export of an event.
 - **Query**: `list_events {from, to}` (ms) answers every account's
-  events overlapping the range (at most 400 days), by start.
+  events overlapping the range (at most 400 days), by start;
+  `get_event {event}` all there is of one, read from its JSON as asked:
+  organizer, attendees and their answers, the body (HTML sanitized as
+  mail's, §8.9), the online meeting's join URL, its Outlook web link,
+  and the JSON itself, for what uplink does not show.
 
 ### 10.2 Display
 
 `/calendar/week/<date>`: the week from Monday, a column a day, all-day
 events in a row above the hours, timed events at local times and side
-by side where they overlap. `/calendar/agenda/<date>`: the days with
-events in the fortnight from the date. Recurring events are marked ↻,
-changed occurrences ↻*. All-day events are on their (UTC) dates, which
+by side where they overlap. The days' heads and all-day rows line up
+across the week (a grid's rows) and stay as the hours scroll; the
+hours are ticked in a column on the left; today is tinted, and the
+time a line across it. A week opens at 08:00, this week at an hour
+before now. `/calendar/agenda/<date>`: the days with events in the
+fortnight from the date. Recurring events are marked ↻, changed
+occurrences ↻*. As Outlook shows them, an event cancelled (but still
+on the calendar) is struck through, one declined faded, one not yet
+answered or tentative hatched, one shown as free hollow; uplink hides
+none of them. An event is a link:
+`/calendar/<view>/<date>/<event>` opens it beside the view (over it,
+on a phone), with what `get_event` has, and a button to join its
+online meeting; `Esc` closes it. Home's agenda and search's events
+link to it so. All-day events are on their (UTC) dates, which
 are the same days wherever one is; timed events are shown in the
 browser's time zone. `j`/`k` move by week or fortnight, `t` goes to
 today, `w` and `a` switch views, `g c` goes to the calendar.
@@ -3863,7 +3883,11 @@ request).
   only. Patch `0006` adds the two-step send (§8.4): drafts created from
   MIME (`POST /me/messages`), sent by id (`POST /me/messages/{id}/send`,
   refused for a message no longer a draft), and a folder's messages
-  filtered by `internetMessageId`.
+  filtered by `internetMessageId`. Patch `0008` keeps a meeting's
+  attendees, HTML body, `showAs` and online meeting (`isOnlineMeeting`
+  gives it a `joinUrl`), and takes what Graph sets itself of someone
+  else's meeting (`organizer`, `responseStatus`, `isCancelled`), so that
+  tests and screenshots can seed one.
 - **IMAP, POP3 and SMTP:** Stalwart (single-binary Rust mail server,
   from nixpkgs; IMAP, POP3, SMTP and JMAP), a real server rather than a
   fake. The Rust tests (`tests/imap_sync.rs`, `tests/pop3_sync.rs`, the

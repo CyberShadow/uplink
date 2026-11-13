@@ -10,7 +10,10 @@ use uplink_email::{
     m365::{api::Graph, oauth},
     oauth::Credentials,
 };
-use uplink_protocol::{calendar::CalendarEvent, ServerResponse};
+use uplink_protocol::{
+    calendar::{AttendeeKind, CalendarEvent, EventResponse, Person, ShowAs},
+    ServerResponse,
+};
 use uplink_realtime::Hub;
 use uplink_storage::seal::MasterKey;
 use uplink_tx_log::{Dispatcher, Registry};
@@ -295,6 +298,124 @@ fn base64url(s: &str) -> Vec<u8> {
 fn unbase64url(v: &Value) -> String {
     use base64::Engine;
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v.to_string())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shows_a_meeting_s_status_and_details() {
+    let setup = Setup::new().await;
+    let id = setup
+        .create(json!({
+            "subject": "Planning",
+            "start": utc("2026-11-10T14:00:00"),
+            "end": utc("2026-11-10T15:00:00"),
+            "body": {
+                "contentType": "html",
+                "content": "<p onclick=\"x()\">Agenda: <a href=\"https://example.org/doc\">doc</a><script>x()</script><img src=\"https://img.example.org/a.png\"></p>",
+            },
+            "organizer": { "emailAddress": { "name": "Bob", "address": "bob@example.com" } },
+            "attendees": [
+                {
+                    "emailAddress": { "name": "Alice", "address": "alice@example.com" },
+                    "type": "required",
+                    "status": { "response": "none", "time": "0001-01-01T00:00:00Z" },
+                },
+                {
+                    "emailAddress": { "name": "Room 4", "address": "room4@example.com" },
+                    "type": "resource",
+                    "status": { "response": "accepted", "time": "0001-01-01T00:00:00Z" },
+                },
+            ],
+            "showAs": "tentative",
+            "isOnlineMeeting": true,
+        }))
+        .await;
+    setup
+        .create(json!({
+            "subject": "Canceled: Retro",
+            "start": utc("2026-11-11T14:00:00"),
+            "end": utc("2026-11-11T15:00:00"),
+            "organizer": { "emailAddress": { "name": "Bob", "address": "bob@example.com" } },
+            "responseStatus": { "response": "declined" },
+            "isCancelled": true,
+        }))
+        .await;
+    setup.sync.sync(NOW).await.unwrap();
+
+    let events = setup.events(NOW, NOW + 7 * DAY).await;
+    let status: Vec<_> = events
+        .iter()
+        .map(|e| (e.subject.as_str(), e.cancelled, e.show_as, e.response))
+        .collect();
+    assert_eq!(
+        status,
+        [
+            (
+                "Planning",
+                false,
+                ShowAs::Tentative,
+                EventResponse::NotResponded
+            ),
+            (
+                "Canceled: Retro",
+                true,
+                ShowAs::Busy,
+                EventResponse::Declined
+            ),
+        ]
+    );
+    let ServerResponse::Event { details, .. } = setup.calendar.get(events[0].id).await.unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(details.event, events[0]);
+    assert_eq!(
+        details.organizer,
+        Some(Person {
+            name: "Bob".into(),
+            address: Some("bob@example.com".into())
+        })
+    );
+    let attendees: Vec<_> = details
+        .attendees
+        .iter()
+        .map(|a| (a.person.name.as_str(), a.kind, a.response))
+        .collect();
+    assert_eq!(
+        attendees,
+        [
+            ("Alice", AttendeeKind::Required, EventResponse::None),
+            ("Room 4", AttendeeKind::Resource, EventResponse::Accepted),
+        ]
+    );
+    // Sanitized as mail is, its remote images proxied.
+    let html = details.body_html.unwrap();
+    assert!(
+        html.contains(r#"<a href="https://example.org/doc""#),
+        "{html}"
+    );
+    assert!(
+        !html.contains("script") && !html.contains("onclick"),
+        "{html}"
+    );
+    assert!(html.contains("/api/remote-image/img.example.org"), "{html}");
+    assert_eq!(details.remote_images.len(), 1);
+    assert_eq!(details.body_text, None);
+    assert!(details.join_url.unwrap().ends_with(&format!("/meet/{id}")));
+    assert!(details.web_link.unwrap().contains("itemid="));
+    assert!(
+        details.raw.contains("\"isOnlineMeeting\": true"),
+        "{}",
+        details.raw
+    );
+
+    let missing = setup
+        .calendar
+        .get(uplink_protocol::calendar::EventId(999))
+        .await;
+    assert_eq!(
+        missing.unwrap_err().code,
+        uplink_protocol::ErrorCode::NotFound
+    );
 }
 
 async fn start_emulate(dir: &Path) -> (String, tokio::process::Child) {

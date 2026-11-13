@@ -110,13 +110,14 @@ It is built for people who live in their inbox and want it fast:
 </p>
 
 - **Your calendar, at a glance.**
-  By week or as an agenda, recurring meetings and all.
+  By week or as an agenda, recurring meetings and all; open a meeting
+  for who is coming, its notes, and the link to join it.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/uplink/docs/screenshots/calendar-dark.png">
     <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/uplink/docs/screenshots/calendar-light.png">
-    <img alt="The calendar's week" src="https://files.cy.md/uplink/docs/screenshots/calendar-light.png" width="800">
+    <img alt="The calendar's week, a meeting opened" src="https://files.cy.md/uplink/docs/screenshots/calendar-light.png" width="800">
   </picture>
 </p>
 

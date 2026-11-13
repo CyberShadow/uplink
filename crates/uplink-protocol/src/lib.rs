@@ -413,6 +413,10 @@ pub enum ClientRequest {
         from: i64,
         to: i64,
     },
+    /// All the calendar has of an event.
+    GetEvent {
+        event: calendar::EventId,
+    },
     /// All to-dos.
     ListTodos,
     /// Flagging a message for follow-up is creating a to-do of it.
@@ -592,6 +596,10 @@ pub enum ServerResponse {
         as_of: TxLogId,
         events: Vec<calendar::CalendarEvent>,
     },
+    Event {
+        as_of: TxLogId,
+        details: Box<calendar::EventDetails>,
+    },
     History {
         as_of: TxLogId,
         entries: Vec<HistoryEntry>,
@@ -623,6 +631,7 @@ impl ServerResponse {
             | Self::Pinned { as_of, .. }
             | Self::Todos { as_of, .. }
             | Self::Events { as_of, .. }
+            | Self::Event { as_of, .. }
             | Self::History { as_of, .. } => Some(*as_of),
             // Message content does not change; a count is of the moment;
             // the rest is not logged.

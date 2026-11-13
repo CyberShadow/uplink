@@ -123,6 +123,13 @@ pub fn html_body(raw: &[u8]) -> Option<(String, Remote)> {
             Some((cid.to_owned(), format!("data:{};base64,{data}", mime(part))))
         })
         .collect();
+    Some(sanitized_html(html, images))
+}
+
+/// `html` sanitized for display, as a message's HTML body is ([`html_body`]):
+/// with its remote images proxied, and those of `images` (by content id)
+/// inlined. With it, its remote images.
+pub fn sanitized_html(html: &str, images: HashMap<String, String>) -> (String, Remote) {
     // Remote images are proxied first, so that sanitizing has the last word
     // on what the client gets.
     let (proxied, remote) = proxy_html(html);
@@ -159,7 +166,7 @@ pub fn html_body(raw: &[u8]) -> Option<(String, Remote)> {
         ])
         .clean(&proxied)
         .to_string();
-    Some((html, remote))
+    (html, remote)
 }
 
 /// The message's attachments, inline images included: those its HTML body
