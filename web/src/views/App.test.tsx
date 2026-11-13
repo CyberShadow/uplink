@@ -44,8 +44,11 @@ function badges(marks: Partial<Marks>): Badges {
   return { buckets: [], marks: { home: none, labels: [], accounts: [], rooms: [], todos: none, calendar: none, ...marks } }
 }
 
+/** The list's conversations, without the end saying more are loading. */
 function rows() {
-  return within(screen.getByRole('list', { name: 'Messages' })).queryAllByRole('listitem')
+  return within(screen.getByRole('list', { name: 'Messages' }))
+    .queryAllByRole('listitem')
+    .filter((row) => row.textContent !== 'Loading more…')
 }
 const subjects = () => rows().map((row) => row.querySelector('[class*=subject]')!.textContent)
 const focusedSubject = () =>
@@ -684,6 +687,15 @@ describe('mail', () => {
       await user.click(selectAll())
       await user.click(toolbar().getByRole('button', { name: 'Not spam' }))
       await screen.findByText('No messages.')
+    })
+
+    it('says more are loading at the end of those loaded, and loads them as it shows', async () => {
+      for (let i = 0; i < PAGE; i++) server.deliver('work', `Bulk ${i}`)
+      await start('/mail/work/INBOX')
+      expect(rows()).toHaveLength(PAGE)
+      scrolledTo(screen.getByText('Loading more…'))
+      await waitFor(() => expect(rows()).toHaveLength(PAGE + 3))
+      expect(screen.queryByText('Loading more…')).toBeNull()
     })
 
     it('selects every match, loaded or not, counted, and acts on them all', async () => {

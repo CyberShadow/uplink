@@ -109,6 +109,14 @@
   white-space: nowrap;
 }
 
+/* After the rows loaded, while more are to load. */
+.more {
+  grid-column: 1 / -1;
+  padding: 8px 16px;
+  color: var(--muted);
+  text-align: center;
+}
+
 .unread {
   background: var(--unread-bg);
   color: var(--fg);

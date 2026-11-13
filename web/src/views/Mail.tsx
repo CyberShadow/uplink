@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
-import type { Conversation, Entry, EntryId, ImageRule, Label, MessageContent, RemoteHost } from '../generated/protocol'
+import type { Conversation, Entry, EntryId, ImageRule, Label, ListPosition, MessageContent, RemoteHost } from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus, lines, useKeymap } from '../keymap'
 import {
@@ -31,6 +31,7 @@ import { senders, UnreadOf } from './ItemRow'
 import { Icon, type IconName } from './Icon'
 import { inboxUnread, labelName } from './Nav'
 import { useTitle } from '../title'
+import { useLoadInView } from './loadInView'
 
 // Route params; preact-iso's own `query` prop is the URL's query string.
 interface Props {
@@ -516,10 +517,6 @@ function MessageList(props: { mail: MailStore; open: (conversation: Conversation
     <ul
       class={styles.list}
       aria-label="Messages"
-      onScroll={(event) => {
-        const el = event.currentTarget
-        if (el.scrollTop + el.clientHeight > el.scrollHeight - 200) mail.loadMore()
-      }}
     >
       {list.conversations.map((conversation) => {
         const key = conversationKey(conversation)
@@ -586,7 +583,20 @@ function MessageList(props: { mail: MailStore; open: (conversation: Conversation
           </li>
         )
       })}
+      {list.next && <More mail={mail} next={list.next} />}
     </ul>
+  )
+}
+
+/** The end of the conversations loaded, with more to load: those load as
+ * it comes into view. */
+function More(props: { mail: MailStore; next: ListPosition }) {
+  const element = useRef<HTMLLIElement>(null)
+  useLoadInView(element, props.next, () => props.mail.loadMore())
+  return (
+    <li ref={element} class={styles.more}>
+      Loading more…
+    </li>
   )
 }
 

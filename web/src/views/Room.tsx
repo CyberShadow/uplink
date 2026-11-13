@@ -30,6 +30,7 @@ import { mention } from './Autocomplete'
 import { EventRow, type Line, type LineActions, lineActions, MembershipRun, type Reacting, reveal, type Overlay } from './RoomEvent'
 import { Badge } from './Badge'
 import { Icon } from './Icon'
+import { useLoadInView } from './loadInView'
 import { RoomSearch } from './RoomSearch'
 import { Composer, type Mode } from './RoomComposer'
 import { MemberPanel, RoomInfo } from './RoomInfo'
@@ -455,25 +456,6 @@ export function moveLine(list: HTMLElement, by: 1 | -1) {
   const at = lines.findIndex((l) => l.contains(document.activeElement))
   const to = at === -1 ? lines.length - 1 : Math.max(0, Math.min(at + by, lines.length - 1))
   lines[to]?.focus()
-}
-
-/** Calls `load` once the element comes into view (in the window, and
- * in its scroller), and again whenever `key` changes while it is in
- * view: a load that brought something changes it, so that loading goes
- * on until the view is full; one that failed is not repeated, but left
- * to the element's button. */
-function useLoadInView(element: RefObject<HTMLElement>, key: unknown, load: () => void) {
-  const current = useRef(load)
-  current.current = load
-  useEffect(() => {
-    const observer = new IntersectionObserver((entries) => {
-      if (!entries.some((entry) => entry.isIntersecting)) return
-      observer.disconnect()
-      current.current()
-    })
-    observer.observe(element.current!)
-    return () => observer.disconnect()
-  }, [element, key])
 }
 
 /** The start of the events loaded, with more before: those load as it
