@@ -36,6 +36,11 @@ pub struct RemoteImagesConfig {
     /// which make the server reach them.
     #[serde(default)]
     pub private_hosts: Vec<String>,
+    /// Hosts whose images the browser loads itself, as the mail has them,
+    /// with its cookies: for those that serve them only to those signed
+    /// in (an intranet's GitLab's avatars). Exact names.
+    #[serde(default)]
+    pub direct_hosts: Vec<String>,
 }
 
 fn default_send_delay_secs() -> u32 {

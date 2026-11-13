@@ -1821,7 +1821,17 @@ it can; but for the hosts in `remote_images.private_hosts`, exact names
 the user trusts mail's images of (an intranet's), fetched from at
 whatever they resolve to, as of the next connection to them. Refused, it
 says so: `<host> resolves only to addresses not of the public internet
-(<addresses>)`, not as a failure of DNS. It serves only `image/*` responses, of at most 16 MB, within
+(<addresses>)`, not as a failure of DNS. Those in
+`remote_images.direct_hosts`, it redirects to (307, over HTTPS): the
+browser loads them itself, with its cookies, for images served only to
+those signed in (an intranet GitLab's avatars). The frame's CSP has each
+shown host's `https://<host>` beside its path; the app's, which the
+frame inherits, has only the direct hosts', so that no other host's
+image is loaded by the browser, rewritten or not. Any mail's images of a
+direct host then make the browser send it requests as the user, so
+those are hosts the user trusts with that; and the browser must send
+cookies to them from uplink's site (in Firefox, not with Enhanced
+Tracking Protection on for it). It serves only `image/*` responses, of at most 16 MB, within
 30 s, with `nosniff`, `Content-Security-Policy: sandbox` (an SVG opened
 as a page runs nothing in uplink's origin) and a day's private caching;
 anything else is a 502.

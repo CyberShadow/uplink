@@ -1,8 +1,8 @@
 // An HTML mail body (SPEC §8.9), already sanitized by the server, shown in
 // a sandboxed frame: no scripts, links open in a new tab, and nothing
 // remote loads (tracking pixels, fonts). Remote images, which the server
-// fetches in the client's stead, load by host, as asked for; likely
-// tracking pixels, never.
+// fetches in the client's stead (or redirects to, for the hosts it is
+// told to), load by host, as asked for; likely tracking pixels, never.
 
 import { useEffect, useMemo, useState } from 'preact/hooks'
 import type { RemoteHost } from '../generated/protocol'
@@ -68,8 +68,11 @@ function frameDocument(html: string, shown: ReadonlySet<string>, classes: string
   // uplink's origin, by path (exactly: the query is not matched). The
   // origin by name, as Firefox does not take a srcdoc frame's 'self' for
   // its (inherited) origin. Likely tracking pixels' path is never here.
+  // And the hosts themselves, over HTTPS, which the server redirects
+  // those of `remote_images.direct_hosts` to: the frame inherits the
+  // app's CSP too, which lets only those through.
   const hosts = [...shown].sort()
-  const images = ['data:', ...hosts.map((host) => location.origin + remotePath(host))].join(' ')
+  const images = ['data:', ...hosts.flatMap((host) => [location.origin + remotePath(host), `https://${host}`])].join(' ')
   return `<!doctype html><html class="${classes}"><head><meta charset="utf-8"><meta name="darkreader-lock">
 <meta http-equiv="x-dns-prefetch-control" content="off">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${images}; style-src 'unsafe-inline'">

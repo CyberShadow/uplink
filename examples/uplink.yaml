@@ -45,12 +45,18 @@ home:
     query: is:unread
 
 # Mail's remote images are fetched by the server, from public addresses
-# only, so that a mail cannot make it reach your network. Hosts named here
-# are fetched from though they resolve to private addresses (e.g. your
-# intranet's GitLab, whose notifications have images): exact names, and
-# any mail's images of them are fetched. Changes apply without a restart.
+# only, so that a mail cannot make it reach your network. Hosts in
+# `private_hosts` are fetched from though they resolve to private
+# addresses (e.g. your intranet's GitLab). Those in `direct_hosts` your
+# browser loads itself, signed in, for images only those signed in get
+# (GitLab's avatars); in Firefox, turn off Enhanced Tracking Protection
+# for uplink, or it sends no cookies. Exact names; any mail's images of
+# them load. Changes apply without a restart (reload the app for
+# `direct_hosts`).
 # remote_images:
 #   private_hosts:
+#     - git.example.org
+#   direct_hosts:
 #     - git.example.org
 
 # Add accounts below (and drop the `[]`), then restart `uplink serve`.

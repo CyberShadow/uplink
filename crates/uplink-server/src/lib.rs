@@ -335,6 +335,9 @@ pub async fn serve_with_listener(
     state
         .remote_images
         .set_private_hosts(&config.remote_images.private_hosts);
+    state
+        .remote_images
+        .set_direct_hosts(&config.remote_images.direct_hosts);
 
     let (tx, rx) = tokio::sync::broadcast::channel::<ConfigChanged>(16);
 
@@ -489,6 +492,7 @@ async fn handle_config_changed(
         ConfigSection::RemoteImages => match Config::load(config_path) {
             Ok(cfg) => {
                 remote_images.set_private_hosts(&cfg.remote_images.private_hosts);
+                remote_images.set_direct_hosts(&cfg.remote_images.direct_hosts);
                 info!("config: remote_images reloaded");
             }
             Err(e) => {
@@ -616,13 +620,17 @@ fn admitted(req: &Request) -> bool {
 }
 
 /// The app's: its own scripts, styles and images only (and `data:` ones,
-/// and inline styles, which mail has, its frame inheriting this), and
-/// never framed by another page. Matrix HTML is in the app's own
-/// document: were its sanitizing to miss, this would still refuse its
-/// scripts.
-const APP_CSP: &str = "default-src 'self'; img-src 'self' data:; \
-    style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; \
-    form-action 'none'; frame-ancestors 'none'";
+/// the direct hosts' (`img_src`), and inline styles, which mail has, its
+/// frame inheriting this), and never framed by another page. Matrix HTML
+/// is in the app's own document: were its sanitizing to miss, this would
+/// still refuse its scripts.
+fn app_csp(img_src: &str) -> String {
+    format!(
+        "default-src 'self'; img-src {img_src}; \
+         style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; \
+         form-action 'none'; frame-ancestors 'none'"
+    )
+}
 
 /// A message's attachment, as a download: never shown by the browser in
 /// uplink's origin, where an HTML one could act as the page.
@@ -949,24 +957,20 @@ fn percent_encode(s: &str) -> String {
         .collect()
 }
 
-async fn index_handler() -> impl IntoResponse {
-    if let Some(file) = StaticFiles::get("index.html") {
-        (
-            [
-                (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-                (header::CONTENT_SECURITY_POLICY, APP_CSP),
-            ],
-            file.data.into_owned(),
-        )
-            .into_response()
-    } else {
-        (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "text/plain")],
-            "hello from uplink",
-        )
-            .into_response()
-    }
+async fn index_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let csp = app_csp(&state.remote_images.app_img_src());
+    let (mime, body) = match StaticFiles::get("index.html") {
+        Some(file) => ("text/html; charset=utf-8", file.data.into_owned()),
+        None => ("text/plain", b"hello from uplink".to_vec()),
+    };
+    (
+        [
+            (header::CONTENT_TYPE, mime.to_owned()),
+            (header::CONTENT_SECURITY_POLICY, csp),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 async fn ws_handler(
@@ -1255,7 +1259,7 @@ fn undo_error(e: UndoError) -> ServerError {
 
 /// Serves the SPA's files; any other path outside `/assets/` and `/api/`
 /// is one of the SPA's routes, so it gets `index.html`.
-async fn static_file_handler(uri: Uri) -> Response {
+async fn static_file_handler(state: State<AppState>, uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     if let Some(file) = StaticFiles::get(path) {
         let mime = mime_guess::from_path(path).first_or_octet_stream();
@@ -1268,7 +1272,7 @@ async fn static_file_handler(uri: Uri) -> Response {
     if path.starts_with("assets/") || path.starts_with("api/") {
         return StatusCode::NOT_FOUND.into_response();
     }
-    index_handler().await.into_response()
+    index_handler(state).await.into_response()
 }
 
 async fn basic_auth_middleware(
@@ -1524,6 +1528,38 @@ mod tests {
                 refused(request, headers).await,
                 expected,
                 "{request} {headers}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_apps_csp_lets_the_direct_hosts_images_through() {
+        let state = test_state();
+        state
+            .remote_images
+            .set_direct_hosts(&["git.example".to_owned()]);
+        let app = build_app(state);
+        for uri in ["/", "/mail/inbox"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .header(
+                            header::AUTHORIZATION,
+                            basic_auth_header(TEST_USER, TEST_PASS),
+                        )
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let csp = response.headers()[header::CONTENT_SECURITY_POLICY]
+                .to_str()
+                .unwrap();
+            assert!(
+                csp.contains("img-src 'self' data: https://git.example;"),
+                "{uri}: {csp}"
             );
         }
     }
