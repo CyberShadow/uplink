@@ -165,6 +165,17 @@ pub const OPERATORS: &[&str] = &[
 
 /// Parses `query`; `now` (unix ms) is what `newer_than:` and
 /// `older_than:` count back from. Dates are of UTC.
+/// Gmail's categories, as labels: `category:` names them whether or not an
+/// account has them, as other providers' mail has none (and the default
+/// home's queries name them).
+pub const CATEGORIES: &[&str] = &[
+    "CATEGORY_PERSONAL",
+    "CATEGORY_SOCIAL",
+    "CATEGORY_PROMOTIONS",
+    "CATEGORY_UPDATES",
+    "CATEGORY_FORUMS",
+];
+
 pub fn parse(query: &str, now: i64) -> Result<Query, Invalid> {
     let tokens = tokens(query)?;
     let mut parser = Parser {
