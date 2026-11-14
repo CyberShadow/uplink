@@ -2197,9 +2197,11 @@ fit uplink better (§8.1, §8.3).
   as are those that cannot hold mail (`\Noselect`). Other folders are
   `mailbox:<name>`, named by their decoded path (modified UTF-7, the
   server's hierarchy delimiter shown as `/`).
-- **State labels**: `\Seen` unset is `UNREAD`, `\Flagged` is `STARRED`;
-  keywords are labels `kw:<keyword>`, but for those of clients'
-  conventions (`$Forwarded`, `$Junk`, …). A message with `\Deleted` is
+- **State labels**: `\Seen` unset is `UNREAD`, `\Flagged` is `STARRED`,
+  `$Important` (RFC 8457) is `IMPORTANT` (Stalwart reports it as
+  `\Important`, which is read as it too); other keywords are labels
+  `kw:<keyword>`, but for those of clients' conventions (`$Forwarded`,
+  `$Junk`, …). A message with `\Deleted` is
   gone, as other clients show it.
 - **Entries** are keyed `<uidvalidity>:<uid>:<folder>`. IMAP has no id
   that survives a move (OBJECTID, RFC 8474, is not widespread), so a
@@ -2370,9 +2372,11 @@ credentials it was built with, which an OAuth token outlives.
   (`Parent/Child`). Virtual mailboxes (`all`, `flagged`) are left out.
   An email another client left in Trash and elsewhere shows in Trash
   only, as Gmail's does.
-- **State labels**: `$seen` unset is `UNREAD`, `$flagged` is `STARRED`;
-  other keywords are labels `kw:<keyword>`, but for those of clients'
-  conventions (`$answered`, `$forwarded`, …).
+- **State labels**: `$seen` unset is `UNREAD`, `$flagged` is `STARRED`,
+  `$important` (RFC 8457: as a server's filters or a classifier set it,
+  or the user, `+`/`-`) is `IMPORTANT`; other keywords are labels
+  `kw:<keyword>`, but for those of clients' conventions (`$answered`,
+  `$forwarded`, …).
 - **Entries** are emails, keyed by their ids, which JMAP keeps as an
   email moves; threads are the server's (`threadId`), however it
   groups them (RFC 8621 §3 leaves that to it, suggesting a message id

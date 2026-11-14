@@ -5,8 +5,9 @@
 //! Junk and the Archive are folders, an email in one of them in nothing
 //! else, as RFC 8621 trashes (§4.6). The ones of a role take the ids of the
 //! Gmail system labels that mean the same, so the rest of uplink treats
-//! all providers alike. `$seen` unset is UNREAD, `$flagged` is STARRED, and
-//! other keywords are labels `kw:<keyword>`.
+//! all providers alike. `$seen` unset is UNREAD, `$flagged` is STARRED,
+//! `$important` (RFC 8457) is IMPORTANT, and other keywords are labels
+//! `kw:<keyword>`.
 //!
 //! Entries are emails, by their ids, which JMAP keeps as they move.
 
@@ -56,6 +57,7 @@ const CONCURRENT_FETCHES: usize = 4;
 const INBOX: &str = "INBOX";
 const UNREAD: &str = "UNREAD";
 const STARRED: &str = "STARRED";
+const IMPORTANT: &str = "IMPORTANT";
 const KEYWORD: &str = "kw:";
 /// The prefix of the external ids of mailboxes of no role uplink knows.
 const MAILBOX: &str = "mailbox:";
@@ -310,6 +312,9 @@ impl Mailboxes {
         }
         if has("$flagged") {
             labels.push(STARRED.to_owned());
+        }
+        if has("$important") {
+            labels.push(IMPORTANT.to_owned());
         }
         // Keywords of clients' conventions ($answered, $forwarded, …) are
         // theirs.
@@ -997,6 +1002,7 @@ fn patch(mailboxes: &Mailboxes, pending: &[Pending]) -> Result<Patch, Pushed> {
         let (path, on) = match label {
             UNREAD => ("keywords/$seen".to_owned(), !p.desired),
             STARRED => ("keywords/$flagged".to_owned(), p.desired),
+            IMPORTANT => ("keywords/$important".to_owned(), p.desired),
             _ => match (label.strip_prefix(KEYWORD), mailboxes.by_label.get(label)) {
                 (Some(keyword), _) => (format!("keywords/{keyword}"), p.desired),
                 (None, Some(mailbox)) => (format!("mailboxIds/{mailbox}"), p.desired),
@@ -1065,7 +1071,7 @@ async fn labels(
         .labels
         .iter()
         .cloned()
-        .chain([UNREAD, STARRED].map(|l| ObservedLabel {
+        .chain([UNREAD, STARRED, IMPORTANT].map(|l| ObservedLabel {
             external_id: l.to_owned(),
             name: l.to_owned(),
             system: true,
@@ -1161,15 +1167,27 @@ mod tests {
             mailbox_ids: [("b", true), ("d", true), ("f", true)]
                 .map(|(k, v)| (k.to_owned(), v))
                 .into(),
-            keywords: [("$flagged", true), ("$answered", true), ("todo", true)]
-                .map(|(k, v)| (k.to_owned(), v))
-                .into(),
+            keywords: [
+                ("$flagged", true),
+                ("$important", true),
+                ("$answered", true),
+                ("todo", true),
+            ]
+            .map(|(k, v)| (k.to_owned(), v))
+            .into(),
             received_at: "2026-11-13T23:30:51Z".into(),
             blob_id: "x".into(),
         };
         assert_eq!(
             m.labels_of(&email).unwrap(),
-            ["ARCHIVE", "STARRED", "UNREAD", "kw:todo", "mailbox:d"]
+            [
+                "ARCHIVE",
+                "IMPORTANT",
+                "STARRED",
+                "UNREAD",
+                "kw:todo",
+                "mailbox:d"
+            ]
         );
     }
 
@@ -1208,8 +1226,13 @@ mod tests {
             .unwrap()
             .clone()
         );
+        let p = patch(&m, &[pending("IMPORTANT", false)]).unwrap();
+        assert_eq!(
+            p.set,
+            *json!({ "keywords/$important": null }).as_object().unwrap()
+        );
         assert!(matches!(
-            patch(&m, &[pending("IMPORTANT", true)]),
+            patch(&m, &[pending("CATEGORY_SOCIAL", true)]),
             Err(Pushed::Refused(_))
         ));
     }

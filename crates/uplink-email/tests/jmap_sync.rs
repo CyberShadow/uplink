@@ -151,6 +151,7 @@ async fn mirrors_the_mailboxes_as_labels_and_pushes_changes() {
     let mut expected: Vec<(String, String, String)> = [
         ("ARCHIVE", "folder"),
         ("DRAFT", "mailbox"),
+        ("IMPORTANT", "tag"),
         ("INBOX", "mailbox"),
         ("SENT", "mailbox"),
         ("SPAM", "folder"),
@@ -240,24 +241,31 @@ async fn mirrors_the_mailboxes_as_labels_and_pushes_changes() {
     })
     .await;
 
-    // Starring and reading set keywords; a label is a mailbox more.
+    // Starring, marking important (RFC 8457) and reading set keywords; a
+    // label is a mailbox more.
     uplink
         .mail
         .modify_labels(
             vec![second],
-            vec![uplink.label("STARRED"), uplink.label(&projects_label)],
+            vec![
+                uplink.label("STARRED"),
+                uplink.label("IMPORTANT"),
+                uplink.label(&projects_label),
+            ],
             vec![uplink.label("UNREAD")],
         )
         .await
         .unwrap();
     eventually("the changes to reach the server", || async {
         let (_, mailboxes, keywords) = find(&other, "second").await?;
-        (mailboxes == set(&["Projects", "inbox"]) && keywords == set(&["$flagged", "$seen"]))
-            .then_some(())
+        (mailboxes == set(&["Projects", "inbox"])
+            && keywords == set(&["$flagged", "$important", "$seen"]))
+        .then_some(())
     })
     .await;
     eventually("the changes to be observed", || async {
-        (label_set(&uplink.labels(second)) == ["INBOX", "STARRED", &projects_label]).then_some(())
+        (label_set(&uplink.labels(second)) == ["IMPORTANT", "INBOX", "STARRED", &projects_label])
+            .then_some(())
     })
     .await;
 
@@ -272,7 +280,8 @@ async fn mirrors_the_mailboxes_as_labels_and_pushes_changes() {
     )
     .await;
     eventually("the other client's changes to be observed", || async {
-        (label_set(&uplink.labels(second)) == ["STARRED", "kw:red", &projects_label]).then_some(())
+        (label_set(&uplink.labels(second)) == ["IMPORTANT", "STARRED", "kw:red", &projects_label])
+            .then_some(())
     })
     .await;
     let (first_id, ..) = find(&other, "first").await.unwrap();

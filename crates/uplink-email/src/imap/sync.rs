@@ -6,8 +6,8 @@
 //! 365's are; the special-use ones (RFC 6154), or failing that those of
 //! the usual names, take the ids of the Gmail system labels that mean the
 //! same, so the rest of uplink treats all providers alike. `\Seen` unset
-//! is UNREAD, `\Flagged` is STARRED, and keywords are labels
-//! `kw:<keyword>`.
+//! is UNREAD, `\Flagged` is STARRED, `$Important` (RFC 8457) is
+//! IMPORTANT, and other keywords are labels `kw:<keyword>`.
 //!
 //! An entry is a message in a folder, keyed by the folder's name, its
 //! UIDVALIDITY and the message's UID ([`Key`]); a message moved, by uplink
@@ -67,6 +67,7 @@ const BATCH: usize = 50;
 const INBOX: &str = "INBOX";
 const UNREAD: &str = "UNREAD";
 const STARRED: &str = "STARRED";
+const IMPORTANT: &str = "IMPORTANT";
 const KEYWORD: &str = "kw:";
 /// The prefix of the external ids of folders not special-use.
 const MAILBOX: &str = "mailbox:";
@@ -655,6 +656,7 @@ impl ImapSync {
                 }
                 UNREAD => ("\\Seen".to_owned(), !p.desired),
                 STARRED => ("\\Flagged".to_owned(), p.desired),
+                IMPORTANT => ("$Important".to_owned(), p.desired),
                 _ => match id.strip_prefix(KEYWORD) {
                     Some(keyword) => (keyword.to_owned(), p.desired),
                     None => {
@@ -948,6 +950,15 @@ fn labels_of(folder: &Folder, fetch: &Fetch) -> Vec<String> {
         match flag {
             Flag::Seen => seen = true,
             Flag::Flagged => labels.push(STARRED.to_owned()),
+            // Flags are of any case (RFC 9051 §2.3.2). Stalwart stores
+            // `$Important` and reports it as `\Important`, the name of the
+            // mailbox attribute of the same RFC.
+            Flag::Custom(keyword)
+                if keyword.eq_ignore_ascii_case("$Important")
+                    || keyword.eq_ignore_ascii_case("\\Important") =>
+            {
+                labels.push(IMPORTANT.to_owned())
+            }
             // Keywords of clients' conventions ($Forwarded, $Junk, …) are
             // theirs.
             Flag::Custom(keyword) if !keyword.starts_with(['$', '\\']) => {
@@ -1018,7 +1029,7 @@ async fn labels(
             system: f.system,
             kind: LabelKind::Folder,
         })
-        .chain([UNREAD, STARRED].map(|l| ObservedLabel {
+        .chain([UNREAD, STARRED, IMPORTANT].map(|l| ObservedLabel {
             external_id: l.to_owned(),
             name: l.to_owned(),
             system: true,

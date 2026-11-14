@@ -118,26 +118,33 @@ async fn mirrors_the_folders_and_pushes_changes() {
     })
     .await;
 
-    // Starring and reading flag the message and mark it read.
+    // Starring, marking important and reading flag the message, by
+    // `$Important` (RFC 8457) too, and mark it read.
     uplink
         .mail
         .modify_labels(
             vec![second],
-            vec![uplink.label("STARRED")],
+            vec![uplink.label("STARRED"), uplink.label("IMPORTANT")],
             vec![uplink.label("UNREAD")],
         )
         .await
         .unwrap();
     eventually("the star to reach the server", || async {
         let (_, flags) = find(&mut stalwart.client("alice").await, "INBOX", "second").await?;
-        (flags.contains(&"Seen".into()) && flags.contains(&"Flagged".into())).then_some(())
+        // As `Debug` has them: `Seen`, `Custom("\\Important")`, as
+        // Stalwart reports `$Important`.
+        let has = |flag: &str| {
+            let flag = flag.to_ascii_lowercase();
+            flags.iter().any(|f| f.to_ascii_lowercase().contains(&flag))
+        };
+        (has("Seen") && has("Flagged") && has("Important")).then_some(())
     })
     .await;
 
     // Changes another client makes show up in uplink: a move and a
     // keyword, the entry the same; then an expunge.
     eventually("the star to be observed", || async {
-        (label_set(&uplink.labels(second)) == ["INBOX", "STARRED"]).then_some(())
+        (label_set(&uplink.labels(second)) == ["IMPORTANT", "INBOX", "STARRED"]).then_some(())
     })
     .await;
     let (uid, _) = find(&mut other, "INBOX", "second").await.unwrap();
@@ -148,8 +155,9 @@ async fn mirrors_the_folders_and_pushes_changes() {
         .await
         .unwrap();
     eventually("the move to be observed", || async {
-        (label_set(&uplink.labels(second)) == ["STARRED", "kw:Red", "mailbox:Projects"])
-            .then_some(())
+        (label_set(&uplink.labels(second))
+            == ["IMPORTANT", "STARRED", "kw:Red", "mailbox:Projects"])
+        .then_some(())
     })
     .await;
     let (uid, _) = find(&mut other, "INBOX", "first").await.unwrap();
