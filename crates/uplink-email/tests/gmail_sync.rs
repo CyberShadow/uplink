@@ -9,25 +9,30 @@ use common::{
 };
 use std::time::Duration;
 use uplink_email::{
-    gmail::{api::Gmail, oauth, sync::GmailSync},
+    gmail::{api::Gmail, oauth, pubsub::PubSub, sync::GmailSync, watch::Push},
     oauth::Credentials,
 };
 use uplink_protocol::{compose::SendState, mail::MailProvider, ServerResponse};
 
+/// Gmail's sync of the account, polling every `unwatched_poll` while
+/// there are no push notifications.
+fn sync(provider: &Provider, unwatched_poll: Duration) -> GmailSync {
+    let http = reqwest::Client::new();
+    let account = &provider.account;
+    let credentials = Credentials::new(http.clone(), oauth::grant(account), provider.key.clone());
+    let pubsub = PubSub::new(http.clone(), &account.endpoints.pubsub, credentials.clone());
+    GmailSync::new(
+        account.id.clone(),
+        Gmail::new(http, &account.endpoints.api, credentials),
+        Push::new(pubsub, &account.oauth.project, &account.id),
+        unwatched_poll,
+    )
+}
+
 /// Gmail's sync task, polling quickly.
 fn start_sync(uplink: &Uplink, provider: &Provider) -> tokio::task::JoinHandle<()> {
-    let http = reqwest::Client::new();
-    let credentials = Credentials::new(
-        http.clone(),
-        oauth::grant(&provider.account),
-        provider.key.clone(),
-    );
     uplink.start(
-        GmailSync::new(Gmail::new(
-            http,
-            &provider.account.endpoints.api,
-            credentials,
-        )),
+        sync(provider, Duration::from_millis(100)),
         &provider.account.address,
     )
 }
@@ -111,6 +116,37 @@ async fn mirrors_the_mailbox_and_pushes_changes() {
     assert_eq!(uplink.log_len(), settled, "the restarted sync re-synced");
     provider.deliver(&message("third", "after restart")).await;
     uplink.arrived("third").await;
+
+    sync.abort();
+    provider.clean_up().await;
+}
+
+/// Polling once an hour, with push notifications or without, uplink still
+/// sees changes at once, as Gmail publishes them to the account's topic;
+/// restarted, it finds the topic and subscription as it left them.
+#[tokio::test(flavor = "multi_thread")]
+async fn changes_are_told_by_push_notifications() {
+    let uplink = Uplink::new(MailProvider::Gmail);
+    let provider = Provider::start(uplink.dir.path(), None).await;
+    let hourly = Duration::from_secs(3600);
+    let start = || uplink.start_polling(sync(&provider, hourly), &provider.account.address, hourly);
+    let sync = start();
+    eventually("the first sync", || async { uplink.synced().then_some(()) }).await;
+
+    let pushed = provider.deliver(&message("pushed", "")).await;
+    let entry = uplink.arrived("pushed").await;
+    provider.modify(&pushed, &["STARRED"], &[]).await;
+    eventually("the star to be observed", || async {
+        (label_set(&uplink.labels(entry)) == ["INBOX", "STARRED", "UNREAD"]).then_some(())
+    })
+    .await;
+
+    sync.abort();
+    let sync = start();
+    // What comes before the watch begins, the sync as it begins finds.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    provider.deliver(&message("restarted", "")).await;
+    uplink.arrived("restarted").await;
 
     sync.abort();
     provider.clean_up().await;

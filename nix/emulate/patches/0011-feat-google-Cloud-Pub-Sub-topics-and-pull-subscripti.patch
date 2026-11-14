@@ -1,0 +1,502 @@
+From 4672db24857e1eaa74a8c87830ef3211e816f39a Mon Sep 17 00:00:00 2001
+From: Vladimir Panteleev <git@cy.md>
+Date: Sat, 14 Nov 2026 10:08:08 +0000
+Subject: [PATCH 11/12] feat(google): Cloud Pub/Sub topics and pull
+ subscriptions; Gmail watches publish to them
+
+Topics with an IAM policy, pull subscriptions whose pull waits a bounded
+time for a message, and acknowledgement. A watch needs its topic to let
+Gmail's push service account publish, and each change to the watched
+mailbox publishes {emailAddress, historyId} to it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../google/src/__tests__/google.test.ts       | 105 ++++++++
+ packages/@emulators/google/src/auth.ts        |   8 +-
+ packages/@emulators/google/src/helpers.ts     |   8 +
+ packages/@emulators/google/src/index.ts       |   2 +
+ .../@emulators/google/src/routes/history.ts   |  20 ++
+ .../@emulators/google/src/routes/pubsub.ts    | 229 ++++++++++++++++++
+ 6 files changed, 371 insertions(+), 1 deletion(-)
+ create mode 100644 packages/@emulators/google/src/routes/pubsub.ts
+
+diff --git a/packages/@emulators/google/src/__tests__/google.test.ts b/packages/@emulators/google/src/__tests__/google.test.ts
+index dc7083a..c5d7234 100644
+--- a/packages/@emulators/google/src/__tests__/google.test.ts
++++ b/packages/@emulators/google/src/__tests__/google.test.ts
+@@ -595,7 +595,112 @@ describe("Google plugin integration", () => {
+     expect(() => seedFromConfig(store, base, { gmail_history_limit: 0 })).toThrow("gmail_history_limit");
+   });
+ 
++  /** A topic Gmail may publish to, with a subscription to it. */
++  async function gmailTopic(name: string) {
++    const topic = `projects/emulate-local/topics/${name}`;
++    expect((await jsonRequest(app, `/v1/${topic}`, { method: "PUT", body: {} })).status).toBe(200);
++    const policy = (await (
++      await jsonRequest(app, `/v1/${topic}:getIamPolicy`, { method: "POST", body: {} })
++    ).json()) as {
++      etag: string;
++      bindings: unknown[];
++    };
++    const setRes = await jsonRequest(app, `/v1/${topic}:setIamPolicy`, {
++      method: "POST",
++      body: {
++        policy: {
++          etag: policy.etag,
++          bindings: [
++            ...policy.bindings,
++            {
++              role: "roles/pubsub.publisher",
++              members: ["serviceAccount:gmail-api-push@system.gserviceaccount.com"],
++            },
++          ],
++        },
++      },
++    });
++    expect(setRes.status).toBe(200);
++    const subscription = `projects/emulate-local/subscriptions/${name}`;
++    const subRes = await jsonRequest(app, `/v1/${subscription}`, {
++      method: "PUT",
++      body: { topic, expirationPolicy: {} },
++    });
++    expect(subRes.status).toBe(200);
++    return { topic, subscription };
++  }
++
++  it("refuses a watch on a topic Gmail may not publish to", async () => {
++    const topic = "projects/emulate-local/topics/closed";
++    expect((await jsonRequest(app, `/v1/${topic}`, { method: "PUT", body: {} })).status).toBe(200);
++    const res = await jsonRequest(app, "/gmail/v1/users/me/watch", { method: "POST", body: { topicName: topic } });
++    expect(res.status).toBe(403);
++  });
++
++  it("publishes each change to the watch's topic, pulled until acknowledged", async () => {
++    const { topic, subscription } = await gmailTopic("notified");
++    expect((await jsonRequest(app, `/v1/${topic}`, { method: "PUT", body: {} })).status).toBe(409);
++    expect((await jsonRequest(app, `/v1/${subscription}`, { method: "PUT", body: { topic } })).status).toBe(409);
++    const existing = await jsonRequest(app, `/v1/${subscription}`, { method: "GET" });
++    expect(await existing.json()).toMatchObject({ name: subscription, topic });
++    const watchRes = await jsonRequest(app, "/gmail/v1/users/me/watch", { method: "POST", body: { topicName: topic } });
++    expect(watchRes.status).toBe(200);
++
++    // A pull waits for a message.
++    const pulled = jsonRequest(app, `/v1/${subscription}:pull`, { method: "POST", body: { maxMessages: 10 } });
++    const importRes = await jsonRequest(app, "/gmail/v1/users/me/messages/import", {
++      method: "POST",
++      body: {
++        raw: buildRawMessage({ from: "a@example.com", to: "testuser@example.com", subject: "x", body_text: "y" }),
++      },
++    });
++    expect(importRes.status).toBe(200);
++    const body = (await (await pulled).json()) as {
++      receivedMessages: Array<{ ackId: string; message: { data: string } }>;
++    };
++    expect(body.receivedMessages).toHaveLength(1);
++    const notification = JSON.parse(Buffer.from(body.receivedMessages[0].message.data, "base64").toString());
++    expect(notification.emailAddress).toBe("testuser@example.com");
++    expect(typeof notification.historyId).toBe("number");
++
++    const ackRes = await jsonRequest(app, `/v1/${subscription}:acknowledge`, {
++      method: "POST",
++      body: { ackIds: [body.receivedMessages[0].ackId] },
++    });
++    expect(ackRes.status).toBe(200);
++    const again = await jsonRequest(app, `/v1/${subscription}:pull`, {
++      method: "POST",
++      body: { maxMessages: 10, returnImmediately: true },
++    });
++    expect(await again.json()).toEqual({});
++  });
++
++  it("hands no messages to a pull whose client has gone", async () => {
++    const { topic, subscription } = await gmailTopic("abandoned");
++    await jsonRequest(app, "/gmail/v1/users/me/watch", { method: "POST", body: { topicName: topic } });
++    const gone = new AbortController();
++    const abandoned = jsonRequest(app, `/v1/${subscription}:pull`, {
++      method: "POST",
++      body: { maxMessages: 10 },
++      signal: gone.signal,
++    });
++    gone.abort();
++    expect(await (await abandoned).json()).toEqual({});
++    await jsonRequest(app, "/gmail/v1/users/me/messages/import", {
++      method: "POST",
++      body: {
++        raw: buildRawMessage({ from: "a@example.com", to: "testuser@example.com", subject: "x", body_text: "y" }),
++      },
++    });
++    const pulled = await jsonRequest(app, `/v1/${subscription}:pull`, {
++      method: "POST",
++      body: { maxMessages: 10, returnImmediately: true },
++    });
++    expect(((await pulled.json()) as { receivedMessages: unknown[] }).receivedMessages).toHaveLength(1);
++  });
++
+   it("tracks history entries after watch registration", async () => {
++    await gmailTopic("gmail");
+     const watchRes = await jsonRequest(app, "/gmail/v1/users/me/watch", {
+       method: "POST",
+       body: {
+diff --git a/packages/@emulators/google/src/auth.ts b/packages/@emulators/google/src/auth.ts
+index 4876830..1ca679d 100644
+--- a/packages/@emulators/google/src/auth.ts
++++ b/packages/@emulators/google/src/auth.ts
+@@ -25,6 +25,7 @@ const calendarRead = googleScopes(
+   "calendar.events.public.readonly",
+   "calendar.app.created",
+ );
++const pubsub = googleScopes("pubsub", "cloud-platform");
+ const calendarWrite = googleScopes("calendar", "calendar.events", "calendar.events.owned", "calendar.app.created");
+ 
+ // OAuth scope alternatives for the supported methods. Upload aliases share the same requirements.
+@@ -89,6 +90,11 @@ const routeScopes: Record<string, string[]> = {
+   "DELETE /gmail/v1/users/:userId/settings/filters/:id": googleScopes("gmail.settings.basic"),
+   "GET /gmail/v1/users/:userId/settings/forwardingAddresses": gmailSettingsRead,
+   "GET /gmail/v1/users/:userId/settings/sendAs": gmailSettingsRead,
++  "PUT /v1/projects/:project/topics/:topic": pubsub,
++  "POST /v1/projects/:project/topics/:topicMethod": pubsub,
++  "PUT /v1/projects/:project/subscriptions/:subscription": pubsub,
++  "GET /v1/projects/:project/subscriptions/:subscription": pubsub,
++  "POST /v1/projects/:project/subscriptions/:subscriptionMethod": pubsub,
+ };
+ 
+ export function googleAuthMiddleware(app: Hono<AppEnv>, store: Store): MiddlewareHandler<AppEnv> {
+@@ -97,7 +103,7 @@ export function googleAuthMiddleware(app: Hono<AppEnv>, store: Store): Middlewar
+     const route = app.matchedRoute(c.req.method, c.req.path);
+     if (!route) return next();
+     const path = route.path.replace(/^\/upload\//, "/");
+-    if (!/^\/(gmail\/v1|drive\/v3|calendar\/v3)\//.test(path) && path !== "/oauth2/v2/userinfo") {
++    if (!/^\/(gmail\/v1|drive\/v3|calendar\/v3|v1\/projects)\//.test(path) && path !== "/oauth2/v2/userinfo") {
+       return next();
+     }
+ 
+diff --git a/packages/@emulators/google/src/helpers.ts b/packages/@emulators/google/src/helpers.ts
+index 0161606..1b97e0a 100644
+--- a/packages/@emulators/google/src/helpers.ts
++++ b/packages/@emulators/google/src/helpers.ts
+@@ -1371,6 +1371,13 @@ function replaceMessageAttachments(gs: GoogleStore, message: GoogleMessage, atta
+   }
+ }
+ 
++const historyListeners = new WeakMap<object, (userEmail: string, historyId: string) => void>();
++
++/** Calls `listener` with each change recorded in a mailbox's history. */
++export function onHistoryRecorded(gs: GoogleStore, listener: (userEmail: string, historyId: string) => void): void {
++  historyListeners.set(gs.history, listener);
++}
++
+ function recordHistoryEvents(
+   gs: GoogleStore,
+   userEmail: string,
+@@ -1392,6 +1399,7 @@ function recordHistoryEvents(
+       label_ids: dedupeLabelIds(event.label_ids),
+     });
+   }
++  if (events.length > 0) historyListeners.get(gs.history)?.(userEmail, historyId);
+ }
+ 
+ function applyFiltersToLabelIds(gs: GoogleStore, userEmail: string, from: string, labelIds: string[]): string[] {
+diff --git a/packages/@emulators/google/src/index.ts b/packages/@emulators/google/src/index.ts
+index 642572d..8aabbe1 100644
+--- a/packages/@emulators/google/src/index.ts
++++ b/packages/@emulators/google/src/index.ts
+@@ -19,6 +19,7 @@ import { labelRoutes } from "./routes/labels.js";
+ import { messageRoutes } from "./routes/messages.js";
+ import { oauthRoutes } from "./routes/oauth.js";
+ import { profileRoutes } from "./routes/profile.js";
++import { pubsubRoutes } from "./routes/pubsub.js";
+ import { settingsRoutes } from "./routes/settings.js";
+ import { threadRoutes } from "./routes/threads.js";
+ import { getGoogleStore } from "./store.js";
+@@ -520,6 +521,7 @@ export const googlePlugin: ServicePlugin = {
+     draftRoutes(ctx);
+     historyRoutes(ctx);
+     profileRoutes(ctx);
++    pubsubRoutes(ctx);
+     threadRoutes(ctx);
+     labelRoutes(ctx);
+     settingsRoutes(ctx);
+diff --git a/packages/@emulators/google/src/routes/history.ts b/packages/@emulators/google/src/routes/history.ts
+index e80a1f1..31079ab 100644
+--- a/packages/@emulators/google/src/routes/history.ts
++++ b/packages/@emulators/google/src/routes/history.ts
+@@ -8,7 +8,9 @@ import {
+   isHistoryRetained,
+   listHistoryForUser,
+   normalizeLimit,
++  onHistoryRecorded,
+ } from "../helpers.js";
++import { gmailMayPublish, publish } from "./pubsub.js";
+ import { getString, getStringArray, parseGoogleBody, requireGmailUser } from "../route-helpers.js";
+ import { getGoogleStore } from "../store.js";
+ 
+@@ -24,6 +26,14 @@ const WATCH_STATE_KEY = "google.gmail.watchStates";
+ export function historyRoutes({ app, store }: RouteContext): void {
+   const gs = getGoogleStore(store);
+ 
++  // Each change is told to the user's watch, as Gmail publishes to its topic.
++  onHistoryRecorded(gs, (userEmail, historyId) => {
++    const watch = store.getData<Map<string, GmailWatchState>>(WATCH_STATE_KEY)?.get(userEmail);
++    if (watch && Number(watch.expiration) > Date.now()) {
++      publish(store, watch.topicName, { emailAddress: userEmail, historyId: Number(historyId) });
++    }
++  });
++
+   app.get("/gmail/v1/users/:userId/history", (c) => {
+     const authEmail = requireGmailUser(c);
+     if (authEmail instanceof Response) return authEmail;
+@@ -61,6 +71,16 @@ export function historyRoutes({ app, store }: RouteContext): void {
+       return googleApiError(c, 400, "Topic name is required.", "invalidArgument", "INVALID_ARGUMENT");
+     }
+ 
++    if (!gmailMayPublish(store, topicName)) {
++      return googleApiError(
++        c,
++        403,
++        `Error sending test message to Cloud PubSub ${topicName} : User not authorized to perform this action.`,
++        "forbidden",
++        "PERMISSION_DENIED",
++      );
++    }
++
+     const labelIds = getStringArray(body, "labelIds");
+     const missingLabelIds = findMissingLabelIds(gs, authEmail, labelIds);
+     if (missingLabelIds.length > 0) {
+diff --git a/packages/@emulators/google/src/routes/pubsub.ts b/packages/@emulators/google/src/routes/pubsub.ts
+new file mode 100644
+index 0000000..ea48af1
+--- /dev/null
++++ b/packages/@emulators/google/src/routes/pubsub.ts
+@@ -0,0 +1,229 @@
++import type { Context, RouteContext, Store } from "@emulators/core";
++import { googleApiError } from "../helpers.js";
++import { parseGoogleBody, requireGoogleAuth } from "../route-helpers.js";
++
++// Cloud Pub/Sub, as far as Gmail push notifications go: topics with an IAM
++// policy, pull subscriptions (pull waits a bounded time for a message, as
++// Pub/Sub does unless asked to return at once), and acknowledgement.
++
++/** Who Gmail publishes as; a watch needs it allowed to publish. */
++export const GMAIL_PUBLISHER = "serviceAccount:gmail-api-push@system.gserviceaccount.com";
++const PUBLISHER_ROLE = "roles/pubsub.publisher";
++const PUBSUB_STATE_KEY = "google.pubsub";
++/** How long a pull waits for a message before answering with none. */
++const PULL_WAIT_MS = 10_000;
++/** How long a message pulled stays unacknowledged before it is redelivered. */
++const DEFAULT_ACK_DEADLINE_SECONDS = 10;
++
++interface IamBinding {
++  role: string;
++  members: string[];
++}
++
++interface Topic {
++  bindings: IamBinding[];
++  etag: number;
++}
++
++interface PubsubMessage {
++  messageId: string;
++  data: string;
++  publishTime: string;
++}
++
++interface Outstanding {
++  message: PubsubMessage;
++  /** When it is redelivered, unless acknowledged first (unix ms). */
++  deadline: number;
++}
++
++interface Subscription {
++  topic: string;
++  ackDeadlineSeconds: number;
++  queue: PubsubMessage[];
++  outstanding: Map<string, Outstanding>;
++  /** Pulls waiting for a message. */
++  waiting: Set<() => void>;
++}
++
++interface PubsubState {
++  topics: Map<string, Topic>;
++  subscriptions: Map<string, Subscription>;
++  nextId: number;
++}
++
++function state(store: Store): PubsubState {
++  let s = store.getData<PubsubState>(PUBSUB_STATE_KEY);
++  if (!s) {
++    s = { topics: new Map(), subscriptions: new Map(), nextId: 1 };
++    store.setData(PUBSUB_STATE_KEY, s);
++  }
++  return s;
++}
++
++/** Whether `topic` exists and Gmail may publish to it. */
++export function gmailMayPublish(store: Store, topic: string): boolean {
++  const t = state(store).topics.get(topic);
++  return !!t?.bindings.some((b) => b.role === PUBLISHER_ROLE && b.members.includes(GMAIL_PUBLISHER));
++}
++
++/** Publishes `data` (JSON) to every subscription of `topic`. */
++export function publish(store: Store, topic: string, data: unknown): void {
++  const s = state(store);
++  if (!s.topics.has(topic)) return;
++  const message: PubsubMessage = {
++    messageId: String(s.nextId++),
++    data: Buffer.from(JSON.stringify(data)).toString("base64"),
++    publishTime: new Date().toISOString(),
++  };
++  for (const sub of s.subscriptions.values()) {
++    if (sub.topic !== topic) continue;
++    sub.queue.push(message);
++    for (const wake of sub.waiting) wake();
++  }
++}
++
++function pubsubError(c: Context, code: 400 | 403 | 404 | 409, message: string, status: string) {
++  return c.json({ error: { code, message, status } }, code);
++}
++
++/** The resource and the method of a `name:method` path segment. */
++function splitMethod(segment: string): [string, string | undefined] {
++  const at = segment.indexOf(":");
++  return at === -1 ? [segment, undefined] : [segment.slice(0, at), segment.slice(at + 1)];
++}
++
++/** Puts the messages whose deadline has passed back on the queue. */
++function redeliver(sub: Subscription): void {
++  const now = Date.now();
++  for (const [ackId, o] of sub.outstanding) {
++    if (o.deadline <= now) {
++      sub.outstanding.delete(ackId);
++      sub.queue.unshift(o.message);
++    }
++  }
++}
++
++export function pubsubRoutes({ app, store }: RouteContext): void {
++  app.put("/v1/projects/:project/topics/:topic", (c) => {
++    const auth = requireGoogleAuth(c);
++    if (auth instanceof Response) return auth;
++    const name = `projects/${c.req.param("project")}/topics/${c.req.param("topic")}`;
++    const s = state(store);
++    if (s.topics.has(name)) return pubsubError(c, 409, "Resource already exists in the project", "ALREADY_EXISTS");
++    s.topics.set(name, { bindings: [], etag: 1 });
++    return c.json({ name });
++  });
++
++  app.post("/v1/projects/:project/topics/:topicMethod", async (c) => {
++    const auth = requireGoogleAuth(c);
++    if (auth instanceof Response) return auth;
++    const [topicId, method] = splitMethod(c.req.param("topicMethod"));
++    const name = `projects/${c.req.param("project")}/topics/${topicId}`;
++    const topic = state(store).topics.get(name);
++    if (!topic) return pubsubError(c, 404, "Resource not found", "NOT_FOUND");
++    const policy = () => ({
++      version: 1,
++      etag: Buffer.from(String(topic.etag)).toString("base64"),
++      bindings: topic.bindings,
++    });
++    switch (method) {
++      case "getIamPolicy":
++        return c.json(policy());
++      case "setIamPolicy": {
++        const body = await parseGoogleBody(c);
++        const given = body.policy as { etag?: string; bindings?: IamBinding[] } | undefined;
++        if (!given) return pubsubError(c, 400, "Policy is required.", "INVALID_ARGUMENT");
++        if (given.etag !== undefined && given.etag !== policy().etag) {
++          return pubsubError(c, 409, "There were concurrent policy changes.", "ABORTED");
++        }
++        topic.bindings = given.bindings ?? [];
++        topic.etag++;
++        return c.json(policy());
++      }
++      default:
++        return pubsubError(c, 404, "Method not found.", "NOT_FOUND");
++    }
++  });
++
++  app.put("/v1/projects/:project/subscriptions/:subscription", async (c) => {
++    const auth = requireGoogleAuth(c);
++    if (auth instanceof Response) return auth;
++    const name = `projects/${c.req.param("project")}/subscriptions/${c.req.param("subscription")}`;
++    const s = state(store);
++    if (s.subscriptions.has(name)) {
++      return pubsubError(c, 409, "Resource already exists in the project", "ALREADY_EXISTS");
++    }
++    const body = await parseGoogleBody(c);
++    const topic = typeof body.topic === "string" ? body.topic : "";
++    if (!s.topics.has(topic)) return pubsubError(c, 404, "Resource not found", "NOT_FOUND");
++    const ackDeadlineSeconds =
++      typeof body.ackDeadlineSeconds === "number" ? body.ackDeadlineSeconds : DEFAULT_ACK_DEADLINE_SECONDS;
++    s.subscriptions.set(name, {
++      topic,
++      ackDeadlineSeconds,
++      queue: [],
++      outstanding: new Map(),
++      waiting: new Set(),
++    });
++    return c.json({ name, topic, ackDeadlineSeconds, expirationPolicy: body.expirationPolicy ?? { ttl: "2678400s" } });
++  });
++
++  app.get("/v1/projects/:project/subscriptions/:subscription", (c) => {
++    const auth = requireGoogleAuth(c);
++    if (auth instanceof Response) return auth;
++    const name = `projects/${c.req.param("project")}/subscriptions/${c.req.param("subscription")}`;
++    const sub = state(store).subscriptions.get(name);
++    if (!sub) return pubsubError(c, 404, "Resource not found", "NOT_FOUND");
++    return c.json({ name, topic: sub.topic, ackDeadlineSeconds: sub.ackDeadlineSeconds });
++  });
++
++  app.post("/v1/projects/:project/subscriptions/:subscriptionMethod", async (c) => {
++    const auth = requireGoogleAuth(c);
++    if (auth instanceof Response) return auth;
++    const [subscriptionId, method] = splitMethod(c.req.param("subscriptionMethod"));
++    const name = `projects/${c.req.param("project")}/subscriptions/${subscriptionId}`;
++    const sub = state(store).subscriptions.get(name);
++    if (!sub) return pubsubError(c, 404, "Resource not found", "NOT_FOUND");
++    const body = await parseGoogleBody(c);
++    switch (method) {
++      case "pull": {
++        const max = typeof body.maxMessages === "number" ? body.maxMessages : 0;
++        if (max <= 0) return pubsubError(c, 400, "maxMessages must be positive.", "INVALID_ARGUMENT");
++        redeliver(sub);
++        const gone = c.req.raw.signal;
++        if (sub.queue.length === 0 && body.returnImmediately !== true && !gone.aborted) {
++          // Until a message is published, the wait is over, or the client
++          // has gone.
++          await new Promise<void>((resolve) => {
++            const wake = () => {
++              clearTimeout(timer);
++              sub.waiting.delete(wake);
++              gone.removeEventListener("abort", wake);
++              resolve();
++            };
++            const timer = setTimeout(wake, PULL_WAIT_MS);
++            sub.waiting.add(wake);
++            gone.addEventListener("abort", wake);
++          });
++        }
++        // Messages are not handed to a client that has gone.
++        if (gone.aborted) return c.json({});
++        const deadline = Date.now() + sub.ackDeadlineSeconds * 1000;
++        const receivedMessages = sub.queue.splice(0, max).map((message) => {
++          const ackId = `${message.messageId}-${Math.random().toString(36).slice(2)}`;
++          sub.outstanding.set(ackId, { message, deadline });
++          return { ackId, message };
++        });
++        return c.json(receivedMessages.length > 0 ? { receivedMessages } : {});
++      }
++      case "acknowledge": {
++        const ackIds = Array.isArray(body.ackIds) ? (body.ackIds as unknown[]) : [];
++        for (const ackId of ackIds) sub.outstanding.delete(String(ackId));
++        return c.json({});
++      }
++      default:
++        return pubsubError(c, 404, "Method not found.", "NOT_FOUND");
++    }
++  });
++}
+-- 
+2.55.0
+

@@ -49,6 +49,7 @@ mod cost {
     pub const DRAFTS_SEND: u32 = 100;
     /// `threads.get`.
     pub const THREAD: u32 = 10;
+    pub const WATCH: u32 = 100;
 }
 
 /// One account's client. Its clones share the account's quota.
@@ -293,6 +294,26 @@ impl Gmail {
         let mut query = vec![("startHistoryId", start), ("maxResults", "500")];
         query.extend(page_token.map(|t| ("pageToken", t)));
         self.get("/history", &query, cost::HISTORY).await
+    }
+
+    /// Has Gmail publish the mailbox's changes to the Pub/Sub topic
+    /// `topic`, for a week.
+    pub async fn watch(&self, topic: &str) -> Result<()> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Watch<'a> {
+            topic_name: &'a str,
+        }
+        self.send(
+            Method::POST,
+            "/watch",
+            &[],
+            Some(&Watch { topic_name: topic }),
+            cost::WATCH,
+        )
+        .await?
+        .check()?;
+        Ok(())
     }
 
     /// `Err` with Gmail's reason if it refused the change.

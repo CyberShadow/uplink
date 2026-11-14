@@ -7,7 +7,10 @@ use uplink_config::GmailAccountConfig;
 use uplink_storage::seal::MasterKey;
 use url::Url;
 
-pub const SCOPE: &str = "https://www.googleapis.com/auth/gmail.modify";
+/// Gmail's, to read, label and send; Pub/Sub's, for the topic and
+/// subscription push notifications go through (SPEC §8.1).
+pub const SCOPE: &str =
+    "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/pubsub";
 
 /// Runs the authorization-code flow for `account` and stores the refresh
 /// token it yields (see [`oauth::authorize_loopback`]).

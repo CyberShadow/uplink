@@ -267,13 +267,15 @@ calendar:
 
 accounts:
   # — Gmail — with the user's own Google Cloud project (Desktop app OAuth
-  # client); scope gmail.modify (read, label, send; no permanent delete).
+  # client); scopes gmail.modify (read, label, send; no permanent delete)
+  # and pubsub (push notifications, published in `project`, §8.1).
   - id: alice-gmail
     kind: gmail
     address: alice@gmail.com
     oauth:
       client_id:     "1234.apps.googleusercontent.com"
       client_secret: "GOCSPX-xxxxxxxxxx"
+      project:       "uplink-123456"
 
   # — Microsoft 365 (work) — with an Entra ID app registration of the
   # user's (or their organization's), a public client; v1 endpoint with
@@ -1452,24 +1454,39 @@ IMAP's per-folder copies, and a REST fake is practical to test against
   100 messages a minute at most. Each account's requests are paced by a
   token bucket of 80 units a second, 400 at once: 80 messages a minute,
   so a mailbox of 50,000 takes about 10 hours to list.
-- **Incremental**: poll `history.list?startHistoryId=…` every 5 s (2
-  quota units per call against 6,000 units/minute per user, so even 1 s
-  polling is affordable) —
+- **Incremental**: `history.list?startHistoryId=…` —
   `messagesAdded`, `messagesDeleted`, `labelsAdded`, `labelsRemoved` map
   directly onto observations. Persist the last `historyId` in
   `account.sync_state`, in the same transaction as the observations. If
   Google answers 404 (history id too old), fall back to a full resync.
-- **Push (deferred)**: the API's only push is `users.watch` → Cloud
-  Pub/Sub. No public endpoint is needed: Pub/Sub's REST
-  `subscriptions.pull` (without `returnImmediately`) waits a bounded time
-  for a message, i.e. a plain-HTTPS long-poll. Costs: a topic and
-  subscription in the user's GCP project with
-  `gmail-api-push@system.gserviceaccount.com` allowed to publish, the
-  `pubsub` OAuth scope, and renewing the watch (Google recommends daily;
-  it lapses after 7 days). A notification only says "something changed";
-  the reaction is the same `history.list` call. Polling stays as the
-  baseline, as Google also recommends, since notifications can be delayed
-  or dropped. No IMAP anywhere.
+  Called as push notifications tell of changes, and every 60 s besides,
+  as Google recommends, since notifications can be delayed or dropped;
+  every 5 s while there is no watch (2 quota units a call, against 6,000
+  a minute per user).
+- **Push**: the API's only push is `users.watch`, which publishes the
+  mailbox's changes to a Cloud Pub/Sub topic. No public endpoint is
+  needed: uplink reads them from a pull subscription by REST
+  `subscriptions.pull`, which, without `returnImmediately`, waits a
+  bounded time for a message, i.e. a plain-HTTPS long poll (a pull taking
+  over 2 minutes is taken for lost and made anew). The topic must be in
+  the project of the account's OAuth client, which the account names
+  (`oauth.project`); topic and subscription are `uplink-<account id>`
+  there, and uplink makes them as the watch (re)begins, unless they are
+  there: the topic, its IAM policy letting
+  `gmail-api-push@system.gserviceaccount.com` publish
+  (`roles/pubsub.publisher`, other bindings kept), and the subscription,
+  never to expire and keeping messages 10 minutes (Pub/Sub's least: a
+  notification only says that something changed, and the sync as the
+  watch begins finds what did). A subscription there to another topic
+  (as when the topic was deleted) is an error, saying to delete it. This
+  takes the `pubsub` OAuth scope, besides `gmail.modify`; of the project,
+  the user only enables the Pub/Sub API (README). Then `watch`, renewed
+  daily (Google recommends; it lapses after 7 days). The messages of each
+  pull are acknowledged and wake the sync task (`Provider::changed`), as
+  does the watch's (re)beginning, since changes may have been missed
+  meanwhile; they are not read, the topic being the account's alone. A
+  watch that fails begins anew 30 s later, the mailbox polled every 5 s
+  meanwhile. No IMAP anywhere.
 - **Threading**: Gmail's `threadId`.
 - **Labels**: `labels.list`; each label becomes a `label` row.
 - **Trash and Spam** are labels like any other (the listing includes
@@ -3520,10 +3537,12 @@ operator and `fail2ban` on the system handles brute-force concerns.
 ### 13.2 OAuth flow (Gmail)
 
 - Prerequisite: the user creates their own Google Cloud project (Desktop
-  app OAuth client) and copies `client_id` + `client_secret` into the
-  YAML. See §15.2. The OAuth consent screen must be set to *In
-  production* (unverified is fine for personal use): in *Testing*,
-  Google expires refresh tokens after 7 days.
+  app OAuth client, the Gmail and Pub/Sub APIs enabled) and copies
+  `client_id` + `client_secret` and the project's id into the YAML. See
+  §15.2. The scopes asked for are `gmail.modify` and `pubsub` (§8.1).
+  The OAuth consent screen must be set to *In production* (unverified is
+  fine for personal use): in *Testing*, Google expires refresh tokens
+  after 7 days.
 - One-time setup: `uplink oauth init --account=alice-gmail`. The CLI
   prints an authorization URL with PKCE and a loopback redirect
   (`http://127.0.0.1:<port>/`; Google no longer supports copy-paste
@@ -3538,7 +3557,7 @@ operator and `fail2ban` on the system handles brute-force concerns.
   until the account is authorized again.
 - The token requests are a few form POSTs, made directly with `reqwest`
   (no `oauth2` crate). Google's endpoints are configurable per account
-  (`endpoints: { auth, token, api }`, defaulting to Google's), so tests
+  (`endpoints: { auth, token, api, pubsub }`, defaulting to Google's), so tests
   point them at a fake (§15.10).
 
 ### 13.3 OAuth flow (M365)
@@ -3696,7 +3715,8 @@ echoed both events with monotonic cursors.
 
 ### M4. Gmail receive
 
-- Gmail API initial sync + `history.list` polling (§8.1).
+- Gmail API initial sync + `history.list` polling (§8.1), as push
+  notifications tell of changes.
 - Message variants + .eml persist + FTS body extract.
 - Frontend mail-list view with selection + keyboard nav.
 - First real ops: mark read/unread, archive, label — with the Gmail
@@ -3881,8 +3901,12 @@ credentials registered in Google Cloud Console. There is no
 fully-decentralised path — OAuth requires a registered client. Two patterns are viable:
 
 1. **BYO (MVP).** The user creates a one-off GCP project (~10 minutes in
-   the Cloud Console), marks it as a Desktop/installed app, and pastes
-   `client_id` + `client_secret` into uplink's YAML. Each install has its
+   the Cloud Console), enables the Gmail and Pub/Sub APIs, marks it as a
+   Desktop/installed app, and pastes `client_id` + `client_secret` and the
+   project's id into uplink's YAML. uplink makes what push notifications
+   need in the project itself (§8.1): there is no supported API for
+   making the OAuth client or the consent screen, so the console visit
+   stays, and enabling an API is a click during it. Each install has its
    own OAuth project; the upstream uplink project has zero ongoing
    relationship with Google. This is what we ship in MVP. While the
    consent screen's publishing status is *Testing*, Google expires refresh
@@ -3894,8 +3918,18 @@ fully-decentralised path — OAuth requires a registered client. Two patterns ar
    tolerates this for installed apps; the secret isn't truly secret). This
    becomes interesting only when uplink is shared beyond a single
    maintainer install, and requires Google's app-verification flow to
-   raise the >100-user cap and remove the "unverified app" warning. Out
-   of scope for MVP.
+   raise the >100-user cap and remove the "unverified app" warning; as
+   `gmail.modify` is a restricted scope, that means a yearly security
+   assessment (CASA) too. Push notifications do not carry over: the
+   topic must be in the client's project, so every user's notifications
+   would be published to the maintainer's, and they cannot be told apart
+   by subscription (the address is in the message's data, and Pub/Sub
+   filters by attributes only), so delivering them would take a relay
+   run by the maintainer, which would learn when everyone's mail
+   arrives. A bundled client would rather watch by IMAP IDLE on All
+   Mail, as Thunderbird's Google sign-in does, as a signal only (the sync
+   stays the API's), at the cost of the full `https://mail.google.com/`
+   scope. Out of scope for MVP.
 
 **Decision**: BYO-only for MVP. Document in README how to create the GCP
 project. Bundled remains an additive future option — the same YAML
@@ -4046,9 +4080,14 @@ request).
   then the message), as uplink sends mail (§8.2); `0007` sends as Gmail
   does, under a Message-ID and a Date of its own, a draft as a new
   message of its thread (the draft then gone), and takes a draft's
-  multipart upload as its message.
-  uplink's Google endpoints (auth, token, API base) are configurable,
-  defaulting to Google's.
+  multipart upload as its message; `0011` adds Cloud Pub/Sub, as far as
+  Gmail's push notifications go (topics with an IAM policy, pull
+  subscriptions whose pull waits for a message, acknowledgement), a watch
+  refused unless Gmail may publish to its topic, and each change
+  published to it; `0012` aborts a request's signal once its client has
+  gone, so that a pull abandoned takes no messages.
+  uplink's Google endpoints (auth, token, Gmail and Pub/Sub API bases)
+  are configurable, defaulting to Google's.
 - **Real accounts.** A fake can diverge from the real service in
   minutiae (error handling especially), so the provider-facing tests are
   written once against endpoints passed in, and also run — manually, now
@@ -4186,7 +4225,13 @@ authorized by hand. The user's own account showed (2026-11-11) that
 Gmail replaces the Message-ID and Date of mail it sends, which emulate
 now does too (§8.2); that a draft sent is a new message, the draft then
 404 to sending again, is from others' reports against the real API,
-emulated likewise, but not yet seen on a real account.
+emulated likewise, but not yet seen on a real account. Push notifications
+(§8.1) are emulated after Google's documentation; open until they run
+against the real services: that the `pubsub` scope suffices for making
+the topic, its policy and the subscription in the user's own project,
+how long a pull waits for a message, how soon Gmail publishes a change,
+and what becomes of an account's watch when another `watch` for the same
+user is made from the same project (two uplinks syncing one account).
 
 ## 16. UI shell
 

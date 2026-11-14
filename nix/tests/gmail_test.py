@@ -86,10 +86,12 @@ with subtest("a restart loses nothing and resumes from the stored historyId"):
     machine.wait_for_open_port(8443)
     assert set(entries(labels["INBOX"])) == before
     head = tx_log_head()
-    time.sleep(12)  # more than two poll intervals
+    time.sleep(12)  # time for the watch to begin, and the sync it starts
     assert tx_log_head() == head, "the restarted server re-synced"
     deliver(token, "After the restart", "still here")
     eventually("mail after the restart", lambda: "After the restart" in entries(labels["INBOX"]))
     machine.fail("journalctl -u uplink.service | grep -q 'history expired'")
+    # Gmail's push notifications came through all along.
+    machine.fail("journalctl -u uplink.service | grep -q 'watching for changes'")
     eml = int(machine.succeed(f"find {STATE}/mail -name '*.eml' | wc -l"))
     assert eml == 3, eml

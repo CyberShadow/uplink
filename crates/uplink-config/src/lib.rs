@@ -189,6 +189,9 @@ pub struct GoogleEndpoints {
     pub token: String,
     /// Base URL of the Gmail API, below which `/gmail/v1/...` lives.
     pub api: String,
+    /// Base URL of the Cloud Pub/Sub API, below which `/v1/projects/...`
+    /// lives.
+    pub pubsub: String,
 }
 
 impl Default for GoogleEndpoints {
@@ -197,6 +200,7 @@ impl Default for GoogleEndpoints {
             auth: "https://accounts.google.com/o/oauth2/v2/auth".into(),
             token: "https://oauth2.googleapis.com/token".into(),
             api: "https://gmail.googleapis.com".into(),
+            pubsub: "https://pubsub.googleapis.com".into(),
         }
     }
 }
@@ -206,6 +210,9 @@ impl Default for GoogleEndpoints {
 pub struct GmailOAuthConfig {
     pub client_id: String,
     pub client_secret: String,
+    /// The id of the Google Cloud project the client is in, where Gmail's
+    /// push notifications are published (SPEC §8.1).
+    pub project: String,
     /// `<data_dir>/accounts/<id>.token`.
     #[serde(skip)]
     pub token_file: PathBuf,
@@ -853,6 +860,7 @@ accounts:
     oauth:
       client_id:     "1234.apps.googleusercontent.com"
       client_secret: "GOCSPX-xxxxxxxxxx"
+      project:       "uplink-123456"
 
   - id: alice-m365
     kind: m365
@@ -898,6 +906,7 @@ accounts:
         };
         assert_eq!(g.id, "alice-gmail");
         assert_eq!(g.oauth.client_secret, "GOCSPX-xxxxxxxxxx");
+        assert_eq!(g.oauth.project, "uplink-123456");
         assert_eq!(
             g.oauth.token_file,
             PathBuf::from("/var/lib/uplink/accounts/alice-gmail.token")

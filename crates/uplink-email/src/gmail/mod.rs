@@ -2,4 +2,6 @@
 
 pub mod api;
 pub mod oauth;
+pub mod pubsub;
 pub mod sync;
+pub mod watch;

@@ -8,7 +8,7 @@ import time
 from urllib.parse import parse_qs, urlparse
 
 STATE = "/var/lib/uplink"
-SCOPE = "https://www.googleapis.com/auth/gmail.modify"
+SCOPE = "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/pubsub"
 
 
 def eventually(what, f, timeout=30):

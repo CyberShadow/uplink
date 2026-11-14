@@ -69,7 +69,9 @@ Deferred:
 ## Email — receiving
 
 MVP:
-- Gmail via the Gmail API, polling `history.list` (see SPEC §8.1).
+- Gmail via the Gmail API: `history.list` as its push notifications tell
+  of changes, pulled from Cloud Pub/Sub over REST, and polled every 60 s
+  besides (see SPEC §8.1).
 - M365 via Graph (mail) with delta-link polling every 30 s (no push;
   see SPEC §8.3 and §15.11 — EWS Streaming deferred).
 - Any IMAP server, polled every 30 s, its Inbox watched by IDLE (SPEC
@@ -93,7 +95,6 @@ Deferred:
   IDLE on a connection per folder.
 - Deciding an SMTP send of unknown outcome in the outbox ("send again",
   "it went out"; SPEC §8.11).
-- Gmail push: API notifications via Cloud Pub/Sub, pulled over REST (SPEC §8.1).
 - Server-side filters/rules.
 - S/MIME and PGP signature verification (read-only).
 - Composing signed/encrypted mail.

@@ -205,14 +205,20 @@ takes about ten minutes, once.
 
 1. In the [Google Cloud console](https://console.cloud.google.com/), create
    a project (any name).
-2. Enable the **Gmail API** for it (APIs & Services → Library).
+2. Enable the **Gmail API** and the **Cloud Pub/Sub API** for it (APIs &
+   Services → Library), or run `gcloud services enable
+   gmail.googleapis.com pubsub.googleapis.com --project PROJECT`. uplink
+   sets up the rest of what Gmail's push notifications need in the
+   project itself (a topic and a subscription named `uplink-ID`).
 3. Configure the **OAuth consent screen** (Google Auth Platform →
    Branding / Audience): user type *External*, and add your Gmail address
    under *Test users*.
 4. Create an **OAuth client** (Google Auth Platform → Clients → Create
    client) of type *Desktop app*. In `uplink.yaml`, uncomment the Gmail
    account (dropping the `[]` after `accounts:`), set `id` (any name) and
-   `address`, and copy the client's id and secret into its `oauth`.
+   `address`, and copy the client's id and secret into its `oauth`, and
+   the project's ID (on the console's dashboard, or in its project
+   picker) as its `project`.
 5. Run `uplink oauth init --account ID`, open the URL it prints, sign in,
    and accept. Google warns that the app is unverified: it is your own
    client, so continue. uplink receives the authorization on a local port,
@@ -230,8 +236,11 @@ client only you use, Google does not require verification, though the
 consent screen keeps warning that the app is unverified.
 
 uplink asks for the `gmail.modify` scope: read mail, change labels and
-send. It never deletes mail itself: `#` moves it to Trash, which Gmail
-empties after 30 days.
+send; and for `pubsub`, to make the topic Gmail tells of changes on, and
+read from it. It never deletes mail itself: `#` moves it to Trash, which
+Gmail empties after 30 days. An account authorized before uplink asked
+for `pubsub` is polled every 5 s, saying in the log why it has no push
+notifications, until `uplink oauth init` is run again.
 
 ### Connecting a Microsoft 365 account
 

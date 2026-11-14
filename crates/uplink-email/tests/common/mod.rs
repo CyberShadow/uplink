@@ -99,12 +99,14 @@ impl Provider {
                 oauth: GmailOAuthConfig {
                     client_id: "uplink-test".into(),
                     client_secret: "uplink-test-secret".into(),
+                    project: "uplink-test".into(),
                     token_file,
                 },
                 endpoints: GoogleEndpoints {
                     auth: format!("{base}/o/oauth2/v2/auth"),
                     token: format!("{base}/oauth2/token"),
                     api: base.clone(),
+                    pubsub: base.clone(),
                 },
             };
             authorize(&http, &account, &key, &base).await;

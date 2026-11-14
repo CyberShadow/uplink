@@ -1,9 +1,12 @@
-//! The sync of a Gmail account (SPEC §8.1–8.2): history polling, label
-//! pushes by `batchModify`, and sending.
+//! The sync of a Gmail account (SPEC §8.1–8.2): history polls, as push
+//! notifications tell of changes, label pushes by `batchModify`, and
+//! sending.
 
 use super::{
     api::{BatchModify, Format, Gmail, Message},
     oauth,
+    pubsub::PubSub,
+    watch::{Push, Watcher},
 };
 use crate::{
     account::{Account, Outgoing, Provider, SendError, SyncTask},
@@ -20,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashSet},
     path::Path,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 use uplink_config::GmailAccountConfig;
@@ -29,8 +32,11 @@ use uplink_storage::seal::MasterKey;
 use uplink_tx_log::Dispatcher;
 
 pub const KIND: &str = "gmail";
-/// How often to poll for changes (SPEC §8.1).
-pub const POLL_INTERVAL: Duration = Duration::from_secs(5);
+/// How often to poll for changes, as push notifications may be late or
+/// dropped (SPEC §8.1).
+pub const POLL_INTERVAL: Duration = Duration::from_secs(60);
+/// How often to poll while there are no push notifications.
+pub const UNWATCHED_POLL: Duration = Duration::from_secs(5);
 /// Messages fetched at once.
 const CONCURRENT_FETCHES: usize = 8;
 /// While listing, how many messages fetched are stored at once: at
@@ -72,8 +78,14 @@ pub fn task(
     data_root: &Path,
 ) -> Result<SyncTask<GmailSync>> {
     let credentials = Credentials::new(http.clone(), oauth::grant(config), key);
+    let pubsub = PubSub::new(http.clone(), &config.endpoints.pubsub, credentials.clone());
     Ok(SyncTask::new(
-        GmailSync::new(Gmail::new(http, &config.endpoints.api, credentials)),
+        GmailSync::new(
+            config.id.clone(),
+            Gmail::new(http, &config.endpoints.api, credentials),
+            Push::new(pubsub, &config.oauth.project, &config.id),
+            UNWATCHED_POLL,
+        ),
         config.id.clone(),
         config.address.clone(),
         dispatcher,
@@ -84,7 +96,12 @@ pub fn task(
 }
 
 pub struct GmailSync {
+    account: String,
     pub gmail: Gmail,
+    push: Arc<Push>,
+    unwatched_poll: Duration,
+    /// Started as the task first waits.
+    watcher: OnceLock<Watcher>,
     /// The listing under way, if one is: where it has got, between steps.
     /// Only in memory: Gmail's page tokens do not last, and a listing
     /// resumed after a restart lists anew, fetching only what it has not.
@@ -92,9 +109,15 @@ pub struct GmailSync {
 }
 
 impl GmailSync {
-    pub fn new(gmail: Gmail) -> Self {
+    /// The sync of account `account`, whose changes are published to
+    /// `push`; polled every `unwatched_poll` while they are not.
+    pub fn new(account: String, gmail: Gmail, push: Push, unwatched_poll: Duration) -> Self {
         Self {
+            account,
             gmail,
+            push: Arc::new(push),
+            unwatched_poll,
+            watcher: OnceLock::new(),
             cursor: tokio::sync::Mutex::new(None),
         }
     }
@@ -182,6 +205,21 @@ impl Provider for GmailSync {
             Some(copy) => Ok(SentCopy::Id(copy)),
             None => self.find_copy(account, &thread, mail.not_before).await,
         }
+    }
+
+    /// What Gmail publishes, watched from the first wait on.
+    async fn changed(&self) {
+        self.watcher
+            .get_or_init(|| {
+                Watcher::start(
+                    self.account.clone(),
+                    self.gmail.clone(),
+                    self.push.clone(),
+                    self.unwatched_poll,
+                )
+            })
+            .changed()
+            .await
     }
 }
 

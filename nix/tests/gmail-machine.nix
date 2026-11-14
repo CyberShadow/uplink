@@ -58,11 +58,13 @@ in
             oauth = {
               client_id = "uplink-test";
               client_secret = "uplink-test-secret";
+              project = "uplink-test";
             };
             endpoints = {
               auth = "${google}/o/oauth2/v2/auth";
               token = "${google}/oauth2/token";
               api = google;
+              pubsub = google;
             };
           }
         ];

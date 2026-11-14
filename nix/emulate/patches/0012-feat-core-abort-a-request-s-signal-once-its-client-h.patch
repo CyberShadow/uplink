@@ -1,0 +1,52 @@
+From 3c52e1850725abb265f575264bd5ee6b81f78ad0 Mon Sep 17 00:00:00 2001
+From: Vladimir Panteleev <git@cy.md>
+Date: Sat, 14 Nov 2026 10:17:58 +0000
+Subject: [PATCH 12/12] feat(core): abort a request's signal once its client
+ has gone
+
+So that a handler waiting on something (a long poll) can tell that no
+one is left to answer.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ packages/@emulators/core/src/http.ts | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/packages/@emulators/core/src/http.ts b/packages/@emulators/core/src/http.ts
+index ce8c0e2..18637c5 100644
+--- a/packages/@emulators/core/src/http.ts
++++ b/packages/@emulators/core/src/http.ts
+@@ -429,7 +429,12 @@ export function serve(options: ServeOptions): Server {
+   const port = options.port ?? 3000;
+   const server = createNodeServer(async (req, res) => {
+     try {
+-      const request = nodeRequestToFetchRequest(req);
++      // Aborted if the client goes before it is answered.
++      const gone = new AbortController();
++      res.on("close", () => {
++        if (!res.writableFinished) gone.abort();
++      });
++      const request = nodeRequestToFetchRequest(req, gone.signal);
+       const response = await options.fetch(request);
+       await writeFetchResponse(res, response, req.method?.toUpperCase() === "HEAD");
+     } catch (err) {
+@@ -529,7 +534,7 @@ function appendBodyValue<T>(target: Record<string, T | T[]>, key: string, value:
+   }
+ }
+ 
+-function nodeRequestToFetchRequest(req: IncomingMessage): Request {
++function nodeRequestToFetchRequest(req: IncomingMessage, signal: AbortSignal): Request {
+   const host = req.headers.host ?? "localhost";
+   const url = new URL(req.url ?? "/", `http://${host}`);
+   const headers = new Headers();
+@@ -548,6 +553,7 @@ function nodeRequestToFetchRequest(req: IncomingMessage): Request {
+     method,
+     headers,
+     body: hasBody ? (req as unknown as BodyInit) : undefined,
++    signal,
+     duplex: "half",
+   } as RequestInit & { duplex: string });
+ }
+-- 
+2.55.0
+
