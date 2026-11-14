@@ -1152,7 +1152,7 @@ pub fn rooms(tx: &Transaction, account: &ConfiguredAccount) -> Result<Vec<Room>>
                SELECT e.id FROM matrix_event t
                JOIN matrix_event e ON e.room = t.room AND e.relates_to = t.event_id
                WHERE t.id = p.id AND {EDIT}
-               ORDER BY e.ts DESC, e.event_id DESC LIMIT 1)
+               ORDER BY +e.ts DESC, e.event_id DESC LIMIT 1)
              WHERE r.account_id = ?1 AND (r.membership != 'left' OR r.desired = 'joined')
              ORDER BY 8 DESC NULLS LAST, r.id",
             read_pos = pos_of("r.read_up_to"),
@@ -1283,7 +1283,7 @@ pub fn event_contents(
         .prepare(&format!(
             "SELECT json_extract(e.raw_json, '$.content.\"m.new_content\"')
              FROM matrix_event t JOIN matrix_event e ON e.room = t.room AND e.relates_to = t.event_id
-             WHERE t.id = ?1 AND {EDIT} ORDER BY e.ts DESC, e.event_id DESC"
+             WHERE t.id = ?1 AND {EDIT} ORDER BY +e.ts DESC, e.event_id DESC"
         ))?
         .query_map([event.0], |r| r.get(0))?
         .collect::<Result<_, _>>()?;
@@ -1875,7 +1875,7 @@ pub fn thread(
         &format!(
             "SELECT {COLUMNS} FROM matrix_event e
              WHERE e.room = ?1 AND e.rel_type = 'm.thread' AND e.relates_to = ?2 AND {LISTED}
-             ORDER BY e.pos"
+             ORDER BY +e.pos"
         ),
         params![room.0, root.event_id],
     )?;
@@ -1889,7 +1889,7 @@ pub fn thread_latest(conn: &Connection, room: RoomId, root: &str) -> Result<Stri
         .query_row(
             "SELECT event_id FROM matrix_event
              WHERE room = ?1 AND rel_type = 'm.thread' AND relates_to = ?2
-             ORDER BY pos DESC LIMIT 1",
+             ORDER BY +pos DESC LIMIT 1",
             params![room.0, root],
             |r| r.get(0),
         )
@@ -1905,7 +1905,7 @@ pub fn edits(tx: &Transaction, room: RoomId, event: RoomEventId) -> Result<Vec<R
         &format!(
             "SELECT {COLUMNS} FROM matrix_event t JOIN matrix_event e
                ON e.room = t.room AND e.relates_to = t.event_id
-             WHERE t.room = ?1 AND t.id = ?2 AND {EDIT} ORDER BY e.ts, e.event_id"
+             WHERE t.room = ?1 AND t.id = ?2 AND {EDIT} ORDER BY +e.ts, e.event_id"
         ),
         params![room.0, event.0],
     )
@@ -1914,6 +1914,10 @@ pub fn edits(tx: &Transaction, room: RoomId, event: RoomEventId) -> Result<Vec<R
 /// Of an event `t`, whether `e` is a valid edit of it: a message replacing
 /// it, sent by its sender, with new content, and neither redacted. An edit
 /// is not edited itself.
+///
+/// What relates to an event is found by the index of relations, and
+/// ordered by a column written `+`: else SQLite may walk the whole room by
+/// the index of that column, for its order, instead (as by `(room, ts)`).
 const EDIT: &str = "e.rel_type = 'm.replace' AND e.type = 'm.room.message' AND NOT e.redacted
     AND NOT t.redacted AND e.sender = t.sender AND coalesce(t.rel_type, '') != 'm.replace'
     AND json_type(e.raw_json, '$.content.\"m.new_content\"') = 'object'";
@@ -1933,7 +1937,7 @@ fn query_events(
         "SELECT e.event_id, e.ts, json_extract(e.raw_json, '$.content.\"m.new_content\"')
          FROM matrix_event t JOIN matrix_event e ON e.room = t.room AND e.relates_to = t.event_id
          WHERE t.id = ?1 AND {EDIT}
-         ORDER BY e.ts DESC, e.event_id DESC LIMIT 1"
+         ORDER BY +e.ts DESC, e.event_id DESC LIMIT 1"
     ))?;
     let mut reactions = tx.prepare(
         "SELECT json_extract(e.raw_json, '$.content.\"m.relates_to\".key'),
@@ -1942,7 +1946,7 @@ fn query_events(
          WHERE t.id = ?1 AND e.rel_type = 'm.annotation' AND e.type = 'm.reaction'
            AND NOT e.redacted
            AND json_type(e.raw_json, '$.content.\"m.relates_to\".key') = 'text'
-         ORDER BY e.id",
+         ORDER BY +e.id",
     )?;
     let mut replied = tx.prepare(&format!(
         "SELECT t.id, t.event_id, t.sender, t.sender_name, t.type, t.redacted,
@@ -1951,7 +1955,7 @@ fn query_events(
          FROM matrix_event t LEFT JOIN matrix_event e ON e.id = (
            SELECT e.id FROM matrix_event e
            WHERE e.room = t.room AND e.relates_to = t.event_id AND {EDIT}
-           ORDER BY e.ts DESC, e.event_id DESC LIMIT 1)
+           ORDER BY +e.ts DESC, e.event_id DESC LIMIT 1)
          WHERE t.room = ?1 AND t.event_id = ?2"
     ))?;
     let mut thread = tx.prepare(&format!(
@@ -1959,7 +1963,7 @@ fn query_events(
                 (SELECT e.event_id FROM matrix_event e
                  WHERE e.room = t.room AND e.relates_to = t.event_id AND e.rel_type = 'm.thread'
                    AND {LISTED}
-                 ORDER BY e.pos DESC LIMIT 1)
+                 ORDER BY +e.pos DESC LIMIT 1)
          FROM matrix_event t JOIN matrix_event e ON e.room = t.room AND e.relates_to = t.event_id
          WHERE t.id = ?1 AND e.rel_type = 'm.thread' AND {LISTED}"
     ))?;
