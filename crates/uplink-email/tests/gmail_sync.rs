@@ -17,6 +17,7 @@ use uplink_protocol::{
     mail::{Identity, MailProvider},
     ServerResponse,
 };
+use uplink_storage::rusqlite::OptionalExtension;
 
 /// Gmail's sync of the account, polling every `unwatched_poll` while
 /// there are no push notifications.
@@ -201,7 +202,16 @@ async fn refused_changes_hold_up_no_others() {
     })
     .await;
     let refusal = eventually("the label to be refused", || async {
-        uplink.logged("mail.refused")
+        uplink
+            .reader()
+            .query_row(
+                "SELECT description FROM tx_log
+                 WHERE op_type = 'mail.pushed' AND description LIKE 'Refused %'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .unwrap()
     })
     .await;
     assert!(refusal.contains(&doomed), "{refusal}");

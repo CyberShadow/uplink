@@ -1,12 +1,13 @@
 //! Mailbox state in the database, and the log entries that change it:
 //! observations recorded by sync, and the user's label edits (SPEC §6.6).
 //!
-//! Label membership is stored twice per entry: *desired* (what the user
-//! asked for) and *observed* (what the provider last reported). Ops change
-//! desired, recording which op did while it differs (`desired_by`, for the
-//! outbox); observations change observed, and desired follows unless a
-//! local change is pending; the reconciler pushes differences and records
-//! what it pushed, or what the provider refused.
+//! Each label of an entry is a field reconciled by the model (SPEC §6.6,
+//! [`Label`]): *desired* (what the user asked for, shown) and *observed*
+//! (what the provider last reported). Ops want a value, recording which op
+//! did (`desired_by`, for the outbox); observations record what the
+//! provider has, and desired follows unless uplink has an opinion; the
+//! account's reconciler claims pushes, records how each ended, and reads
+//! back what it pushed.
 
 use crate::{
     compose,
@@ -25,7 +26,10 @@ use uplink_protocol::{
 };
 use uplink_storage::rusqlite::{self, params, OptionalExtension, Row, Transaction};
 use uplink_storage::store::{Store, VariantHash};
-use uplink_tx_log::{this_entry, Applied, Conflict, Inverse, Observation, Observed, Op, Registry};
+use uplink_tx_log::{
+    reconcile::{Attempt, Decision, Ended, Field},
+    this_entry, Applied, Conflict, Inverse, Observation, Observed, Op, Registry,
+};
 
 /// Bytes of body text indexed for search (SPEC §8.7).
 const INDEXED_BODY_BYTES: usize = 64 * 1024;
@@ -89,6 +93,9 @@ pub struct MailboxObserved {
     pub removed: Vec<String>,
     /// Replaces the account's sync state.
     pub sync_state: Option<SyncState>,
+    /// The log's last entry as the first request of what this records was
+    /// sent (SPEC §6.6.2).
+    pub as_of: TxLogId,
 }
 
 /// An account's sync state: the provider's own, and whether it describes
@@ -188,6 +195,16 @@ impl Observation for MailboxObserved {
             "account {account} is recorded as {kind}, not {}",
             self.account_kind
         );
+        let labels = Labels::of(tx, account)?;
+        // One task observes and pushes in turn: what it observes was asked
+        // for after the pushes it recorded (see `account.labels_known_at`).
+        ensure!(
+            self.as_of >= labels.known_at,
+            "observed as of {:?}, before {:?}",
+            self.as_of,
+            labels.known_at
+        );
+        let at = labels.at;
 
         let mut events = vec![];
         let mut description = vec![];
@@ -228,10 +245,10 @@ impl Observation for MailboxObserved {
 
         let mut added = vec![];
         for new in self.added {
-            let labels = resolve(&new.labels)?;
+            let resolved_labels = resolve(&new.labels)?;
             let entry = insert_entry(tx, account, new)?;
-            for label in labels {
-                set_label_row(tx, entry, label, true, true, None)?;
+            for label in resolved_labels {
+                labels.store(entry, label, &Field::new(true, at))?;
                 label_changes.push(LabelState {
                     entry,
                     label,
@@ -253,7 +270,7 @@ impl Observation for MailboxObserved {
         for update in self.updated {
             let entry = entry_id(tx, account, &update.external_id)?;
             let observed = resolve(&update.labels)?;
-            let (changes, was_pending) = observe_labels(tx, entry, &observed)?;
+            let (changes, was_pending) = labels.observe(entry, &observed, self.as_of, at)?;
             relabelled += usize::from(!changes.is_empty());
             reconciled |= was_pending;
             label_changes.extend(changes);
@@ -272,7 +289,7 @@ impl Observation for MailboxObserved {
             let entry = entry_id(tx, account, external_id)?;
             reconciled |= tx.query_row(
                 "SELECT EXISTS (SELECT 1 FROM entry_label
-                                WHERE entry = ?1 AND desired != observed)",
+                                WHERE entry = ?1 AND desired_by IS NOT NULL)",
                 [entry.0],
                 |r| r.get::<_, bool>(0),
             )?;
@@ -314,92 +331,181 @@ impl Observation for MailboxObserved {
     }
 }
 
-/// Label changes the reconciler has pushed to the provider, which now
-/// reports them as observed.
+/// The labels whose pushes the account's reconciler claims, in one entry
+/// (SPEC §6.6.3): those still wanted of `changes`.
+#[derive(Debug, Serialize)]
+pub struct LabelsClaimed {
+    pub changes: Vec<(EntryId, LabelId)>,
+}
+
+impl Observation for LabelsClaimed {
+    const KIND: &'static str = "mail.claimed";
+
+    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
+        let labels = Labels::of(tx, account)?;
+        let mut entries = BTreeSet::new();
+        for (entry, label) in self.changes {
+            let mut field = labels.load(entry, label)?;
+            // Unless an op settled it meanwhile.
+            if field.wanted().is_some() {
+                field.claim()?;
+                labels.store(entry, label, &field)?;
+                entries.insert(entry);
+            }
+        }
+        Ok(Observed {
+            description: format!("Pushing label changes on {}", messages(entries.len())),
+            events: vec![],
+        })
+    }
+}
+
+/// How a push of label changes ended: each the value pushed (`desired`).
+/// A change of an entry or label gone meanwhile went with it.
 #[derive(Debug, Serialize)]
 pub struct LabelsPushed {
     pub changes: Vec<LabelChange>,
+    pub ended: Ended,
 }
 
 impl Observation for LabelsPushed {
     const KIND: &'static str = "mail.pushed";
 
     fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
+        let mut labels = Labels::of(tx, account)?;
+        let at = labels.at;
         let mut entries = BTreeSet::new();
-        let mut changes = vec![];
-        for change in self.changes {
-            // Entries and labels removed meanwhile need no bookkeeping.
-            let exists: bool = tx.query_row(
-                "SELECT EXISTS (SELECT 1 FROM mail_entry WHERE id = ?1)
-                    AND EXISTS (SELECT 1 FROM label WHERE id = ?2)",
-                [change.entry.0, change.label.0],
-                |r| r.get(0),
-            )?;
-            if !exists {
+        let mut outbox = false;
+        for change in &self.changes {
+            if !labels.exists(change.entry, change.label)? {
                 continue;
             }
-            // The user may have changed desired again since the push.
-            let (desired, _) = label_row(tx, change.entry, change.label)?.unwrap_or_default();
-            set_label_row(
-                tx,
-                change.entry,
-                change.label,
-                desired,
-                change.desired,
-                None,
-            )?;
+            let mut field = labels.load(change.entry, change.label)?;
+            let before = pending_of(&field);
+            field.ended(self.ended.clone(), at)?;
+            outbox |= pending_of(&field) != before;
+            labels.store(change.entry, change.label, &field)?;
             entries.insert(change.entry);
-            changes.push(LabelState {
-                entry: change.entry,
-                label: change.label,
-                desired,
-                observed: change.desired,
-            });
         }
+        if self.ended == Ended::Applied {
+            labels.known(at)?;
+        }
+        let n = messages(entries.len());
         Ok(Observed {
-            description: format!("Pushed label changes on {}", messages(entries.len())),
-            events: vec![
-                ServerEvent::LabelsChanged(LabelsChanged { changes }),
-                outbox_changed(account),
-            ],
+            description: match &self.ended {
+                Ended::Applied => format!("Pushed label changes on {n}"),
+                Ended::NotApplied {
+                    refused: Some(reason),
+                } => format!("Refused label changes on {n}: {reason}"),
+                Ended::NotApplied { refused: None } => {
+                    format!("Could not push label changes on {n}")
+                }
+                Ended::Unknown { .. } => {
+                    format!("Whether label changes on {n} were pushed is unknown")
+                }
+            },
+            events: if outbox {
+                vec![outbox_changed(account)]
+            } else {
+                vec![]
+            },
         })
     }
 }
 
-/// Label changes the provider refused, for `reason`: they are not pushed
-/// again until the user decides (SPEC §6.6).
+/// Pushes whose outcome became unknown, as of `now_ms`: those in flight,
+/// as a push stopped without telling how they ended (`interrupted`), else
+/// those so long enough to expire (SPEC §6.6.3).
 #[derive(Debug, Serialize)]
-pub struct LabelsRefused {
-    pub changes: Vec<LabelChange>,
-    pub reason: String,
+pub struct LabelsSettled {
+    pub now_ms: i64,
+    pub interrupted: bool,
 }
 
-impl Observation for LabelsRefused {
-    const KIND: &'static str = "mail.refused";
+impl Observation for LabelsSettled {
+    const KIND: &'static str = "mail.settled";
 
     fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
-        let mut entries = BTreeSet::new();
-        for change in &self.changes {
-            // Only as the push asked for it: the user may have changed it
-            // since, or the entry may be gone.
-            let refused = tx.execute(
-                "UPDATE entry_label SET refused = ?1
-                 WHERE entry = ?2 AND label = ?3 AND desired = ?4 AND desired != observed",
-                params![self.reason, change.entry.0, change.label.0, change.desired],
-            )?;
-            if refused > 0 {
-                entries.insert(change.entry);
+        let mut labels = Labels::of(tx, account)?;
+        let at = labels.at;
+        let mut settled = 0;
+        for stored in reconciling(tx, account)? {
+            let mut field = labels.load(stored.entry, stored.label)?;
+            let before = field.clone();
+            if self.interrupted {
+                field.interrupted(self.now_ms);
+            } else if field.expiring(self.now_ms) {
+                field.expire(self.now_ms, at)?;
+            }
+            if field != before {
+                labels.store(stored.entry, stored.label, &field)?;
+                settled += 1;
             }
         }
+        if !self.interrupted && settled > 0 {
+            labels.known(at)?;
+        }
         Ok(Observed {
-            description: format!(
-                "Refused label changes on {}: {}",
-                messages(entries.len()),
-                self.reason
-            ),
-            events: vec![outbox_changed(account)],
+            description: if self.interrupted {
+                format!("Whether {settled} label changes were pushed is unknown")
+            } else {
+                format!("Took {settled} label changes pushed or not for good")
+            },
+            events: vec![],
         })
     }
+}
+
+/// A label of an entry the account's reconciler has to do with: one
+/// uplink has an opinion of, or a push of which it awaits.
+#[derive(Debug, Clone)]
+pub struct Reconciling {
+    pub entry: EntryId,
+    /// The entry's id at the provider.
+    pub external_id: String,
+    pub label: LabelId,
+    pub label_external_id: String,
+    pub kind: LabelKind,
+    pub field: Label,
+}
+
+/// The account's labels its reconciler has to do with, by entry.
+pub fn reconciling(conn: &rusqlite::Connection, account: &str) -> Result<Vec<Reconciling>> {
+    let known_at = labels_known_at(conn, account)?;
+    conn.prepare(
+        "SELECT e.id, e.external_id, l.id, l.external_id, l.kind,
+                el.desired, el.observed, el.desired_by, el.decision, el.push
+         FROM entry_label el
+         JOIN mail_entry e ON e.id = el.entry
+         JOIN label l ON l.id = el.label
+         WHERE e.account_id = ?1 AND (el.desired_by IS NOT NULL OR el.push IS NOT NULL)
+         ORDER BY e.id, l.id",
+    )?
+    .query_map([account], |r| {
+        Ok((
+            Reconciling {
+                entry: EntryId(r.get(0)?),
+                external_id: r.get(1)?,
+                label: LabelId(r.get(2)?),
+                label_external_id: r.get(3)?,
+                kind: kind_at(r, 4)?,
+                field: Field::new(false, known_at),
+            },
+            Columns {
+                desired: r.get(5)?,
+                observed: r.get(6)?,
+                desired_by: r.get(7)?,
+                decision: r.get(8)?,
+                push: r.get(9)?,
+            },
+        ))
+    })?
+    .map(|row| {
+        let (mut reconciling, columns) = row?;
+        reconciling.field = columns.field(known_at)?;
+        Ok(reconciling)
+    })
+    .collect()
 }
 
 /// The account's outbox changed (SPEC §6.6).
@@ -601,94 +707,269 @@ fn insert_message(
     Ok(MessageId(id))
 }
 
-/// Records that the provider reports exactly `observed` on `entry`; and
-/// whether that changed a label pending a push.
-fn observe_labels(
-    tx: &Transaction,
-    entry: EntryId,
-    observed: &BTreeSet<LabelId>,
-) -> Result<(Vec<LabelState>, bool)> {
-    let mut rows: BTreeMap<LabelId, (bool, bool)> = tx
-        .prepare("SELECT label, desired, observed FROM entry_label WHERE entry = ?1")?
-        .query_map([entry.0], |r| {
-            Ok((LabelId(r.get(0)?), (r.get(1)?, r.get(2)?)))
-        })?
-        .collect::<Result<_, _>>()?;
-    for &label in observed {
-        rows.entry(label).or_insert((false, false));
-    }
-    let mut changes = vec![];
-    let mut was_pending = false;
-    for (label, (desired, was_observed)) in rows {
-        let now_observed = observed.contains(&label);
-        if now_observed == was_observed {
-            continue;
-        }
-        was_pending |= desired != was_observed;
-        // Without a pending local change, the remote change wins; with one,
-        // the local change stands and is pushed.
-        let desired = if desired == was_observed {
-            now_observed
-        } else {
-            desired
-        };
-        set_label_row(tx, entry, label, desired, now_observed, None)?;
-        changes.push(LabelState {
-            entry,
-            label,
-            desired,
-            observed: now_observed,
-        });
-    }
-    Ok((changes, was_pending))
+/// A label of an entry (SPEC §6.6): had (`observed`), or asked for
+/// (`desired`).
+pub type Label = Field<bool>;
+
+/// What of a [`Label`] its row's `push` holds: the rest is in columns.
+#[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Push {
+    attempt: Option<Attempt<bool>>,
+    straggler: Option<i64>,
+    check: Option<TxLogId>,
+    not_kept: u8,
 }
 
-fn label_row(tx: &Transaction, entry: EntryId, label: LabelId) -> Result<Option<(bool, bool)>> {
-    Ok(tx
-        .prepare_cached(
-            "SELECT desired, observed FROM entry_label WHERE entry = ?1 AND label = ?2",
-        )?
-        .query_row([entry.0, label.0], |r| Ok((r.get(0)?, r.get(1)?)))
-        .optional()?)
-}
-
-/// Records `desired` and `observed`; `by` is the op setting `desired`, if
-/// one is. A difference keeps the op that made it, and a refusal of it,
-/// until an op sets `desired` again; once there is none, neither stays.
-fn set_label_row(
-    tx: &Transaction,
-    entry: EntryId,
-    label: LabelId,
+/// An `entry_label` row's columns of its field.
+struct Columns {
     desired: bool,
     observed: bool,
-    by: Option<TxLogId>,
-) -> Result<()> {
-    // Cached: an op may set many, and each statement's triggers are
-    // compiled with it.
-    if desired || observed {
-        tx.prepare_cached(
-            "INSERT INTO entry_label (entry, label, desired, observed, desired_by)
-             VALUES (?1, ?2, ?3, ?4, CASE WHEN ?3 != ?4 THEN ?5 END)
-             ON CONFLICT (entry, label)
-             DO UPDATE SET desired = excluded.desired, observed = excluded.observed,
-               desired_by = CASE WHEN excluded.desired = excluded.observed THEN NULL
-                                 WHEN ?5 IS NOT NULL THEN ?5
-                                 ELSE desired_by END,
-               refused = CASE WHEN excluded.desired = excluded.observed OR ?5 IS NOT NULL
-                              THEN NULL ELSE refused END",
-        )?
-        .execute(params![
-            entry.0,
-            label.0,
-            desired,
-            observed,
-            by.map(|b| b.0)
-        ])?;
-    } else {
-        tx.prepare_cached("DELETE FROM entry_label WHERE entry = ?1 AND label = ?2")?
-            .execute([entry.0, label.0])?;
+    desired_by: Option<i64>,
+    decision: Option<String>,
+    push: Option<String>,
+}
+
+impl Columns {
+    /// The field, known as of the account's `known_at`.
+    fn field(self, known_at: TxLogId) -> Result<Label> {
+        let push: Push = match &self.push {
+            Some(json) => {
+                serde_json::from_str(json).with_context(|| format!("a label's push: {json}"))?
+            }
+            None => Push::default(),
+        };
+        let decision = match &self.decision {
+            Some(json) => Some(
+                serde_json::from_str(json)
+                    .with_context(|| format!("a label's decision: {json}"))?,
+            ),
+            None => None,
+        };
+        Ok(Field {
+            desired: self.desired,
+            opinion: self.desired_by.map(TxLogId),
+            observed: self.observed,
+            known_at,
+            attempt: push.attempt,
+            straggler: push.straggler,
+            check: push.check,
+            not_kept: push.not_kept,
+            decision,
+        })
     }
-    Ok(())
+}
+
+/// When the account's labels are known as of: every field's `known_at`.
+fn labels_known_at(conn: &rusqlite::Connection, account: &str) -> Result<TxLogId> {
+    Ok(TxLogId(
+        conn.query_row(
+            "SELECT labels_known_at FROM account WHERE id = ?1",
+            [account],
+            |r| r.get(0),
+        )
+        .optional()?
+        // Not recorded yet: nothing is known.
+        .unwrap_or(0),
+    ))
+}
+
+/// An account's labels in a transaction: their fields, stored as rows,
+/// all known as of the account's `labels_known_at` (V0073): the last push
+/// applied, or expired. Observations are not: one task observes, in the
+/// order it fetched, and pushes in turn, so what it observes was fetched
+/// after the observations before, and as fresh as those recorded with it.
+/// Only this writes `entry_label`, so that rows are as fields are.
+struct Labels<'a> {
+    tx: &'a Transaction<'a>,
+    account: String,
+    known_at: TxLogId,
+    /// The log entry the transaction records.
+    at: TxLogId,
+}
+
+impl<'a> Labels<'a> {
+    fn of(tx: &'a Transaction<'a>, account: &str) -> Result<Self> {
+        Ok(Self {
+            tx,
+            account: account.to_owned(),
+            known_at: labels_known_at(tx, account)?,
+            at: this_entry(tx)?,
+        })
+    }
+
+    /// Whether both the entry and the label still exist.
+    fn exists(&self, entry: EntryId, label: LabelId) -> Result<bool> {
+        Ok(self
+            .tx
+            .prepare_cached(
+                "SELECT EXISTS (SELECT 1 FROM mail_entry WHERE id = ?1)
+                AND EXISTS (SELECT 1 FROM label WHERE id = ?2)",
+            )?
+            .query_row([entry.0, label.0], |r| r.get(0))?)
+    }
+
+    /// The label of the entry; neither had nor asked for if it has no row.
+    fn load(&self, entry: EntryId, label: LabelId) -> Result<Label> {
+        let columns = self
+            .tx
+            .prepare_cached(
+                "SELECT desired, observed, desired_by, decision, push FROM entry_label
+                 WHERE entry = ?1 AND label = ?2",
+            )?
+            .query_row([entry.0, label.0], |r| {
+                Ok(Columns {
+                    desired: r.get(0)?,
+                    observed: r.get(1)?,
+                    desired_by: r.get(2)?,
+                    decision: r.get(3)?,
+                    push: r.get(4)?,
+                })
+            })
+            .optional()?;
+        match columns {
+            Some(columns) => columns.field(self.known_at),
+            None => Ok(Field::new(false, self.known_at)),
+        }
+    }
+
+    /// Stores the label of the entry; its row goes once it is neither had
+    /// nor asked for, nor awaited. Its `known_at` is the account's, which
+    /// [`Self::known`] raises.
+    fn store(&self, entry: EntryId, label: LabelId, field: &Label) -> Result<()> {
+        ensure!(
+            field.known_at <= self.at,
+            "a label known as of later than now"
+        );
+        let push = Push {
+            attempt: field.attempt.clone(),
+            straggler: field.straggler,
+            check: field.check,
+            not_kept: field.not_kept,
+        };
+        let empty = push == Push::default();
+        // Cached: an op may set many, and each statement's triggers are
+        // compiled with it.
+        if field.desired || field.observed || field.opinion.is_some() || !empty {
+            self.tx
+                .prepare_cached(
+                    "INSERT INTO entry_label
+                       (entry, label, desired, observed, desired_by, decision, push)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                     ON CONFLICT (entry, label)
+                     DO UPDATE SET desired = excluded.desired, observed = excluded.observed,
+                       desired_by = excluded.desired_by, decision = excluded.decision,
+                       push = excluded.push",
+                )?
+                .execute(params![
+                    entry.0,
+                    label.0,
+                    field.desired,
+                    field.observed,
+                    field.opinion.map(|o| o.0),
+                    field
+                        .decision
+                        .as_ref()
+                        .map(serde_json::to_string)
+                        .transpose()?,
+                    (!empty).then(|| serde_json::to_string(&push)).transpose()?,
+                ])?;
+        } else {
+            self.tx
+                .prepare_cached("DELETE FROM entry_label WHERE entry = ?1 AND label = ?2")?
+                .execute([entry.0, label.0])?;
+        }
+        Ok(())
+    }
+
+    /// The account's labels are known as of `at`, this entry, recording a
+    /// push applied or expired: as every field it set `known_at` of was,
+    /// and conservatively the rest.
+    fn known(&mut self, at: TxLogId) -> Result<()> {
+        if at > self.known_at {
+            self.tx.execute(
+                "UPDATE account SET labels_known_at = ?2 WHERE id = ?1",
+                params![self.account, at.0],
+            )?;
+            self.known_at = at;
+        }
+        Ok(())
+    }
+
+    /// Records that the provider reports exactly `observed` on `entry`, by
+    /// a request sent after `as_of`, recorded at `at`; and whether what is
+    /// pending changed. A label without an opinion or a read-back asked
+    /// for that was observed so already is as it was: its row is not
+    /// written.
+    fn observe(
+        &self,
+        entry: EntryId,
+        observed: &BTreeSet<LabelId>,
+        as_of: TxLogId,
+        at: TxLogId,
+    ) -> Result<(Vec<LabelState>, bool)> {
+        let mut rows: BTreeMap<LabelId, Label> = BTreeMap::new();
+        let stored: Vec<(LabelId, Columns)> = self
+            .tx
+            .prepare_cached(
+                "SELECT label, desired, observed, desired_by, decision, push FROM entry_label
+                 WHERE entry = ?1",
+            )?
+            .query_map([entry.0], |r| {
+                Ok((
+                    LabelId(r.get(0)?),
+                    Columns {
+                        desired: r.get(1)?,
+                        observed: r.get(2)?,
+                        desired_by: r.get(3)?,
+                        decision: r.get(4)?,
+                        push: r.get(5)?,
+                    },
+                ))
+            })?
+            .collect::<Result<_, _>>()?;
+        for (label, columns) in stored {
+            rows.insert(label, columns.field(self.known_at)?);
+        }
+        for &label in observed {
+            rows.entry(label)
+                .or_insert_with(|| Field::new(false, self.known_at));
+        }
+        let mut changes = vec![];
+        let mut was_pending = false;
+        for (label, mut field) in rows {
+            let now_observed = observed.contains(&label);
+            let settled = field.opinion.is_none() && field.check.is_none();
+            if settled && now_observed == field.observed {
+                continue;
+            }
+            let before = (field.desired, field.observed, pending_of(&field));
+            field.observe(now_observed, as_of, at)?;
+            self.store(entry, label, &field)?;
+            was_pending |= pending_of(&field) != before.2;
+            if (field.desired, field.observed) != (before.0, before.1) {
+                changes.push(LabelState {
+                    entry,
+                    label,
+                    desired: field.desired,
+                    observed: field.observed,
+                });
+            }
+        }
+        Ok((changes, was_pending))
+    }
+}
+
+/// What of a label the outbox shows: the op asking, and its decision.
+fn pending_of(field: &Label) -> (Option<TxLogId>, Option<Decision>) {
+    (field.opinion, field.decision.clone())
+}
+
+/// The reason a label's decision (`entry_label.decision`, as JSON) gives.
+pub(crate) fn decision_reason(json: &str) -> Result<String> {
+    let decision: Decision =
+        serde_json::from_str(json).with_context(|| format!("a label's decision: {json}"))?;
+    Ok(decision.reason().to_owned())
 }
 
 // ── ops ───────────────────────────────────────────────────────────────────
@@ -747,6 +1028,7 @@ impl Op for SetLabels {
             by_entry[i].1.push(change);
         }
         let mut changes = vec![];
+        let mut labels_of: BTreeMap<String, Labels> = BTreeMap::new();
         for (entry, requested) in by_entry {
             let implied = implied_by_places(tx, entry, &requested)?;
             // Moving is leaving what the place moved to implies leaving:
@@ -787,19 +1069,20 @@ impl Op for SetLabels {
                 change.label.0,
                 change.entry.0
             );
-            let (desired, observed) =
-                label_row(tx, change.entry, change.label)?.unwrap_or_default();
+            let labels = match labels_of.entry(entry_account.clone()) {
+                std::collections::btree_map::Entry::Occupied(of) => of.into_mut(),
+                std::collections::btree_map::Entry::Vacant(of) => {
+                    of.insert(Labels::of(tx, &entry_account)?)
+                }
+            };
+            let mut field = labels.load(change.entry, change.label)?;
+            let desired = field.desired;
             if desired == change.desired {
                 continue;
             }
-            set_label_row(
-                tx,
-                change.entry,
-                change.label,
-                change.desired,
-                observed,
-                Some(this),
-            )?;
+            field.want(change.desired, this);
+            labels.store(change.entry, change.label, &field)?;
+            let observed = field.observed;
             let conversation = match thread {
                 Some(thread) => Conversation::Thread(entry_account.clone(), thread),
                 None => Conversation::Alone(change.entry),

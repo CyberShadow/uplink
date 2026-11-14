@@ -23,17 +23,14 @@ use super::{
 };
 use crate::watching::Told;
 use crate::{
-    account::{Account, Outgoing, Pending, Provider, SendError, SyncTask},
+    account::{Account, Outgoing, Pending, Provider, PushEnded, SendError, SyncTask},
     compose::SentCopy,
     mail_server::{
         self,
         sign_in::{self, SignIn},
         smtp,
     },
-    mailbox::{
-        self, EntryLabels, LabelChange, LabelsPushed, LabelsRefused, MailboxObserved, NewEntry,
-        ObservedLabel, Rekeyed,
-    },
+    mailbox::{self, EntryLabels, MailboxObserved, NewEntry, ObservedLabel, Rekeyed},
 };
 use anyhow::{ensure, Context, Result};
 use async_imap::{
@@ -53,9 +50,12 @@ use std::{
 use tokio::sync::Mutex;
 use tokio_rustls::TlsConnector;
 use uplink_config::ImapAccountConfig;
-use uplink_protocol::mail::{EntryId, LabelKind};
+use uplink_protocol::{
+    mail::{EntryId, LabelKind},
+    TxLogId,
+};
 use uplink_storage::seal::MasterKey;
-use uplink_tx_log::Dispatcher;
+use uplink_tx_log::{reconcile::Ended, Dispatcher};
 
 pub const KIND: &str = "imap";
 /// How often to poll for changes.
@@ -229,14 +229,28 @@ impl Provider for ImapSync {
         result
     }
 
-    async fn push(&self, account: &Account) -> Result<()> {
-        let pending = account.pending().await?;
-        if pending.is_empty() {
-            return Ok(());
+    async fn push(&self, account: &Account, claimed: Vec<Pending>) -> Vec<PushEnded> {
+        let mut slot = match self.connected().await {
+            Ok(slot) => slot,
+            Err(e) => return vec![PushEnded::not_sent(&claimed, e)],
+        };
+        let c = slot.as_mut().expect("connected");
+        let ended = self.push_with(c, account, claimed).await;
+        // A request failed: the connection may not be good for another.
+        if ended.iter().any(|e| e.error.is_some()) {
+            *slot = None;
         }
+        ended
+    }
+
+    /// By fetching their flags where they are, by UID. One no longer
+    /// there (moved, or its folder's UIDs no longer valid) is left for the
+    /// next sync, which re-keys it.
+    async fn read(&self, account: &Account, entries: Vec<(EntryId, String)>) -> Result<()> {
+        let as_of = account.as_of().await?;
         let mut slot = self.connected().await?;
         let result = self
-            .push_with(slot.as_mut().expect("connected"), account, pending)
+            .read_with(slot.as_mut().expect("connected"), account, entries, as_of)
             .await;
         forget_if_failed(&mut slot, &result);
         result
@@ -327,6 +341,7 @@ impl ImapSync {
     }
 
     async fn sync_with(&self, c: &mut Connection, account: &Account) -> Result<bool> {
+        let as_of = account.as_of().await?;
         let folders = folders(c).await?;
         let state = account.sync_state::<SyncState>().await?;
         let first = state.as_ref().is_none_or(|s| s.listing);
@@ -536,6 +551,7 @@ impl ImapSync {
                 } else {
                     mailbox::SyncState::Synced(value)
                 }),
+                as_of,
             })
             .await?;
         Ok(more)
@@ -592,42 +608,116 @@ impl ImapSync {
         Ok(entries)
     }
 
+    /// Pushes the changes claimed, by entry, in turn; once a request
+    /// fails, the rest are not sent.
     async fn push_with(
         &self,
         c: &mut Connection,
         account: &Account,
-        pending: Vec<Pending>,
-    ) -> Result<()> {
-        let folders = folders(c).await?;
+        claimed: Vec<Pending>,
+    ) -> Vec<PushEnded> {
+        let folders = match folders(c).await {
+            Ok(folders) => folders,
+            Err(e) => return vec![PushEnded::not_sent(&claimed, e)],
+        };
         let mut per_entry: BTreeMap<EntryId, Vec<Pending>> = BTreeMap::new();
-        for p in pending {
+        for p in claimed {
             per_entry.entry(p.entry).or_default().push(p);
         }
-        let mut pushed = vec![];
-        let mut refused: BTreeMap<String, Vec<LabelChange>> = BTreeMap::new();
+        let mut ended = vec![];
+        let mut failed = false;
         for (entry, pending) in per_entry {
-            let outcome = self
-                .push_entry(c, account, &folders, entry, &pending)
-                .await?;
-            let changes = pending.into_iter().map(|p| LabelChange {
-                entry: p.entry,
-                label: p.label,
-                desired: p.desired,
-            });
-            match outcome {
-                Pushed::Done => pushed.extend(changes),
-                Pushed::Refused(reason) => refused.entry(reason).or_default().extend(changes),
-                // Left for the next sync to settle.
-                Pushed::Stale => {}
+            if failed {
+                ended.push(PushEnded::of(
+                    &pending,
+                    Ended::NotApplied { refused: None },
+                    None,
+                ));
+                continue;
+            }
+            ended.push(
+                match self.push_entry(c, account, &folders, entry, &pending).await {
+                    Ok(Pushed::Done) => PushEnded::of(&pending, Ended::Applied, None),
+                    Ok(Pushed::Refused(reason)) => PushEnded::refused(&pending, reason),
+                    // Pushed again once the next sync re-keyed or removed it.
+                    Ok(Pushed::Stale) => {
+                        PushEnded::of(&pending, Ended::NotApplied { refused: None }, None)
+                    }
+                    Err(e) => {
+                        failed = true;
+                        PushEnded::unknown(&pending, e)
+                    }
+                },
+            );
+        }
+        ended
+    }
+
+    async fn read_with(
+        &self,
+        c: &mut Connection,
+        account: &Account,
+        entries: Vec<(EntryId, String)>,
+        as_of: TxLogId,
+    ) -> Result<()> {
+        let folders = folders(c).await?;
+        let mut by_folder: BTreeMap<String, Vec<(Key, String)>> = BTreeMap::new();
+        for (_, external_id) in entries {
+            let key = Key::parse(&external_id)?;
+            by_folder
+                .entry(key.folder.clone())
+                .or_default()
+                .push((key, external_id));
+        }
+        let mut updated = vec![];
+        let mut keywords = BTreeSet::new();
+        for (name, keys) in by_folder {
+            let Some(folder) = folders.iter().find(|f| f.name == name && f.exists) else {
+                continue;
+            };
+            let uidvalidity = match select(c, &name).await {
+                Ok(uidvalidity) => uidvalidity,
+                // Gone meanwhile.
+                Err(ImapError::No(_)) => continue,
+                Err(e) => return Err(e.into()),
+            };
+            let valid: Vec<&(Key, String)> = keys
+                .iter()
+                .filter(|(k, _)| k.uidvalidity == uidvalidity)
+                .collect();
+            if valid.is_empty() {
+                continue;
+            }
+            let uids = uid_set(valid.iter().map(|(k, _)| k.uid));
+            for fetch in fetch(c, &uids, "(UID FLAGS)").await? {
+                let uid = fetch.uid.context("a FETCH without its UID")?;
+                let Some((_, external_id)) = valid.iter().find(|(k, _)| k.uid == uid) else {
+                    continue;
+                };
+                let labels = labels_of(folder, &fetch);
+                keywords.extend(labels.iter().filter(|l| l.starts_with(KEYWORD)).cloned());
+                updated.push(EntryLabels {
+                    external_id: external_id.clone(),
+                    labels,
+                });
             }
         }
-        for (reason, changes) in refused {
-            account.observe(LabelsRefused { changes, reason }).await?;
+        if updated.is_empty() {
+            return Ok(());
         }
-        if !pushed.is_empty() {
-            account.observe(LabelsPushed { changes: pushed }).await?;
-        }
-        Ok(())
+        let labels = labels(account, &folders, keywords).await?;
+        account
+            .observe(MailboxObserved {
+                account_kind: KIND,
+                labels,
+                rekeyed: vec![],
+                added: vec![],
+                updated,
+                removed: vec![],
+                sync_state: None,
+                as_of,
+            })
+            .await
     }
 
     /// Makes the entry's pending changes at the server: its flags stored,

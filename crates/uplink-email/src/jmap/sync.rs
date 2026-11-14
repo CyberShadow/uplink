@@ -20,13 +20,10 @@ use super::{
 };
 use crate::watching::Told;
 use crate::{
-    account::{Account, Outgoing, Pending, Provider, SendError, SyncTask},
+    account::{Account, Outgoing, Pending, Provider, PushEnded, SendError, SyncTask},
     compose::{SendDrafted, SentCopy},
     mail_server::sign_in::SignIn,
-    mailbox::{
-        EntryLabels, LabelChange, LabelsPushed, LabelsRefused, MailboxObserved, NewEntry,
-        ObservedLabel, SyncState,
-    },
+    mailbox::{EntryLabels, MailboxObserved, NewEntry, ObservedLabel, SyncState},
 };
 use anyhow::{bail, ensure, Context, Result};
 use futures_util::{stream, StreamExt, TryStreamExt};
@@ -39,9 +36,12 @@ use std::{
     time::Duration,
 };
 use uplink_config::JmapAccountConfig;
-use uplink_protocol::mail::{EntryId, LabelKind};
+use uplink_protocol::{
+    mail::{EntryId, LabelKind},
+    TxLogId,
+};
 use uplink_storage::seal::MasterKey;
-use uplink_tx_log::Dispatcher;
+use uplink_tx_log::{reconcile::Ended, Dispatcher};
 
 pub const KIND: &str = "jmap";
 /// How often to poll for changes; the event source tells of them sooner.
@@ -409,12 +409,43 @@ impl Provider for JmapSync {
         Ok(true)
     }
 
-    async fn push(&self, account: &Account) -> Result<()> {
-        let pending = account.pending().await?;
-        if pending.is_empty() {
-            return Ok(());
-        }
-        self.push_labels(account, pending).await
+    async fn push(&self, _account: &Account, claimed: Vec<Pending>) -> Vec<PushEnded> {
+        self.push_labels(claimed).await
+    }
+
+    async fn read(&self, account: &Account, entries: Vec<(EntryId, String)>) -> Result<()> {
+        let as_of = account.as_of().await?;
+        let mut request = Request::default();
+        let mailboxes = get_mailboxes(&mut request);
+        let ids: Vec<String> = entries.into_iter().map(|(_, id)| id).collect();
+        let got = request.call(
+            "Email/get",
+            json!({ "ids": ids, "properties": EMAIL_PROPERTIES }),
+        );
+        let mut responses = self.jmap.call(request).await?;
+        let mailboxes = Mailboxes::of(responses.take::<Got<Mailbox>>(mailboxes)?.list)?;
+        let got: Got<Email> = responses.take(got)?;
+        let mut keywords = BTreeSet::new();
+        let updated = got
+            .list
+            .iter()
+            .map(|email| {
+                let labels = mailboxes.labels_of(email)?;
+                keywords.extend(keywords_of(&labels));
+                Ok(EntryLabels {
+                    external_id: email.id.clone(),
+                    labels,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        account
+            .observe(MailboxObserved {
+                labels: labels(account, &mailboxes, keywords).await?,
+                updated,
+                removed: got.not_found,
+                ..observed(as_of)
+            })
+            .await
     }
 
     /// In two steps: the message is imported into Drafts, recorded, then
@@ -475,6 +506,7 @@ impl JmapSync {
         from: &str,
         listing: Option<&mut Cursor>,
     ) -> Result<Option<bool>> {
+        let as_of = account.as_of().await?;
         let mut request = Request::default();
         let mailboxes = get_mailboxes(&mut request);
         let changes = request.call(
@@ -551,7 +583,7 @@ impl JmapSync {
                 updated,
                 removed: removed.clone(),
                 sync_state: Some(sync_state),
-                ..observed()
+                ..observed(as_of)
             })
             .await?;
         if let Some(cursor) = listing {
@@ -564,6 +596,7 @@ impl JmapSync {
     /// listing began; continues `resumed` if given, listing anew but
     /// fetching only what it has not.
     async fn start_listing(&self, account: &Account, resumed: Option<State>) -> Result<Cursor> {
+        let as_of = account.as_of().await?;
         let mut request = Request::default();
         let mailboxes = get_mailboxes(&mut request);
         let state = request.call("Email/get", json!({ "ids": [] }));
@@ -592,7 +625,7 @@ impl JmapSync {
             .observe(MailboxObserved {
                 labels: labels(account, &mailboxes, BTreeSet::new()).await?,
                 sync_state: Some(cursor.sync_state(&cursor.state.emails)),
-                ..observed()
+                ..observed(as_of)
             })
             .await?;
         Ok(cursor)
@@ -603,6 +636,7 @@ impl JmapSync {
     /// that the emails are synced. `true` if there is more. The cursor
     /// moves only once a step is recorded, so a failed one is retried.
     async fn list_step(&self, account: &Account, cursor: &mut Cursor) -> Result<bool> {
+        let as_of = account.as_of().await?;
         let mut request = Request::default();
         let mailboxes = get_mailboxes(&mut request);
         if !cursor.unfetched.is_empty() {
@@ -618,7 +652,7 @@ impl JmapSync {
                 .observe(MailboxObserved {
                     labels: labels(account, &mailboxes, keywords).await?,
                     added,
-                    ..observed()
+                    ..observed(as_of)
                 })
                 .await?;
             cursor.unfetched.drain(..n);
@@ -632,7 +666,7 @@ impl JmapSync {
                     .observe(MailboxObserved {
                         removed: cursor.known.difference(&cursor.listed).cloned().collect(),
                         sync_state: Some(synced(cursor.state.emails.clone())),
-                        ..observed()
+                        ..observed(as_of)
                     })
                     .await?;
                 return Ok(false);
@@ -687,7 +721,7 @@ impl JmapSync {
                 .observe(MailboxObserved {
                     labels,
                     updated,
-                    ..observed()
+                    ..observed(as_of)
                 })
                 .await?;
         }
@@ -734,42 +768,65 @@ impl JmapSync {
     /// Pushes label changes not yet in effect at the server: each email's
     /// keywords and mailboxes patched, a role's mailbox made if the server
     /// has none.
-    async fn push_labels(&self, account: &Account, pending: Vec<Pending>) -> Result<()> {
+    async fn push_labels(&self, claimed: Vec<Pending>) -> Vec<PushEnded> {
         let mut per_entry: BTreeMap<EntryId, Vec<Pending>> = BTreeMap::new();
-        for p in pending {
+        for p in claimed {
             per_entry.entry(p.entry).or_default().push(p);
         }
-        let chunk = self.jmap.session().await?.max_objects_in_set;
         let entries: Vec<(EntryId, Vec<Pending>)> = per_entry.into_iter().collect();
-        let mut pushed = vec![];
-        let mut refused: BTreeMap<String, Vec<LabelChange>> = BTreeMap::new();
+        let all = || -> Vec<Pending> { entries.iter().flat_map(|(_, p)| p.clone()).collect() };
+        let chunk = match self.jmap.session().await {
+            Ok(session) => session.max_objects_in_set,
+            Err(e) => return vec![PushEnded::not_sent(&all(), e)],
+        };
+        let mut ended = vec![];
+        let mut failed = false;
         for entries in entries.chunks(chunk) {
-            let outcomes = self.push_chunk(entries).await?;
-            for ((_, pending), outcome) in entries.iter().zip(outcomes) {
-                let changes = pending.iter().map(|p| LabelChange {
-                    entry: p.entry,
-                    label: p.label,
-                    desired: p.desired,
-                });
-                match outcome {
-                    Pushed::Done => pushed.extend(changes),
-                    Pushed::Refused(reason) => refused.entry(reason).or_default().extend(changes),
-                    // Left for the next sync to record as removed.
-                    Pushed::Gone => {}
+            let pending: Vec<Pending> = entries.iter().flat_map(|(_, p)| p.clone()).collect();
+            if failed {
+                ended.push(PushEnded::of(
+                    &pending,
+                    Ended::NotApplied { refused: None },
+                    None,
+                ));
+                continue;
+            }
+            let patches = match self.patches(entries).await {
+                Ok(patches) => patches,
+                Err(e) => {
+                    failed = true;
+                    ended.push(PushEnded::not_sent(&pending, e));
+                    continue;
+                }
+            };
+            match self.set(&patches).await {
+                Ok(outcomes) => {
+                    for ((_, pending), outcome) in entries.iter().zip(outcomes) {
+                        ended.push(match outcome {
+                            Pushed::Done => PushEnded::of(pending, Ended::Applied, None),
+                            Pushed::Refused(reason) => PushEnded::refused(pending, reason),
+                            // Pushed again only if the next sync has it.
+                            Pushed::Gone => {
+                                PushEnded::of(pending, Ended::NotApplied { refused: None }, None)
+                            }
+                        });
+                    }
+                }
+                Err(e) => {
+                    failed = true;
+                    ended.push(PushEnded::unknown(&pending, e));
                 }
             }
         }
-        for (reason, changes) in refused {
-            account.observe(LabelsRefused { changes, reason }).await?;
-        }
-        if !pushed.is_empty() {
-            account.observe(LabelsPushed { changes: pushed }).await?;
-        }
-        Ok(())
+        ended
     }
 
-    /// Pushes the changes of `entries`; what came of each, in order.
-    async fn push_chunk(&self, entries: &[(EntryId, Vec<Pending>)]) -> Result<Vec<Pushed>> {
+    /// The patches of `entries`' changes, the mailboxes they file into
+    /// made if need be; or why an entry's cannot be.
+    async fn patches(
+        &self,
+        entries: &[(EntryId, Vec<Pending>)],
+    ) -> Result<Vec<Result<Patch, Pushed>>> {
         let mut request = Request::default();
         let mailboxes = get_mailboxes(&mut request);
         let mut responses = self.jmap.call(request).await?;
@@ -785,10 +842,14 @@ impl JmapSync {
                 self.mailbox(&mut mailboxes, label).await?;
             }
         }
-        let patches: Vec<Result<Patch, Pushed>> = entries
+        Ok(entries
             .iter()
             .map(|(_, pending)| patch(&mailboxes, pending))
-            .collect();
+            .collect())
+    }
+
+    /// Sets the patches; what came of each, in order.
+    async fn set(&self, patches: &[Result<Patch, Pushed>]) -> Result<Vec<Pushed>> {
         let mut update = Map::new();
         for p in patches.iter().flatten() {
             update.insert(p.id.clone(), p.set.clone().into());
@@ -800,18 +861,20 @@ impl JmapSync {
             set = Some(self.jmap.call(request).await?.take(call)?);
         }
         Ok(patches
-            .into_iter()
+            .iter()
             .map(|p| {
-                let p = p?;
+                let p = match p {
+                    Ok(p) => p,
+                    Err(pushed) => return pushed.clone(),
+                };
                 let set = set.as_ref().expect("set, as there was a patch");
                 match set.not_updated.get(&p.id) {
-                    Some(e) if e.kind == "notFound" => Err(Pushed::Gone),
-                    Some(e) => Err(Pushed::Refused(e.to_string())),
-                    None if set.updated.contains_key(&p.id) => Ok(Pushed::Done),
-                    None => Err(Pushed::Refused("the server did not say".into())),
+                    Some(e) if e.kind == "notFound" => Pushed::Gone,
+                    Some(e) => Pushed::Refused(e.to_string()),
+                    None if set.updated.contains_key(&p.id) => Pushed::Done,
+                    None => Pushed::Refused("the server did not say".into()),
                 }
             })
-            .map(|p| p.unwrap_or_else(|e| e))
             .collect())
     }
 
@@ -978,7 +1041,7 @@ impl JmapSync {
 }
 
 /// What came of pushing an entry's changes.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Pushed {
     Done,
     Refused(String),
@@ -1098,7 +1161,8 @@ fn synced(emails: String) -> SyncState {
     )
 }
 
-fn observed() -> MailboxObserved {
+/// An observation of nothing yet, by requests sent after `as_of`.
+fn observed(as_of: TxLogId) -> MailboxObserved {
     MailboxObserved {
         account_kind: KIND,
         labels: None,
@@ -1107,6 +1171,7 @@ fn observed() -> MailboxObserved {
         updated: vec![],
         removed: vec![],
         sync_state: None,
+        as_of,
     }
 }
 

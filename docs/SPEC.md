@@ -504,7 +504,10 @@ CREATE TABLE account (
   push_error  TEXT,                -- (V0018) why pushes are failing, while
   push_failing_since INTEGER,      -- they are (§6.6); unix ms
   watch_error TEXT,                -- (V0057) why the provider's watch is
-  watch_failing_since INTEGER      -- failing, while it is (§8.14); unix ms
+  watch_failing_since INTEGER,     -- failing, while it is (§8.14); unix ms
+  labels_known_at INTEGER NOT NULL -- (V0073) known_at of every entry_label
+              DEFAULT 0            -- field (§6.6.2): raised by pushes
+                                   -- applied and expired
 );
 
 -- A logical message, identified by its Message-ID across accounts.
@@ -567,26 +570,29 @@ CREATE TABLE label (
   UNIQUE (account_id, external_id)
 );
 
--- Label membership of an entry, desired (set by ops) and observed (set by
--- sync); the account's reconciler pushes differences (§6.6). Read and
--- starred state are labels too (UNREAD, STARRED). Rows with both 0 are
--- deleted.
+-- Label membership of an entry: a field (§6.6.1) of each (entry, label),
+-- Field<bool> stored as columns (V0073), its known_at the account's
+-- `labels_known_at`. Read and starred state are labels too (UNREAD,
+-- STARRED). A row that says nothing (neither desired nor observed, no
+-- opinion, no push) is deleted.
 CREATE TABLE entry_label (
   entry      INTEGER NOT NULL REFERENCES mail_entry(id) ON DELETE CASCADE,
   label      INTEGER NOT NULL REFERENCES label(id) ON DELETE CASCADE,
-  desired    INTEGER NOT NULL,
-  observed   INTEGER NOT NULL,
-  -- (V0018) The op that set `desired`, while it differs from `observed`:
-  -- the outbox's item it belongs to (none for changes made before it was
-  -- recorded); and the provider's refusal of it, after which it is not
-  -- pushed again until an op changes it. Both go once it is reconciled.
+  desired    INTEGER NOT NULL,     -- shown
+  observed   INTEGER NOT NULL,     -- as the provider has it, last seen
+  -- (V0018) The op whose opinion `desired` is, until it is reconciled:
+  -- the outbox's item it belongs to.
   desired_by INTEGER REFERENCES tx_log(id) DEFERRABLE INITIALLY DEFERRED,
-  refused    TEXT,
+  decision   TEXT,                 -- (V0073) a Decision's JSON: refused, …
+  push       TEXT,                 -- (V0073) {attempt, straggler, check,
+                                   -- not_kept}, NULL when none
   PRIMARY KEY (entry, label),
-  CHECK (desired OR observed)
+  CHECK (desired OR observed OR desired_by IS NOT NULL OR push IS NOT NULL),
+  CHECK (desired_by IS NOT NULL OR (desired = observed AND decision IS NULL))
 );
 CREATE INDEX entry_label_by_label ON entry_label(label, entry) WHERE desired;
-CREATE INDEX entry_label_pending ON entry_label(entry) WHERE desired != observed;
+CREATE INDEX entry_label_reconciling ON entry_label(entry)
+  WHERE desired_by IS NOT NULL OR push IS NOT NULL;
 
 -- (V0017) Label counts, kept as entries change rather than counted when
 -- asked. A view says how an entry counts now (`entry_label_counted`: per
@@ -1610,10 +1616,15 @@ How they order:
 - Gmail, IMAP, Graph, JMAP and the calendar: one task per account takes
   sync and pushes in turns, so each sync is sent after the
   outcomes of the pushes before it are recorded, and is authoritative
-  for them; no read-back is needed. IDLE and JMAP's push only wake the
-  task. Should anything observe out of turn, it stamps `as_of` like any
-  other.
-- POP3: labels are uplink's own; a push is applied at once.
+  for them. Pushes applied are read back still, in the same step
+  (Gmail `messages.get`, IMAP `UID FETCH FLAGS`, Graph `GET
+  /messages/{id}`, JMAP `Email/get`; the calendar's answers by `GET
+  /events/{id}`): an incremental sync tells only of what changed, and
+  may not mention an entry the push left as it was. IDLE and JMAP's
+  push only wake the task. Should anything observe out of turn, it
+  stamps `as_of` like any other.
+- POP3: labels are uplink's own; a push is applied at once, and read
+  back as uplink has it.
 - Matrix: `/sync` long-polls alongside the pushes, so its answers are
   often ambiguous, and applied pushes are read back (tags by `GET
   .../tags`, other room account data by `GET .../account_data/{type}`,
@@ -1666,11 +1677,10 @@ the providers, as last observed, match what the user has done.
 **Not yet so.** The crates predate this model, and each reconciles in
 its own way: the model is implemented, and simulated, as
 `uplink_tx_log::reconcile`, and Matrix room tags, space orders (§9.5)
-and memberships (§9.7) and calendar answers (§10.3) use it; nothing
-uses limbo yet. Known to fail meanwhile: mail (a step's failure
-loses the outcomes of its earlier pushes, so an undo then is lost); IMAP
-(a push after a move goes to the old UID); Matrix pins (built from the
-SDK's store).
+and memberships (§9.7), calendar answers (§10.3) and mail labels (§8)
+use it; nothing uses limbo yet. Known to fail meanwhile: IMAP (a push
+after a move goes to the old UID); Matrix pins (built from the SDK's
+store).
 
 ### 6.7 Sends: desired state fulfilled once
 
@@ -2108,11 +2118,14 @@ IMAP's per-folder copies, and a REST fake is practical to test against
   (`account.sync_state`: `{"folders": {<id>: <delta link>}}`); a round
   that changes nothing records nothing. A delta link Graph has forgotten
   (410 Gone) is replaced by listing that folder anew.
-- **Push**: a pending folder change is `POST /messages/{id}/move` to the
+- **Push**: a claimed folder change is `POST /messages/{id}/move` to the
   desired folder (by well-known name or id); read, flag, importance and
-  categories are one `PATCH /messages/{id}` with their desired values
-  (categories in full). A message gone meanwhile (404) is left to the
-  next round to remove.
+  categories are one `PATCH /messages/{id}` with the claimed values,
+  sent first (categories in full: as last observed, but for those
+  claimed). Each request's outcome is its own, as its response tells
+  (§10.3's `Failed`); once one fails, the other is not sent. A message
+  gone meanwhile (404) is not changed, and left to the next round to
+  remove.
 - **OAuth**: a public client of the user's own Entra ID app
   registration. v1 endpoint, `resource=` parameter, no PKCE. See §13.3.
 

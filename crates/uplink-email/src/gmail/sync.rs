@@ -10,12 +10,9 @@ use super::{
 };
 use crate::watching::Told;
 use crate::{
-    account::{Account, Outgoing, Provider, SendError, SyncTask},
+    account::{Account, Outgoing, Pending, Provider, PushEnded, SendError, SyncTask},
     compose::{self, SendDrafted, SentCopy},
-    mailbox::{
-        EntryLabels, LabelChange, LabelsPushed, LabelsRefused, MailboxObserved, NewEntry,
-        ObservedLabel, SyncState,
-    },
+    mailbox::{EntryLabels, MailboxObserved, NewEntry, ObservedLabel, SyncState},
     oauth::Credentials,
 };
 use anyhow::Result;
@@ -29,8 +26,9 @@ use std::{
 };
 use uplink_config::GmailAccountConfig;
 use uplink_protocol::mail::{EntryId, LabelKind};
+use uplink_protocol::TxLogId;
 use uplink_storage::seal::MasterKey;
-use uplink_tx_log::Dispatcher;
+use uplink_tx_log::{reconcile::Ended, Dispatcher};
 
 pub const KIND: &str = "gmail";
 /// How often to poll for changes, as push notifications may be late or
@@ -228,8 +226,34 @@ impl Provider for GmailSync {
         Ok(more)
     }
 
-    async fn push(&self, account: &Account) -> Result<()> {
-        self.push_labels(account).await
+    async fn push(&self, _account: &Account, claimed: Vec<Pending>) -> Vec<PushEnded> {
+        self.push_labels(claimed).await
+    }
+
+    async fn read(&self, account: &Account, entries: Vec<(EntryId, String)>) -> Result<()> {
+        let as_of = account.as_of().await?;
+        let mut updated = vec![];
+        let mut removed = vec![];
+        let ids = entries.into_iter().map(|(_, id)| id).collect();
+        for (id, message) in self.fetch_labels(ids).await? {
+            match message {
+                Some(labels) => updated.push(labels),
+                None => removed.push(id),
+            }
+        }
+        // Messages may carry labels created since the last listing.
+        let labels = match updated.is_empty() {
+            true => None,
+            false => Some(self.labels().await?),
+        };
+        account
+            .observe(MailboxObserved {
+                labels,
+                updated,
+                removed,
+                ..observed(as_of)
+            })
+            .await
     }
 
     /// In two steps (SPEC §8.2): the message is made a draft, recorded,
@@ -346,6 +370,7 @@ impl GmailSync {
         from: &str,
         listing: Option<&mut Cursor>,
     ) -> Result<bool> {
+        let as_of = account.as_of().await?;
         let gmail = &self.gmail;
         let mut touched = vec![];
         let mut seen = HashSet::new();
@@ -393,13 +418,12 @@ impl GmailSync {
         };
         account
             .observe(MailboxObserved {
-                account_kind: KIND,
                 labels,
-                rekeyed: vec![],
                 added,
                 updated,
                 removed: removed.clone(),
                 sync_state: Some(sync_state),
+                ..observed(as_of)
             })
             .await?;
         if let Some(cursor) = listing {
@@ -413,6 +437,7 @@ impl GmailSync {
     /// lists anew (Gmail's page tokens do not last) but fetches only what
     /// it has not.
     async fn start_listing(&self, account: &Account, resumed: Option<Listing>) -> Result<Cursor> {
+        let as_of = account.as_of().await?;
         // Its total, for the progress shown, is as of now.
         let profile = self.gmail.profile().await?;
         let listing = match resumed {
@@ -436,7 +461,7 @@ impl GmailSync {
             .observe(MailboxObserved {
                 labels: Some(self.labels().await?),
                 sync_state: Some(cursor.sync_state(&cursor.listing.changes_from)),
-                ..observed()
+                ..observed(as_of)
             })
             .await?;
         Ok(cursor)
@@ -453,6 +478,7 @@ impl GmailSync {
             let fetched = batch.len();
             // Messages deleted since they were listed are recorded as
             // removed by the polls.
+            let as_of = account.as_of().await?;
             let updated: Vec<EntryLabels> = self
                 .fetch_labels(batch)
                 .await?
@@ -463,7 +489,7 @@ impl GmailSync {
                 account
                     .observe(MailboxObserved {
                         updated,
-                        ..observed()
+                        ..observed(as_of)
                     })
                     .await?;
             }
@@ -475,12 +501,13 @@ impl GmailSync {
             // that they show, and pushes and sends go between.
             let batch = cursor.unfetched[..cursor.unfetched.len().min(STORE_EVERY)].to_vec();
             let fetched = batch.len();
+            let as_of = account.as_of().await?;
             let added = self.fetch_new(account, batch).await?;
             if !added.is_empty() {
                 account
                     .observe(MailboxObserved {
                         added,
-                        ..observed()
+                        ..observed(as_of)
                     })
                     .await?;
             }
@@ -491,11 +518,12 @@ impl GmailSync {
             Next::First => None,
             Next::Page(token) => Some(token.clone()),
             Next::Done => {
+                let as_of = account.as_of().await?;
                 account
                     .observe(MailboxObserved {
                         removed: cursor.known.difference(&cursor.listed).cloned().collect(),
                         sync_state: Some(synced(cursor.listing.changes_from.clone())),
-                        ..observed()
+                        ..observed(as_of)
                     })
                     .await?;
                 return Ok(false);
@@ -518,38 +546,30 @@ impl GmailSync {
         Ok(true)
     }
 
-    /// Pushes label changes not yet in effect at Gmail.
-    async fn push_labels(&self, account: &Account) -> Result<()> {
-        let pending = account.pending().await?;
-        if pending.is_empty() {
-            return Ok(());
-        }
-        // Entries needing the same change go in one request.
+    /// Pushes the label changes claimed: entries needing the same change
+    /// in one request, how each ended.
+    async fn push_labels(&self, claimed: Vec<Pending>) -> Vec<PushEnded> {
         struct Entry {
             external_id: String,
             add: Vec<String>,
             remove: Vec<String>,
-            changes: Vec<LabelChange>,
+            pending: Vec<Pending>,
         }
         let mut per_entry: BTreeMap<EntryId, Entry> = BTreeMap::new();
-        for p in pending {
+        for p in claimed {
             let entry = per_entry.entry(p.entry).or_insert_with(|| Entry {
-                external_id: p.external_id,
+                external_id: p.external_id.clone(),
                 add: vec![],
                 remove: vec![],
-                changes: vec![],
+                pending: vec![],
             });
             if p.desired {
                 &mut entry.add
             } else {
                 &mut entry.remove
             }
-            .push(p.label_external_id);
-            entry.changes.push(LabelChange {
-                entry: p.entry,
-                label: p.label,
-                desired: p.desired,
-            });
+            .push(p.label_external_id.clone());
+            entry.pending.push(p);
         }
         let mut per_change: BTreeMap<(Vec<String>, Vec<String>), Vec<Entry>> = BTreeMap::new();
         for entry in per_entry.into_values() {
@@ -558,12 +578,25 @@ impl GmailSync {
                 .or_default()
                 .push(entry);
         }
-        let mut pushed = vec![];
-        let mut refused: BTreeMap<String, Vec<LabelChange>> = BTreeMap::new();
+        let mut ended = vec![];
+        let mut failed = false;
         for ((add, remove), entries) in per_change {
             // A batch refused is split until the entries refused are found.
             let mut batches: Vec<&[Entry]> = entries.chunks(BATCH_MODIFY_MAX).rev().collect();
             while let Some(batch) = batches.pop() {
+                let pending: Vec<Pending> = batch
+                    .iter()
+                    .flat_map(|e| e.pending.iter().cloned())
+                    .collect();
+                // One failed: Gmail is not answering, so the rest wait.
+                if failed {
+                    ended.push(PushEnded::of(
+                        &pending,
+                        Ended::NotApplied { refused: None },
+                        None,
+                    ));
+                    continue;
+                }
                 let ids: Vec<String> = batch.iter().map(|e| e.external_id.clone()).collect();
                 let outcome = self
                     .gmail
@@ -572,28 +605,25 @@ impl GmailSync {
                         add_label_ids: &add,
                         remove_label_ids: &remove,
                     })
-                    .await?;
+                    .await;
                 match outcome {
-                    Ok(()) => pushed.extend(batch.iter().flat_map(|e| e.changes.iter().copied())),
-                    Err(reason) if batch.len() == 1 => refused
-                        .entry(reason)
-                        .or_default()
-                        .extend(batch[0].changes.iter().copied()),
-                    Err(_) => {
+                    Ok(Ok(())) => ended.push(PushEnded::of(&pending, Ended::Applied, None)),
+                    Ok(Err(reason)) if batch.len() == 1 => {
+                        ended.push(PushEnded::refused(&pending, reason));
+                    }
+                    Ok(Err(_)) => {
                         let (first, second) = batch.split_at(batch.len() / 2);
                         batches.push(second);
                         batches.push(first);
                     }
+                    Err(e) => {
+                        failed = true;
+                        ended.push(PushEnded::unknown(&pending, e));
+                    }
                 }
             }
         }
-        for (reason, changes) in refused {
-            account.observe(LabelsRefused { changes, reason }).await?;
-        }
-        if !pushed.is_empty() {
-            account.observe(LabelsPushed { changes: pushed }).await?;
-        }
-        Ok(())
+        ended
     }
 
     async fn labels(&self) -> Result<Vec<ObservedLabel>> {
@@ -662,7 +692,8 @@ fn synced(history_id: String) -> SyncState {
     SyncState::Synced(serde_json::to_value(State::Synced { history_id }).expect("serializes"))
 }
 
-fn observed() -> MailboxObserved {
+/// An observation of nothing yet, by requests sent after `as_of`.
+fn observed(as_of: TxLogId) -> MailboxObserved {
     MailboxObserved {
         account_kind: KIND,
         labels: None,
@@ -671,5 +702,6 @@ fn observed() -> MailboxObserved {
         updated: vec![],
         removed: vec![],
         sync_state: None,
+        as_of,
     }
 }

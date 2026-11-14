@@ -189,7 +189,8 @@ impl Uplink {
     pub fn pending(&self, entry: EntryId, label: LabelId) -> (Option<i64>, Option<String>) {
         self.reader()
             .query_row(
-                "SELECT desired_by, refused FROM entry_label WHERE entry = ?1 AND label = ?2",
+                "SELECT desired_by, decision ->> '$.refused' FROM entry_label
+                 WHERE entry = ?1 AND label = ?2",
                 [entry.0, label.0],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )

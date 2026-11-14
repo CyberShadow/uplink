@@ -1217,6 +1217,7 @@ mod tests {
         // Each listed as the log is then.
         let reader = uplink_storage::open_reader(dir.path()).unwrap();
         let observed = |labels, added, updated| MailboxObserved {
+            as_of: uplink_tx_log::as_of(&reader).unwrap(),
             account_kind: "gmail",
             labels,
             rekeyed: vec![],
@@ -1511,10 +1512,12 @@ mod tests {
         );
         let raw = b"Message-ID: <m@x>\r\nFrom: bob@x\r\nTo: a@x\r\nSubject: s\r\n\r\nhi\r\n";
         let store = uplink_storage::store::Store::mail(dir.path());
+        let reader = uplink_storage::open_reader(dir.path()).unwrap();
         dispatcher
             .observe(
                 "a".into(),
                 MailboxObserved {
+                    as_of: uplink_tx_log::as_of(&reader).unwrap(),
                     account_kind: "gmail",
                     labels: Some(vec![ObservedLabel {
                         external_id: "INBOX".into(),
@@ -1640,6 +1643,7 @@ mod tests {
         // Each listed as the log is then.
         let reader = uplink_storage::open_reader(dir.path()).unwrap();
         let observed = |labels, added| MailboxObserved {
+            as_of: uplink_tx_log::as_of(&reader).unwrap(),
             account_kind: "gmail",
             labels,
             rekeyed: vec![],

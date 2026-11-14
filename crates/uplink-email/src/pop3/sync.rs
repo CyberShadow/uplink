@@ -6,14 +6,14 @@
 
 use super::client::{self, Client};
 use crate::{
-    account::{Account, Outgoing, Provider, SendError, SyncTask},
+    account::{Account, Outgoing, Pending, Provider, PushEnded, SendError, SyncTask},
     compose::{now_ms, SentCopy},
     mail_server::{
         self,
         sign_in::{self, SignIn},
         smtp,
     },
-    mailbox::{self, LabelChange, LabelsPushed, MailboxObserved, NewEntry, ObservedLabel},
+    mailbox::{self, EntryLabels, MailboxObserved, NewEntry, ObservedLabel},
 };
 use anyhow::Result;
 use mail_parser::{HeaderName, MessageParser};
@@ -21,9 +21,9 @@ use serde::{Deserialize, Serialize};
 use std::{path::Path, sync::Arc, time::Duration};
 use tokio_rustls::TlsConnector;
 use uplink_config::Pop3AccountConfig;
-use uplink_protocol::mail::LabelKind;
+use uplink_protocol::mail::{EntryId, LabelKind};
 use uplink_storage::seal::MasterKey;
-use uplink_tx_log::Dispatcher;
+use uplink_tx_log::{reconcile::Ended, Dispatcher};
 
 pub const KIND: &str = "pop3";
 /// How often to poll for new mail: less often than IMAP, as each poll
@@ -98,6 +98,7 @@ impl Provider for Pop3Sync {
     /// server. A session sees the maildrop as it was when it began (RFC
     /// 1939 §8), and deletes only as it quits.
     async fn sync(&self, account: &Account) -> Result<bool> {
+        let as_of = account.as_of().await?;
         let state = account.sync_state::<SyncState>().await?;
         let mut client = client::connect(&self.config, &self.sign_in, &self.tls).await?;
         let listed = client.uidl().await?;
@@ -137,6 +138,7 @@ impl Provider for Pop3Sync {
                     } else {
                         mailbox::SyncState::Synced(value)
                     }),
+                    as_of,
                 })
                 .await?;
         }
@@ -151,20 +153,32 @@ impl Provider for Pop3Sync {
     }
 
     /// The labels are uplink's: what the user changes is so at once.
-    async fn push(&self, account: &Account) -> Result<()> {
-        let pending = account.pending().await?;
-        if pending.is_empty() {
-            return Ok(());
+    async fn push(&self, _account: &Account, claimed: Vec<Pending>) -> Vec<PushEnded> {
+        vec![PushEnded::of(&claimed, Ended::Applied, None)]
+    }
+
+    /// As uplink has them, the labels being uplink's.
+    async fn read(&self, account: &Account, entries: Vec<(EntryId, String)>) -> Result<()> {
+        let as_of = account.as_of().await?;
+        let mut updated = vec![];
+        for (entry, external_id) in entries {
+            updated.push(EntryLabels {
+                external_id,
+                labels: account.desired_labels(entry).await?,
+            });
         }
-        let changes = pending
-            .into_iter()
-            .map(|p| LabelChange {
-                entry: p.entry,
-                label: p.label,
-                desired: p.desired,
+        account
+            .observe(MailboxObserved {
+                account_kind: KIND,
+                labels: None,
+                rekeyed: vec![],
+                added: vec![],
+                updated,
+                removed: vec![],
+                sync_state: None,
+                as_of,
             })
-            .collect();
-        account.observe(LabelsPushed { changes }).await
+            .await
     }
 
     /// Submits the message by SMTP, then files it in Sent.
@@ -239,6 +253,7 @@ fn labels() -> Vec<ObservedLabel> {
 /// The sent message, as its entry in Sent; joined to the message sent
 /// when the send is recorded (SPEC §8.6).
 async fn file_sent(account: &Account, mail: &Outgoing<'_>) -> Result<()> {
+    let as_of = account.as_of().await?;
     let thread_id = mail_server::thread_of(mail.raw);
     let (variant, parsed, size_bytes) = account.store_raw(mail.raw.to_vec()).await?;
     account
@@ -258,6 +273,7 @@ async fn file_sent(account: &Account, mail: &Outgoing<'_>) -> Result<()> {
             updated: vec![],
             removed: vec![],
             sync_state: None,
+            as_of,
         })
         .await
 }

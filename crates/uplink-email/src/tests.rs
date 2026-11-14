@@ -1,6 +1,6 @@
 use crate::{
     mailbox::{
-        self, EntryLabels, LabelChange, LabelsPushed, LabelsRefused, MailboxObserved, NewEntry,
+        self, EntryLabels, LabelChange, LabelsClaimed, LabelsPushed, MailboxObserved, NewEntry,
         ObservedLabel, SetLabels,
     },
     parse::parse,
@@ -14,7 +14,9 @@ use uplink_protocol::{
 use uplink_realtime::Hub;
 use uplink_storage::rusqlite::{params, Connection};
 use uplink_storage::store::Store;
-use uplink_tx_log::{push::PushFailing, Conflict, Dispatcher, Registry, UndoError};
+use uplink_tx_log::{
+    push::PushFailing, reconcile::Ended, Conflict, Dispatcher, Registry, UndoError,
+};
 
 /// The identities of an account of `address` alone, unnamed.
 pub(crate) fn own(address: &str) -> Vec<uplink_protocol::mail::Identity> {
@@ -79,11 +81,36 @@ impl Db {
         crate::outbox::outbox(&tx).unwrap()
     }
 
+    /// Records `observation`, by requests sent now.
     pub async fn observe(&self, account: &str, observation: MailboxObserved) -> TxLogId {
+        let as_of = uplink_tx_log::as_of(&self.reader()).unwrap();
         self.dispatcher
-            .observe(account.to_owned(), observation)
+            .observe(
+                account.to_owned(),
+                MailboxObserved {
+                    as_of,
+                    ..observation
+                },
+            )
             .await
             .unwrap()
+    }
+
+    /// The reconciler claims the pushes of `changes`, which end so.
+    pub async fn push(&self, account: &str, changes: Vec<LabelChange>, ended: Ended) {
+        self.dispatcher
+            .observe(
+                account.to_owned(),
+                LabelsClaimed {
+                    changes: changes.iter().map(|c| (c.entry, c.label)).collect(),
+                },
+            )
+            .await
+            .unwrap();
+        self.dispatcher
+            .observe(account.to_owned(), LabelsPushed { changes, ended })
+            .await
+            .unwrap();
     }
 
     pub fn query<T: uplink_storage::rusqlite::types::FromSql>(&self, sql: &str) -> Vec<T> {
@@ -189,6 +216,8 @@ pub(crate) fn observed(
             .collect(),
         removed: removed.iter().map(|r| r.to_string()).collect(),
         sync_state: None,
+        // As `Db::observe` records it.
+        as_of: TxLogId(0),
     }
 }
 
@@ -804,7 +833,7 @@ async fn undo_refuses_once_the_message_is_gone() {
 }
 
 #[tokio::test]
-async fn pushed_changes_become_observed() {
+async fn pushed_changes_become_observed_as_read_back() {
     let db = Db::new();
     let store = db.store();
     db.observe(
@@ -839,7 +868,17 @@ async fn pushed_changes_become_observed() {
         })
         .await
         .unwrap();
-    // The star is pushed, then unstarred again before the push is recorded.
+    // The star is pushed, then unstarred again before the push ends.
+    let claimed = vec![change(inbox, false), change(starred, true)];
+    db.dispatcher
+        .observe(
+            "a".into(),
+            LabelsClaimed {
+                changes: claimed.iter().map(|c| (c.entry, c.label)).collect(),
+            },
+        )
+        .await
+        .unwrap();
     db.dispatcher
         .dispatch(SetLabels {
             changes: vec![change(starred, false)],
@@ -851,12 +890,30 @@ async fn pushed_changes_become_observed() {
         .observe(
             "a".into(),
             LabelsPushed {
-                changes: vec![change(inbox, false), change(starred, true)],
+                changes: claimed,
+                ended: Ended::Applied,
             },
         )
         .await
         .unwrap();
+    // Applied, not yet seen so.
+    assert_eq!(
+        db.label_rows(),
+        [
+            row("m1", "INBOX", false, true),
+            row("m1", "STARRED", false, false)
+        ]
+    );
+    db.observe("a", observed(None, vec![], vec![("m1", &["STARRED"])], &[]))
+        .await;
     assert_eq!(db.label_rows(), [row("m1", "STARRED", false, true)]);
+    // The unstar is pushed after the star.
+    let reconciling = mailbox::reconciling(&db.reader(), "a").unwrap();
+    let wanted: Vec<_> = reconciling
+        .iter()
+        .filter_map(|r| r.field.wanted().map(|w| (r.label, *w)))
+        .collect();
+    assert_eq!(wanted, [(starred, false)]);
 }
 
 /// A pending change names the op that made it, and the provider's refusal
@@ -887,10 +944,10 @@ async fn pending_changes_keep_their_op_and_refusal() {
     let pending = || {
         db.query::<String>(
             "SELECT e.external_id || ' ' || l.external_id || ' ' || coalesce(desired_by, '-')
-                    || ' ' || coalesce(refused, '-')
+                    || ' ' || coalesce(decision ->> '$.refused', '-')
              FROM entry_label el JOIN mail_entry e ON e.id = el.entry
              JOIN label l ON l.id = el.label
-             WHERE desired != observed OR desired_by IS NOT NULL OR refused IS NOT NULL
+             WHERE desired != observed OR desired_by IS NOT NULL OR decision IS NOT NULL
              ORDER BY 1",
         )
     };
@@ -926,29 +983,24 @@ async fn pending_changes_keep_their_op_and_refusal() {
         ]
     );
 
-    // m1's archive is refused, m2's pushed; the star is refused too.
+    // m1's archive is refused, m2's pushed and seen so; the star is
+    // refused too.
     let mut live = db.hub.subscribe();
-    db.dispatcher
-        .observe(
-            "a".into(),
-            LabelsRefused {
-                changes: vec![change(m1, inbox, false), change(m1, starred, true)],
-                reason: "no".into(),
-            },
-        )
-        .await
-        .unwrap();
+    db.push(
+        "a",
+        vec![change(m1, inbox, false), change(m1, starred, true)],
+        Ended::NotApplied {
+            refused: Some("no".into()),
+        },
+    )
+    .await;
+    live.recv().await.unwrap();
     assert!(matches!(&live.recv().await.unwrap().events[..],
         [ServerEvent::OutboxChanged(o)] if o.accounts == ["a"]));
-    db.dispatcher
-        .observe(
-            "a".into(),
-            LabelsPushed {
-                changes: vec![change(m2, inbox, false)],
-            },
-        )
-        .await
-        .unwrap();
+    db.push("a", vec![change(m2, inbox, false)], Ended::Applied)
+        .await;
+    db.observe("a", observed(None, vec![], vec![("m2", &[])], &[]))
+        .await;
     assert_eq!(
         pending(),
         [
@@ -958,15 +1010,8 @@ async fn pending_changes_keep_their_op_and_refusal() {
     );
 
     // Refused changes are not pushed again.
-    let reader = db.reader();
-    let refused: i64 = reader
-        .query_row(
-            "SELECT count(*) FROM entry_label WHERE desired != observed AND refused IS NULL",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(refused, 0);
+    let reconciling = mailbox::reconciling(&db.reader(), "a").unwrap();
+    assert!(reconciling.iter().all(|r| r.field.wanted().is_none()));
 
     // Starring again is a change of its own, pushed anew; undoing the
     // archive leaves nothing pending of it.
@@ -1007,6 +1052,105 @@ async fn pending_changes_keep_their_op_and_refusal() {
     )
     .await;
     assert!(pending().is_empty(), "{:?}", pending());
+}
+
+/// The labels the reconciler would push now, as (entry, label, value).
+fn wanted(db: &Db) -> Vec<(EntryId, LabelId, bool)> {
+    mailbox::reconciling(&db.reader(), "a")
+        .unwrap()
+        .iter()
+        .filter_map(|r| r.field.wanted().map(|w| (r.entry, r.label, *w)))
+        .collect()
+}
+
+/// Undoing a change whose push's outcome is unknown: it may have landed,
+/// so the undo is pushed, and a sync seeing it landed does not take it
+/// for another client's change.
+#[tokio::test]
+async fn an_undo_after_a_push_of_unknown_outcome_is_pushed() {
+    let db = Db::new();
+    archived(&db).await;
+    let (m1, inbox) = (db.entry("m1"), db.label("a", "INBOX"));
+    let archive = TxLogId(db.query::<i64>("SELECT max(id) FROM tx_log")[0]);
+    let change = |desired| LabelChange {
+        entry: m1,
+        label: inbox,
+        desired,
+    };
+    db.push("a", vec![change(false)], Ended::Unknown { at_ms: 0 })
+        .await;
+    db.dispatcher.undo(archive).await.unwrap();
+    // Nothing differs, yet the archive may have landed.
+    assert_eq!(db.label_rows(), [row("m1", "INBOX", true, true)]);
+    assert_eq!(wanted(&db), [(m1, inbox, true)]);
+    // It did: still the undo is wanted.
+    db.observe("a", observed(None, vec![], vec![("m1", &[])], &[]))
+        .await;
+    assert_eq!(wanted(&db), [(m1, inbox, true)]);
+    assert_eq!(db.label_rows(), [row("m1", "INBOX", true, true)]);
+}
+
+/// A push that fails partway records how each request ended: those that
+/// went through await their read-back, and an undo of one is pushed.
+#[tokio::test]
+async fn a_failing_push_keeps_the_outcomes_of_those_before() {
+    let db = Db::new();
+    let store = db.store();
+    db.observe(
+        "a",
+        observed(
+            labels(ALL),
+            vec![
+                new_entry(&store, "m1", &["INBOX"], &raw("1@x", "s@x", DATE, "1", "")),
+                new_entry(&store, "m2", &["INBOX"], &raw("2@x", "s@x", DATE, "2", "")),
+            ],
+            vec![],
+            &[],
+        ),
+    )
+    .await;
+    let (m1, m2, inbox) = (db.entry("m1"), db.entry("m2"), db.label("a", "INBOX"));
+    let change = |entry, desired| LabelChange {
+        entry,
+        label: inbox,
+        desired,
+    };
+    let archive = db
+        .dispatcher
+        .dispatch(SetLabels {
+            changes: vec![change(m1, false), change(m2, false)],
+            shown: false,
+        })
+        .await
+        .unwrap()
+        .0;
+    db.dispatcher
+        .observe(
+            "a".into(),
+            LabelsClaimed {
+                changes: vec![(m1, inbox), (m2, inbox)],
+            },
+        )
+        .await
+        .unwrap();
+    for (entry, ended) in [
+        (m1, Ended::Applied),
+        (m2, Ended::NotApplied { refused: None }),
+    ] {
+        db.dispatcher
+            .observe(
+                "a".into(),
+                LabelsPushed {
+                    changes: vec![change(entry, false)],
+                    ended,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    assert_eq!(wanted(&db), [(m2, inbox, false)], "m1 awaits its read-back");
+    db.dispatcher.undo(TxLogId(archive)).await.unwrap();
+    assert_eq!(wanted(&db), [(m1, inbox, true)], "m2 never left the Inbox");
 }
 
 /// An account's failing pushes are recorded from when they start, and
@@ -1262,7 +1406,6 @@ pub(crate) mod service {
     /// the provider has.
     #[tokio::test]
     async fn the_outbox_lists_pending_changes_by_op() {
-        use crate::mailbox::LabelsRefused;
         use uplink_protocol::compose::{Failing, PendingChanges, PendingOp, Refusal};
         let db = Db::new();
         let mail = mail_with(&db).await;
@@ -1279,20 +1422,18 @@ pub(crate) mod service {
             mail.modify_labels(vec![db.entry("m3")], vec![starred], vec![])
                 .await,
         );
-        db.dispatcher
-            .observe(
-                "a".into(),
-                LabelsRefused {
-                    changes: vec![LabelChange {
-                        entry: db.entry("m1"),
-                        label: inbox,
-                        desired: false,
-                    }],
-                    reason: "no".into(),
-                },
-            )
-            .await
-            .unwrap();
+        db.push(
+            "a",
+            vec![LabelChange {
+                entry: db.entry("m1"),
+                label: inbox,
+                desired: false,
+            }],
+            Ended::NotApplied {
+                refused: Some("no".into()),
+            },
+        )
+        .await;
         db.dispatcher
             .observe(
                 "a".into(),
@@ -3255,6 +3396,60 @@ async fn attachments_are_indexed_for_messages_stored_before() {
     assert_eq!(index_attachments(&mut conn, &store).unwrap(), 0);
 }
 
+/// Reads back `entries` as uplink has them, as a provider whose labels
+/// are uplink's would.
+async fn read_as_desired(
+    account: &crate::account::Account,
+    entries: Vec<(EntryId, String)>,
+) -> anyhow::Result<()> {
+    let as_of = account.as_of().await?;
+    let mut updated = vec![];
+    for (entry, external_id) in entries {
+        updated.push(EntryLabels {
+            external_id,
+            labels: account.desired_labels(entry).await?,
+        });
+    }
+    account
+        .observe(MailboxObserved {
+            updated,
+            as_of,
+            ..observed(None, vec![], vec![], &[])
+        })
+        .await
+}
+
+/// An account with a message, "m1", which the user has archived.
+async fn archived(db: &Db) {
+    let store = db.store();
+    db.observe(
+        "a",
+        observed(
+            labels(ALL),
+            vec![new_entry(
+                &store,
+                "m1",
+                &["INBOX"],
+                &raw("1@x", "s@x", DATE, "1", ""),
+            )],
+            vec![],
+            &[],
+        ),
+    )
+    .await;
+    db.dispatcher
+        .dispatch(SetLabels {
+            changes: vec![LabelChange {
+                entry: db.entry("m1"),
+                label: db.label("a", "INBOX"),
+                desired: false,
+            }],
+            shown: false,
+        })
+        .await
+        .unwrap();
+}
+
 /// A provider whose sync takes `steps` steps, recording its calls.
 struct Stepping {
     steps: std::sync::atomic::AtomicU32,
@@ -3270,9 +3465,26 @@ impl crate::account::Provider for Stepping {
         Ok(self.steps.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) > 1)
     }
 
-    async fn push(&self, _: &crate::account::Account) -> anyhow::Result<()> {
+    async fn push(
+        &self,
+        _: &crate::account::Account,
+        claimed: Vec<crate::account::Pending>,
+    ) -> Vec<crate::account::PushEnded> {
         self.calls.lock().unwrap().push("push");
-        Ok(())
+        vec![crate::account::PushEnded::of(
+            &claimed,
+            Ended::Applied,
+            None,
+        )]
+    }
+
+    async fn read(
+        &self,
+        account: &crate::account::Account,
+        entries: Vec<(EntryId, String)>,
+    ) -> anyhow::Result<()> {
+        self.calls.lock().unwrap().push("read");
+        read_as_desired(account, entries).await
     }
 
     async fn send(
@@ -3290,6 +3502,7 @@ impl crate::account::Provider for Stepping {
 #[tokio::test]
 async fn pushes_go_between_the_steps_of_a_long_sync() {
     let db = Db::new();
+    archived(&db).await;
     let calls = Arc::new(std::sync::Mutex::new(vec![]));
     let task = crate::account::SyncTask::new(
         Stepping {
@@ -3305,7 +3518,7 @@ async fn pushes_go_between_the_steps_of_a_long_sync() {
     );
     let run = tokio::spawn(task.run());
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-    while calls.lock().unwrap().len() < 6 {
+    while calls.lock().unwrap().len() < 5 {
         assert!(
             tokio::time::Instant::now() < deadline,
             "{:?}",
@@ -3317,8 +3530,9 @@ async fn pushes_go_between_the_steps_of_a_long_sync() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert_eq!(
         *calls.lock().unwrap(),
-        ["sync", "push", "sync", "push", "sync", "push"]
+        ["sync", "push", "read", "sync", "sync"]
     );
+    assert!(db.accounts_outbox().is_empty(), "pushed, and seen so");
     run.abort();
 }
 
@@ -3335,14 +3549,33 @@ impl crate::account::Provider for Failing {
         Ok(false)
     }
 
-    async fn push(&self, _: &crate::account::Account) -> anyhow::Result<()> {
+    async fn push(
+        &self,
+        _: &crate::account::Account,
+        claimed: Vec<crate::account::Pending>,
+    ) -> Vec<crate::account::PushEnded> {
         let left = self.failures.load(std::sync::atomic::Ordering::SeqCst);
         if left > 0 {
             self.failures
                 .store(left - 1, std::sync::atomic::Ordering::SeqCst);
-            anyhow::bail!("down {left}");
+            return vec![crate::account::PushEnded::not_sent(
+                &claimed,
+                anyhow::anyhow!("down {left}"),
+            )];
         }
-        Ok(())
+        vec![crate::account::PushEnded::of(
+            &claimed,
+            Ended::Applied,
+            None,
+        )]
+    }
+
+    async fn read(
+        &self,
+        account: &crate::account::Account,
+        entries: Vec<(EntryId, String)>,
+    ) -> anyhow::Result<()> {
+        read_as_desired(account, entries).await
     }
 
     async fn send(
@@ -3359,8 +3592,7 @@ impl crate::account::Provider for Failing {
 #[tokio::test(start_paused = true)]
 async fn the_task_records_failing_as_it_starts_and_stops() {
     let db = Db::new();
-    db.observe("a", observed(labels(ALL), vec![], vec![], &[]))
-        .await;
+    archived(&db).await;
     let task = crate::account::SyncTask::new(
         Failing { failures: 3.into() },
         "a".into(),
@@ -3379,8 +3611,9 @@ async fn the_task_records_failing_as_it_starts_and_stops() {
             "SELECT description FROM tx_log WHERE op_type = 'account.push_failing' ORDER BY id"
         ),
         [
-            "Changes are not reaching the provider: down 3",
+            "Changes are not reaching the provider: pushing label changes: down 3",
             "Changes are reaching the provider again"
         ]
     );
+    assert!(db.accounts_outbox().is_empty(), "pushed, and seen so");
 }

@@ -8,16 +8,15 @@
 //! are the labels UNREAD, STARRED and IMPORTANT, and categories are labels
 //! `cat:<name>`.
 
-use super::api::{Changed, Delta, Flag, FlagStatus, Graph, Importance, Message, MessageUpdate};
+use super::api::{
+    Changed, Delta, Failed, Flag, FlagStatus, Graph, Importance, Message, MessageUpdate,
+};
 use crate::{
-    account::{Account, Outgoing, Pending, Provider, SendError, SyncTask},
+    account::{Account, Outgoing, Pending, Provider, PushEnded, SendError, SyncTask},
     compose::{SendDrafted, SentCopy},
     imap::watch::{Watched, Watcher},
     mail_server::sign_in::{self, SignIn},
-    mailbox::{
-        self, EntryLabels, LabelChange, LabelsPushed, LabelsRefused, MailboxObserved, NewEntry,
-        ObservedLabel,
-    },
+    mailbox::{self, EntryLabels, MailboxObserved, NewEntry, ObservedLabel},
     watching::Told,
 };
 use anyhow::{bail, Context, Result};
@@ -31,8 +30,11 @@ use std::{
 };
 use tokio_rustls::TlsConnector;
 use uplink_config::M365AccountConfig;
-use uplink_protocol::mail::{EntryId, LabelKind};
-use uplink_tx_log::Dispatcher;
+use uplink_protocol::{
+    mail::{EntryId, LabelKind},
+    TxLogId,
+};
+use uplink_tx_log::{reconcile::Ended, Dispatcher};
 
 pub const KIND: &str = "m365";
 /// Messages fetched at once.
@@ -162,6 +164,7 @@ impl Provider for M365Sync {
     /// Records all of the changes in one call: a first sync blocks pushes
     /// and sends until done (SPEC §8.3), unlike Gmail's.
     async fn sync(&self, account: &Account) -> Result<bool> {
+        let as_of = account.as_of().await?;
         let folders = self.folders().await?;
         let state = account.sync_state::<SyncState>().await?.unwrap_or_default();
 
@@ -262,7 +265,7 @@ impl Provider for M365Sync {
                         state: serde_json::to_value(&state).expect("sync state serializes"),
                         total: Some(u32::try_from(total).unwrap_or(u32::MAX)),
                     }),
-                    ..observed()
+                    ..observed(as_of)
                 })
                 .await?;
         }
@@ -279,7 +282,7 @@ impl Provider for M365Sync {
                 .observe(MailboxObserved {
                     labels: labels.take(),
                     added,
-                    ..observed()
+                    ..observed(as_of)
                 })
                 .await?;
         }
@@ -291,42 +294,62 @@ impl Provider for M365Sync {
                 sync_state: Some(mailbox::SyncState::Synced(
                     serde_json::to_value(sync_state).expect("sync state serializes"),
                 )),
-                ..observed()
+                ..observed(as_of)
             })
             .await
             .map(|()| false)
     }
 
-    async fn push(&self, account: &Account) -> Result<()> {
-        let pending = account.pending().await?;
-        if pending.is_empty() {
-            return Ok(());
-        }
+    async fn push(&self, account: &Account, claimed: Vec<Pending>) -> Vec<PushEnded> {
         let mut per_entry: BTreeMap<EntryId, Vec<Pending>> = BTreeMap::new();
-        for p in pending {
+        for p in claimed {
             per_entry.entry(p.entry).or_default().push(p);
         }
-        let mut pushed = vec![];
-        let mut refused: BTreeMap<String, Vec<LabelChange>> = BTreeMap::new();
+        let mut ended = vec![];
+        let mut failed = false;
         for (entry, pending) in per_entry {
-            let refusal = self.push_entry(account, entry, &pending).await?;
-            let changes = pending.into_iter().map(|p| LabelChange {
-                entry: p.entry,
-                label: p.label,
-                desired: p.desired,
-            });
-            match refusal {
-                None => pushed.extend(changes),
-                Some(reason) => refused.entry(reason).or_default().extend(changes),
+            if failed {
+                ended.push(PushEnded::of(
+                    &pending,
+                    Ended::NotApplied { refused: None },
+                    None,
+                ));
+                continue;
+            }
+            let pushed = self.push_entry(account, entry, &pending).await;
+            failed = pushed.iter().any(|p| p.error.is_some());
+            ended.extend(pushed);
+        }
+        ended
+    }
+
+    async fn read(&self, account: &Account, entries: Vec<(EntryId, String)>) -> Result<()> {
+        let as_of = account.as_of().await?;
+        let folders = self.folders().await?;
+        let ids = entries.into_iter().map(|(_, id)| id).collect();
+        let mut seen = vec![];
+        let mut removed = vec![];
+        for (id, message) in self.verify(&folders, ids).await? {
+            match message {
+                Some(message) => seen.push(message),
+                None => removed.push(id),
             }
         }
-        for (reason, changes) in refused {
-            account.observe(LabelsRefused { changes, reason }).await?;
-        }
-        if !pushed.is_empty() {
-            account.observe(LabelsPushed { changes: pushed }).await?;
-        }
-        Ok(())
+        let updated = seen
+            .iter()
+            .map(|s| EntryLabels {
+                external_id: s.message.id.clone(),
+                labels: labels_of(s),
+            })
+            .collect();
+        account
+            .observe(MailboxObserved {
+                labels: self.labels(account, &folders, seen.iter()).await?,
+                updated,
+                removed,
+                ..observed(as_of)
+            })
+            .await
     }
 
     /// In two steps (SPEC §8.4): the message is made a draft, recorded,
@@ -560,26 +583,24 @@ impl M365Sync {
         Ok(entries.into_iter().flatten().collect())
     }
 
-    /// Makes the entry's pending changes at Graph: a folder by moving the
-    /// message, the rest by updating it. Returns Graph's reason if it
-    /// refused them.
+    /// Makes the entry's changes claimed at Graph: a folder by moving the
+    /// message, the rest by updating it; how each request ended. Once one
+    /// fails, the other is not sent.
     async fn push_entry(
         &self,
         account: &Account,
         entry: EntryId,
         pending: &[Pending],
-    ) -> Result<Option<String>> {
+    ) -> Vec<PushEnded> {
         let id = &pending[0].external_id;
+        let (moving, updating): (Vec<Pending>, Vec<Pending>) = pending
+            .iter()
+            .cloned()
+            .partition(|p| p.kind == LabelKind::Folder);
         let mut update = MessageUpdate::default();
         let mut categories = false;
-        let mut into = None;
-        for p in pending {
+        for p in &updating {
             match p.label_external_id.as_str() {
-                _ if p.kind == LabelKind::Folder => {
-                    if p.desired {
-                        into = Some(&p.label_external_id);
-                    }
-                }
                 UNREAD => update.is_read = Some(!p.desired),
                 STARRED => {
                     update.flag = Some(Flag {
@@ -598,38 +619,81 @@ impl M365Sync {
                     })
                 }
                 l if l.starts_with(CATEGORY) => categories = true,
-                l => return Ok(Some(format!("label {l} is not one Microsoft 365 has"))),
+                l => {
+                    return vec![PushEnded::refused(
+                        pending,
+                        format!("label {l} is not one Microsoft 365 has"),
+                    )]
+                }
             }
         }
-        if categories {
-            update.categories = Some(
-                account
-                    .desired_labels(entry)
-                    .await?
+        let mut ended = vec![];
+        if !updating.is_empty() {
+            if categories {
+                // Graph takes them all: as the provider has them, but for
+                // those claimed.
+                let observed = match account.observed_labels(entry).await {
+                    Ok(observed) => observed,
+                    Err(e) => return vec![PushEnded::not_sent(pending, e)],
+                };
+                let mut all: BTreeSet<String> = observed
                     .into_iter()
-                    .filter_map(|l| l.strip_prefix(CATEGORY).map(str::to_owned))
-                    .collect(),
-            );
-        }
-        // A message deleted meanwhile is recorded as removed by the next
-        // sync.
-        if !update.is_empty() {
-            match self.graph.update(id, &update).await? {
-                Changed::Done => {}
-                Changed::Gone => return Ok(None),
-                Changed::Refused(reason) => return Ok(Some(reason)),
+                    .filter(|l| l.starts_with(CATEGORY))
+                    .collect();
+                for p in updating
+                    .iter()
+                    .filter(|p| p.label_external_id.starts_with(CATEGORY))
+                {
+                    if p.desired {
+                        all.insert(p.label_external_id.clone());
+                    } else {
+                        all.remove(&p.label_external_id);
+                    }
+                }
+                update.categories = Some(
+                    all.iter()
+                        .map(|l| l.strip_prefix(CATEGORY).expect("a category").to_owned())
+                        .collect(),
+                );
+            }
+            let pushed = changed(&updating, self.graph.update(id, &update).await);
+            let failed = pushed.error.is_some();
+            ended.push(pushed);
+            if failed {
+                ended.push(PushEnded::of(
+                    &moving,
+                    Ended::NotApplied { refused: None },
+                    None,
+                ));
+                return ended;
             }
         }
-        if let Some(into) = into {
+        if let Some(into) = moving.iter().find(|p| p.desired) {
             let folder = WELL_KNOWN
                 .iter()
-                .find(|(_, external_id)| external_id == into)
-                .map_or(into.as_str(), |(name, _)| name);
-            if let Changed::Refused(reason) = self.graph.move_to(id, folder).await? {
-                return Ok(Some(reason));
-            }
+                .find(|(_, external_id)| *external_id == into.label_external_id)
+                .map_or(into.label_external_id.as_str(), |(name, _)| name);
+            ended.push(changed(&moving, self.graph.move_to(id, folder).await));
+        } else if !moving.is_empty() {
+            // Out of a folder, but into none: SetLabels puts it somewhere.
+            ended.push(PushEnded::refused(
+                &moving,
+                "a message is in one folder at a time".to_owned(),
+            ));
         }
-        Ok(None)
+        ended
+    }
+}
+
+/// How a Graph request pushing `pending` ended. A message gone meanwhile
+/// is recorded as removed by the next sync.
+fn changed(pending: &[Pending], result: Result<Changed, Failed>) -> PushEnded {
+    match result {
+        Ok(Changed::Done) => PushEnded::of(pending, Ended::Applied, None),
+        Ok(Changed::Gone) => PushEnded::of(pending, Ended::NotApplied { refused: None }, None),
+        Ok(Changed::Refused(reason)) => PushEnded::refused(pending, reason),
+        Err(Failed::NotDone(e)) => PushEnded::not_sent(pending, e),
+        Err(Failed::Unknown(e)) => PushEnded::unknown(pending, e),
     }
 }
 
@@ -669,7 +733,8 @@ async fn known_folders(account: &Account) -> Result<HashMap<String, Option<Strin
         .await
 }
 
-fn observed() -> MailboxObserved {
+/// An observation of nothing yet, by requests sent after `as_of`.
+fn observed(as_of: TxLogId) -> MailboxObserved {
     MailboxObserved {
         account_kind: KIND,
         labels: None,
@@ -678,5 +743,6 @@ fn observed() -> MailboxObserved {
         updated: vec![],
         removed: vec![],
         sync_state: None,
+        as_of,
     }
 }

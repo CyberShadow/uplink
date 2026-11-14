@@ -2,7 +2,10 @@
 //! providers (SPEC §6.6). Label changes pending, by the op that made them;
 //! mail being sent; and why an account's changes are not reaching it.
 
-use crate::{compose, mailbox::LabelChange};
+use crate::{
+    compose,
+    mailbox::{decision_reason, LabelChange},
+};
 use anyhow::Result;
 use std::collections::BTreeMap;
 use uplink_protocol::{
@@ -29,42 +32,37 @@ pub fn outbox(tx: &Transaction) -> Result<Vec<AccountOutbox>> {
     for (id, failing) in uplink_tx_log::push::failing(tx, &crate::KINDS)? {
         account(&mut accounts, id).failing = Some(failing);
     }
-    // Per account and op, newest first (changes of no op last), the
-    // entries pending and refused.
+    // Per account and op, newest first, the entries pending and those
+    // waiting for a decision.
     struct Group {
         account: String,
-        by: Option<i64>,
-        op: Option<PendingOp>,
-        refused: Option<String>,
+        by: i64,
+        op: PendingOp,
+        decision: Option<String>,
         entries: u32,
     }
     let groups: Vec<Group> = tx
         .prepare(
-            "SELECT e.account_id, el.desired_by, t.description, t.ts, el.refused,
+            "SELECT e.account_id, el.desired_by, t.description, t.ts, el.decision,
                     count(DISTINCT el.entry)
              FROM entry_label el
              JOIN mail_entry e ON e.id = el.entry
-             LEFT JOIN tx_log t ON t.id = el.desired_by
-             WHERE el.desired != el.observed
-             GROUP BY e.account_id, el.desired_by, el.refused
-             ORDER BY e.account_id, el.desired_by IS NULL, el.desired_by DESC,
-                      el.refused IS NOT NULL, el.refused",
+             JOIN tx_log t ON t.id = el.desired_by
+             GROUP BY e.account_id, el.desired_by, el.decision
+             ORDER BY e.account_id, el.desired_by DESC,
+                      el.decision IS NOT NULL, el.decision",
         )?
         .query_map([], |r| {
-            let by: Option<i64> = r.get(1)?;
-            let op = match by {
-                Some(id) => Some(PendingOp {
-                    id: TxLogId(id),
-                    description: r.get(2)?,
-                    ts: r.get(3)?,
-                }),
-                None => None,
-            };
+            let by: i64 = r.get(1)?;
             Ok(Group {
                 account: r.get(0)?,
                 by,
-                op,
-                refused: r.get(4)?,
+                op: PendingOp {
+                    id: TxLogId(by),
+                    description: r.get(2)?,
+                    ts: r.get(3)?,
+                },
+                decision: r.get(4)?,
                 entries: r.get(5)?,
             })
         })?
@@ -73,20 +71,21 @@ pub fn outbox(tx: &Transaction) -> Result<Vec<AccountOutbox>> {
     for group in groups {
         let pending = entries[&(group.account.clone(), group.by)];
         let outbox = account(&mut accounts, group.account);
+        let op = Some(group.op);
         let changes = match outbox.changes.last_mut() {
-            Some(last) if last.op == group.op => last,
+            Some(last) if last.op == op => last,
             _ => {
                 outbox.changes.push(PendingChanges {
-                    op: group.op,
+                    op,
                     entries: pending,
                     refused: vec![],
                 });
                 outbox.changes.last_mut().expect("just pushed")
             }
         };
-        if let Some(reason) = group.refused {
+        if let Some(decision) = group.decision {
             changes.refused.push(Refusal {
-                reason,
+                reason: decision_reason(&decision)?,
                 entries: group.entries,
             });
         }
@@ -111,20 +110,20 @@ pub fn outbox(tx: &Transaction) -> Result<Vec<AccountOutbox>> {
 
 /// Per account and op, the entries with changes pending: an entry with
 /// some refused and some not counts once.
-fn entries_pending(tx: &Transaction) -> Result<BTreeMap<(String, Option<i64>), u32>> {
+fn entries_pending(tx: &Transaction) -> Result<BTreeMap<(String, i64), u32>> {
     Ok(tx
         .prepare(
             "SELECT e.account_id, el.desired_by, count(DISTINCT el.entry)
              FROM entry_label el JOIN mail_entry e ON e.id = el.entry
-             WHERE el.desired != el.observed
+             WHERE el.desired_by IS NOT NULL
              GROUP BY e.account_id, el.desired_by",
         )?
         .query_map([], |r| Ok(((r.get(0)?, r.get(1)?), r.get(2)?)))?
         .collect::<Result<_, _>>()?)
 }
 
-/// The changes that would take `op`'s refused changes in `account` (those
-/// of no op, if `None`) back to what the provider has.
+/// The changes that would take `op`'s changes waiting for a decision in
+/// `account` back to what the provider has.
 pub(crate) fn keeping_observed(
     tx: &Transaction,
     account: &str,
@@ -135,7 +134,7 @@ pub(crate) fn keeping_observed(
             "SELECT el.entry, el.label, el.observed
              FROM entry_label el JOIN mail_entry e ON e.id = el.entry
              WHERE e.account_id = ?1 AND el.desired_by IS ?2
-               AND el.refused IS NOT NULL AND el.desired != el.observed
+               AND el.decision IS NOT NULL AND el.desired != el.observed
              ORDER BY el.entry, el.label",
         )?
         .query_map(params![account, op.map(|o| o.0)], |r| {

@@ -271,6 +271,14 @@ mod tests {
                 add_label(account, label);
             }
         }
+        // The op of the labels asked for that differ, as there always is.
+        conn.execute(
+            "INSERT INTO tx_log (id, ts, description, op_type, op_json, inverse_type,
+                                 inverse_json, events_json)
+             VALUES (1, 0, '', 'mail.set_labels', '{}', 'mail.set_labels', '{}', '[]')",
+            [],
+        )
+        .unwrap();
         // xorshift: the same run every time.
         let mut state = 0x2545_f491_4f6c_dd1du64;
         let mut next = |n: u64| {
@@ -317,10 +325,11 @@ mod tests {
                 (12..70, Some(entry)) => {
                     let (desired, observed) = (next(3) > 0, next(2) == 0);
                     conn.execute(
-                        "INSERT INTO entry_label (entry, label, desired, observed)
-                         VALUES (?1, ?2, ?3, ?4)
+                        "INSERT INTO entry_label (entry, label, desired, observed, desired_by)
+                         VALUES (?1, ?2, ?3, ?4, CASE WHEN ?3 != ?4 THEN 1 END)
                          ON CONFLICT (entry, label)
-                         DO UPDATE SET desired = excluded.desired, observed = excluded.observed",
+                         DO UPDATE SET desired = excluded.desired, observed = excluded.observed,
+                           desired_by = excluded.desired_by",
                         params![entry, label, desired, observed || !desired],
                     )
                     .unwrap();
@@ -739,6 +748,87 @@ mod tests {
                 (Some("d".into()), None, None),
             ]
         );
+    }
+
+    /// Labels become reconciled fields (V0073): those pending without an
+    /// op (from before V0018) take the last one, refusals become
+    /// decisions, and the labels are counted as they were.
+    #[test]
+    fn labels_become_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = migrated_to(dir.path(), 72);
+        conn.execute_batch(
+            r#"INSERT INTO account (id, kind) VALUES ('a', 'gmail');
+               INSERT INTO tx_log (id, ts, description, op_type, op_json, inverse_type,
+                                   inverse_json, events_json)
+               VALUES (1, 0, '', 'mail.set_labels', '{}', 'mail.set_labels', '{}', '[]'),
+                      (2, 0, '', 'mail.set_labels', '{}', 'mail.set_labels', '{}', '[]');
+               INSERT INTO message (id, message_id, preferred_variant, to_addrs, cc_addrs,
+                                    senders, snippet)
+               VALUES (1, 'm', 'v', '[]', '[]', '[]', '');
+               INSERT INTO message_variant (sha256, message, source, size_bytes)
+               VALUES ('v', 1, 'test', 0);
+               INSERT INTO mail_entry (id, account_id, external_id, message, variant,
+                                       received_at)
+               VALUES (1, 'a', 'm1', 1, 'v', 0);
+               INSERT INTO label (id, account_id, external_id, name, system, kind)
+               VALUES (1, 'a', 'INBOX', 'Inbox', 1, 'tag'),
+                      (2, 'a', 'STARRED', 'Starred', 1, 'tag'),
+                      (3, 'a', 'UNREAD', 'Unread', 1, 'tag');
+               INSERT INTO entry_label (entry, label, desired, observed, desired_by, refused)
+               VALUES (1, 1, 1, 1, NULL, NULL),
+                      (1, 2, 1, 0, 1, 'no'),
+                      (1, 3, 0, 1, NULL, NULL);"#,
+        )
+        .unwrap();
+        let counts = kept(&conn);
+        drop(conn);
+
+        let conn = open(dir.path()).unwrap();
+        type Row = (i64, bool, bool, Option<i64>, Option<String>, Option<String>);
+        let rows: Vec<Row> = conn
+            .prepare(
+                "SELECT label, desired, observed, desired_by, decision, push FROM entry_label
+                 ORDER BY label",
+            )
+            .unwrap()
+            .query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            [
+                (1, true, true, None, None, None),
+                (
+                    2,
+                    true,
+                    false,
+                    Some(1),
+                    Some(r#"{"refused":"no"}"#.into()),
+                    None
+                ),
+                (3, false, true, Some(2), None, None),
+            ]
+        );
+        assert_eq!(kept(&conn), counts);
+        assert_eq!(kept(&conn), counted(&conn));
+        // Still counted as labels change.
+        conn.execute(
+            "UPDATE entry_label SET desired = 0, desired_by = 2 WHERE label = 1",
+            [],
+        )
+        .unwrap();
+        assert_eq!(kept(&conn), counted(&conn));
     }
 
     /// Answers to meeting requests become reconciled fields (V0072):
