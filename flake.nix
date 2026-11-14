@@ -261,6 +261,8 @@
           UPLINK_CONDUIT = "${conduit}/bin/conduit";
           # A mail server (IMAP, SMTP), for crates/uplink-email/tests.
           UPLINK_STALWART = "${pkgs.stalwart}/bin/stalwart";
+          # An IMAP server with NOTIFY (RFC 5465), which Stalwart lacks.
+          UPLINK_DOVECOT = "${pkgs.dovecot}/bin/dovecot";
         };
 
         # ── checks (nix flake check) ───────────────────────────────────────

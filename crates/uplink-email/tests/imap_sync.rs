@@ -6,6 +6,7 @@ mod common;
 
 use common::{
     eventually, message,
+    dovecot::Dovecot,
     stalwart::{append, find, store, Directory, Stalwart, ALICE, BOB},
     uplink::{label_set, Uplink},
 };
@@ -209,6 +210,37 @@ async fn the_inbox_is_watched_by_idle() {
         (label_set(&uplink.labels(pushed)) == ["INBOX", "STARRED", "UNREAD"]).then_some(())
     })
     .await;
+    sync.abort();
+}
+
+/// Polled, a change in the folder the sync last selected is seen: of it, a
+/// STATUS may answer as the connection last saw it (Dovecot does).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_change_in_the_folder_left_selected_is_seen() {
+    let uplink = Uplink::new(MailProvider::Imap);
+    let dovecot = Dovecot::start(uplink.dir.path()).await;
+    let account = dovecot.account();
+    let provider = ImapSync::new(
+        account.clone(),
+        dovecot.sign_in(&account),
+        dovecot.tls.clone(),
+    );
+    let mut other = dovecot.client().await;
+    // In every folder, so that whichever the sync looks at last is
+    // selected as it polls.
+    for folder in ["INBOX", "Alerts"] {
+        append(&mut other, folder, &message(folder, "")).await;
+    }
+    let sync = uplink.start(provider, ALICE);
+    for folder in ["INBOX", "Alerts"] {
+        let entry = uplink.arrived(folder).await;
+        let (uid, _) = find(&mut other, folder, folder).await.unwrap();
+        store(&mut other, folder, uid, "+FLAGS (\\Seen)").await;
+        eventually(&format!("the read in {folder} to be observed"), || async {
+            (!uplink.labels(entry).iter().any(|(l, ..)| l == "UNREAD")).then_some(())
+        })
+        .await;
+    }
     sync.abort();
 }
 

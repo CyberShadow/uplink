@@ -8,6 +8,7 @@
 
 #![allow(dead_code)]
 
+pub mod dovecot;
 pub mod stalwart;
 pub mod uplink;
 

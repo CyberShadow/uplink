@@ -37,7 +37,7 @@ use crate::{
 use anyhow::{ensure, Context, Result};
 use async_imap::{
     error::Error as ImapError,
-    types::{Fetch, Flag, NameAttribute},
+    types::{Fetch, Flag, Name, NameAttribute},
 };
 use futures_util::TryStreamExt;
 use mail_parser::MessageParser;
@@ -328,6 +328,7 @@ impl ImapSync {
         let mut keywords: BTreeSet<String> = BTreeSet::new();
         let mut states = BTreeMap::new();
         let mut total = 0;
+        refresh(c).await?;
         for (i, folder) in folders.iter().enumerate().filter(|(_, f)| f.exists) {
             let here = by_folder.remove(folder.name.as_str()).unwrap_or_default();
             let now = status(c, &folder.name).await?;
@@ -403,6 +404,7 @@ impl ImapSync {
         // or go stands only if no folder changed while it looked; else it
         // is taken again.
         if !vanished.is_empty() || !new.is_empty() {
+            refresh(c).await?;
             for (name, seen) in &states {
                 if status(c, name).await? != *seen {
                     return Ok(true);
@@ -727,6 +729,16 @@ fn forget_if_failed<T>(slot: &mut Option<Connection>, result: &Result<T>) {
     }
 }
 
+/// A listed mailbox's path, as uplink names a folder: its name decoded,
+/// `/` between levels.
+pub(super) fn path(name: &Name) -> Result<String> {
+    let path = names::decode(name.name())?;
+    Ok(match name.delimiter() {
+        Some(delimiter) if delimiter != "/" => path.replace(delimiter, "/"),
+        _ => path,
+    })
+}
+
 /// The folders uplink shows: all that can hold mail, but for the virtual
 /// ones that show what others hold (`\All`, `\Flagged`); and the
 /// special-use ones the server lacks, to be created when needed.
@@ -748,12 +760,7 @@ async fn folders(c: &mut Connection) -> Result<Vec<Folder>> {
         }) {
             continue;
         }
-        let display = names::decode(name.name())?;
-        let display = match name.delimiter() {
-            Some(delimiter) if delimiter != "/" => display.replace(delimiter, "/"),
-            _ => display,
-        };
-        listed.push((name.name().to_owned(), display, attributes.to_vec()));
+        listed.push((name.name().to_owned(), path(name)?, attributes.to_vec()));
     }
     // A role is the folder with its attribute, else the first of its names.
     let mut roles: HashMap<String, &str> = HashMap::new();
@@ -844,6 +851,15 @@ async fn select(c: &mut Connection, name: &str) -> Result<u32, ImapError> {
     mailbox
         .uid_validity
         .ok_or_else(|| ImapError::Bad(format!("{name} has no UIDVALIDITY")))
+}
+
+/// Brings what the connection sees of the folder selected, if any, up to
+/// date, so that STATUS tells of it as it is: of the folder selected, a
+/// server may answer as the connection last saw it (Dovecot does; RFC 9051
+/// §6.3.11 asks clients not to ask).
+async fn refresh(c: &mut Connection) -> Result<()> {
+    c.session.noop().await?;
+    Ok(())
 }
 
 async fn status(c: &mut Connection, name: &str) -> Result<FolderState> {
