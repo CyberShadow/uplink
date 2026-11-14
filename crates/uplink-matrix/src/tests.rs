@@ -762,8 +762,12 @@ async fn messages_go_only_to_known_rooms() {
 
 mod membership {
     use super::*;
-    use crate::membership::MembershipChanged;
+    use crate::{
+        membership::Memberships,
+        reconciler::{Claimed, Kind, Pushed, Read},
+    };
     use uplink_protocol::{matrix::MembershipChange, ErrorCode};
+    use uplink_tx_log::reconcile::Ended;
 
     impl Db {
         /// Syncs the room with `membership`, and no events.
@@ -816,16 +820,38 @@ mod membership {
             }
         }
 
-        /// The homeserver did as asked, or refused.
-        async fn reconcile(&self, change: MembershipChange, refused: Option<&str>) {
+        /// The sync task pushes the membership asked for, which ends so.
+        async fn push_membership(&self, ended: Ended) {
             let room = self.room().await.id;
-            self.observe(MembershipChanged {
+            self.observe(Claimed::<Memberships>::new(vec![(room, String::new())]))
+                .await
+                .unwrap();
+            let [stored] = &self.reconciling()[..] else {
+                panic!("one room")
+            };
+            let value = stored.field.attempt.clone().unwrap().value;
+            self.observe(Pushed::<Memberships> {
                 room,
-                change,
-                refused: refused.map(Into::into),
+                key: String::new(),
+                value,
+                ended,
             })
             .await
             .unwrap();
+        }
+
+        /// The sync task reads back the room's membership.
+        async fn read_membership(&self, read: Membership) {
+            let room = self.room().await.id;
+            let as_of = self.as_of();
+            self.observe(Read::<Memberships> { room, read, as_of })
+                .await
+                .unwrap();
+        }
+
+        fn reconciling(&self) -> Vec<crate::reconciler::Stored<Membership>> {
+            let conn = uplink_storage::open_reader(self._dir.path()).unwrap();
+            Memberships::reconciling(&conn, "mx").unwrap()
         }
 
         async fn state(&self) -> (Membership, Option<MembershipChange>) {
@@ -866,7 +892,13 @@ mod membership {
         let db = Db::new();
         db.sync_membership(Membership::Invited).await;
         let join = db.change(MembershipChange::Join).await;
-        db.reconcile(MembershipChange::Join, None).await;
+        db.push_membership(Ended::Applied).await;
+        assert_eq!(
+            db.state().await,
+            (Membership::Invited, Some(MembershipChange::Join)),
+            "until confirmed"
+        );
+        db.read_membership(Membership::Joined).await;
         assert_eq!(db.state().await, (Membership::Joined, None));
         let leave = db.dispatcher.undo(join).await.unwrap();
         assert_eq!(
@@ -874,7 +906,8 @@ mod membership {
             (Membership::Joined, Some(MembershipChange::Leave))
         );
         // Left: the room is listed no more, unless joining it again.
-        db.reconcile(MembershipChange::Leave, None).await;
+        db.push_membership(Ended::Applied).await;
+        db.read_membership(Membership::Left).await;
         let ServerResponse::Rooms { rooms, .. } = db.matrix.list_rooms().await.unwrap() else {
             panic!()
         };
@@ -884,7 +917,7 @@ mod membership {
             db.state().await,
             (Membership::Left, Some(MembershipChange::Join))
         );
-        // The sync's view settles it as well as the sync task's report.
+        // A sync settles it as well as a read back.
         db.sync_membership(Membership::Joined).await;
         assert_eq!(db.state().await, (Membership::Joined, None));
     }
@@ -896,6 +929,38 @@ mod membership {
             None => vec![],
             other => panic!("{other:?}"),
         }
+    }
+
+    /// Undoing a join while it is pushed: it may land, so the room is
+    /// left after it, rather than kept invited.
+    #[tokio::test]
+    async fn undoing_a_join_in_flight_leaves_after_it() {
+        let db = Db::new();
+        db.sync_membership(Membership::Invited).await;
+        let join = db.change(MembershipChange::Join).await;
+        let room = db.room().await.id;
+        db.observe(Claimed::<Memberships>::new(vec![(room, String::new())]))
+            .await
+            .unwrap();
+        db.dispatcher.undo(join).await.unwrap();
+        assert_eq!(
+            db.state().await,
+            (Membership::Invited, Some(MembershipChange::Leave))
+        );
+        db.observe(Pushed::<Memberships> {
+            room,
+            key: String::new(),
+            value: Membership::Joined,
+            ended: Ended::Applied,
+        })
+        .await
+        .unwrap();
+        let wanted: Vec<_> = db
+            .reconciling()
+            .iter()
+            .filter_map(|r| r.field.wanted().copied())
+            .collect();
+        assert_eq!(wanted, [Membership::Left]);
     }
 
     #[tokio::test]
@@ -924,8 +989,10 @@ mod membership {
         assert_eq!(code, ErrorCode::Conflict, "a change is pending");
 
         // Refused: still asked for, and not asked again, until undone.
-        db.reconcile(MembershipChange::Join, Some("M_FORBIDDEN"))
-            .await;
+        db.push_membership(Ended::NotApplied {
+            refused: Some("M_FORBIDDEN".into()),
+        })
+        .await;
         let room = db.room().await;
         assert_eq!(
             (room.membership, room.pending),
@@ -933,8 +1000,7 @@ mod membership {
         );
         assert_eq!(room.membership_error.as_deref(), Some("M_FORBIDDEN"));
         assert_eq!(memberships(&db)[0].refused.as_deref(), Some("M_FORBIDDEN"));
-        let conn = uplink_storage::open_reader(db._dir.path()).unwrap();
-        assert!(crate::membership::wanted(&conn, "mx").unwrap().is_empty());
+        assert!(db.reconciling().iter().all(|r| r.field.wanted().is_none()));
         db.dispatcher.undo(join).await.unwrap();
         let room = db.room().await;
         assert_eq!((room.pending, room.membership_error), (None, None));
@@ -958,8 +1024,10 @@ mod membership {
         let db = Db::new();
         db.sync_membership(Membership::Invited).await;
         db.change(MembershipChange::Join).await;
-        db.reconcile(MembershipChange::Join, Some("M_FORBIDDEN"))
-            .await;
+        db.push_membership(Ended::NotApplied {
+            refused: Some("M_FORBIDDEN".into()),
+        })
+        .await;
         db.sync_membership(Membership::Joined).await;
         let room = db.room().await;
         assert_eq!((room.pending, room.membership_error), (None, None));

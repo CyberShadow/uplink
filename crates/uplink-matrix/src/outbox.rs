@@ -4,8 +4,7 @@
 //! account's changes are not reaching its homeserver.
 
 use crate::{
-    membership::parse_desired,
-    room_tags,
+    membership, room_tags,
     rooms::{ACCOUNT_KIND, UNSENT_RECEIPT},
     send, space_order,
 };
@@ -39,28 +38,36 @@ pub fn outbox(tx: &Transaction) -> Result<Vec<AccountOutbox>> {
     }
     let memberships: Vec<(String, PendingMembership)> = tx
         .prepare(
-            "SELECT r.account_id, r.id, r.desired, r.membership_error, t.id, t.description, t.ts
-             FROM matrix_room r LEFT JOIN tx_log t ON t.id = r.membership_by
-             WHERE r.desired IS NOT NULL
+            "SELECT r.account_id, r.id, r.membership_field, t.id, t.description, t.ts
+             FROM matrix_room r JOIN tx_log t ON t.id = r.membership_by
              ORDER BY r.account_id, r.membership_by DESC",
         )?
         .query_map([], |r| {
             Ok((
                 r.get(0)?,
-                PendingMembership {
-                    room: RoomId(r.get(1)?),
-                    change: parse_desired(Some(&r.get::<_, String>(2)?)).expect("desired is set"),
-                    // Set with `desired`: an error if not.
-                    op: PendingOp {
-                        id: TxLogId(r.get(4)?),
-                        description: r.get(5)?,
-                        ts: r.get(6)?,
-                    },
-                    refused: r.get(3)?,
+                RoomId(r.get(1)?),
+                r.get::<_, String>(2)?,
+                PendingOp {
+                    id: TxLogId(r.get(3)?),
+                    description: r.get(4)?,
+                    ts: r.get(5)?,
                 },
             ))
         })?
-        .collect::<Result<_, _>>()?;
+        .map(|row| {
+            let (account, room, field, op) = row?;
+            let field = membership::parse_field(&field)?;
+            Ok((
+                account,
+                PendingMembership {
+                    room,
+                    change: membership::change_to(field.desired),
+                    op,
+                    refused: field.decision.as_ref().map(|d| d.reason().to_owned()),
+                },
+            ))
+        })
+        .collect::<Result<_>>()?;
     for (account, membership) in memberships {
         accounts
             .entry(account)
@@ -225,7 +232,7 @@ pub(crate) fn pending_rooms(conn: &Connection, account: &str) -> Result<PendingR
         .collect::<Result<_, _>>()?;
     Ok(PendingRooms(
         conn.prepare(&format!(
-            "SELECT r.id, r.desired, r.membership_error,
+            "SELECT r.id, r.desired, r.membership_decision,
                     r.membership = 'joined' AND {UNSENT_RECEIPT} AS receipt,
                     r.space_order_by, r.space_order_decision
              FROM matrix_room r

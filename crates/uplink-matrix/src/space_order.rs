@@ -7,7 +7,10 @@
 
 use anyhow::{bail, ensure, Context, Result};
 use matrix_sdk::ruma::{
-    api::{client::config::get_room_account_data, error::ErrorKind},
+    api::{
+        client::config::{get_room_account_data, set_room_account_data},
+        error::ErrorKind,
+    },
     events::{AnyRoomAccountDataEventContent, RoomAccountDataEventType},
     serde::Raw,
 };
@@ -25,7 +28,7 @@ use uplink_tx_log::{
 
 use crate::{
     outbox,
-    reconciler::{Kind, Stored},
+    reconciler::{Homeserver, Kind, RoomIdRef, Stored},
 };
 
 /// The room account data's event type, as Element names it.
@@ -234,7 +237,8 @@ impl Kind for Orders {
     }
 
     async fn push(
-        room: &matrix_sdk::Room,
+        homeserver: &Homeserver,
+        room: &RoomIdRef,
         _key: &str,
         order: &Option<String>,
     ) -> matrix_sdk::Result<()> {
@@ -244,21 +248,23 @@ impl Kind for Orders {
             None => json!({}),
         };
         let content = serde_json::value::to_raw_value(&content).expect("JSON serializes");
-        room.set_account_data_raw(
+        let request = set_room_account_data::v3::Request::new_raw(
+            homeserver.user.clone(),
+            room.to_owned(),
             RoomAccountDataEventType::from(EVENT_TYPE),
             Raw::<AnyRoomAccountDataEventContent>::from_json(content),
-        )
-        .await
-        .map(drop)
+        );
+        homeserver.client.send(request).await?;
+        Ok(())
     }
 
-    async fn read(room: &matrix_sdk::Room) -> Result<Option<String>> {
+    async fn read(homeserver: &Homeserver, room: &RoomIdRef) -> Result<Option<String>> {
         let request = get_room_account_data::v3::Request::new(
-            room.own_user_id().to_owned(),
-            room.room_id().to_owned(),
+            homeserver.user.clone(),
+            room.to_owned(),
             RoomAccountDataEventType::from(EVENT_TYPE),
         );
-        match room.client().send(request).await {
+        match homeserver.client.send(request).await {
             Ok(response) => {
                 let content: serde_json::Value =
                     serde_json::from_str(response.account_data.json().get())?;

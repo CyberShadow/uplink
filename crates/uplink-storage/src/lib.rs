@@ -624,7 +624,7 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let conn = open(dir.path()).unwrap();
+        let conn = migrated_to(dir.path(), 24);
         let rooms: Vec<(i64, Option<i64>, Option<String>)> = conn
             .prepare("SELECT id, membership_by, membership_error FROM matrix_room ORDER BY id")
             .unwrap()
@@ -737,6 +737,50 @@ mod tests {
                 (Some("b".into()), Some(1), None),
                 (Some("c".into()), Some(1), refused),
                 (Some("d".into()), None, None),
+            ]
+        );
+    }
+
+    /// Memberships become reconciled fields (V0071): pending while they
+    /// differ from what was had, refused as they were.
+    #[test]
+    fn memberships_become_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = migrated_to(dir.path(), 70);
+        conn.execute_batch(
+            r#"INSERT INTO account (id, kind) VALUES ('mx', 'matrix');
+               INSERT INTO tx_log (id, ts, description, op_type, op_json, inverse_type,
+                                   inverse_json, events_json)
+               VALUES (1, 0, '', 'matrix.change_membership', '{}',
+                       'matrix.revert_membership', '{}', '[]');
+               INSERT INTO matrix_room (id, account_id, room_id, name, encrypted, membership,
+                                        desired, membership_by, membership_error)
+               VALUES (1, 'mx', '!a:x', 'A', 0, 'joined', NULL, NULL, NULL),
+                      (2, 'mx', '!b:x', 'B', 0, 'invited', 'joined', 1, NULL),
+                      (3, 'mx', '!c:x', 'C', 0, 'joined', 'left', 1, 'M_FORBIDDEN');"#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open(dir.path()).unwrap();
+        type Member = (String, Option<String>, Option<i64>, Option<String>);
+        let rooms: Vec<Member> = conn
+            .prepare(
+                "SELECT membership, desired, membership_by, membership_decision
+                 FROM matrix_room ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let refused = Some(r#"{"refused":"M_FORBIDDEN"}"#.into());
+        assert_eq!(
+            rooms,
+            [
+                ("joined".into(), None, None, None),
+                ("invited".into(), Some("joined".into()), Some(1), None),
+                ("joined".into(), Some("left".into()), Some(1), refused),
             ]
         );
     }

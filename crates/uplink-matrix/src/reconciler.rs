@@ -1,13 +1,13 @@
 //! How the sender reconciles rooms' fields with the homeserver (SPEC
-//! §6.6): a [`Kind`] of field (a room's tags, a space's order) says how
-//! its fields are stored, pushed and read back; the observations here
-//! record, for any kind, what the sender does to them: claiming pushes,
-//! how each ended, what was read back, and pushes whose outcome became
-//! unknown or expired.
+//! §6.6): a [`Kind`] of field (a room's tags, a space's order, a
+//! membership) says how its fields are stored, pushed and read back; the
+//! observations here record, for any kind, what the sender does to them:
+//! claiming pushes, how each ended, what was read back, and pushes whose
+//! outcome became unknown or expired.
 
 use anyhow::Result;
 use serde::{de::DeserializeOwned, Serialize};
-use std::{fmt::Debug, future::Future, marker::PhantomData};
+use std::{collections::BTreeSet, fmt::Debug, future::Future, marker::PhantomData};
 use uplink_protocol::{
     matrix::{RoomId, RoomsChanged},
     ServerEvent, TxLogId,
@@ -19,6 +19,9 @@ use uplink_tx_log::{
 };
 
 use crate::{outbox, rooms};
+
+/// A room's id as Matrix has it.
+pub type RoomIdRef = matrix_sdk::ruma::RoomId;
 
 /// A room's field, as stored, of an account.
 #[derive(Debug, Clone)]
@@ -55,14 +58,32 @@ pub trait Kind: Send + Sync + 'static {
     /// The log's description of a push of the room's (named `room`) field.
     fn pushed(room: &str, key: &str, value: &Self::Value, ended: &Ended) -> String;
 
-    /// Sets the field on the homeserver.
+    /// Whether the room, as listed, shows the field otherwise as `after`
+    /// than as `before`: by its desired value, unless the kind shows more.
+    fn shows_otherwise(before: &Field<Self::Value>, after: &Field<Self::Value>) -> bool {
+        before.desired != after.desired
+    }
+
+    /// Sets the field on the homeserver, by a request of its own: not the
+    /// SDK's room methods, which skip, or take for done, what its store
+    /// says is so already.
     fn push(
-        room: &matrix_sdk::Room,
+        homeserver: &Homeserver,
+        room: &RoomIdRef,
         key: &str,
         value: &Self::Value,
     ) -> impl Future<Output = matrix_sdk::Result<()>> + Send;
     /// Reads the room's fields from the homeserver.
-    fn read(room: &matrix_sdk::Room) -> impl Future<Output = Result<Self::Read>> + Send;
+    fn read(
+        homeserver: &Homeserver,
+        room: &RoomIdRef,
+    ) -> impl Future<Output = Result<Self::Read>> + Send;
+}
+
+/// The account's homeserver, as the sender asks it.
+pub struct Homeserver {
+    pub client: matrix_sdk::Client,
+    pub user: matrix_sdk::ruma::OwnedUserId,
 }
 
 /// The fields whose pushes the sender claims, in one entry (SPEC
@@ -121,10 +142,10 @@ impl<K: Kind> Observation for Pushed<K> {
     fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
         let before = outbox::pending_rooms(tx, account)?;
         let mut field = K::load(tx, self.room, &self.key)?;
-        let shown = field.desired.clone();
+        let shown = field.clone();
         field.ended(self.ended.clone(), this_entry(tx)?)?;
         K::store(tx, self.room, &self.key, &field)?;
-        let changed = field.desired != shown;
+        let changed = K::shows_otherwise(&shown, &field);
         let name = rooms::name(tx, self.room)?;
         Ok(Observed {
             description: K::pushed(&name, &self.key, &self.value, &self.ended),
@@ -183,8 +204,10 @@ impl<K: Kind> Observation for Settled<K> {
     const KIND: &'static str = K::SETTLED;
 
     fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
+        let before_outbox = outbox::pending_rooms(tx, account)?;
         let at = this_entry(tx)?;
         let mut settled = 0;
+        let mut shown = BTreeSet::new();
         for mut stored in K::reconciling(tx, account)? {
             let field = &mut stored.field;
             let before = field.clone();
@@ -196,7 +219,19 @@ impl<K: Kind> Observation for Settled<K> {
             if *field != before {
                 K::store(tx, stored.room, &stored.key, field)?;
                 settled += 1;
+                if K::shows_otherwise(&before, field) {
+                    shown.insert(stored.room);
+                }
             }
+        }
+        let mut events = vec![];
+        if !shown.is_empty() {
+            events.push(ServerEvent::RoomsChanged(RoomsChanged {
+                rooms: shown.into_iter().collect(),
+            }));
+        }
+        if outbox::pending_rooms(tx, account)? != before_outbox {
+            events.push(outbox::outbox_changed(account));
         }
         let what = K::WHAT;
         Ok(Observed {
@@ -205,7 +240,7 @@ impl<K: Kind> Observation for Settled<K> {
             } else {
                 format!("Took {settled} {what} set or not on the homeserver for good")
             },
-            events: vec![],
+            events,
         })
     }
 }

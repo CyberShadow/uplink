@@ -994,8 +994,10 @@ mod tests {
         idle_minutes: 5,
     };
 
-    /// A room for the account `mx`, joined, of these events.
+    /// A room for the account `mx`, joined, of these events, synced by a
+    /// request sent after `as_of`.
     fn room(
+        as_of: uplink_protocol::TxLogId,
         room_id: &str,
         membership: Membership,
         events: Vec<uplink_matrix::rooms::ObservedEvent>,
@@ -1003,7 +1005,7 @@ mod tests {
         Synced {
             next_batch: "next".into(),
             packs: None,
-            as_of: uplink_protocol::TxLogId(0),
+            as_of,
             rooms: vec![ObservedRoom {
                 room_id: room_id.into(),
                 name: room_id.into(),
@@ -1076,14 +1078,17 @@ mod tests {
                 registry,
                 hub.clone(),
             );
+            // Each synced as the log is then.
+            let log = uplink_storage::open_reader(dir.path()).unwrap();
+            let as_of = || uplink_tx_log::as_of(&log).unwrap();
             let synced = Synced {
                 rooms: (0..rooms)
                     .flat_map(|r| {
                         let events = (0..3).map(|m| message(format!("$e{r}-{m}"))).collect();
-                        room(&format!("!r{r}:x"), Membership::Joined, events).rooms
+                        room(as_of(), &format!("!r{r}:x"), Membership::Joined, events).rooms
                     })
                     .collect(),
-                ..room("!r0:x", Membership::Joined, vec![])
+                ..room(as_of(), "!r0:x", Membership::Joined, vec![])
             };
             dispatcher.observe("mx".into(), synced).await.unwrap();
             let reader = uplink_storage::open_reader(dir.path()).unwrap();
@@ -1145,6 +1150,7 @@ mod tests {
             let (badged, _) = items.badged().await.unwrap();
             let mut entries = hub.subscribe();
             let more = room(
+                as_of(),
                 &format!("!r{}:x", rooms / 2),
                 Membership::Joined,
                 vec![message("$more".into())],
@@ -1208,6 +1214,8 @@ mod tests {
             hub.clone(),
         );
         let store = uplink_storage::store::Store::mail(dir.path());
+        // Each listed as the log is then.
+        let reader = uplink_storage::open_reader(dir.path()).unwrap();
         let observed = |labels, added, updated| MailboxObserved {
             account_kind: "gmail",
             labels,
@@ -1376,6 +1384,7 @@ mod tests {
                     let id = format!("!r{}:x", step / 6 % 3);
                     let event = format!("$e{step}");
                     let mut synced = room(
+                        uplink_tx_log::as_of(&reader).unwrap(),
                         &id,
                         Membership::Joined,
                         vec![message(&event, step % 4 == 2, step % 8 == 2)],
@@ -1386,7 +1395,12 @@ mod tests {
                     dispatcher.observe("mx".into(), synced).await.unwrap();
                     // And now and then an invitation.
                     if step % 4 == 2 {
-                        let invite = room(&format!("!i{step}:x"), Membership::Invited, vec![]);
+                        let invite = room(
+                            uplink_tx_log::as_of(&reader).unwrap(),
+                            &format!("!i{step}:x"),
+                            Membership::Invited,
+                            vec![],
+                        );
                         dispatcher.observe("mx".into(), invite).await.unwrap();
                     }
                 }
@@ -1623,6 +1637,8 @@ mod tests {
             hub.clone(),
         );
         let store = uplink_storage::store::Store::mail(dir.path());
+        // Each listed as the log is then.
+        let reader = uplink_storage::open_reader(dir.path()).unwrap();
         let observed = |labels, added| MailboxObserved {
             account_kind: "gmail",
             labels,
@@ -1683,6 +1699,7 @@ mod tests {
             }
         };
         let matrix = |room| dispatcher.observe("mx".into(), room);
+        let as_of = || uplink_tx_log::as_of(&reader).unwrap();
         let items = Items::new(
             vec![uplink_storage::open_reader(dir.path()).unwrap()],
             vec![mail::ConfiguredAccount {
@@ -1705,7 +1722,7 @@ mod tests {
             hub.attended(),
         );
         // The account's first sync, whose invitation is no news.
-        matrix(room("!old:x", Membership::Invited, vec![]))
+        matrix(room(as_of(), "!old:x", Membership::Invited, vec![]))
             .await
             .unwrap();
         mail(vec![
@@ -1715,10 +1732,15 @@ mod tests {
         ])
         .await
         .unwrap();
-        matrix(room("!r:x", Membership::Joined, vec![message("$1")]))
-            .await
-            .unwrap();
-        matrix(room("!i:x", Membership::Invited, vec![]))
+        matrix(room(
+            as_of(),
+            "!r:x",
+            Membership::Joined,
+            vec![message("$1")],
+        ))
+        .await
+        .unwrap();
+        matrix(room(as_of(), "!i:x", Membership::Invited, vec![]))
             .await
             .unwrap();
         // As home's second bucket has it, after one of what is starred.
@@ -1754,9 +1776,14 @@ mod tests {
         mail(vec![entry("m3", "t", &["INBOX", "UNREAD"])])
             .await
             .unwrap();
-        matrix(room("!r:x", Membership::Joined, vec![message("$2")]))
-            .await
-            .unwrap();
+        matrix(room(
+            as_of(),
+            "!r:x",
+            Membership::Joined,
+            vec![message("$2")],
+        ))
+        .await
+        .unwrap();
         let mut came = unseen().await;
         came.sort();
         assert_eq!(came, ["$2", "s m3"]);

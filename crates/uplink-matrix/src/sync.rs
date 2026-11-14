@@ -12,8 +12,8 @@ use crate::{
     bridge, client,
     crawl::Crawler,
     image_packs, markdown,
-    membership::{self, MembershipChanged},
-    reconciler::{self, Claimed, Kind, Pushed, Settled},
+    membership::Memberships,
+    reconciler::{self, Claimed, Homeserver, Kind, Pushed, Settled},
     room_tags::{self, Tags},
     rooms::{
         self, Decrypted, ObservedEvent, ObservedInvitation, ObservedRoom, Push, ReceiptSent,
@@ -68,8 +68,8 @@ use tokio::sync::{
 use uplink_config::MatrixAccountConfig;
 use uplink_protocol::{
     matrix::{
-        Bridge, Encryption, MatrixContent, MemberAction, Membership, MembershipChange,
-        ReceiptsChanged, RoomMember, SecurityChanged, TextFormat, Typing,
+        Bridge, Encryption, MatrixContent, MemberAction, Membership, ReceiptsChanged, RoomMember,
+        SecurityChanged, TextFormat, Typing,
     },
     LogEntry, Notice, Source,
 };
@@ -1024,50 +1024,18 @@ impl Sender {
             .await?;
         }
         let now = send::now_ms();
+        self.observe(Settled::<Memberships>::new(now, true)).await?;
         self.observe(Settled::<Orders>::new(now, true)).await?;
         self.observe(Settled::<Tags>::new(now, true)).await
     }
 
     async fn step(&self) -> Result<()> {
-        self.change_memberships().await?;
+        self.reconcile::<Memberships>().await?;
         self.reconcile::<Orders>().await?;
         self.reconcile::<Tags>().await?;
         self.send_due().await?;
         self.take_back_due().await?;
         self.push_receipts().await
-    }
-
-    /// Joins and leaves the rooms the user asked to.
-    async fn change_memberships(&self) -> Result<()> {
-        let account = self.account.clone();
-        let wanted = read(&self.reader, move |conn| membership::wanted(conn, &account)).await?;
-        for wanted in wanted {
-            let room_id = <&RoomId>::try_from(wanted.room_id.as_str())?;
-            let done = match wanted.change {
-                MembershipChange::Join => self.client.join_room_by_id(room_id).await.map(drop),
-                MembershipChange::Leave => {
-                    self.client
-                        .get_room(room_id)
-                        .with_context(|| format!("room {room_id} is not in the client"))?
-                        .leave()
-                        .await
-                }
-            };
-            let refused = match &done {
-                Ok(()) => None,
-                Err(e) => match refusal(e) {
-                    Some(refused) => Some(refused),
-                    None => return done.context("changing a room's membership"),
-                },
-            };
-            self.observe(MembershipChanged {
-                room: wanted.room,
-                change: wanted.change,
-                refused,
-            })
-            .await?;
-        }
-        Ok(())
     }
 
     /// Pushes the fields of kind `K` the user changed, and reads back what
@@ -1107,7 +1075,7 @@ impl Sender {
             }
             for (room, room_id) in read_back {
                 let as_of = read(&self.reader, uplink_tx_log::as_of).await?;
-                let read = K::read(&self.room(&room_id)?).await?;
+                let read = K::read(&self.homeserver()?, room_id.as_str().try_into()?).await?;
                 self.observe(reconciler::Read::<K> { room, read, as_of })
                     .await?;
             }
@@ -1129,7 +1097,8 @@ impl Sender {
             else {
                 continue;
             };
-            let done = K::push(&self.room(&stored.room_id)?, &stored.key, &attempt.value).await;
+            let room_id = <&RoomId>::try_from(stored.room_id.as_str())?;
+            let done = K::push(&self.homeserver()?, room_id, &stored.key, &attempt.value).await;
             let ended = ended(&done);
             if let (Err(e), Ended::NotApplied { refused: None } | Ended::Unknown { .. }) =
                 (done, &ended)
@@ -1148,11 +1117,15 @@ impl Sender {
         failed.map_or(Ok(()), Err)
     }
 
-    fn room(&self, room_id: &str) -> Result<Room> {
-        let room_id = <&RoomId>::try_from(room_id)?;
-        self.client
-            .get_room(room_id)
-            .with_context(|| format!("room {room_id} is not in the client"))
+    fn homeserver(&self) -> Result<Homeserver> {
+        Ok(Homeserver {
+            client: self.client.clone(),
+            user: self
+                .client
+                .user_id()
+                .context("the client has no user")?
+                .to_owned(),
+        })
     }
 
     /// Until the user changes something, or the interval passes.

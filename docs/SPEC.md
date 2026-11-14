@@ -616,12 +616,12 @@ CREATE TABLE matrix_room (
   room_id      TEXT NOT NULL,        -- !opaque:server
   name         TEXT NOT NULL,        -- display name, as the SDK computes it
   encrypted    INTEGER NOT NULL,
-  membership   TEXT NOT NULL,        -- 'joined' | 'invited' | 'left'
   read_up_to   INTEGER REFERENCES matrix_event(id), -- desired read marker
   read_pushed  INTEGER REFERENCES matrix_event(id), -- last receipt sent/seen
-  desired      TEXT,                 -- 'joined' | 'left' asked for (§9.7)
-  membership_by INTEGER REFERENCES tx_log(id), -- the op that asked; set iff desired (V0024)
-  membership_error TEXT,             -- the homeserver's refusal of what is asked for
+  membership_field TEXT NOT NULL,    -- Field<Membership> as JSON (§6.6, §9.7; V0071)
+  -- generated from it: membership ('joined' | 'invited' | 'left', as had),
+  -- desired and membership_by (asked for, and by which op, while pending),
+  -- membership_decision (a refusal waiting for the user)
   UNIQUE (account_id, room_id)
 );
 CREATE TABLE matrix_event (
@@ -1662,10 +1662,9 @@ the providers, as last observed, match what the user has done.
 
 **Not yet so.** The crates predate this model, and each reconciles in
 its own way: the model is implemented, and simulated, as
-`uplink_tx_log::reconcile`, and Matrix room tags and space orders use
-it (§9.5); nothing uses limbo yet. Known to fail meanwhile: Matrix
-membership (stale syncs overwrite pushes; undo during a push lost);
-calendar answers (an undo during the push lost); mail (a step's failure
+`uplink_tx_log::reconcile`, and Matrix room tags, space orders (§9.5)
+and memberships (§9.7) use it; nothing uses limbo yet. Known to fail
+meanwhile: calendar answers (an undo during the push lost); mail (a step's failure
 loses the outcomes of its earlier pushes, so an undo then is lost); IMAP
 (a push after a move goes to the old UID); Matrix pins (built from the
 SDK's store).
@@ -3324,24 +3323,29 @@ which a verified device gives.
 
 ### 9.7 Joining and leaving
 
-Membership is desired state (§6.6). `ChangeMembership { room, change }`
-(join an invitation; leave a room, or decline an invitation) records
-`matrix_room.desired`, and the op that asked (`membership_by`); the
-account's sender loop asks the homeserver (`join_room_by_id`,
-`Room::leave`) and records the outcome as an observation: the
-membership, or the refusal in `membership_error`. A refused change stays
-asked for, and is not asked again: the outbox lists it as needing a
-decision (§6.6), which undoing the op makes, keeping the membership as
-it is (an op changes one room, so its undo is that decision). Sync
-clears `desired` once it sees that membership, however it came about.
-Rooms left are not listed, unless being joined again.
+Membership is desired state (§6.6), a field of each room
+(`matrix_room.membership_field`, V0071), reconciled by the model.
+`ChangeMembership { room, change }` (join an invitation; leave a room,
+or decline an invitation) wants joined or left; the account's sender
+pushes it by a request of its own (`join_room_by_id`, `leave_room`: not
+the SDK's room methods, which need the room in the SDK's store, and the
+SDK forgets a room declined) and reads it back by a sync of that room
+alone from the start, including rooms left (joined, invited, or left
+when absent: plain state requests are forbidden in rooms one is not
+in). Sync observes every room's membership as of the request (§6.6.2),
+so one older than a push does not undo it. A refused change stays asked
+for, and is not asked again: the outbox lists it as needing a decision
+(§6.6), which undoing the op makes, keeping the membership as it is (an
+op changes one room, so its undo is that decision). Rooms left are not
+listed, unless being joined again.
 
-Undo goes back to how the room was, as far as possible: a change not yet
-made is cancelled; one made is reversed (a joined room is left; a room
-left is joined again, which the homeserver refuses unless the room lets
-one in). The inverse decides which when it is applied, since that is
-when it is known, and is refused if the membership changed otherwise;
-its own inverse redoes. `tests/conduit.rs` joins an invitation, undoes
+Undo goes back to how the room was, as far as possible: a change nothing
+of which was asked of the homeserver is cancelled; else it is reversed
+(a joined room is left; a room left is joined again, which the
+homeserver refuses unless the room lets one in), after any push in
+flight. The inverse decides which when it is applied, since that is
+when it is known, and is refused if another membership was asked for
+since; its own inverse redoes. `tests/conduit.rs` joins an invitation, undoes
 (leaves) and redoes (joins again), and declines another.
 
 Rooms new to uplink are joined at once, as requests of the moment (they

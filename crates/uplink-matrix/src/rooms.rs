@@ -30,12 +30,14 @@ use uplink_protocol::{
     },
     ServerEvent, TxLogId,
 };
-use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
+use uplink_storage::rusqlite::{
+    self, params, types::Type, Connection, OptionalExtension, Row, Transaction,
+};
 use uplink_tx_log::{Applied, Inverse, Observation, Observed, Op};
 
 use crate::{
     html, image_packs,
-    membership::{parse_desired, parse_membership},
+    membership::{self, parse_desired, parse_membership},
     outbox, room_tags, send,
     service::ConfiguredAccount,
     space_order,
@@ -276,14 +278,6 @@ fn message_text(kind: &str, content: &serde_json::Value) -> (Option<String>, Opt
     (text("msgtype"), text("body"))
 }
 
-fn membership_str(membership: Membership) -> &'static str {
-    match membership {
-        Membership::Joined => "joined",
-        Membership::Invited => "invited",
-        Membership::Left => "left",
-    }
-}
-
 fn encryption_str(encryption: Encryption) -> &'static str {
     match encryption {
         Encryption::None => "none",
@@ -341,7 +335,8 @@ impl Observation for Synced {
                 room.membership,
                 room.invitation
             );
-            let (id, upserted) = upsert_room(tx, account, &room)?;
+            let (id, upserted) = upsert_room(tx, account, &room, self.as_of)?;
+            let member = membership::observe(tx, id, room.membership, self.as_of)?;
             let tagged = match &room.tags {
                 Some(tags) => room_tags::observe(tx, id, tags, self.as_of)?,
                 None => false,
@@ -352,8 +347,12 @@ impl Observation for Synced {
                 Some(order) => space_order::observe(tx, id, order.clone(), self.as_of)?,
                 None => false,
             };
-            let changed =
-                set_children(tx, id, &room.children)? || upserted || tagged || invited || ordered;
+            let changed = set_children(tx, id, &room.children)?
+                || upserted
+                || member
+                || tagged
+                || invited
+                || ordered;
             let positions = synced_positions(tx, id, room.events.len())?;
             let inserted = insert_events(tx, id, &room.events, &positions)?;
             if let (true, Some(Some(first))) = (room.limited, inserted.first()) {
@@ -424,16 +423,21 @@ impl Observation for Synced {
     }
 }
 
-/// The room's id, and whether it is new or its name, encryption,
-/// membership, type, avatar, bridge, topic, address, pinned events, power
-/// to pin, member count, space order or being a direct chat changed.
-fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(RoomId, bool)> {
-    let membership = membership_str(room.membership);
+/// The room's id, and whether it is new or its name, encryption, type,
+/// avatar, bridge, topic, address, pinned events, power to pin, member count or
+/// being a direct chat changed. A new room's membership is as observed by
+/// a request sent after `as_of`; an existing one's is the caller's to
+/// observe.
+fn upsert_room(
+    tx: &Transaction,
+    account: &str,
+    room: &ObservedRoom,
+    as_of: TxLogId,
+) -> Result<(RoomId, bool)> {
     type Stored = (
         i64,
         String,
         bool,
-        String,
         bool,
         Option<String>,
         Option<String>,
@@ -453,7 +457,7 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
     let pinned = serde_json::to_string(&room.pinned)?;
     let existing: Option<Stored> = tx
         .query_row(
-            "SELECT id, name, encrypted, membership, space, avatar, topic, joined_members, pinned,
+            "SELECT id, name, encrypted, space, avatar, topic, joined_members, pinned,
                     may_pin, direct, alias, created, bridge_name, bridge_icon
              FROM matrix_room WHERE account_id = ?1 AND room_id = ?2",
             [account, &room.room_id],
@@ -473,7 +477,6 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                     r.get(11)?,
                     r.get(12)?,
                     r.get(13)?,
-                    r.get(14)?,
                 ))
             },
         )
@@ -483,7 +486,6 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
             id,
             name,
             encrypted,
-            old_membership,
             space,
             avatar,
             topic,
@@ -498,7 +500,6 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
         )) => {
             let changed = name != room.name
                 || encrypted != room.encrypted
-                || old_membership != membership
                 || space != room.space
                 || avatar != room.avatar
                 || topic != room.topic
@@ -511,21 +512,15 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                 || old_bridge_name.as_ref() != bridge_name
                 || old_bridge_icon.as_ref() != bridge_icon;
             if changed {
-                // A membership asked for is had, however it came about.
                 tx.execute(
-                    "UPDATE matrix_room SET name = ?1, encrypted = ?2, membership = ?3,
-                       space = ?4, avatar = ?5, topic = ?6, joined_members = ?7, pinned = ?9,
-                       may_pin = ?10, direct = ?11, alias = ?12, created = ?13,
-                       bridge_name = ?14, bridge_icon = ?15,
-                       membership_by = CASE WHEN desired = ?3 THEN NULL ELSE membership_by END,
-                       membership_error =
-                         CASE WHEN desired = ?3 THEN NULL ELSE membership_error END,
-                       desired = CASE WHEN desired = ?3 THEN NULL ELSE desired END
-                     WHERE id = ?8",
+                    "UPDATE matrix_room SET name = ?1, encrypted = ?2,
+                       space = ?3, avatar = ?4, topic = ?5, joined_members = ?6, pinned = ?8,
+                       may_pin = ?9, direct = ?10, alias = ?11, created = ?12,
+                       bridge_name = ?13, bridge_icon = ?14
+                     WHERE id = ?7",
                     params![
                         room.name,
                         room.encrypted,
-                        membership,
                         room.space,
                         room.avatar,
                         room.topic,
@@ -546,7 +541,7 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
         None => {
             let id = tx.query_row(
                 "INSERT INTO matrix_room
-                   (account_id, room_id, name, encrypted, membership, space, avatar, topic,
+                   (account_id, room_id, name, encrypted, membership_field, space, avatar, topic,
                     joined_members, pinned, may_pin, direct, alias, created,
                     bridge_name, bridge_icon)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
@@ -556,7 +551,7 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                     room.room_id,
                     room.name,
                     room.encrypted,
-                    membership,
+                    membership::new_field(room.membership, as_of),
                     room.space,
                     room.avatar,
                     room.topic,
@@ -1298,7 +1293,7 @@ pub fn rooms(
             "SELECT r.id, r.account_id, r.room_id, r.name, r.encrypted, r.membership,
                     (SELECT count(*) FROM matrix_event e WHERE {unread} AND {MAIN}),
                     (SELECT max(ts) FROM matrix_event e WHERE e.room = r.id),
-                    r.read_up_to, r.desired, r.membership_error, r.space, r.avatar,
+                    r.read_up_to, r.desired, r.membership_field, r.space, r.avatar,
                     -- In the space's order: by `order`, those without last.
                     (SELECT json_group_array(child) FROM
                        (SELECT child FROM matrix_space_child c WHERE c.space = r.id
@@ -1373,7 +1368,12 @@ pub fn rooms(
                         _ => unreachable!("a read marker is of a stored event"),
                     },
                     pending: parse_desired(r.get::<_, Option<String>>(9)?.as_deref()),
-                    membership_error: r.get(10)?,
+                    membership_error: membership::parse_field(&r.get::<_, String>(10)?)
+                        .map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(10, Type::Text, e.into())
+                        })?
+                        .decision
+                        .map(|d| d.reason().to_owned()),
                     space: r.get(11)?,
                     avatar: r.get(12)?,
                     bridge: match (r.get(38)?, r.get(39)?) {

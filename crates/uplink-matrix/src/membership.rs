@@ -1,24 +1,35 @@
-//! Joining and leaving rooms (SPEC §9.7), as desired state (§6.6): the
-//! user's op records the membership asked for, and the account's sync task
-//! asks the homeserver for it, then records the outcome. One refused stays
-//! asked for, and refused, until the user decides: undoing the op keeps
-//! the room as it is.
+//! Joining and leaving rooms (SPEC §9.7), as desired state (§6.6), a
+//! field of each room: the user's op records the membership asked for,
+//! and the account's sync task asks the homeserver for it. One refused
+//! stays asked for, and refused, until the user decides: undoing the op
+//! keeps the room as it is.
 //!
 //! Undoing is going back to how the room was, as far as that is still
-//! possible: before the change took effect, it is cancelled; after, it is
-//! reversed (joined rooms are left; rooms left are joined again, which the
-//! homeserver may refuse). If the membership changed otherwise meanwhile,
-//! undo is refused.
+//! possible: before anything was asked of the homeserver, the change is
+//! cancelled; after, it is reversed (joined rooms are left; rooms left are
+//! joined again, which the homeserver may refuse). If another membership
+//! was asked for meanwhile, undo is refused.
 
 use anyhow::{bail, Context, Result};
+use matrix_sdk::ruma::api::client::{
+    filter::FilterDefinition,
+    membership::{join_room_by_id, leave_room},
+    sync::sync_events::{self, v3::Filter},
+};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use uplink_protocol::{
     compose::OutboxChanged,
     matrix::{Membership, MembershipChange, RoomId, RoomsChanged},
-    ServerEvent,
+    ServerEvent, TxLogId,
 };
 use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Transaction};
-use uplink_tx_log::{this_entry, Applied, Conflict, Inverse, Observation, Observed, Op};
+use uplink_tx_log::{
+    reconcile::{Ended, Field},
+    this_entry, Applied, Conflict, Inverse, Op,
+};
+
+use crate::reconciler::{Homeserver, Kind, RoomIdRef, Stored};
 
 pub(crate) fn parse_membership(membership: &str) -> Membership {
     match membership {
@@ -37,13 +48,6 @@ fn target(change: MembershipChange) -> Membership {
     }
 }
 
-fn target_str(change: MembershipChange) -> &'static str {
-    match change {
-        MembershipChange::Join => "joined",
-        MembershipChange::Leave => "left",
-    }
-}
-
 fn opposite(change: MembershipChange) -> MembershipChange {
     match change {
         MembershipChange::Join => MembershipChange::Leave,
@@ -51,51 +55,98 @@ fn opposite(change: MembershipChange) -> MembershipChange {
     }
 }
 
+/// The change that pushes `membership`: leaving for an invitation too,
+/// which no change can bring back, as leaving is nearest to it (the
+/// homeserver keeping it left, the user decides, SPEC §6.6.3).
+pub(crate) fn change_to(membership: Membership) -> MembershipChange {
+    match membership {
+        Membership::Joined => MembershipChange::Join,
+        Membership::Invited | Membership::Left => MembershipChange::Leave,
+    }
+}
+
 /// The desired membership as a change, if one is asked for.
 pub(crate) fn parse_desired(desired: Option<&str>) -> Option<MembershipChange> {
-    desired.map(|desired| match desired {
-        "joined" => MembershipChange::Join,
-        "left" => MembershipChange::Leave,
-        _ => unreachable!("the schema allows no desired membership {desired}"),
-    })
+    desired.map(|desired| change_to(parse_membership(desired)))
+}
+
+/// A room's membership (SPEC §6.6): had (`observed`) or asked for
+/// (`desired`).
+pub type Member = Field<Membership>;
+
+pub(crate) fn parse_field(json: &str) -> Result<Member> {
+    serde_json::from_str(json).with_context(|| format!("a room's membership field: {json}"))
+}
+
+/// The JSON of the field of a room first seen with `membership` by a
+/// request sent after `as_of`.
+pub(crate) fn new_field(membership: Membership, as_of: TxLogId) -> String {
+    serde_json::to_string(&Field::new(membership, as_of)).expect("a field serializes")
+}
+
+fn load(conn: &Connection, room: RoomId) -> Result<Member> {
+    let json: String = conn
+        .query_row(
+            "SELECT membership_field FROM matrix_room WHERE id = ?1",
+            [room.0],
+            |r| r.get(0),
+        )
+        .with_context(|| format!("no room {}", room.0))?;
+    parse_field(&json)
+}
+
+fn store(tx: &Transaction, room: RoomId, field: &Member) -> Result<()> {
+    tx.execute(
+        "UPDATE matrix_room SET membership_field = ?2 WHERE id = ?1",
+        params![room.0, serde_json::to_string(field)?],
+    )?;
+    Ok(())
+}
+
+/// Records the room's membership as observed by a request sent after
+/// `as_of` (SPEC §6.6.2); returns whether it or the change pending
+/// changed.
+pub(crate) fn observe(
+    tx: &Transaction,
+    room: RoomId,
+    membership: Membership,
+    as_of: TxLogId,
+) -> Result<bool> {
+    let mut field = load(tx, room)?;
+    let before = field.clone();
+    field.observe(membership, as_of, this_entry(tx)?)?;
+    store(tx, room, &field)?;
+    Ok(shown(&field) != shown(&before))
+}
+
+/// What a room shows of its membership: as had, the change pending, and
+/// why it waits for the user's decision.
+fn shown(field: &Member) -> (Membership, Option<MembershipChange>, Option<&str>) {
+    let pending = field.opinion.map(|_| change_to(field.desired));
+    let decision = field.decision.as_ref().map(|d| d.reason());
+    (field.observed, pending, decision)
 }
 
 struct State {
     account: String,
     name: String,
-    membership: Membership,
-    desired: Option<MembershipChange>,
+    field: Member,
 }
 
 fn state(tx: &Transaction, room: RoomId) -> Result<State> {
-    tx.query_row(
-        "SELECT account_id, name, membership, desired FROM matrix_room WHERE id = ?1",
-        [room.0],
-        |r| {
-            Ok(State {
-                account: r.get(0)?,
-                name: r.get(1)?,
-                membership: parse_membership(&r.get::<_, String>(2)?),
-                desired: parse_desired(r.get::<_, Option<String>>(3)?.as_deref()),
-            })
-        },
-    )
-    .optional()?
-    .with_context(|| format!("no room {}", room.0))
-}
-
-/// Asks for `desired`, by the op being applied; or for nothing.
-fn desire(tx: &Transaction, room: RoomId, desired: Option<MembershipChange>) -> Result<()> {
-    let by = match desired {
-        Some(_) => Some(this_entry(tx)?.0),
-        None => None,
-    };
-    tx.execute(
-        "UPDATE matrix_room SET desired = ?1, membership_by = ?2, membership_error = NULL
-         WHERE id = ?3",
-        params![desired.map(target_str), by, room.0],
-    )?;
-    Ok(())
+    let (account, name) = tx
+        .query_row(
+            "SELECT account_id, name FROM matrix_room WHERE id = ?1",
+            [room.0],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+        .with_context(|| format!("no room {}", room.0))?;
+    Ok(State {
+        account,
+        name,
+        field: load(tx, room)?,
+    })
 }
 
 /// The room changed, and with it what its account has pending.
@@ -120,17 +171,19 @@ impl Op for ChangeMembership {
     const KIND: &'static str = "matrix.change_membership";
 
     fn apply(self, tx: &Transaction) -> Result<Applied> {
-        let room = state(tx, self.room)?;
-        if room.desired.is_some() {
+        let mut room = state(tx, self.room)?;
+        if room.field.pending() {
             bail!(Conflict(format!("'{}' is changing already", room.name)));
         }
-        if room.membership == target(self.change) {
+        let had = room.field.observed;
+        if had == target(self.change) {
             bail!(Conflict(format!("'{}' is that way already", room.name)));
         }
-        desire(tx, self.room, Some(self.change))?;
+        room.field.want(target(self.change), this_entry(tx)?);
+        store(tx, self.room, &room.field)?;
         let name = &room.name;
         Ok(Applied {
-            description: match (self.change, room.membership) {
+            description: match (self.change, had) {
                 (MembershipChange::Join, _) => format!("Joined '{name}'"),
                 (MembershipChange::Leave, Membership::Invited) => format!("Declined '{name}'"),
                 (MembershipChange::Leave, _) => format!("Left '{name}'"),
@@ -138,15 +191,15 @@ impl Op for ChangeMembership {
             inverse: Inverse::of(&RevertMembership {
                 room: self.room,
                 change: self.change,
-                prior: room.membership,
+                prior: had,
             }),
             events: changed(self.room, &room),
         })
     }
 }
 
-/// Undoes `change`, made when the membership was `prior`: cancels it if it
-/// has not taken effect, or else reverses it.
+/// Undoes `change`, made when the membership was `prior`: cancels it if
+/// nothing of it was asked of the homeserver, or else reverses it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RevertMembership {
@@ -159,24 +212,27 @@ impl Op for RevertMembership {
     const KIND: &'static str = "matrix.revert_membership";
 
     fn apply(self, tx: &Transaction) -> Result<Applied> {
-        let room = state(tx, self.room)?;
-        let name = &room.name;
-        let pending = room.membership == self.prior && room.desired == Some(self.change);
-        let done = room.membership == target(self.change) && room.desired.is_none();
-        if pending {
-            desire(tx, self.room, None)?;
-            Ok(Applied {
+        let mut room = state(tx, self.room)?;
+        let name = room.name.clone();
+        if room.field.desired != target(self.change) {
+            bail!(Conflict(format!("'{name}' changed since")));
+        }
+        let by = this_entry(tx)?;
+        let unasked = room.field.attempt.is_none() && room.field.observed == self.prior;
+        let applied = if unasked {
+            room.field.want(self.prior, by);
+            Applied {
                 description: format!("Kept '{name}' as it was"),
                 inverse: Inverse::of(&ChangeMembership {
                     room: self.room,
                     change: self.change,
                 }),
                 events: changed(self.room, &room),
-            })
-        } else if done {
+            }
+        } else {
             let reverse = opposite(self.change);
-            desire(tx, self.room, Some(reverse))?;
-            Ok(Applied {
+            room.field.want(target(reverse), by);
+            Applied {
                 description: match reverse {
                     MembershipChange::Join => format!("Joined '{name}' again"),
                     MembershipChange::Leave => format!("Left '{name}'"),
@@ -184,82 +240,133 @@ impl Op for RevertMembership {
                 inverse: Inverse::of(&RevertMembership {
                     room: self.room,
                     change: reverse,
-                    prior: room.membership,
+                    prior: target(self.change),
                 }),
                 events: changed(self.room, &room),
-            })
-        } else {
-            bail!(Conflict(format!("'{name}' changed since")))
-        }
+            }
+        };
+        store(tx, self.room, &room.field)?;
+        Ok(applied)
     }
 }
 
-/// A membership change to ask the homeserver for.
-#[derive(Debug, Clone)]
-pub struct Wanted {
-    pub room: RoomId,
-    pub room_id: String,
-    pub change: MembershipChange,
-}
+/// Rooms' memberships, a field of each room.
+pub struct Memberships;
 
-pub fn wanted(conn: &Connection, account: &str) -> Result<Vec<Wanted>> {
-    Ok(conn
-        .prepare(
-            "SELECT id, room_id, desired FROM matrix_room
-             WHERE account_id = ?1 AND desired IS NOT NULL AND desired != membership
-               AND membership_error IS NULL",
+impl Kind for Memberships {
+    type Value = Membership;
+    /// The room's membership.
+    type Read = Membership;
+
+    const CLAIMED: &'static str = "matrix.memberships_claimed";
+    const PUSHED: &'static str = "matrix.membership_changed";
+    const READ: &'static str = "matrix.membership_read";
+    const SETTLED: &'static str = "matrix.membership_pushes_settled";
+    const WHAT: &'static str = "memberships";
+
+    fn load(conn: &Connection, room: RoomId, _key: &str) -> Result<Member> {
+        load(conn, room)
+    }
+
+    fn store(tx: &Transaction, room: RoomId, _key: &str, field: &Member) -> Result<()> {
+        store(tx, room, field)
+    }
+
+    fn reconciling(conn: &Connection, account: &str) -> Result<Vec<Stored<Membership>>> {
+        conn.prepare(
+            "SELECT id, room_id, membership_field FROM matrix_room
+             WHERE account_id = ?1
+               AND (membership_by IS NOT NULL
+                    OR json_extract(membership_field, '$.check') IS NOT NULL)
+             ORDER BY id",
         )?
         .query_map([account], |r| {
-            Ok(Wanted {
-                room: RoomId(r.get(0)?),
-                room_id: r.get(1)?,
-                change: parse_desired(Some(&r.get::<_, String>(2)?)).expect("desired is set"),
-            })
+            Ok((RoomId(r.get(0)?), r.get(1)?, r.get::<_, String>(2)?))
         })?
-        .collect::<Result<_, _>>()?)
-}
+        .map(|row| {
+            let (room, room_id, json) = row?;
+            Ok(Stored {
+                room,
+                room_id,
+                key: String::new(),
+                field: parse_field(&json)?,
+            })
+        })
+        .collect()
+    }
 
-/// The homeserver did as asked; or refused, saying why.
-#[derive(Debug, Serialize)]
-pub struct MembershipChanged {
-    pub room: RoomId,
-    pub change: MembershipChange,
-    pub refused: Option<String>,
-}
+    fn observe(
+        tx: &Transaction,
+        room: RoomId,
+        membership: &Membership,
+        as_of: TxLogId,
+    ) -> Result<bool> {
+        observe(tx, room, *membership, as_of)
+    }
 
-impl Observation for MembershipChanged {
-    const KIND: &'static str = "matrix.membership_changed";
+    fn shows_otherwise(before: &Member, after: &Member) -> bool {
+        shown(before) != shown(after)
+    }
 
-    fn apply(self, _account: &str, tx: &Transaction) -> Result<Observed> {
-        let room = state(tx, self.room)?;
-        // Asked for something else meanwhile (or nothing): that is the
-        // sync task's next step.
-        if room.desired != Some(self.change) {
-            return Ok(Observed {
-                description: format!("Changed '{}', as asked before", room.name),
-                events: vec![],
-            });
-        }
-        match &self.refused {
-            None => tx.execute(
-                "UPDATE matrix_room SET membership = ?1, desired = NULL, membership_by = NULL
-                 WHERE id = ?2",
-                params![target_str(self.change), self.room.0],
-            )?,
-            // Still asked for, until the user decides.
-            Some(error) => tx.execute(
-                "UPDATE matrix_room SET membership_error = ?1 WHERE id = ?2",
-                params![error, self.room.0],
-            )?,
+    fn pushed(room: &str, _key: &str, membership: &Membership, ended: &Ended) -> String {
+        let verb = match change_to(*membership) {
+            MembershipChange::Join => "join",
+            MembershipChange::Leave => "leave",
         };
-        let name = &room.name;
-        Ok(Observed {
-            description: match (&self.refused, self.change) {
-                (None, MembershipChange::Join) => format!("Joined '{name}' on the homeserver"),
-                (None, MembershipChange::Leave) => format!("Left '{name}' on the homeserver"),
-                (Some(error), _) => format!("The homeserver refused to change '{name}': {error}"),
+        match ended {
+            Ended::Applied => match change_to(*membership) {
+                MembershipChange::Join => format!("Joined '{room}' on the homeserver"),
+                MembershipChange::Leave => format!("Left '{room}' on the homeserver"),
             },
-            events: changed(self.room, &room),
+            Ended::NotApplied {
+                refused: Some(error),
+            } => format!("The homeserver refused to {verb} '{room}': {error}"),
+            Ended::NotApplied { refused: None } => {
+                format!("Could not {verb} '{room}' on the homeserver")
+            }
+            Ended::Unknown { .. } => format!("Whether '{room}' was {verb}ed is unknown"),
+        }
+    }
+
+    async fn push(
+        homeserver: &Homeserver,
+        room: &RoomIdRef,
+        _key: &str,
+        membership: &Membership,
+    ) -> matrix_sdk::Result<()> {
+        let client = &homeserver.client;
+        let room = room.to_owned();
+        match change_to(*membership) {
+            MembershipChange::Join => {
+                client.send(join_room_by_id::v3::Request::new(room)).await?;
+            }
+            MembershipChange::Leave => {
+                client.send(leave_room::v3::Request::new(room)).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// By a sync of the room alone, from the start, which tells which of
+    /// joined, invited and left it is (none: never in it, so left).
+    async fn read(homeserver: &Homeserver, room: &RoomIdRef) -> Result<Membership> {
+        let mut filter = FilterDefinition::ignore_all();
+        filter.room.rooms = Some(vec![room.to_owned()]);
+        filter.room.include_leave = true;
+        let mut request = sync_events::v3::Request::new();
+        request.filter = Some(Filter::FilterDefinition(filter));
+        request.timeout = Some(Duration::ZERO);
+        let response = homeserver
+            .client
+            .send(request)
+            .await
+            .context("reading a room's membership")?;
+        Ok(if response.rooms.join.contains_key(room) {
+            Membership::Joined
+        } else if response.rooms.invite.contains_key(room) {
+            Membership::Invited
+        } else {
+            Membership::Left
         })
     }
 }

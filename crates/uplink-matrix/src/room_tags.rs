@@ -8,8 +8,8 @@
 
 use anyhow::{Context, Result};
 use matrix_sdk::ruma::{
-    api::client::tag::get_tags,
-    events::tag::{TagInfo, TagName},
+    api::client::tag::{create_tag, delete_tag, get_tags},
+    events::tag::TagInfo,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
@@ -25,7 +25,7 @@ use uplink_tx_log::{
 
 use crate::{
     outbox,
-    reconciler::{Kind, Stored},
+    reconciler::{Homeserver, Kind, RoomIdRef, Stored},
 };
 
 pub const FAVOURITE: &str = "m.favourite";
@@ -334,20 +334,30 @@ impl Kind for Tags {
         }
     }
 
-    async fn push(room: &matrix_sdk::Room, tag: &str, tagged: &bool) -> matrix_sdk::Result<()> {
-        let tag = TagName::from(tag);
+    async fn push(
+        homeserver: &Homeserver,
+        room: &RoomIdRef,
+        tag: &str,
+        tagged: &bool,
+    ) -> matrix_sdk::Result<()> {
+        let (user, room, tag) = (homeserver.user.clone(), room.to_owned(), tag.to_owned());
+        let client = &homeserver.client;
         if *tagged {
-            room.set_tag(tag, TagInfo::new()).await.map(drop)
+            let request = create_tag::v3::Request::new(user, room, tag, TagInfo::new());
+            client.send(request).await.map(drop)?;
         } else {
-            room.remove_tag(tag).await.map(drop)
+            client
+                .send(delete_tag::v3::Request::new(user, room, tag))
+                .await
+                .map(drop)?;
         }
+        Ok(())
     }
 
-    async fn read(room: &matrix_sdk::Room) -> Result<Vec<String>> {
-        let user = room.own_user_id().to_owned();
-        let request = get_tags::v3::Request::new(user, room.room_id().to_owned());
-        let response = room
-            .client()
+    async fn read(homeserver: &Homeserver, room: &RoomIdRef) -> Result<Vec<String>> {
+        let request = get_tags::v3::Request::new(homeserver.user.clone(), room.to_owned());
+        let response = homeserver
+            .client
             .send(request)
             .await
             .context("reading a room's tags")?;
