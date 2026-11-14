@@ -501,7 +501,7 @@ export type Source = { "type": "user" } | { "type": "account", id: string, };
  * rather than content, since they are stored in the log; clients query
  * what they display.
  */
-export type ServerEvent = { "type": "entries_added" } & EntriesAdded | { "type": "entries_removed" } & EntriesRemoved | { "type": "labels_changed" } & LabelsChanged | { "type": "label_list_changed" } & LabelListChanged | { "type": "image_rule_changed" } & ImageRuleChanged | { "type": "draft_edited" } & DraftEdited | { "type": "drafts_changed" } & DraftsChanged | { "type": "outbox_changed" } & OutboxChanged | { "type": "rooms_changed" } & RoomsChanged | { "type": "timeline_added" } & TimelineAdded | { "type": "timeline_filled" } & TimelineFilled | { "type": "timeline_changed" } & TimelineChanged | { "type": "matrix_sends_changed" } & MatrixSendsChanged | { "type": "todos_changed" } & TodosChanged | { "type": "calendar_changed" } & CalendarChanged | { "type": "seen_changed" };
+export type ServerEvent = { "type": "entries_added" } & EntriesAdded | { "type": "entries_removed" } & EntriesRemoved | { "type": "labels_changed" } & LabelsChanged | { "type": "label_list_changed" } & LabelListChanged | { "type": "account_changed" } & AccountChanged | { "type": "image_rule_changed" } & ImageRuleChanged | { "type": "draft_edited" } & DraftEdited | { "type": "drafts_changed" } & DraftsChanged | { "type": "outbox_changed" } & OutboxChanged | { "type": "rooms_changed" } & RoomsChanged | { "type": "timeline_added" } & TimelineAdded | { "type": "timeline_filled" } & TimelineFilled | { "type": "timeline_changed" } & TimelineChanged | { "type": "matrix_sends_changed" } & MatrixSendsChanged | { "type": "todos_changed" } & TodosChanged | { "type": "calendar_changed" } & CalendarChanged | { "type": "seen_changed" };
 
 export type MessageId = number;
 
@@ -523,7 +523,13 @@ synced: boolean,
  * Until then, how far it has got, if the provider says how far it
  * goes.
  */
-listing: ListingProgress | null, labels: Array<Label>, };
+listing: ListingProgress | null, 
+/**
+ * Why its changes are not told as they happen (SPEC §8.14), while
+ * they are not: the provider's watch is failing, so its mail is only
+ * polled.
+ */
+watch_failing: Failing | null, labels: Array<Label>, };
 
 /**
  * An address a mail account sends from (SPEC §3.2): one, or any at a
@@ -695,6 +701,12 @@ export type LabelState = { entry: EntryId, label: LabelId, desired: boolean, obs
  * An account's labels were created, renamed or deleted.
  */
 export type LabelListChanged = { account: string, };
+
+/**
+ * What `ListAccounts` tells of an account changed, other than its mail
+ * and labels: whether it is watched (SPEC §8.14).
+ */
+export type AccountChanged = { account: string, };
 
 /**
  * A host a message's remote images are at, as its HTML body has them
@@ -1575,4 +1587,4 @@ export type EventChangeKind = "create" | "update" | "delete";
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "72f6a2e5b3721b82"
+export const PROTOCOL_VERSION = "b599be38abbc5533"

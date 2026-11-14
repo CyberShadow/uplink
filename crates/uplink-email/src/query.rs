@@ -3,6 +3,7 @@
 
 use anyhow::{Context, Result};
 use uplink_protocol::{
+    compose::Failing,
     mail::{
         Conversation, Entry, EntryId, Identity, Label, LabelId, ListPosition, ListScope,
         ListingProgress, MailProvider, Member, MessageId, Sender,
@@ -31,14 +32,25 @@ pub fn accounts(
     let as_of = as_of(&tx)?;
     let mut accounts = vec![];
     for account in configured {
-        let (synced, total): (bool, Option<u32>) = tx
+        let (synced, total, watch_error, watch_failing_since): (
+            bool,
+            Option<u32>,
+            Option<String>,
+            Option<i64>,
+        ) = tx
             .query_row(
-                "SELECT synced, listing_total FROM account WHERE id = ?1",
+                "SELECT synced, listing_total, watch_error, watch_failing_since
+                 FROM account WHERE id = ?1",
                 [&account.id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()?
-            .unwrap_or((false, None));
+            .unwrap_or((false, None, None, None));
+        let watch_failing = match (watch_error, watch_failing_since) {
+            (Some(error), Some(since)) => Some(Failing { error, since }),
+            (None, None) => None,
+            other => anyhow::bail!("account {} is recorded as {other:?}", account.id),
+        };
         let listing = match total {
             Some(total) => Some(ListingProgress {
                 stored: tx.query_row(
@@ -78,6 +90,7 @@ pub fn accounts(
             provider: account.provider,
             synced,
             listing,
+            watch_failing,
             labels,
         });
     }

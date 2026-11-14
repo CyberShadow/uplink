@@ -3,9 +3,10 @@
 //! as they happen rather than at the next poll (SPEC §8.1).
 
 use super::{api::Gmail, pubsub::PubSub};
+use crate::watching::{Told, Watching};
 use anyhow::Result;
 use std::{sync::Arc, time::Duration};
-use tokio::{sync::Notify, task::JoinHandle, time::Instant};
+use tokio::{task::JoinHandle, time::Instant};
 
 /// Who Gmail publishes as.
 const GMAIL_PUBLISHER: &str = "serviceAccount:gmail-api-push@system.gserviceaccount.com";
@@ -38,24 +39,34 @@ impl Push {
 
 /// The watch, for as long as it is kept.
 pub struct Watcher {
-    changed: Arc<Notify>,
+    watching: Arc<Watching>,
     task: JoinHandle<()>,
 }
+
+/// What the watch is called, of the account's one.
+const WATCH: &str = "push";
 
 impl Watcher {
     /// While there is no watch, the mailbox is polled every
     /// `unwatched_poll`.
     pub fn start(account: String, gmail: Gmail, push: Arc<Push>, unwatched_poll: Duration) -> Self {
-        let changed = Arc::new(Notify::new());
-        let task = tokio::spawn(watch(account, gmail, push, unwatched_poll, changed.clone()));
-        Self { changed, task }
+        let watching = Arc::new(Watching::default());
+        let task = tokio::spawn(watch(
+            account,
+            gmail,
+            push,
+            unwatched_poll,
+            watching.clone(),
+        ));
+        Self { watching, task }
     }
 
     /// Resolves once Gmail tells of a change, or once the watch (re)begins,
     /// as it may have missed some; while there is no watch, every
-    /// `unwatched_poll`. At once if that happened since the last call.
-    pub async fn changed(&self) {
-        self.changed.notified().await
+    /// `unwatched_poll`; or once the watch fails. At once if that happened
+    /// since the last call.
+    pub async fn told(&self) -> Told {
+        self.watching.told().await
     }
 }
 
@@ -70,24 +81,29 @@ async fn watch(
     gmail: Gmail,
     push: Arc<Push>,
     unwatched_poll: Duration,
-    changed: Arc<Notify>,
+    watching: Arc<Watching>,
 ) {
     loop {
-        let Err(e) = listen(&gmail, &push, &changed).await;
+        let Err(e) = listen(&gmail, &push, &watching).await;
         tracing::warn!(
             account,
             "watching for changes: {e:#}; polling every {unwatched_poll:?} meanwhile"
         );
+        watching.failing(WATCH, format!("{e:#}"));
         let retry = Instant::now() + RETRY;
         while Instant::now() < retry {
             tokio::time::sleep(unwatched_poll).await;
-            changed.notify_one();
+            watching.changed();
         }
     }
 }
 
 /// Sets the watch up and tells of the changes it tells of, until it fails.
-async fn listen(gmail: &Gmail, push: &Push, changed: &Notify) -> Result<std::convert::Infallible> {
+async fn listen(
+    gmail: &Gmail,
+    push: &Push,
+    watching: &Watching,
+) -> Result<std::convert::Infallible> {
     let pubsub = &push.pubsub;
     pubsub.create_topic(&push.topic).await?;
     pubsub.allow_publisher(&push.topic, GMAIL_PUBLISHER).await?;
@@ -96,8 +112,7 @@ async fn listen(gmail: &Gmail, push: &Push, changed: &Notify) -> Result<std::con
         .await?;
     gmail.watch(&push.topic).await?;
     let mut renewal = Instant::now() + RENEWAL;
-    // What changed while there was no watch.
-    changed.notify_one();
+    watching.watching(WATCH);
     loop {
         if Instant::now() >= renewal {
             gmail.watch(&push.topic).await?;
@@ -106,7 +121,7 @@ async fn listen(gmail: &Gmail, push: &Push, changed: &Notify) -> Result<std::con
         let pulled = pubsub.pull(&push.subscription).await?;
         if !pulled.is_empty() {
             pubsub.acknowledge(&push.subscription, &pulled).await?;
-            changed.notify_one();
+            watching.changed();
         }
     }
 }

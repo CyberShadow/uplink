@@ -2,10 +2,10 @@ import { signal } from '@preact/signals'
 import { useEffect, useRef, useState } from 'preact/hooks'
 import type { ComponentChildren, RefObject } from 'preact'
 import { useLocation } from 'preact-iso'
-import { date, duration } from '../format'
+import { date, dateTime, duration } from '../format'
 import { historyProgress } from '../matrix'
 import { keepFocus, returnFocus, useKeymap } from '../keymap'
-import type { Account, Label, ListingProgress, MailProvider, Mark, MatrixAccount, Place, Room, RoomId } from '../generated/protocol'
+import type { Account, Failing, Label, ListingProgress, MailProvider, Mark, MatrixAccount, Place, Room, RoomId } from '../generated/protocol'
 import { isInbox, markOf, NONE, shows, strongest } from '../marks'
 import { bySpaceOrder, moveSpace } from '../spaceOrder'
 import { useServices } from '../context'
@@ -137,6 +137,21 @@ function Syncing(props: { account: string; listing: ListingProgress | null }) {
     <span class={styles.syncing} title={`${count(listing.stored)} of about ${count(listing.total)} messages${eta}`}>
       {' '}
       (syncing, {percent}%)
+    </span>
+  )
+}
+
+/** A mail account whose provider's watch is failing (SPEC §8.14): its
+ * changes show when it is next polled, not as they happen. */
+function Unwatched(props: { failing: Failing }) {
+  const { failing } = props
+  return (
+    <span
+      class={`${styles.syncing} ${styles.unwatched}`}
+      title={`Not told of changes as they happen since ${dateTime(failing.since)}, so checked for every so often: ${failing.error}`}
+    >
+      {' '}
+      (not watched)
     </span>
   )
 }
@@ -553,7 +568,12 @@ export function Nav(props: { open: boolean }) {
           id={mailSection(account.id)}
           title={account.address}
           tooltip={account.id}
-          status={!account.synced && <Syncing account={account.id} listing={account.listing} />}
+          status={
+            <>
+              {!account.synced && <Syncing account={account.id} listing={account.listing} />}
+              {account.watch_failing && <Unwatched failing={account.watch_failing} />}
+            </>
+          }
           unread={inboxUnread(account)}
           mark={marks.account(account.id)}
         >

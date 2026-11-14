@@ -8,6 +8,7 @@ use super::{
     pubsub::PubSub,
     watch::{Push, Watcher},
 };
+use crate::watching::Told;
 use crate::{
     account::{Account, Outgoing, Provider, SendError, SyncTask},
     compose::{self, SendDrafted, SentCopy},
@@ -259,7 +260,7 @@ impl Provider for GmailSync {
     }
 
     /// What Gmail publishes, watched from the first wait on.
-    async fn changed(&self) {
+    async fn told(&self) -> Told {
         self.watcher
             .get_or_init(|| {
                 Watcher::start(
@@ -269,7 +270,7 @@ impl Provider for GmailSync {
                     self.unwatched_poll,
                 )
             })
-            .changed()
+            .told()
             .await
     }
 }

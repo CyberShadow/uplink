@@ -1028,6 +1028,7 @@ pub enum ServerEvent {
     EntriesRemoved(mail::EntriesRemoved),
     LabelsChanged(mail::LabelsChanged),
     LabelListChanged(mail::LabelListChanged),
+    AccountChanged(mail::AccountChanged),
     ImageRuleChanged(mail::ImageRuleChanged),
     DraftEdited(compose::DraftEdited),
     DraftsChanged(compose::DraftsChanged),
@@ -1061,6 +1062,7 @@ impl ServerEvent {
             | Self::CalendarChanged(_)
             | Self::SeenChanged => true,
             Self::ImageRuleChanged(_)
+            | Self::AccountChanged(_)
             | Self::DraftEdited(_)
             | Self::DraftsChanged(_)
             | Self::OutboxChanged(_)

@@ -21,6 +21,7 @@ use super::{
     session::{self, Connection},
     watch::Watcher,
 };
+use crate::watching::Told;
 use crate::{
     account::{Account, Outgoing, Pending, Provider, SendError, SyncTask},
     compose::SentCopy,
@@ -266,12 +267,12 @@ impl Provider for ImapSync {
 
     /// What the server tells of its folders, watched from the first wait
     /// on.
-    async fn changed(&self) {
+    async fn told(&self) -> Told {
         self.watcher
             .get_or_init(|| {
                 Watcher::start(self.config.clone(), self.sign_in.clone(), self.tls.clone())
             })
-            .changed()
+            .told()
             .await
     }
 }

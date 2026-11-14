@@ -10,14 +10,12 @@ use super::{
     sync::path,
 };
 use crate::mail_server::sign_in::SignIn;
+use crate::watching::{Told, Watching};
 use anyhow::{bail, Result};
 use async_imap::{extensions::idle::IdleResponse, types::NameAttribute};
 use futures_util::TryStreamExt;
 use std::{fmt, sync::Arc, time::Duration};
-use tokio::{
-    sync::Notify,
-    task::{JoinHandle, JoinSet},
-};
+use tokio::task::{JoinHandle, JoinSet};
 use tokio_rustls::TlsConnector;
 use uplink_config::ImapAccountConfig;
 
@@ -35,22 +33,22 @@ const NOTIFY: &str = "NOTIFY SET (personal (MessageNew MessageExpunge FlagChange
 
 /// The watches, for as long as they are kept.
 pub struct Watcher {
-    changed: Arc<Notify>,
+    watching: Arc<Watching>,
     task: JoinHandle<()>,
 }
 
 impl Watcher {
     pub fn start(config: ImapAccountConfig, sign_in: SignIn, tls: TlsConnector) -> Self {
-        let changed = Arc::new(Notify::new());
-        let task = tokio::spawn(watch(config, sign_in, tls, changed.clone()));
-        Self { changed, task }
+        let watching = Arc::new(Watching::default());
+        let task = tokio::spawn(watch(config, sign_in, tls, watching.clone()));
+        Self { watching, task }
     }
 
     /// Resolves once the server tells of a change in a folder watched, or
-    /// once a watch (re)begins, as it may have missed some; at once if that
-    /// happened since the last call.
-    pub async fn changed(&self) {
-        self.changed.notified().await
+    /// once a watch (re)begins, as it may have missed some, or fails; at
+    /// once if that happened since the last call.
+    pub async fn told(&self) -> Told {
+        self.watching.told().await
     }
 }
 
@@ -85,19 +83,25 @@ async fn watch(
     config: ImapAccountConfig,
     sign_in: SignIn,
     tls: TlsConnector,
-    changed: Arc<Notify>,
+    watching: Arc<Watching>,
 ) {
     let account = &config.id;
     let host = &config.imap.host;
+    // Before what the server can do is known, the one watch is learning it.
+    const LEARNING: &str = "the server";
     let connection = loop {
         match session::connect(&config, &sign_in, &tls).await {
             Ok(connection) => break connection,
             Err(e) => {
                 tracing::warn!(account, "watching for changes: {e:#}");
+                watching.failing(LEARNING, format!("{e:#}"));
                 tokio::time::sleep(RETRY).await;
             }
         }
     };
+    // Its failure ends with the watches' beginning, if any: else, the
+    // account is polled as it is to be.
+    watching.watching(LEARNING);
     // NOTIFY tells while the client waits for it, which is by IDLE.
     if !connection.idle {
         tracing::info!(account, "{host} cannot IDLE: its folders are polled");
@@ -117,18 +121,18 @@ async fn watch(
             .collect()
     };
     let mut first = Some(connection);
-    let mut watching = JoinSet::new();
+    let mut watches_kept = JoinSet::new();
     for watch in watches {
-        watching.spawn(keep(
+        watches_kept.spawn(keep(
             config.clone(),
             sign_in.clone(),
             tls.clone(),
-            changed.clone(),
+            watching.clone(),
             first.take(),
             watch,
         ));
     }
-    while let Some(ended) = watching.join_next().await {
+    while let Some(ended) = watches_kept.join_next().await {
         ended.expect("a watch goes on until stopped");
     }
 }
@@ -138,20 +142,22 @@ async fn keep(
     config: ImapAccountConfig,
     sign_in: SignIn,
     tls: TlsConnector,
-    changed: Arc<Notify>,
+    watching: Arc<Watching>,
     mut connection: Option<Connection>,
     watch: Watch,
 ) {
+    let name = watch.to_string();
     loop {
         let connected = match connection.take() {
             Some(connection) => Ok(connection),
             None => session::connect(&config, &sign_in, &tls).await,
         };
         let Err(e) = match connected {
-            Ok(connection) => listen(connection.session, &watch, &changed).await,
+            Ok(connection) => listen(connection.session, &watch, &name, &watching).await,
             Err(e) => Err(e),
         };
         tracing::warn!(account = config.id, "watching {watch}: {e:#}");
+        watching.failing(&name, format!("{watch}: {e:#}"));
         tokio::time::sleep(RETRY).await;
     }
 }
@@ -160,7 +166,8 @@ async fn keep(
 async fn listen(
     mut session: Session,
     watch: &Watch,
-    changed: &Notify,
+    name: &str,
+    watching: &Watching,
 ) -> Result<std::convert::Infallible> {
     match watch {
         Watch::Every => {
@@ -178,8 +185,7 @@ async fn listen(
             session.select(&name).await?;
         }
     }
-    // What changed while there was no watch.
-    changed.notify_one();
+    watching.watching(name);
     loop {
         let mut handle = session.idle();
         handle.init().await?;
@@ -187,7 +193,7 @@ async fn listen(
             // Dropping the stop source would end the wait.
             let (wait, _stop) = handle.wait_with_timeout(RENEWAL);
             match wait.await? {
-                IdleResponse::NewData(_) => changed.notify_one(),
+                IdleResponse::NewData(_) => watching.changed(),
                 IdleResponse::Timeout => {}
                 // Never stopped by hand: the stream ended.
                 IdleResponse::ManualInterrupt => bail!("the server closed the connection"),

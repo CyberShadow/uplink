@@ -135,6 +135,10 @@
   font-weight: normal;
 }
 
+.unwatched {
+  color: var(--error-fg);
+}
+
 .current {
   background: var(--focus);
 }

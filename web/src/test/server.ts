@@ -150,6 +150,7 @@ function mayChangeLists(event: ServerEvent): boolean {
     case 'seen_changed':
       return true
     case 'image_rule_changed':
+    case 'account_changed':
     case 'draft_edited':
     case 'drafts_changed':
     case 'outbox_changed':
@@ -289,6 +290,14 @@ export class FakeServer implements Requester, Subscriber, Blobs {
   /** Records a sync observation and delivers its entry to the store. */
   observe(account: string, events: ServerEvent[]) {
     this.commit({ type: 'account', id: account }, 'Synced', events)
+  }
+
+  /** The account's watch is failing, for `error`, or is not (`null`),
+   * as its sync task records it (SPEC §8.14). */
+  watchFailing(account: string, error: string | null) {
+    if (error === null) this.unwatched.delete(account)
+    else this.unwatched.set(account, { error, since: Date.parse('2026-11-14T09:30:00') })
+    this.observe(account, [{ type: 'account_changed', account }])
   }
 
   /** The entry is gone from its account, as syncing finds. */
@@ -792,6 +801,8 @@ export class FakeServer implements Requester, Subscriber, Blobs {
 
   /** Accounts whose first sync is under way, with its progress if known. */
   readonly syncing = new Map<string, ListingProgress | null>()
+  /** Accounts whose watch is failing. */
+  private readonly unwatched = new Map<string, Failing>()
 
   /** Rooms whose messages notify only if they mention the account, as
    * push rules may have it. */
@@ -1982,6 +1993,7 @@ export class FakeServer implements Requester, Subscriber, Blobs {
         provider: account.provider,
         synced: !this.syncing.has(account.id),
         listing: this.syncing.get(account.id) ?? null,
+        watch_failing: this.unwatched.get(account.id) ?? null,
         labels: account.labels.map((label) => {
           const showsHidden = HIDING.includes(label.external_id)
           const having = this.entries.filter((e) => e.labels.includes(label.id) && (showsHidden || !this.hidden(e)))

@@ -19,6 +19,7 @@ pub mod pop3;
 pub mod query;
 pub mod remote;
 pub mod service;
+pub mod watching;
 
 #[cfg(test)]
 mod tests;

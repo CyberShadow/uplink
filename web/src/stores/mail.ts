@@ -255,6 +255,10 @@ export class MailStore {
           break
         case 'label_list_changed':
           break
+        case 'account_changed':
+          // Nothing of its mail.
+          this.invalidateAccounts()
+          continue
         case 'image_rule_changed':
           this.imageRuleChanges.value = new Map(this.imageRuleChanges.value).set(ruleKey(event.rule), event.always)
           continue

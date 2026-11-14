@@ -128,6 +128,7 @@ fn declarations() -> String {
         LabelsChanged,
         LabelState,
         LabelListChanged,
+        AccountChanged,
         RemoteHost,
         ImageRule,
         ImageRuleChanged,

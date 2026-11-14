@@ -254,6 +254,49 @@ async fn named_folders_are_watched_by_idle() {
     sync.abort();
 }
 
+/// A watch that fails is recorded, and told by `ListAccounts`, from its
+/// first failure on; as the watches begin again, the next run of the task
+/// recording otherwise, it ends.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_watch_failing_is_recorded_until_the_watches_begin() {
+    let uplink = Uplink::new(MailProvider::Imap);
+    let stalwart = Stalwart::start(uplink.dir.path()).await;
+    let start = |watch: Vec<String>| {
+        let account = ImapAccountConfig {
+            watch,
+            ..stalwart.account("alice")
+        };
+        let sign_in = stalwart.sign_in(account.login());
+        let provider = ImapSync::new(account, sign_in, stalwart.tls.clone());
+        uplink.start_polling(provider, ALICE, Duration::from_secs(3600))
+    };
+    let sync = start(vec!["Missing".into()]);
+    let failing = eventually("the watch to fail", || async {
+        uplink.watch_failing().await
+    })
+    .await;
+    assert_eq!(
+        failing.error,
+        "folder Missing: the server has no folder Missing"
+    );
+    assert_eq!(
+        uplink.logged("account.watch_failing").as_deref(),
+        Some("Not watched, only polled: folder Missing: the server has no folder Missing")
+    );
+    sync.abort();
+
+    let sync = start(vec![]);
+    eventually("the watch to be recorded", || async {
+        uplink.watch_failing().await.is_none().then_some(())
+    })
+    .await;
+    assert_eq!(
+        uplink.logged("account.watch_failing").as_deref(),
+        Some("Watched again")
+    );
+    sync.abort();
+}
+
 /// Polled, a change in the folder the sync last selected is seen: of it, a
 /// STATUS may answer as the connection last saw it (Dovecot does).
 #[tokio::test(flavor = "multi_thread")]

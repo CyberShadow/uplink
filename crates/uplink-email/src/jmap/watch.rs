@@ -3,9 +3,10 @@
 //! the next poll (SPEC §8.13).
 
 use super::api::Jmap;
+use crate::watching::{Told, Watching};
 use anyhow::{Context, Result};
 use std::{sync::Arc, time::Duration};
-use tokio::{sync::Notify, task::JoinHandle};
+use tokio::task::JoinHandle;
 
 /// How often the server is asked to ping; it may ping less often
 /// (Stalwart: every 30 s at least).
@@ -17,24 +18,27 @@ const SILENCE: Duration = Duration::from_secs(5 * 60);
 /// meanwhile.
 const RETRY: Duration = Duration::from_secs(30);
 
+/// What the watch is called, of the account's one.
+const WATCH: &str = "event source";
+
 /// The watch, for as long as it is kept.
 pub struct Watcher {
-    changed: Arc<Notify>,
+    watching: Arc<Watching>,
     task: JoinHandle<()>,
 }
 
 impl Watcher {
     pub fn start(account: String, jmap: Arc<Jmap>) -> Self {
-        let changed = Arc::new(Notify::new());
-        let task = tokio::spawn(watch(account, jmap, changed.clone()));
-        Self { changed, task }
+        let watching = Arc::new(Watching::default());
+        let task = tokio::spawn(watch(account, jmap, watching.clone()));
+        Self { watching, task }
     }
 
     /// Resolves once the server tells of a change, or once the watch
-    /// (re)begins, as it may have missed some; at once if that happened
-    /// since the last call.
-    pub async fn changed(&self) {
-        self.changed.notified().await
+    /// (re)begins, as it may have missed some, or fails; at once if that
+    /// happened since the last call.
+    pub async fn told(&self) -> Told {
+        self.watching.told().await
     }
 }
 
@@ -44,19 +48,19 @@ impl Drop for Watcher {
     }
 }
 
-async fn watch(account: String, jmap: Arc<Jmap>, changed: Arc<Notify>) {
+async fn watch(account: String, jmap: Arc<Jmap>, watching: Arc<Watching>) {
     loop {
-        let Err(e) = listen(&jmap, &changed).await;
+        let Err(e) = listen(&jmap, &watching).await;
         tracing::warn!(account, "watching for changes: {e:#}");
+        watching.failing(WATCH, format!("{e:#}"));
         tokio::time::sleep(RETRY).await;
     }
 }
 
 /// Tells of the changes the event source tells of, until it fails.
-async fn listen(jmap: &Jmap, changed: &Notify) -> Result<std::convert::Infallible> {
+async fn listen(jmap: &Jmap, watching: &Watching) -> Result<std::convert::Infallible> {
     let mut response = jmap.event_source("Email,Mailbox", PING).await?;
-    // What changed while there was no watch.
-    changed.notify_one();
+    watching.watching(WATCH);
     let mut events = Events::default();
     loop {
         let chunk = tokio::time::timeout(SILENCE, response.chunk())
@@ -66,7 +70,7 @@ async fn listen(jmap: &Jmap, changed: &Notify) -> Result<std::convert::Infallibl
             .context("the server closed the event source")?;
         for event in events.push(&chunk) {
             if event == "state" {
-                changed.notify_one();
+                watching.changed();
             }
         }
     }

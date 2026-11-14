@@ -17,6 +17,7 @@ use super::{
     },
     watch::Watcher,
 };
+use crate::watching::Told;
 use crate::{
     account::{Account, Outgoing, Pending, Provider, SendError, SyncTask},
     compose::{SendDrafted, SentCopy},
@@ -436,10 +437,10 @@ impl Provider for JmapSync {
     }
 
     /// What the event source tells, watched from the first wait on.
-    async fn changed(&self) {
+    async fn told(&self) -> Told {
         self.watcher
             .get_or_init(|| Watcher::start(self.account.clone(), self.jmap.clone()))
-            .changed()
+            .told()
             .await
     }
 }

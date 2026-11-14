@@ -8,6 +8,7 @@
 //! stale fetch can never be recorded over a push and revert it. What
 //! differs between providers is behind [`Provider`].
 
+use crate::watching::{self, Told, WatchFailing};
 use crate::{
     compose::{
         self, build_message, now_ms, Due, File, ReplyContext, SendFailed, SendNotFound,
@@ -76,11 +77,11 @@ pub trait Provider: Send + Sync + 'static {
         mail: Outgoing<'_>,
     ) -> impl Future<Output = Result<SentCopy, SendError>> + Send;
 
-    /// Resolves when the provider tells of a change, so that the task
-    /// syncs before the poll interval passes; or, for a provider that only
-    /// polls, never. A change told while no one waits is not lost: the
-    /// next call resolves at once.
-    fn changed(&self) -> impl Future<Output = ()> + Send {
+    /// Resolves when the provider's watch tells of a change, so that the
+    /// task syncs before the poll interval passes, or of its failing
+    /// (SPEC §8.14); for a provider that only polls, never. What is told
+    /// while no one waits is not lost: the next call resolves at once.
+    fn told(&self) -> impl Future<Output = Told> + Send {
         std::future::pending()
     }
 }
@@ -432,12 +433,13 @@ impl<P: Provider> SyncTask<P> {
         }
         let deadline = tokio::time::sleep(interval);
         tokio::pin!(deadline);
-        let changed = self.provider.changed();
-        tokio::pin!(changed);
         loop {
             tokio::select! {
                 () = &mut deadline => return,
-                () = &mut changed => return,
+                told = self.provider.told() => match told {
+                    Told::Changed => return,
+                    Told::Failing(error) => self.record_watch(error).await,
+                },
                 entry = wake.recv() => match entry {
                     Ok(entry) if entry.source == Source::User => return,
                     Ok(_) => {}
@@ -445,6 +447,29 @@ impl<P: Provider> SyncTask<P> {
                     Err(RecvError::Closed) => panic!("the hub outlives sync tasks"),
                 },
             }
+        }
+    }
+
+    /// Records that the provider's watch is failing, for `error`, or is
+    /// not, where that is not what is recorded: as failures start and
+    /// end, not at each retry. If that cannot be done, the database is
+    /// failing, which the next step reports.
+    async fn record_watch(&self, error: Option<String>) {
+        let account = self.account.id.clone();
+        let recorded = self
+            .account
+            .read(move |conn| watching::is_failing(conn, &account))
+            .await;
+        let result = match recorded {
+            Ok(failing) if failing == error.is_some() => return,
+            Ok(_) => {
+                let at = now_ms();
+                self.account.observe(WatchFailing { error, at }).await
+            }
+            Err(e) => Err(e),
+        };
+        if let Err(e) = result {
+            tracing::warn!(account = self.account.id, "recording the watch: {e:#}");
         }
     }
 

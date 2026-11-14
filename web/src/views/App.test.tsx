@@ -67,6 +67,19 @@ describe('mail', () => {
     expect(within(nav).getByText('(syncing)')).toBeTruthy()
   })
 
+  it('marks an account not watched, while its watch is failing', async () => {
+    await start()
+    const nav = within(screen.getByRole('navigation'))
+    expect(nav.queryByText('(not watched)')).toBeNull()
+    server.watchFailing('work', 'PERMISSION_DENIED')
+    const mark = await waitFor(() => nav.getByText('(not watched)'))
+    expect(mark.title).toBe(
+      'Not told of changes as they happen since 2026-11-14 09:30, so checked for every so often: PERMISSION_DENIED',
+    )
+    server.watchFailing('work', null)
+    await waitFor(() => expect(nav.queryByText('(not watched)')).toBeNull())
+  })
+
   it('folds an account in the nav, and labels nested in a label', async () => {
     server.addAccount('home', ['Family', 'Family/Kids'])
     const user = await start()

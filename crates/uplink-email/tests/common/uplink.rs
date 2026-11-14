@@ -10,7 +10,7 @@ use uplink_email::{
     service::Mail,
 };
 use uplink_protocol::{
-    compose::{DraftContent, DraftId, OutboxItem, Pending, SendState},
+    compose::{DraftContent, DraftId, Failing, OutboxItem, Pending, SendState},
     mail::{EntryId, Identity, LabelId, MailProvider, MessageId},
     ServerResponse,
 };
@@ -157,6 +157,19 @@ impl Uplink {
             .optional()
             .unwrap()
             .unwrap_or(false)
+    }
+
+    /// Why the account is not watched, as `ListAccounts` tells it, if it
+    /// is not.
+    pub async fn watch_failing(&self) -> Option<Failing> {
+        let ServerResponse::Accounts { accounts, .. } = self.mail.list_accounts().await.unwrap()
+        else {
+            panic!("ListAccounts answers with accounts")
+        };
+        let [account] = &accounts[..] else {
+            panic!("one account")
+        };
+        account.watch_failing.clone()
     }
 
     /// The description of the last log entry of `kind`, if any.

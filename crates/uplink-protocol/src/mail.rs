@@ -34,6 +34,10 @@ pub struct Account {
     /// Until then, how far it has got, if the provider says how far it
     /// goes.
     pub listing: Option<ListingProgress>,
+    /// Why its changes are not told as they happen (SPEC §8.14), while
+    /// they are not: the provider's watch is failing, so its mail is only
+    /// polled.
+    pub watch_failing: Option<crate::compose::Failing>,
     pub labels: Vec<Label>,
 }
 
@@ -337,6 +341,14 @@ pub struct LabelState {
     pub label: LabelId,
     pub desired: bool,
     pub observed: bool,
+}
+
+/// What `ListAccounts` tells of an account changed, other than its mail
+/// and labels: whether it is watched (SPEC §8.14).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct AccountChanged {
+    pub account: String,
 }
 
 /// An account's labels were created, renamed or deleted.

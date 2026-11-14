@@ -452,7 +452,9 @@ CREATE TABLE account (
                                    -- the mailbox held as it began (Gmail's
                                    -- profile, Spam and Trash included)
   push_error  TEXT,                -- (V0018) why pushes are failing, while
-  push_failing_since INTEGER       -- they are (§6.6); unix ms
+  push_failing_since INTEGER,      -- they are (§6.6); unix ms
+  watch_error TEXT,                -- (V0057) why the provider's watch is
+  watch_failing_since INTEGER      -- failing, while it is (§8.14); unix ms
 );
 
 -- A logical message, identified by its Message-ID across accounts.
@@ -1632,11 +1634,11 @@ IMAP's per-folder copies, and a REST fake is practical to test against
   takes the `pubsub` OAuth scope, besides `gmail.modify`; of the project,
   the user only enables the Pub/Sub API (README). Then `watch`, renewed
   daily (Google recommends; it lapses after 7 days). The messages of each
-  pull are acknowledged and wake the sync task (`Provider::changed`), as
+  pull are acknowledged and wake the sync task (`Provider::told`), as
   does the watch's (re)beginning, since changes may have been missed
   meanwhile; they are not read, the topic being the account's alone. A
   watch that fails begins anew 30 s later, the mailbox polled every 5 s
-  meanwhile. No IMAP anywhere.
+  meanwhile, and the failure recorded (§8.14). No IMAP anywhere.
 - **Threading**: Gmail's `threadId`.
 - **Labels**: `labels.list`; each label becomes a `label` row.
 - **Trash and Spam** are labels like any other (the listing includes
@@ -2221,13 +2223,13 @@ fit uplink better (§8.1, §8.3).
   as servers limit a user's connections (Dovecot to 10 an address, by
   default; Gmail to 15), so what a folder watched costs is the user's to
   weigh; with NOTIFY, `watch` is not needed, and the log says so. What a
-  watch tells wakes the sync task (`Provider::changed`), which takes a
+  watch tells wakes the sync task (`Provider::told`), which takes a
   step as for a poll; so does a watch's (re)beginning, as changes may
   have been missed meanwhile. An IDLE is renewed every 10 minutes (RFC
   2177's limit is 29), which also finds a connection lost without a
   word; a watch that fails (a folder named that the server lacks
-  included) begins anew 30 s later, polling going on meanwhile. The
-  watches begin as the task first waits.
+  included) begins anew 30 s later, polling going on meanwhile and the
+  failure recorded (§8.14). The watches begin as the task first waits.
 - **Threading**: IMAP servers give no thread ids, so they are the
   headers': the first message a message's `References` names, else the
   one it replies to (`In-Reply-To`), else itself. Unlike Gmail's, such
@@ -2379,12 +2381,13 @@ credentials it was built with, which an OAuth token outlives.
   client's change meanwhile, would leave an email in no mailbox).
 - **Event source** (RFC 8620 §7.3): a connection of its own tells of
   changes to emails and mailboxes as they happen, waking the sync task
-  (`Provider::changed`), which takes a step as for a poll; so does the
+  (`Provider::told`), which takes a step as for a poll; so does the
   watch's (re)beginning. It asks for a ping a minute (Stalwart pings
   every 30 s at least), and one silent for 5 minutes is taken for lost;
   a watch that fails begins anew 30 s later, polling going on meanwhile
-  (every 30 s). The watch begins as the task first waits. (Stalwart
-  tells nothing of an `Email/import`; of mail delivered, it does.)
+  (every 30 s) and the failure recorded (§8.14). The watch begins as the
+  task first waits. (Stalwart tells nothing of an `Email/import`; of mail
+  delivered, it does.)
 - **Sending** (§6.7): the message is uploaded and imported into Drafts
   (`Email/import`, `$draft` and `$seen`), which is recorded
   (`SendDrafted`), then submitted (`EmailSubmission/set`, the envelope
@@ -2408,6 +2411,26 @@ credentials it was built with, which an OAuth token outlives.
   minutes, which finds the submission if it was made (`FILES_SENT`).
 - **Connection**: HTTP's, kept by the client; a request may take a
   minute, a blob ten.
+
+### 8.14 Watches failing
+
+A provider's watch (Gmail's Pub/Sub, §8.1; IMAP's IDLE or NOTIFY,
+§8.10; JMAP's event source, §8.13) is what makes changes show as they
+happen; while it fails, they show at the next poll only, which the user
+cannot tell from the mail by itself. So the account records, as an
+observation (`account.watch_failing`, "Not watched, only polled: …",
+then "Watched again"), when its watch starts failing, with the error,
+and when it is watched again; not at each retry, as for pushes (§6.6).
+An account of several watches (IMAP's Inbox and the folders it names)
+fails while any does, with each one's error. The watches tell the
+account's sync task (`Provider::told`) as each fails and (re)begins;
+the task records what differs from what is recorded, so a failure
+recorded before the process stopped ends as the watches begin again. A
+server that cannot watch (IMAP without IDLE) is polled as it is to be,
+not failing. `ListAccounts` tells each mail account's `watch_failing`
+(the error, and since when), and an `account_changed` event that it
+changed; the nav marks the account "(not watched)", the error and since
+when in its tooltip.
 
 ---
 
