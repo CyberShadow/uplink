@@ -222,13 +222,13 @@ impl Graph {
         Ok(Some(check(response).await?.bytes().await?.to_vec()))
     }
 
-    pub async fn update(&self, id: &str, update: &MessageUpdate) -> Result<Changed> {
+    pub async fn update(&self, id: &str, update: &MessageUpdate) -> Result<Changed, Failed> {
         let url = self.url(&format!("/messages/{id}"));
         changed(self.send(Method::PATCH, &url, Some(update)).await?).await
     }
 
     /// Moves the message to `folder`, an id or a well-known name.
-    pub async fn move_to(&self, id: &str, folder: &str) -> Result<Changed> {
+    pub async fn move_to(&self, id: &str, folder: &str) -> Result<Changed, Failed> {
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
         struct Move<'a> {
@@ -349,7 +349,7 @@ impl Graph {
     }
 
     /// POSTs `body` to `path` below `/me`, an action on what is there.
-    pub async fn act<B: Serialize>(&self, path: &str, body: &B) -> Result<Changed> {
+    pub async fn act<B: Serialize>(&self, path: &str, body: &B) -> Result<Changed, Failed> {
         changed(self.send(Method::POST, &self.url(path), Some(body)).await?).await
     }
 
@@ -392,7 +392,7 @@ impl Graph {
     }
 
     /// DELETEs what is at `path` below `/me`.
-    pub async fn delete(&self, path: &str) -> Result<Changed> {
+    pub async fn delete(&self, path: &str) -> Result<Changed, Failed> {
         changed(
             self.send::<()>(Method::DELETE, &self.url(path), None)
                 .await?,
@@ -406,7 +406,7 @@ impl Graph {
     }
 
     /// `None` on 404.
-    async fn get<T: DeserializeOwned>(&self, url: &str) -> Result<Option<T>> {
+    pub async fn get<T: DeserializeOwned>(&self, url: &str) -> Result<Option<T>> {
         let response = self.send::<()>(Method::GET, url, None).await?;
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
@@ -424,7 +424,7 @@ impl Graph {
         method: Method,
         url: &str,
         body: Option<&B>,
-    ) -> Result<reqwest::Response> {
+    ) -> Result<reqwest::Response, Failed> {
         let mut refreshed = false;
         let mut attempt = 1;
         loop {
@@ -432,14 +432,24 @@ impl Graph {
                 .http
                 .request(method.clone(), url)
                 .header("Prefer", PREFER)
-                .bearer_auth(self.credentials.access_token().await?);
+                .bearer_auth(
+                    self.credentials
+                        .access_token()
+                        .await
+                        .map_err(Failed::NotDone)?,
+                );
             if let Some(body) = body {
                 request = request.json(body);
             }
-            let response = request
-                .send()
-                .await
-                .with_context(|| format!("{method} {url}"))?;
+            let response = request.send().await.map_err(|e| {
+                let unsent = e.is_connect();
+                let e = anyhow::Error::from(e).context(format!("{method} {url}"));
+                if unsent {
+                    Failed::NotDone(e)
+                } else {
+                    Failed::Unknown(e)
+                }
+            })?;
             let status = response.status();
             if status == StatusCode::UNAUTHORIZED && !refreshed {
                 refreshed = true;
@@ -533,19 +543,40 @@ async fn written(response: reqwest::Response) -> Result<Written> {
     decode(&url, response).await.map(Written::Done)
 }
 
-async fn changed(response: reqwest::Response) -> Result<Changed> {
+/// How a request to change something failed, but for Graph refusing it.
+#[derive(Debug, thiserror::Error)]
+pub enum Failed {
+    /// Not done: never sent, or refused for authorization or rate, which
+    /// pass.
+    #[error("{0:#}")]
+    NotDone(anyhow::Error),
+    /// Whether it was done is unknown: Graph got it, maybe, but did not
+    /// say what it made of it.
+    #[error("{0:#}")]
+    Unknown(anyhow::Error),
+}
+
+async fn changed(response: reqwest::Response) -> Result<Changed, Failed> {
     let status = response.status();
+    if status.is_success() {
+        return Ok(Changed::Done);
+    }
     if status == StatusCode::NOT_FOUND {
         return Ok(Changed::Gone);
     }
-    if status.is_client_error()
-        && status != StatusCode::UNAUTHORIZED
-        && status != StatusCode::TOO_MANY_REQUESTS
-    {
-        let body = response.text().await.unwrap_or_default();
+    let url = response.url().path().to_owned();
+    let body = response.text().await.unwrap_or_default();
+    if status == StatusCode::UNAUTHORIZED || status == StatusCode::TOO_MANY_REQUESTS {
+        return Err(Failed::NotDone(anyhow!(
+            "{url} failed with {status}: {body}"
+        )));
+    }
+    if status.is_client_error() {
         return Ok(Changed::Refused(error_message(&body).unwrap_or(body)));
     }
-    check(response).await.map(|_| Changed::Done)
+    Err(Failed::Unknown(anyhow!(
+        "{url} failed with {status}: {body}"
+    )))
 }
 
 async fn check(response: reqwest::Response) -> Result<reqwest::Response> {
