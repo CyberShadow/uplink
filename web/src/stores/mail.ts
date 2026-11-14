@@ -122,8 +122,12 @@ export function threadOf(conversation: Conversation): Thread {
 
 /** Identifies a conversation while its entries come and go. */
 export function conversationKey(conversation: Conversation): string {
-  const { latest } = conversation
-  return latest.thread_id === null ? `#${latest.id}` : `${latest.account}/${latest.thread_id}`
+  return threadKey(conversation.latest)
+}
+
+/** The key of `entry`'s conversation, as `conversationKey`'s. */
+export function threadKey(entry: Entry): string {
+  return entry.thread_id === null ? `#${entry.id}` : `${entry.account}/${entry.thread_id}`
 }
 
 export function hasEntry(conversation: Conversation, entry: EntryId): boolean {

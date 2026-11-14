@@ -33,6 +33,7 @@ async function start(path = '/mail/work/INBOX') {
   else if (path === '/history') await screen.findByText(/^The outbox is empty/)
   else if (path.startsWith('/matrix/')) await screen.findByRole('heading', { name: /^Security of/ })
   else if (path === '/') await screen.findByRole('region', { name: 'Home' })
+  else if (/\/\d+$/.test(path)) await screen.findByRole('toolbar', { name: 'Conversation actions' })
   else await screen.findByRole('list', { name: 'Messages' })
   return userEvent.setup()
 }
@@ -337,6 +338,19 @@ describe('mail', () => {
     expect(location.pathname).toBe('/mail/work/INBOX')
     await user.keyboard('{Escape}')
     expect(location.pathname).toBe('/')
+  })
+
+  it('shows a conversation not in its list, saying so', async () => {
+    const archived = server.deliver('work', 'Archived', [])
+    const user = await start(`/mail/work/INBOX/${archived.id}`)
+    expect(screen.getByRole('heading', { name: /Archived/ })).toBeTruthy()
+    const toolbar = screen.getByRole('toolbar', { name: 'Conversation actions' })
+    within(toolbar).getByText('This conversation is not in this list.')
+    // Of no place in the list, which back goes to.
+    expect(within(toolbar).queryByRole('button', { name: 'Older' })).toBeNull()
+    await user.keyboard('u')
+    await screen.findByRole('list', { name: 'Messages' })
+    expect(location.pathname).toBe('/mail/work/INBOX')
   })
 
   it('shows the badged buckets on the icon, as the server says they are', async () => {

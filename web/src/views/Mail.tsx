@@ -8,6 +8,7 @@ import {
   conversationKey,
   hasEntry,
   inScope,
+  threadKey,
   threadOf,
   type ImageRuleState,
   type MailStore,
@@ -96,15 +97,19 @@ export function Mail(props: Props) {
         ? null
         : Number(props.entry)
   const opened = openId === null ? undefined : conversations.find((c) => hasEntry(c, openId))
-  useTitle(...(opened ? [opened.latest.subject ?? '(no subject)'] : listTitle(mail, view)))
-  useEffect(() => mail.showConversation(opened ? openId : null), [mail, opened, openId])
+  // Not in the list, as it was once (moved, or the list changed since its
+  // path was), it shows still, with all its entries, saying so.
+  const unlisted = openId !== null && list !== null && list.loaded && !opened
+  useEffect(() => mail.showConversation(openId), [mail, openId])
   // Of the conversation open, the entries in the list's scope.
   const scope = list?.scope
-  const shown = (scope && mail.open.value?.entries?.filter((e) => inScope(scope, e.labels))) ?? null
+  const entries = mail.open.value?.entries
+  const shown = (entries && (unlisted ? entries : scope && entries.filter((e) => inScope(scope, e.labels)))) || null
   const openThread: Thread | null =
-    opened && shown && shown.length > 0
-      ? { account: opened.latest.account, subject: shown.at(-1)!.subject, entries: shown }
+    shown && shown.length > 0
+      ? { account: shown.at(-1)!.account, subject: shown.at(-1)!.subject, entries: shown }
       : null
+  useTitle(...(openThread ? [openThread.subject ?? '(no subject)'] : listTitle(mail, view)))
   // Those shown, which toggles go by; and what actions are done to.
   const targets: Thread[] =
     openId === null ? mail.targets.value.map(threadOf) : openThread ? [openThread] : []
@@ -265,9 +270,11 @@ export function Mail(props: Props) {
             actions={common}
             thread={openThread}
             back={backToList}
-            // A message by itself is of no list to go through.
+            unlisted={unlisted}
+            // A message by itself, or one not listed, is of no list to go
+            // through.
             place={
-              view.kind === 'message'
+              view.kind === 'message' || unlisted
                 ? null
                 : {
                     index: conversations.indexOf(opened!),
@@ -278,7 +285,7 @@ export function Mail(props: Props) {
             }
           />
           <ConversationView
-            key={conversationKey(opened!)}
+            key={threadKey(shown!.at(-1)!)}
             mail={mail}
             thread={openThread}
             entries={shown!}
@@ -288,9 +295,7 @@ export function Mail(props: Props) {
           />
         </>
       ) : (
-        <p class={styles.placeholder}>
-          {list?.loaded && !opened ? 'This conversation is not in the list.' : 'Loading…'}
-        </p>
+        <p class={styles.placeholder}>Loading…</p>
       )}
       {picking === 'label' && (
         <LabelPicker targets={targets} acting={acting} close={() => setPicking(null)} done={done} />
@@ -528,6 +533,8 @@ function ConversationToolbar(props: {
   actions: Actions
   thread: Thread
   back: () => void
+  /** Whether it is not in the list it was opened in. */
+  unlisted: boolean
   place: Place | null
 }) {
   const { place } = props
@@ -544,6 +551,7 @@ function ConversationToolbar(props: {
           <ToolButton label="Older" icon="chevron-right" action={place.older} />
         </span>
       )}
+      {props.unlisted && <p class={styles.banner}>This conversation is not in this list.</p>}
     </div>
   )
 }

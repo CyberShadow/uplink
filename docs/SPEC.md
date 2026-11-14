@@ -3415,6 +3415,10 @@ The view lists the messages oldest first, the unread ones and the
 latest expanded (a header toggles one); opening it reads them all, and
 replying, forwarding and flagging (`Shift+t`, or unflagging the flagged
 ones) take the latest.
+A conversation its path opens in a list that does not have it (moved
+since, or the list changed) shows still, all of its entries, with a
+banner saying it is not in this list; of no place in it, `j` and `k`
+have none to go to, and back is the list.
 
 Not only by keyboard (for touch, too), as Gmail has them: below the
 conversation, Reply to all, Reply and Forward, on the latest; on an
