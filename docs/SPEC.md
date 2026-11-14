@@ -2664,7 +2664,9 @@ day, or today: a change of daylight saving time within the week is not
 followed.) Config changes apply at once (`CalendarConfigured`). A week opens at 08:00, this week at an hour
 before now. `/calendar/agenda/<date>`: the days with events in the
 fortnight from the date. Recurring events are marked ↻, changed
-occurrences ↻*. As Outlook shows them, an event cancelled (but still
+occurrences ↻*. Every account's calendar is in the one view; with several,
+each has a colour (its events' edge), named in a legend above it, in
+their tooltips and in the event opened. As Outlook shows them, an event cancelled (but still
 on the calendar) is struck through, one declined faded, one not yet
 answered or tentative hatched, one shown as free hollow; uplink hides
 none of them. An event is a link:

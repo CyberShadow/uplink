@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
+import { createContext, type ComponentChildren } from 'preact'
+import { useContext, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import type { Attendee, CalendarEvent, EventDetails, EventResponse, ShowAs, TimeZone } from '../generated/protocol'
 import { useServices } from '../context'
@@ -149,7 +150,9 @@ export function Calendar(props: { view?: string; date?: string; event?: string }
   const title = { day: dayName(first), week: `Week of ${dateString(first)}`, agenda: `From ${dateString(first)}` }[view]
   useTitle(title, 'Calendar')
   const link = (event: CalendarEvent) => calendarPath(view, date, event.id)
+  const calendars = useCalendars()
   return (
+    <CalendarsContext.Provider value={calendars}>
     <section class={styles.calendar} aria-label="Calendar">
       <header class={styles.header}>
         <h1>{title}</h1>
@@ -173,6 +176,15 @@ export function Calendar(props: { view?: string; date?: string; event?: string }
             Agenda
           </a>
         </nav>
+        {calendars.size > 0 && (
+          <ul class={styles.legend} aria-label="Calendars">
+            {[...calendars.values()].map(({ address, color }) => (
+              <li key={address} style={{ '--calendar': color }}>
+                {address}
+              </li>
+            ))}
+          </ul>
+        )}
       </header>
       <div class={styles.body}>
         {events === null ? (
@@ -185,6 +197,7 @@ export function Calendar(props: { view?: string; date?: string; event?: string }
         {opened !== null && <EventPane details={calendar.opened.value} close={closed} />}
       </div>
     </section>
+    </CalendarsContext.Provider>
   )
 }
 
@@ -256,8 +269,46 @@ function eventClass(event: CalendarEvent, opened: number | null): string {
     .join(' ')
 }
 
-function tooltip(event: CalendarEvent): string {
-  return [event.subject, event.location, status(event)].filter(Boolean).join('\n')
+/** Of the accounts with calendars, when there are several, which is
+ * which: each one's address and colour. */
+type Calendars = ReadonlyMap<string, { address: string; color: string }>
+
+const CalendarsContext = createContext<Calendars>(new Map())
+
+/** The colours of calendars told apart: the accent's, then others. */
+const COLORS = ['var(--accent)', '#e8710a', '#1e8e3e', '#a142f4', '#d93025', '#12b5cb']
+
+/** The accounts with calendars (Microsoft 365's), told apart only when
+ * there are several. */
+function useCalendars(): Calendars {
+  const { mail } = useServices()
+  const accounts = (mail.accounts.value ?? []).filter((a) => a.provider === 'm365')
+  if (accounts.length < 2) return new Map()
+  return new Map(accounts.map((a, i) => [a.id, { address: a.address, color: COLORS[i % COLORS.length] }]))
+}
+
+function tooltip(event: CalendarEvent, calendars: Calendars): string {
+  return [event.subject, event.location, status(event), calendars.get(event.account)?.address]
+    .filter(Boolean)
+    .join('\n')
+}
+
+/** An event, as a link that opens it; of its calendar's colour, when
+ * calendars are told apart. */
+function EventLink(props: { event: CalendarEvent; opened: number | null; link: Link; class?: string; children: ComponentChildren }) {
+  const calendars = useContext(CalendarsContext)
+  const { event } = props
+  return (
+    <a
+      class={[props.class, eventClass(event, props.opened)].filter(Boolean).join(' ')}
+      href={props.link(event)}
+      title={tooltip(event, calendars)}
+      style={{ '--calendar': calendars.get(event.account)?.color }}
+      onMouseDown={keepFocus}
+    >
+      {props.children}
+    </a>
+  )
 }
 
 type Link = (event: CalendarEvent) => string
@@ -385,11 +436,11 @@ function Week(props: {
                 .filter(inAllDayRow)
                 .map((e) => (
                   <li key={e.id}>
-                    <a class={eventClass(e, props.opened)} href={props.link(e)} title={tooltip(e)} onMouseDown={keepFocus}>
+                    <EventLink event={e} opened={props.opened} link={props.link}>
                       {!e.all_day && <time>{spanTimes(e, day)}</time>}
                       <span class={styles.subject}>{e.subject}</span>
                       <Marks event={e} />
-                    </a>
+                    </EventLink>
                   </li>
                 ))}
             </ul>
@@ -408,17 +459,12 @@ function Week(props: {
                     width: `${100 / lanes}%`,
                   }}
                 >
-                  <a
-                    class={[eventClass(e, props.opened), height < SHORT_PX && styles.short].filter(Boolean).join(' ')}
-                    href={props.link(e)}
-                    title={tooltip(e)}
-                    onMouseDown={keepFocus}
-                  >
+                  <EventLink event={e} opened={props.opened} link={props.link} class={height < SHORT_PX ? styles.short : undefined}>
                     <time>{e.start >= start ? time(e.start) : `until ${time(e.end)}`}</time>{' '}
                     <span class={styles.subject}>{e.subject}</span>
                     <Marks event={e} />
                     {e.location && <span class={styles.location}> · {e.location}</span>}
-                  </a>
+                  </EventLink>
                 </li>
               ))}
             </ul>
@@ -477,14 +523,14 @@ function Agenda(props: { days: Date[]; events: readonly CalendarEvent[]; link: L
           <ul>
             {events.map((e) => (
               <li key={e.id}>
-                <a class={`${styles.agendaEvent} ${eventClass(e, props.opened)}`} href={props.link(e)} title={tooltip(e)} onMouseDown={keepFocus}>
+                <EventLink event={e} opened={props.opened} link={props.link} class={styles.agendaEvent}>
                   <span class={styles.when}>{e.all_day ? 'All day' : `${time(e.start)}–${time(e.end)}`}</span>
                   <span>
                     <span class={styles.subject}>{e.subject}</span>
                     <Marks event={e} />
                     {e.location && <span class={styles.location}> · {e.location}</span>}
                   </span>
-                </a>
+                </EventLink>
               </li>
             ))}
           </ul>
@@ -558,6 +604,7 @@ function EventPane(props: { details: EventDetails | 'gone' | null; close: string
 }
 
 function Details(props: { details: EventDetails }) {
+  const calendars = useContext(CalendarsContext)
   const { event, organizer, attendees, web_link } = props.details
   const { join_url } = event
   return (
@@ -577,6 +624,12 @@ function Details(props: { details: EventDetails }) {
         </a>
       )}
       <dl class={styles.facts}>
+        {calendars.has(event.account) && (
+          <>
+            <dt>Calendar</dt>
+            <dd>{calendars.get(event.account)!.address}</dd>
+          </>
+        )}
         {event.location && (
           <>
             <dt>Where</dt>

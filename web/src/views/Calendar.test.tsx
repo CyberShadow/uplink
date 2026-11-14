@@ -1,5 +1,5 @@
 import { signal } from '@preact/signals'
-import { render, screen, waitFor, within } from '@testing-library/preact'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/preact'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Client } from '../stores/client'
@@ -313,5 +313,28 @@ describe('calendar', () => {
     // 22:00 to 02:00 here.
     expect(timed('Friday 2026-11-13').map((e) => e.textContent)).toEqual(['22:00 Night shift'])
     expect(timed('Saturday 2026-11-14').map((e) => e.textContent)).toEqual(['until 02:00 Night shift'])
+  })
+
+  it('tells calendars apart when there are several', async () => {
+    const user = await start('/calendar/week/2026-11-11')
+    await waitFor(() => expect(timed('Tuesday 2026-11-10')).toHaveLength(3))
+    // One: nothing to tell apart.
+    expect(screen.queryByRole('list', { name: 'Calendars' })).toBeNull()
+    expect(within(day('Tuesday 2026-11-10')).getByRole('link', { name: /Lunch/ }).style.getPropertyValue('--calendar')).toBe('')
+    cleanup()
+    server.addM365Account('board', [])
+    server.addEvent('board', 'Board meeting', '2026-11-11T19:00:00Z', '2026-11-11T20:00:00Z')
+    await start('/calendar/week/2026-11-11')
+    const legend = await screen.findByRole('list', { name: 'Calendars' })
+    expect(within(legend).getAllByRole('listitem').map((e) => e.textContent)).toEqual([
+      'work@example.com',
+      'board@example.com',
+    ])
+    const board = await within(day('Wednesday 2026-11-11')).findByRole('link', { name: /Board meeting/ })
+    expect(board.style.getPropertyValue('--calendar')).toBe('#e8710a')
+    expect(board.title).toBe('Board meeting\nYou organize it · shown as Busy\nboard@example.com')
+    await user.click(board)
+    const pane = await screen.findByRole('complementary', { name: 'Event' })
+    await within(pane).findByText('board@example.com')
   })
 })
