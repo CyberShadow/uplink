@@ -4684,14 +4684,13 @@ reason and is the always-available baseline.
 ### 15.12 Not yet verified against the real services
 
 The M365 side is verified against the emulator (§15.10), and against a
-real tenant only as far as the sign-in (§13.3: the authorize URL, the
-code's redemption, the registration's permissions) and a first sync of
-mail folders and messages. That sign-in redirected to `nativeclient`,
-whose page shows the code in its URL for about a second, warning of
-phishing, and then replaces itself with "This is not the right page";
-hence the loopback redirect, which is open: that Entra ID matches
-`http://127.0.0.1:<port>/` to the registered `http://127.0.0.1` and
-checks PKCE at the v1 endpoint. Open until it runs against a real
+real tenant only as far as the sign-in (§13.3: the authorize URL with
+PKCE and the loopback redirect, which Entra ID matches to the
+registered `http://127.0.0.1` whatever its port, the code's redemption,
+the registration's permissions) and a first sync of mail folders and
+messages. (The `nativeclient` redirect, before, showed the code for
+about a second, warning of phishing, and then replaced its page with
+"This is not the right page".) Open until it runs against a real
 tenant: the
 immutable-id `Prefer` header
 together with `odata.maxpagesize`, `$select` on delta queries, whether
