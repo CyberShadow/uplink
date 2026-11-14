@@ -45,11 +45,53 @@ pub fn open(data_root: &Path) -> Result<Connection> {
     conn.pragma_update(None, "temp_store", "MEMORY")?;
     conn.pragma_update(None, "cache_size", -64000)?;
 
+    drop_sparse_occurrences(&mut conn)
+        .with_context(|| format!("repairing the calendar of {}", path.display()))?;
     embedded::migrations::runner()
         .run(&mut conn)
         .with_context(|| format!("migrating {}", path.display()))?;
 
     Ok(conn)
+}
+
+/// Before V0046, the calendar sync recorded the occurrences of a series as
+/// Graph's delta sends them, sparse (id, type, start, end, seriesMasterId
+/// only), with no subject; V0046 and V0051 fill columns from every event's
+/// JSON, and fail on them. Being Graph's, they are dropped, and their
+/// accounts' calendars listed anew, whole (the sync now completes them
+/// from their series). Done ahead of the migrations, as an applied one
+/// is not to change.
+fn drop_sparse_occurrences(conn: &mut Connection) -> Result<()> {
+    let tx = conn.transaction()?;
+    let tables = |name: &str| -> rusqlite::Result<bool> {
+        tx.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [name],
+            |r| r.get::<_, i64>(0).map(|n| n > 0),
+        )
+    };
+    if !tables("refinery_schema_history")? || !tables("calendar_event")? {
+        return Ok(());
+    }
+    let version: i64 = tx.query_row(
+        "SELECT coalesce(max(version), 0) FROM refinery_schema_history",
+        [],
+        |r| r.get(0),
+    )?;
+    if version >= 46 {
+        return Ok(());
+    }
+    const SPARSE: &str = "json_extract(raw, '$.isCancelled') IS NULL";
+    tx.execute(
+        &format!(
+            "DELETE FROM calendar_sync WHERE account_id IN
+               (SELECT account_id FROM calendar_event WHERE {SPARSE})"
+        ),
+        [],
+    )?;
+    tx.execute(&format!("DELETE FROM calendar_event WHERE {SPARSE}"), [])?;
+    tx.commit()?;
+    Ok(())
 }
 
 /// Opens a read-only connection to the database [`open`] created under
@@ -308,6 +350,48 @@ mod tests {
             .run(&mut conn)
             .unwrap();
         conn
+    }
+
+    /// Occurrences recorded sparse before V0046 are dropped, and their
+    /// accounts' calendars listed anew, so that the migrations reading
+    /// every event's JSON pass; whole events stay.
+    #[test]
+    fn sparse_occurrences_are_dropped_before_migrating() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = migrated_to(dir.path(), 45);
+        let whole = r#"{"type":"singleInstance","isCancelled":false,"showAs":"busy",
+            "responseStatus":{"response":"organizer"},"isReminderOn":false,
+            "lastModifiedDateTime":"2026-11-01T10:00:00Z"}"#;
+        let sparse = r#"{"type":"occurrence","id":"o","seriesMasterId":"m",
+            "start":{},"end":{}}"#;
+        conn.execute_batch(&format!(
+            r#"INSERT INTO account (id, kind) VALUES ('a', 'm365'), ('b', 'm365');
+               INSERT INTO calendar_event (account_id, external_id, series, exception,
+                   subject, location, preview, start_ts, end_ts, all_day, raw)
+               VALUES ('a', 'e', NULL, 0, 'Whole', '', '', 0, 1, 0, '{whole}'),
+                      ('a', 'o', 'm', 0, '', '', '', 0, 1, 0, '{sparse}'),
+                      ('b', 'f', NULL, 0, 'Whole', '', '', 0, 1, 0, '{whole}');
+               INSERT INTO calendar_sync (account_id, state) VALUES ('a', '{{}}'), ('b', '{{}}');"#
+        ))
+        .unwrap();
+        drop(conn);
+        let conn = open(dir.path()).unwrap();
+        let rows: Vec<String> = conn
+            .prepare("SELECT external_id FROM calendar_event ORDER BY 1")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows, ["e", "f"]);
+        let synced: Vec<String> = conn
+            .prepare("SELECT account_id FROM calendar_sync")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(synced, ["b"]);
     }
 
     /// Senders' addresses whose images are shown become sender rules
