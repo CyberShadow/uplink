@@ -984,18 +984,14 @@ impl Matrix {
         self.reader
             .read(move |conn| {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
-                let account = rooms::room_account(&tx, room)
+                let standing = rooms::standing(&tx, room)
                     .map_err(internal)?
                     .ok_or_else(|| no_room(room))?;
-                let configured = accounts.iter().find(|a| a.id == account);
-                let joined = match configured {
-                    Some(configured) => rooms::rooms(&tx, configured)
-                        .map_err(internal)?
-                        .into_iter()
-                        .any(|r| r.id == room && r.membership == Membership::Joined),
-                    None => false,
-                };
-                let Some(configured) = configured.filter(|_| joined) else {
+                let configured = accounts
+                    .iter()
+                    .find(|a| a.id == standing.account)
+                    .filter(|_| standing.membership == Membership::Joined);
+                let Some(configured) = configured else {
                     return Err(error(
                         ErrorCode::Invalid,
                         format!(
@@ -1109,21 +1105,13 @@ impl Matrix {
         self.reader
             .read(move |conn| {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
-                let account = rooms::room_account(&tx, room)
+                let standing = rooms::standing(&tx, room)
                     .map_err(internal)?
-                    .ok_or_else(|| no_room(room))?;
-                let configured = accounts
-                    .iter()
-                    .find(|a| a.id == account)
-                    .ok_or_else(|| no_room(room))?;
-                let listed = rooms::rooms(&tx, configured)
-                    .map_err(internal)?
-                    .into_iter()
-                    .find(|r| r.id == room)
+                    .filter(|s| accounts.iter().any(|a| a.id == s.account))
                     .ok_or_else(|| no_room(room))?;
                 let allowed = match change {
-                    MembershipChange::Join => listed.membership == Membership::Invited,
-                    MembershipChange::Leave => listed.membership != Membership::Left,
+                    MembershipChange::Join => standing.membership == Membership::Invited,
+                    MembershipChange::Leave => standing.membership != Membership::Left,
                 };
                 if !allowed {
                     return Err(error(
@@ -1153,29 +1141,27 @@ impl Matrix {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
                 let account = rooms::room_account(&tx, first.space)
                     .map_err(internal)?
+                    .filter(|account| accounts.iter().any(|a| &a.id == account))
                     .ok_or_else(|| no_room(first.space))?;
-                let configured = accounts
-                    .iter()
-                    .find(|a| a.id == account)
-                    .ok_or_else(|| no_room(first.space))?;
-                let listed = rooms::rooms(&tx, configured).map_err(internal)?;
                 let mut seen = std::collections::HashSet::new();
                 for change in &asked {
-                    let room = listed
-                        .iter()
-                        .find(|r| r.id == change.space)
+                    // Of one account: of another, the space is not of
+                    // this order.
+                    let room = rooms::standing(&tx, change.space)
+                        .map_err(internal)?
+                        .filter(|s| s.account == account)
                         .ok_or_else(|| no_room(change.space))?;
                     if !(room.space && room.membership == Membership::Joined) {
-                        return invalid(format!("room {} is not a joined space", room.id.0));
+                        return invalid(format!("room {} is not a joined space", change.space.0));
                     }
                     if !seen.insert(change.space) {
-                        return invalid(format!("space {} reordered twice", room.id.0));
+                        return invalid(format!("space {} reordered twice", change.space.0));
                     }
                     if change.to.as_deref().is_some_and(|o| !space_order::valid(o)) {
                         return invalid(format!("invalid order {:?}", change.to));
                     }
                     if change.to == change.from {
-                        return invalid(format!("space {} is not moved", room.id.0));
+                        return invalid(format!("space {} is not moved", change.space.0));
                     }
                 }
                 Ok(())

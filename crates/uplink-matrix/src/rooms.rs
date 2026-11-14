@@ -1247,6 +1247,30 @@ pub fn room_avatar(conn: &Connection, room: RoomId) -> Result<Option<(String, Op
         .optional()?)
 }
 
+/// What requests about a room are checked against.
+pub struct Standing {
+    pub account: String,
+    pub membership: Membership,
+    pub space: bool,
+}
+
+/// The room's standing, if the room exists.
+pub fn standing(conn: &Connection, room: RoomId) -> Result<Option<Standing>> {
+    Ok(conn
+        .query_row(
+            "SELECT account_id, membership, space FROM matrix_room WHERE id = ?1",
+            [room.0],
+            |r| {
+                Ok(Standing {
+                    account: r.get(0)?,
+                    membership: parse_membership(&r.get::<_, String>(1)?),
+                    space: r.get(2)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
 /// The account a room is of, if the room exists.
 pub fn room_account(conn: &Connection, room: RoomId) -> Result<Option<String>> {
     Ok(conn
