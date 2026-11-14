@@ -18,6 +18,7 @@ use crate::{
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     path::Path,
     sync::{Arc, Mutex},
     time::{Duration, SystemTime},
@@ -331,41 +332,54 @@ impl CalendarSync {
             }
         };
 
+        // As Graph's delta sends them (SPEC §10.1): single events and
+        // exceptions in full; a series whole whenever any of it changed,
+        // its master in full and its occurrences with only what is their
+        // own, the rest being their master's.
         let mut events = vec![];
         let mut removed = vec![];
+        let mut masters = HashMap::new();
+        let mut occurrences = vec![];
         for item in items {
+            let serde_json::Value::Object(item) = item else {
+                bail!("a delta item that is not an object: {item}");
+            };
             if item.get("@removed").is_some() {
                 let id = item["id"].as_str().context("a removal without an id")?;
                 removed.push(id.to_owned());
-            } else {
-                events.push(observed(item)?);
+                continue;
+            }
+            match item["type"].as_str() {
+                Some("seriesMaster") => {
+                    let id = item["id"].as_str().context("a master without an id")?;
+                    masters.insert(id.to_owned(), serde_json::Value::Object(item));
+                }
+                Some("occurrence") => occurrences.push(item),
+                Some("singleInstance" | "exception") => {
+                    events.push(observed(serde_json::Value::Object(item))?)
+                }
+                _ => bail!("an event of no type Graph has: {item:?}"),
             }
         }
+        for occurrence in occurrences {
+            let master = occurrence["seriesMasterId"]
+                .as_str()
+                .and_then(|id| masters.get(id))
+                .with_context(|| format!("occurrence {occurrence:?} without its master"))?;
+            events.push(observed(of_series(master, occurrence))?);
+        }
         // Nothing to record; the old delta link stays good.
-        if !full && events.is_empty() && removed.is_empty() {
+        if !full && events.is_empty() && removed.is_empty() && masters.is_empty() {
             return Ok(());
         }
-        // The masters of the series whose occurrences changed, as they
-        // may have: they say how a series recurs.
-        let mut series = vec![];
-        let mut masters: Vec<&str> = events.iter().filter_map(|e| e.series.as_deref()).collect();
-        masters.sort_unstable();
-        masters.dedup();
-        for id in masters {
-            // Gone since: its occurrences will be, at the next sync.
-            let Some(master) = self
-                .graph
-                .fetch::<serde_json::Value>(&format!("/events/{id}"))
-                .await?
-            else {
-                continue;
-            };
-            series.push(ObservedSeries {
-                external_id: id.to_owned(),
+        let series = masters
+            .into_iter()
+            .map(|(external_id, master)| ObservedSeries {
+                external_id,
                 transaction_id: master["transactionId"].as_str().map(str::to_owned),
                 raw: master.to_string(),
-            });
-        }
+            })
+            .collect();
         let sync_state = SyncState {
             start,
             end,
@@ -423,6 +437,24 @@ fn changes_calendar(entry: &LogEntry) -> bool {
         .events
         .iter()
         .any(|e| matches!(e, ServerEvent::CalendarChanged(_)))
+}
+
+/// The occurrence of `master` that delta sends sparse, as Graph lists it
+/// in full: its master's, but for what is the occurrence's own.
+fn of_series(
+    master: &serde_json::Value,
+    occurrence: serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Value {
+    let mut full = master.clone();
+    for (key, value) in occurrence {
+        full[key] = value;
+    }
+    // A series' own, not its occurrences'.
+    full["recurrence"] = serde_json::Value::Null;
+    full.as_object_mut()
+        .expect("an object")
+        .remove("transactionId");
+    full
 }
 
 /// An event of a delta page (or as Graph answers a write), as recorded.

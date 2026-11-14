@@ -371,11 +371,6 @@ impl Graph {
         .await
     }
 
-    /// What is at `path` below `/me`; `None` on 404.
-    pub async fn fetch<T: DeserializeOwned>(&self, path: &str) -> Result<Option<T>> {
-        self.get(&self.url(path)).await
-    }
-
     /// The URL of `path` below `/me`.
     pub fn url(&self, path: &str) -> String {
         format!("{}{path}", self.base)

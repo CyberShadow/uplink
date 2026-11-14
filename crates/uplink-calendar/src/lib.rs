@@ -107,8 +107,8 @@ pub struct CalendarObserved {
     pub events: Vec<ObservedEvent>,
     /// Events gone, by external id.
     pub removed: Vec<String>,
-    /// The masters of the series whose occurrences changed (calendar views
-    /// list occurrences only), as fetched.
+    /// The masters of the series sent, as delta sends a series: whole,
+    /// with every instance of it in the window among `events` (SPEC §10.1).
     pub series: Vec<ObservedSeries>,
     /// Replaces the calendar's sync state.
     pub sync_state: serde_json::Value,
@@ -300,13 +300,36 @@ impl CalendarObserved {
                 ],
             )?;
         }
+        // Those deleted take what is asked of them along (§6.6).
         let mut removed = 0;
+        for series in &self.series {
+            // Sent whole: an instance of it not sent is gone (cancelled,
+            // or past a shortened end), as Graph says no more of it.
+            let instances = serde_json::to_string(
+                &self
+                    .events
+                    .iter()
+                    .filter(|e| e.series.as_ref() == Some(&series.external_id))
+                    .map(|e| &e.external_id)
+                    .collect::<Vec<_>>(),
+            )?;
+            removed += tx.execute(
+                "DELETE FROM calendar_event WHERE account_id = ?1 AND external_id IS NOT NULL
+                   AND series_id = (SELECT id FROM calendar_series
+                                    WHERE account_id = ?1 AND external_id = ?2)
+                   AND external_id NOT IN (SELECT value FROM json_each(?3))",
+                params![account, series.external_id, instances],
+            )?;
+        }
         for external_id in &self.removed {
             // Graph also reports as removed what it never listed: events
-            // outside the window that changed. Those deleted take what is
-            // asked of them along (§6.6).
+            // outside the window that changed. A series' master removed
+            // takes the series' instances along.
             removed += tx.execute(
-                "DELETE FROM calendar_event WHERE account_id = ?1 AND external_id = ?2",
+                "DELETE FROM calendar_event WHERE account_id = ?1 AND external_id IS NOT NULL
+                   AND (external_id = ?2
+                        OR series_id = (SELECT id FROM calendar_series
+                                        WHERE account_id = ?1 AND external_id = ?2))",
                 params![account, external_id],
             )?;
         }

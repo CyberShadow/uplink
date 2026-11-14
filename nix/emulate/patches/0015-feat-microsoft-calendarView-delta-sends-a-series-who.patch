@@ -1,0 +1,338 @@
+From 896dc154a220ce8cd4af49ac3c3c1874453623ad Mon Sep 17 00:00:00 2001
+From: Vladimir Panteleev <git@cy.md>
+Date: Sat, 14 Nov 2026 15:42:09 +0000
+Subject: [PATCH] feat(microsoft): calendarView delta sends a series whole, its
+ occurrences sparse
+
+As a test tenant shows Graph's delta: any change to a series sends it
+whole again, its master and exceptions in full and its occurrences with
+only id, type, start, end and seriesMasterId; an occurrence no longer in
+the series is left out rather than removed, and a series deleted has its
+master alone removed. Changes are recorded by event rather than by
+instance to tell what to send. The delta test expected an occurrence's
+change alone; it expects the series now.
+---
+ packages/@emulators/microsoft/README.md       |  2 +-
+ .../microsoft/src/__tests__/calendar.test.ts  | 40 ++++++++-----
+ packages/@emulators/microsoft/src/calendar.ts | 28 ++++++---
+ packages/@emulators/microsoft/src/entities.ts | 16 ++---
+ .../microsoft/src/routes/calendar.ts          | 59 +++++++++++--------
+ packages/@emulators/microsoft/src/store.ts    |  8 +--
+ 6 files changed, 92 insertions(+), 61 deletions(-)
+
+diff --git a/packages/@emulators/microsoft/README.md b/packages/@emulators/microsoft/README.md
+index 8da6393..8b1ba9c 100644
+--- a/packages/@emulators/microsoft/README.md
++++ b/packages/@emulators/microsoft/README.md
+@@ -66,7 +66,7 @@ Events live in the user's one calendar. Requests give times in any `timeZone` Gr
+ 
+ An event keeps its `body` (`text` or `html`), `showAs`, `attendees` (each of a `type`, `required` unless given, and with a `status`, `none` unless given) and reminder (`isReminderOn`, `reminderMinutesBeforeStart`; 15 minutes by default) as given; `isOnlineMeeting: true` gives it an `onlineMeeting.joinUrl` at the emulator. What Graph sets itself of a meeting someone else organizes, the emulator takes too, to seed one: its `organizer`, the user's `responseStatus` (`notResponded` by default, `organizer` for the user's own) and `isCancelled`.
+ 
+-`calendarView` lists the events overlapping `startDateTime`–`endDateTime`, series as their occurrences and exceptions. Its `delta` lists them, then, from its `@odata.deltaLink`, those changed since, and as `@removed` those deleted, cancelled or moved out of the window. An unknown delta token answers 410 `SyncStateNotFound`.
++`calendarView` lists the events overlapping `startDateTime`–`endDateTime`, series as their occurrences and exceptions. Its `delta` lists them, then, from its `@odata.deltaLink`, those changed since: a single event as it is, or as `@removed` once deleted or moved out of the window; a series, as Graph's delta sends one, whole whenever any of it changed: its master (`seriesMaster`) and exceptions in full, its occurrences sparse (`id`, `type`, `start`, `end`, `seriesMasterId`), an occurrence no longer in it (cancelled, or past a shortened end) just left out, and once the series is deleted, its master alone `@removed`. An unknown delta token answers 410 `SyncStateNotFound`.
+ 
+ ## Seed Configuration
+ 
+diff --git a/packages/@emulators/microsoft/src/__tests__/calendar.test.ts b/packages/@emulators/microsoft/src/__tests__/calendar.test.ts
+index bcc0071..2c94bb2 100644
+--- a/packages/@emulators/microsoft/src/__tests__/calendar.test.ts
++++ b/packages/@emulators/microsoft/src/__tests__/calendar.test.ts
+@@ -130,14 +130,22 @@ describe("Microsoft Graph calendar", () => {
+     ]);
+   });
+ 
+-  it("reports a calendar view's changes through delta links", async () => {
++  it("reports a calendar view's changes through delta links, a series whole", async () => {
+     const dentist = await create({ subject: "Dentist", start: utc("2026-11-10T14:00:00"), end: utc("2026-11-10T15:00:00") });
+     const series = await create(weekly);
++    const items = (round: { items: any[] }) =>
++      round.items.map((e) => [e.id === series.id ? "master" : e.id === dentist.id ? "dentist" : e.type, e["@removed"] ? "removed" : (e.subject ?? null)]);
++    // The series' master in full, its occurrences sparse, as Graph's
++    // delta sends them: what they have of their own.
+     const initial = await delta(`/v1.0/me/calendarView/delta?${WINDOW}`, 4);
+-    expect(initial.items).toHaveLength(10);
++    expect(initial.items).toHaveLength(11);
++    expect(initial.items.find((e) => e.id === series.id)).toMatchObject({ type: "seriesMaster", subject: "Standup" });
++    const occurrence = initial.items.find((e) => e.type === "occurrence");
++    expect(Object.keys(occurrence).sort()).toEqual(["@odata.type", "end", "id", "seriesMasterId", "start", "type"]);
+     expect((await delta(initial.link)).items).toEqual([]);
+ 
+-    // A series shortened: its later occurrences are removed.
++    // A series shortened is sent again, whole: what is no longer in it is
++    // not there, rather than removed.
+     await json(`/v1.0/me/events/${series.id}`, {
+       method: "PATCH",
+       body: JSON.stringify({
+@@ -145,10 +153,15 @@ describe("Microsoft Graph calendar", () => {
+       }),
+     });
+     const shortened = await delta(initial.link);
+-    expect(shortened.items.filter((e) => e["@removed"])).toHaveLength(7);
++    expect(items(shortened)).toEqual([
++      ["master", "Standup"],
++      ["occurrence", null],
++      ["occurrence", null],
++    ]);
+ 
+-    // An event moved out of the window is reported as removed; one renamed,
+-    // as it is now.
++    // An event moved out of the window is reported as removed; a series
++    // one of whose occurrences is renamed is sent whole again, as Graph
++    // does, the renamed one an exception, in full.
+     await json(`/v1.0/me/events/${dentist.id}`, {
+       method: "PATCH",
+       body: JSON.stringify({ start: utc("2027-01-10T14:00:00"), end: utc("2027-01-10T15:00:00") }),
+@@ -156,17 +169,16 @@ describe("Microsoft Graph calendar", () => {
+     const { value: [first] } = await json(`/v1.0/me/events/${series.id}/instances?${WINDOW}`);
+     await json(`/v1.0/me/events/${first.id}`, { method: "PATCH", body: JSON.stringify({ subject: "Kickoff" }) });
+     const later = await delta(shortened.link);
+-    expect(later.items.map((e) => [e.id, e["@removed"] ? "removed" : e.subject])).toEqual([
+-      [dentist.id, "removed"],
+-      [first.id, "Kickoff"],
++    expect(items(later)).toEqual([
++      ["dentist", "removed"],
++      ["master", "Standup"],
++      ["exception", "Kickoff"],
++      ["occurrence", null],
+     ]);
+ 
+-    // Deleting the series removes what is left of it.
++    // Deleting the series removes its master alone.
+     await json(`/v1.0/me/events/${series.id}`, { method: "DELETE" });
+-    expect((await delta(later.link)).items.map((e) => e["@removed"])).toEqual([
+-      { reason: "deleted" },
+-      { reason: "deleted" },
+-    ]);
++    expect(items(await delta(later.link))).toEqual([["master", "removed"]]);
+   });
+ 
+   it("answers 410 for a delta token it does not know", async () => {
+diff --git a/packages/@emulators/microsoft/src/calendar.ts b/packages/@emulators/microsoft/src/calendar.ts
+index 41a6677..b7b0558 100644
+--- a/packages/@emulators/microsoft/src/calendar.ts
++++ b/packages/@emulators/microsoft/src/calendar.ts
+@@ -281,9 +281,15 @@ export function occurrenceDate(eventId: string, instanceId: string): string {
+   return `${day.slice(0, 4)}-${day.slice(4, 6)}-${day.slice(6, 8)}`;
+ }
+ 
+-/** Makes the event's recorded instances `wanted`, recording what changed
+- * and what is gone under one change of the calendar. */
+-export function syncInstances(store: Store, email: string, eventId: string, wanted: Instance[]): void {
++/** Makes the event's recorded instances `wanted`, and its own JSON `json`
++ * (`null`: deleted), recording a change of the calendar if any changed. */
++export function syncInstances(
++  store: Store,
++  email: string,
++  eventId: string,
++  wanted: Instance[],
++  json: string | null,
++): void {
+   const ms = getMicrosoftStore(store);
+   const recorded = new Map(
+     ms.eventInstances
+@@ -291,21 +297,27 @@ export function syncInstances(store: Store, email: string, eventId: string, want
+       .filter((i) => i.user_email === email)
+       .map((i) => [i.instance_id, i]),
+   );
+-  let change: number | undefined;
+-  const next = () => (change ??= nextCalendarChange(store, email));
++  const last = ms.eventChanges.findBy("event_id", eventId).find((c) => c.user_email === email);
++  let changed = last?.json !== json;
+   for (const instance of wanted) {
+     const old = recorded.get(instance.instance_id);
+     recorded.delete(instance.instance_id);
+     if (!old) {
+-      ms.eventInstances.insert({ ...instance, user_email: email, event_id: eventId, change: next() });
++      ms.eventInstances.insert({ ...instance, user_email: email, event_id: eventId });
++      changed = true;
+     } else if (old.json !== instance.json) {
+-      ms.eventInstances.update(old.id, { ...instance, change: next() });
++      ms.eventInstances.update(old.id, instance);
++      changed = true;
+     }
+   }
+   for (const gone of recorded.values()) {
+     ms.eventInstances.delete(gone.id);
+-    ms.eventInstanceRemovals.insert({ user_email: email, instance_id: gone.instance_id, change: next() });
++    changed = true;
+   }
++  if (!changed) return;
++  const change = nextCalendarChange(store, email);
++  if (last) ms.eventChanges.update(last.id, { json, change });
++  else ms.eventChanges.insert({ user_email: email, event_id: eventId, json, change });
+ }
+ 
+ /** The fields of an event, or of an occurrence, that a request body sets;
+diff --git a/packages/@emulators/microsoft/src/entities.ts b/packages/@emulators/microsoft/src/entities.ts
+index 938a2cb..34462d8 100644
+--- a/packages/@emulators/microsoft/src/entities.ts
++++ b/packages/@emulators/microsoft/src/entities.ts
+@@ -128,8 +128,7 @@ export interface MicrosoftEvent extends Entity, MicrosoftEventFields {
+ }
+ 
+ /** An event as a calendar view lists it: a single event, or one occurrence
+- * of a series, kept up to date with its event so that delta queries can
+- * tell what changed. */
++ * of a series, kept up to date with its event. */
+ export interface MicrosoftEventInstance extends Entity {
+   instance_id: string;
+   user_email: string;
+@@ -139,13 +138,16 @@ export interface MicrosoftEventInstance extends Entity {
+   end: string;
+   /** Graph's representation, as JSON. */
+   json: string;
+-  /** The calendar's change counter when the instance last changed. */
+-  change: number;
+ }
+ 
+-/** An instance that no longer exists, for delta queries. */
+-export interface MicrosoftEventInstanceRemoval extends Entity {
++/** When an event (a single one, or a series with all its instances) last
++ * changed, for delta queries, which send a series whole, as Graph does. */
++export interface MicrosoftEventChange extends Entity {
+   user_email: string;
+-  instance_id: string;
++  event_id: string;
++  /** Graph's representation of the event (of a series, its master), as
++   * JSON; `null` once it is deleted. */
++  json: string | null;
++  /** The calendar's change counter when it last changed. */
+   change: number;
+ }
+diff --git a/packages/@emulators/microsoft/src/routes/calendar.ts b/packages/@emulators/microsoft/src/routes/calendar.ts
+index 6d29fda..19c4155 100644
+--- a/packages/@emulators/microsoft/src/routes/calendar.ts
++++ b/packages/@emulators/microsoft/src/routes/calendar.ts
+@@ -54,7 +54,8 @@ export function calendarRoutes({ app, store, baseUrl }: RouteContext): void {
+     ms.events.findBy("event_id", id).find((e) => e.user_email === email);
+   const instanceOf = (email: string, id: string) =>
+     ms.eventInstances.findBy("instance_id", id).find((i) => i.user_email === email);
+-  const resync = (event: MicrosoftEvent) => syncInstances(store, event.user_email, event.event_id, instancesOf(event));
++  const resync = (event: MicrosoftEvent) =>
++    syncInstances(store, event.user_email, event.event_id, instancesOf(event), JSON.stringify(formatEvent(event)));
+ 
+   /** The window of a calendar view request, or the error answering it. */
+   const windowOf = (c: Context): { start: number; end: number } | Response => {
+@@ -188,7 +189,7 @@ export function calendarRoutes({ app, store, baseUrl }: RouteContext): void {
+     const event = eventOf(email, id);
+     if (event) {
+       ms.events.delete(event.id);
+-      syncInstances(store, email, event.event_id, []);
++      syncInstances(store, email, event.event_id, [], null);
+       return c.body(null, 204);
+     }
+     const instance = instanceOf(email, id);
+@@ -216,7 +217,7 @@ export function calendarRoutes({ app, store, baseUrl }: RouteContext): void {
+     }
+     if (event) {
+       ms.events.delete(event.id);
+-      syncInstances(store, email, event.event_id, []);
++      syncInstances(store, email, event.event_id, [], null);
+     } else {
+       changeOccurrence(master, instance!.instance_id, null);
+     }
+@@ -247,7 +248,7 @@ export function calendarRoutes({ app, store, baseUrl }: RouteContext): void {
+       if (event) {
+         if (response === "declined") {
+           ms.events.delete(event.id);
+-          syncInstances(store, email, event.event_id, []);
++          syncInstances(store, email, event.event_id, [], null);
+         } else {
+           resync(ms.events.update(event.id, { response })!);
+         }
+@@ -295,32 +296,38 @@ export function calendarRoutes({ app, store, baseUrl }: RouteContext): void {
+     }
+ 
+     const { start, end, since, upto, offset } = state;
+-    const changed = ms.eventInstances
+-      .findBy("user_email", email)
+-      .filter((i) => i.change > since && i.change <= upto)
+-      .map((i) => ({ change: i.change, instance: i }));
+-    const present = new Set(changed.map((x) => x.instance.instance_id));
+-    const removed = ms.eventInstanceRemovals
++    const removal = (id: string) => ({ "@odata.type": "#microsoft.graph.event", id, "@removed": { reason: "deleted" } });
++    // As Graph sends them: a single event as it is, or removed if it has
++    // left the window; a series whole, its master and exceptions in full
++    // and its occurrences sparse, an instance no longer in it just left
++    // out; a series deleted, its master removed. The first round lists
++    // what is in the window.
++    const changes = ms.eventChanges
+       .findBy("user_email", email)
+-      .filter((r) => r.change > since && r.change <= upto && !present.has(r.instance_id))
+-      .map((r) => ({ change: r.change, removed: r.instance_id }));
+-    // The first round lists what is in the window; later ones also report
+-    // as removed what has left it.
+-    const changes = [...changed, ...removed]
+-      .filter((x) => since > 0 || ("instance" in x && overlaps(x.instance, start, end)))
+-      .sort((a, b) => a.change - b.change);
++      .filter((x) => x.change > since && x.change <= upto)
++      .sort((a, b) => a.change - b.change)
++      .flatMap((x) => {
++        if (x.json === null) return since > 0 ? [removal(x.event_id)] : [];
++        const event = JSON.parse(x.json);
++        const instances = ms.eventInstances
++          .findBy("event_id", x.event_id)
++          .filter((i) => i.user_email === email && overlaps(i, start, end))
++          .sort((a, b) => a.start.localeCompare(b.start))
++          .map((i) => JSON.parse(i.json));
++        if (event.type === "singleInstance") {
++          return instances.length > 0 ? instances : since > 0 ? [removal(x.event_id)] : [];
++        }
++        if (since === 0 && instances.length === 0) return [];
++        const sparse = (i: any) =>
++          i.type === "occurrence"
++            ? { "@odata.type": i["@odata.type"], id: i.id, type: i.type, start: i.start, end: i.end, seriesMasterId: i.seriesMasterId }
++            : i;
++        return [event, ...instances.map(sparse)];
++      });
+ 
+     const prefer = c.req.header("Prefer") ?? "";
+     const pageSize = Number(prefer.match(/odata\.maxpagesize=(\d+)/)?.[1] ?? DEFAULT_PAGE_SIZE);
+-    const page = changes.slice(offset, offset + pageSize);
+-    const removal = (id: string) => ({ "@odata.type": "#microsoft.graph.event", id, "@removed": { reason: "deleted" } });
+-    const value = page.map((x) =>
+-      "instance" in x
+-        ? overlaps(x.instance, start, end)
+-          ? JSON.parse(x.instance.json)
+-          : removal(x.instance.instance_id)
+-        : removal(x.removed),
+-    );
++    const value = changes.slice(offset, offset + pageSize);
+     const link = `${baseUrl}/v1.0/me/calendarView/delta`;
+     const more = offset + pageSize < changes.length;
+     return c.json({
+diff --git a/packages/@emulators/microsoft/src/store.ts b/packages/@emulators/microsoft/src/store.ts
+index 8f23380..41d5c5a 100644
+--- a/packages/@emulators/microsoft/src/store.ts
++++ b/packages/@emulators/microsoft/src/store.ts
+@@ -7,7 +7,7 @@ import type {
+   MicrosoftMessageRemoval,
+   MicrosoftEvent,
+   MicrosoftEventInstance,
+-  MicrosoftEventInstanceRemoval,
++  MicrosoftEventChange,
+ } from "./entities.js";
+ 
+ export interface MicrosoftStore {
+@@ -18,7 +18,7 @@ export interface MicrosoftStore {
+   messageRemovals: Collection<MicrosoftMessageRemoval>;
+   events: Collection<MicrosoftEvent>;
+   eventInstances: Collection<MicrosoftEventInstance>;
+-  eventInstanceRemovals: Collection<MicrosoftEventInstanceRemoval>;
++  eventChanges: Collection<MicrosoftEventChange>;
+ }
+ 
+ export function getMicrosoftStore(store: Store): MicrosoftStore {
+@@ -34,8 +34,6 @@ export function getMicrosoftStore(store: Store): MicrosoftStore {
+       "event_id",
+       "user_email",
+     ]),
+-    eventInstanceRemovals: store.collection<MicrosoftEventInstanceRemoval>("microsoft.event_instance_removals", [
+-      "user_email",
+-    ]),
++    eventChanges: store.collection<MicrosoftEventChange>("microsoft.event_changes", ["event_id", "user_email"]),
+   };
+ }
+-- 
+2.55.0
+

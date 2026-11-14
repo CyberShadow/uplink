@@ -200,6 +200,62 @@ async fn shows_every_occurrence_of_a_series_and_its_exceptions() {
         .any(|e| e.start == NOW + 7 * DAY + 9 * 3_600_000));
 }
 
+/// Delta sends a series whole whenever any of it changes, its occurrences
+/// with only what is their own, and says no more of an occurrence gone
+/// than that it is not there; of a series deleted, it removes the master.
+#[tokio::test(flavor = "multi_thread")]
+async fn follows_a_series_sent_whole_by_its_master() {
+    let setup = Setup::new().await;
+    let series = setup.create(standup()).await;
+    setup.sync.sync(NOW).await.unwrap();
+    let days = |events: Vec<CalendarEvent>| {
+        events
+            .into_iter()
+            .map(|e| (e.start - NOW) / DAY)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(days(setup.events(NOW, NOW + 21 * DAY).await), [0, 7, 14]);
+
+    // Renamed: the occurrences are as their master is now.
+    setup
+        .call(
+            reqwest::Method::PATCH,
+            &format!("/events/{series}"),
+            Some(json!({ "subject": "Daily standup" })),
+        )
+        .await;
+    setup.sync.sync(NOW).await.unwrap();
+    let events = setup.events(NOW, NOW + 21 * DAY).await;
+    assert!(
+        events.iter().all(|e| e.subject == "Daily standup"),
+        "{events:?}"
+    );
+
+    // An occurrence cancelled is left out of the series sent again.
+    let instances = setup
+        .call(
+            reqwest::Method::GET,
+            &format!(
+                "/events/{series}/instances?startDateTime=2026-11-15T00:00:00Z&endDateTime=2026-11-17T00:00:00Z"
+            ),
+            None,
+        )
+        .await;
+    let second = instances["value"][0]["id"].as_str().unwrap().to_owned();
+    setup
+        .call(reqwest::Method::DELETE, &format!("/events/{second}"), None)
+        .await;
+    setup.sync.sync(NOW).await.unwrap();
+    assert_eq!(days(setup.events(NOW, NOW + 21 * DAY).await), [0, 14]);
+
+    // The series deleted: its master removed, and its occurrences with it.
+    setup
+        .call(reqwest::Method::DELETE, &format!("/events/{series}"), None)
+        .await;
+    setup.sync.sync(NOW).await.unwrap();
+    assert!(setup.events(NOW, NOW + 182 * DAY).await.is_empty());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn follows_changes_and_moves_its_window() {
     let setup = Setup::new().await;
