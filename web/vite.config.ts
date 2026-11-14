@@ -37,6 +37,9 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['src/test/setup.ts'],
+    // Well past a query's wait (setup.ts), so that one that waits in vain
+    // fails as itself, naming what it found not and showing the page.
+    testTimeout: 15000,
     // Local times differ from UTC ones, as they do for most users: the
     // calendar shows all-day events by their UTC dates, timed ones at
     // local times.
