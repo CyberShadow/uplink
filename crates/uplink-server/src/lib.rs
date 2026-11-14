@@ -55,6 +55,10 @@ const HUB_CAPACITY: usize = 4096;
 const MAX_REPLAY: usize = 4096;
 /// The most history entries one request may ask for.
 const MAX_HISTORY: u32 = 500;
+/// Connections the items' queries run on at once: so that a request
+/// waits not for windows listed again and badges derived, nor they for
+/// each other.
+const ITEM_READERS: usize = 4;
 
 #[derive(Embed)]
 #[folder = "static/"]
@@ -297,7 +301,9 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
     Ok(Services {
         outbox: Outbox::new(uplink_storage::open_reader(root)?),
         items: items::Items::new(
-            uplink_storage::open_reader(root)?,
+            (0..ITEM_READERS)
+                .map(|_| uplink_storage::open_reader(root))
+                .collect::<Result<_>>()?,
             mail_accounts.clone(),
             matrix_accounts.clone(),
             config.home.clone(),
@@ -1455,7 +1461,7 @@ mod tests {
                     uplink_storage::store::Store::blobs(dir.path()),
                 ),
                 outbox: Outbox::new(reader()),
-                items: items::Items::new(reader(), vec![], vec![], vec![]),
+                items: items::Items::new(vec![reader()], vec![], vec![], vec![]),
                 todos: Todos::new(dispatcher.clone(), reader()),
                 calendar: Calendar::new(dispatcher.clone(), reader(), vec![]),
                 reader: Arc::new(LogReader::new(reader(), 16)),

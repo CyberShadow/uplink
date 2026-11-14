@@ -206,15 +206,17 @@ fn mail_after(after: ItemPosition) -> ListPosition {
 }
 
 impl Items {
-    /// `reader` is a read-only connection to the database.
+    /// `readers` are read-only connections to the database, on which
+    /// queries run at once: listing windows again and deriving badges are
+    /// many, and long.
     pub fn new(
-        reader: Connection,
+        readers: Vec<Connection>,
         mail_accounts: Vec<mail::ConfiguredAccount>,
         matrix_accounts: Vec<uplink_matrix::service::ConfiguredAccount>,
         home: Vec<HomeBucket>,
     ) -> Self {
         Self {
-            reader: Reader::new(reader),
+            reader: Reader::pool(readers),
             mail_accounts,
             matrix_accounts,
             home: Arc::new(ArcSwap::from_pointee(home)),
@@ -659,7 +661,7 @@ mod tests {
         let observe = |events| dispatcher.observe("mx".into(), room(events));
         observe(vec![message("$1")]).await.unwrap();
         let items = Items::new(
-            uplink_storage::open_reader(dir.path()).unwrap(),
+            vec![uplink_storage::open_reader(dir.path()).unwrap()],
             vec![],
             vec![uplink_matrix::service::ConfiguredAccount {
                 id: "mx".into(),
@@ -755,7 +757,7 @@ mod tests {
             .await
             .unwrap();
         let items = Items::new(
-            uplink_storage::open_reader(dir.path()).unwrap(),
+            vec![uplink_storage::open_reader(dir.path()).unwrap()],
             vec![],
             vec![uplink_matrix::service::ConfiguredAccount {
                 id: "mx".into(),

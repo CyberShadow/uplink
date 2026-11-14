@@ -420,7 +420,10 @@ level. With `~1 M` messages that's ~4 K files per dir, fine for ext4/btrfs.
 - One write connection, owned by the op dispatcher and used from the tokio
   blocking pool; read connections added as queries need them.
 - All writes serialized through the op dispatcher; read connections run in
-  the tokio blocking pool.
+  the tokio blocking pool. Each domain reads on its own; the items'
+  queries (lists, windows, home, badges, §8.7) on a pool of four
+  (`Reader::pool`), so that a click waits not for a window listed again
+  or the badges derived, which are long and many as mail syncs.
 
 **Why rusqlite over sqlx**: no compile-time DB schema dependency (sqlx
 verifies queries against a live DB at build time, which is brittle for an
