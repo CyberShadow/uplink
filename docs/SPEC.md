@@ -1389,24 +1389,29 @@ room's membership, a space's order, an answer. Of each, uplink records:
   and the provider's changes, by whomever, are the user's state;
 - `observed`: the value last seen authoritatively (§6.6.2), and when;
 - the *attempt*, if any: the value last pushed, the op whose opinion it
-  pushed, its position in the log when claimed (§6.6.3), and its
-  outcome so far — *in flight*, *applied* (and when recorded), or
-  *unknown*.
+  pushed, and its outcome so far — *in flight*, *applied* (and when
+  recorded), *unknown* (and since when), or *expired* (§6.6.3); while
+  its own outcome is in flight, the attempt it superseded, which is what
+  the provider has if this one is not applied;
+- the *straggler*: since when the latest superseded push of unknown
+  outcome is so, until it expires (§6.6.3);
+- whether, and since when, it is to be *read back* (§6.6.2).
 
 What the provider may hold is the observed value and, while there is an
-attempt, the attempted one. A field is **pending** while uplink has an
-opinion and the provider may hold anything but the desired value: that
-is, `desired != observed`, or an attempt is outstanding. (Pending is
-never `desired != observed` alone: the attempt is what makes "back to
-as it was" safe, below.)
+attempt or a straggler, the pushed ones. A field is **pending** while
+uplink has an opinion and the provider may hold anything but the
+desired value: that is, `desired != observed`, or an attempt or a
+straggler is outstanding. (Pending is never `desired != observed`
+alone: the attempt is what makes "back to as it was" safe, below.)
 
 An opinion is formed by an op, and goes only when:
 
-- an op sets desired back to observed, and **no attempt is
+- an op sets desired back to observed, and **no attempt or straggler is
   outstanding**: nothing was asked of the provider, so nothing is left
   to reconcile (cancelling a send before it is claimed, §6.7, is this);
 - it is **confirmed**: an authoritative observation (§6.6.2) shows the
-  desired value, after the last attempt's outcome was recorded;
+  desired value, after the last attempt's outcome was recorded, and no
+  straggler may still land;
 - its entity is authoritatively gone (§6.6.5);
 - the user resolves it, when it needs a decision (§6.6.3).
 
@@ -1434,34 +1439,45 @@ that a provider reads its own writes: a request sent after a write
 was answered sees it.
 
 Every observation of the provider carries `as_of`: the log position
-taken **before** the request that produced it was sent. (Taken early, it
-errs towards distrust.) An observation of a field is:
+taken **before** the request that produced it was sent (taken early, it
+errs towards distrust), and is recorded at an entry of its own. A
+request sent after an entry is answered after what the entry recorded
+was; of two observations, the one sent later is not therefore the newer
+(a long poll is answered late), but one sent after the other was
+recorded is. An observation of a field is:
 
-- **authoritative** if its `as_of` is after the recording of the field's
-  last attempt's outcome, applied or not applied (or there was no
-  attempt). It becomes observed. With no opinion, that is the user's
-  state. With one, it confirms it if it shows the desired value; else
-  the local change wins, and is pushed again (but see *not kept*,
-  §6.6.3);
-- **ambiguous** otherwise: it may predate the attempt, or be another
-  client's change after it, and nothing tells which. It is never
-  adopted. If it contradicts the desired value, the desired value is
-  pushed again: harmless if it was stale, and the local change winning
-  if it was not. (Ignoring it instead could lose another client's
-  change for good: syncs are incremental, and that change will not be
-  told again.) If it agrees, it confirms nothing.
+- **authoritative** if its `as_of` is at or after the field's *known*
+  position: the recording of its last applied or expired attempt's
+  outcome, or of the last authoritative observation; and no attempt is
+  in flight or of unknown outcome. It becomes observed, and the known
+  position its recording. With no opinion, that is the user's state.
+  With one, it confirms it if it shows the desired value; else the local
+  change wins, and is pushed again (but see *not kept*, §6.6.3);
+- **ambiguous** otherwise: it may predate what is known, or be another
+  client's change since, and nothing tells which. It is never adopted,
+  and changes neither the opinion nor the attempt. If it differs from
+  the observed or the desired value, the field is **read back** by a
+  request sent after its recording, and settled by that as by any
+  authoritative observation: the local change winning if there still is
+  one. (Ignoring it could lose another client's change for good: syncs
+  are incremental, and that change will not be told again.) An
+  authoritative observation sent before the ambiguous one was recorded
+  does not end that.
 
 An attempt of unknown outcome is never ordered by: the request may
 still land. It is superseded by pushing the desired value again, whose
-outcome is.
+outcome is; the superseded one, its outcome still unknown, becomes the
+straggler (§6.6.3).
 
 An applied push is confirmed only by an authoritative observation, and
 a sync may never give one: a Matrix long poll is usually already waiting
 when uplink pushes, and is woken by the push's own echo, so it is
-ambiguous, and it tells of the field once. So after an applied push, the
-reconciler **reads the field back** directly, unless the next sync is
-anyway sent after the outcome is recorded (providers whose sync and
-pushes take turns, §6.6.6).
+ambiguous, and it tells of the field once. So after an applied push of
+the value still desired, the reconciler **reads the field back**
+directly, unless the next sync is anyway sent after the outcome is
+recorded (providers whose sync and pushes take turns, §6.6.6). It does
+not read back while a push is in flight or of unknown outcome: no
+observation would be trusted.
 
 A provider that does not read its own writes (a replica behind) can
 still mislead an authoritative observation: while an opinion is pending,
@@ -1497,6 +1513,15 @@ A request ends one of three ways:
   with backoff: harmlessly, as pushes state what should be (sends,
   which are not states, are pushed again only once the provider is seen
   not to have them, §6.7).
+
+  A request of unknown outcome may still land, after a later one: until
+  then, it is the field's *straggler*, and the opinion is not confirmed
+  (a contradiction meanwhile is pushed again, and is no sign of a value
+  not kept, below). Five minutes after its outcome became unknown, the
+  provider is taken to be done with it: the outcome is **expired**,
+  recorded as an entry, and what is observed after it is trusted. An
+  expired attempt, or straggler, is read back, to learn what became of
+  it.
 
 The account records, as an observation, when its pushes start failing
 (with the error) and when they recover, not each retry.
@@ -1595,9 +1620,10 @@ How they order:
 Without versions from the provider, some interleavings can't be told
 apart, and are accepted rather than guessed at:
 
-- a request of unknown outcome that the provider applies **late**, after
-  a later push: the late value wins, and with no opinion left, it is
-  taken for another client's. Only conditional writes catch it;
+- a request of unknown outcome that the provider applies **later than
+  its expiry** (§6.6.3), after a later push: the late value wins, and
+  with no opinion left, it is taken for another client's. Only
+  conditional writes catch it;
 - a provider not reading its own writes (§6.6.2): a stale value shown
   once a change is confirmed, until it changes again;
 - a set written whole: another client's concurrent change to it lost
@@ -1634,10 +1660,10 @@ while an account's pushes are failing or something needs a decision. An empty ou
 the providers, as last observed, match what the user has done.
 
 **Not yet so.** The crates predate this model, and each reconciles in
-its own way: the attempt, `as_of`, read-back, not kept and limbo are not
-yet implemented. Known to fail meanwhile: Matrix tags, space orders and
-membership (stale syncs overwrite pushes; undo during a push lost);
-membership and calendar answers (an undo during the push lost); mail
+its own way: the model is implemented, and simulated, as
+`uplink_tx_log::reconcile`, but no crate uses it yet, nor limbo. Known
+to fail meanwhile: Matrix tags, space orders and membership (stale
+syncs overwrite pushes; undo during a push lost); calendar answers (an undo during the push lost); mail
 (a step's failure loses the outcomes of its earlier pushes, so an undo
 then is lost); IMAP (a push after a move goes to the old UID); Matrix
 pins (built from the SDK's store).
@@ -5064,7 +5090,10 @@ flake is the source of truth.
   and has another client change it; random interleavings of these with
   ops and undos, from a seed, reproducible. After each run, with the
   network quiet, every field must be reconciled or need a decision, and
-  the provider must have the desired value of each reconciled one.
+  the provider must have the desired value of each reconciled one; and,
+  unless another client wrote since, the user's last change must have
+  won, or need the decision the provider's refusal or not keeping it
+  calls for.
 
 **Integration tests (NixOS VM tests, `pkgs.testers.nixosTest`)**
 

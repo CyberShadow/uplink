@@ -22,6 +22,7 @@ use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Row, Trans
 
 pub mod answer;
 pub mod push;
+pub mod reconcile;
 #[cfg(any(test, feature = "test-ops"))]
 pub mod sample;
 
