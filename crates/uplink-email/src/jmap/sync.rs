@@ -117,9 +117,10 @@ const VIRTUAL: [&str; 2] = ["all", "flagged"];
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct State {
-    /// The emails are recorded up to this state; while listing, the state
-    /// as the listing began, from which the polls after it record what
-    /// changed.
+    /// The emails' changes are recorded up to this state; while listing,
+    /// as the listing began, then as the polls between its steps went on.
+    /// The listing records the emails as they were; the polls, what
+    /// changed since.
     emails: String,
     /// While listing: the last entry recorded before the listing began.
     /// Those after it were fetched by the listing, so the polls cover
@@ -170,15 +171,47 @@ pub struct JmapSync {
 /// A listing's progress through the emails, newest first.
 struct Cursor {
     state: State,
-    /// What the account had as it began, and of that, what it had before
-    /// the listing first began.
+    /// How many emails there were as it began, if the server says, for
+    /// the progress shown.
+    total: Option<u32>,
+    /// What the account has: what it had as the listing began, and what
+    /// the polls since added, less what they removed.
     known: HashSet<String>,
+    /// What it had before the listing first began.
     earlier: HashSet<String>,
-    /// Every email listed so far: what is not, at the end, has gone.
+    /// Every email listed so far, or added by a poll: what is known but
+    /// not this, at the end, has gone.
     listed: HashSet<String>,
     next: Next,
     /// Of the pages listed, the new emails yet to fetch, in order.
     unfetched: Vec<Email>,
+}
+
+impl Cursor {
+    /// The account's sync state while listing, its changes recorded up to
+    /// `emails`.
+    fn sync_state(&self, emails: &str) -> SyncState {
+        let state = State {
+            emails: emails.to_owned(),
+            ..self.state.clone()
+        };
+        SyncState::Listing {
+            state: serde_json::to_value(&state).expect("serializes"),
+            total: self.total,
+        }
+    }
+
+    /// Takes in what a poll recorded, up to `emails`: what it added is
+    /// not fetched again, nor what it removed taken as gone again.
+    fn polled(&mut self, emails: String, added: &[String], removed: &[String]) {
+        self.state.emails = emails;
+        for id in removed {
+            self.known.remove(id);
+        }
+        self.known.extend(added.iter().cloned());
+        self.listed.extend(added.iter().cloned());
+        self.unfetched.retain(|e| !added.contains(&e.id));
+    }
 }
 
 enum Next {
@@ -321,11 +354,22 @@ impl Provider for JmapSync {
     // server accepts it (`onSuccessUpdateEmail`).
     const FILES_SENT: bool = true;
 
-    /// Polls; or, listing the emails, takes one step: one page listed, or
+    /// Polls; and, listing the emails, takes one step: one page listed, or
     /// one batch of its emails fetched.
     async fn sync(&self, account: &Account) -> Result<bool> {
         let mut cursor = self.cursor.lock().await;
         if let Some(listing) = cursor.as_mut() {
+            // The polls go on while the listing does, so that it holds up
+            // no new mail.
+            let from = listing.state.emails.clone();
+            match self.poll(account, &from, Some(listing)).await? {
+                None => {
+                    *cursor = Some(self.start_listing(account, None).await?);
+                    return Ok(true);
+                }
+                Some(true) => return Ok(true),
+                Some(false) => {}
+            }
             return match self.list_step(account, listing).await {
                 Ok(more) => {
                     if !more {
@@ -344,7 +388,7 @@ impl Provider for JmapSync {
         }
         let resumed = match account.sync_state::<State>().await? {
             Some(state) if state.listing_before.is_none() => {
-                if let Some(more) = self.poll(account, &state.emails).await? {
+                if let Some(more) = self.poll(account, &state.emails, None).await? {
                     return Ok(more);
                 }
                 None
@@ -417,8 +461,14 @@ impl JmapSync {
     }
 
     /// Records the changes since `from`, a batch of them; whether more
-    /// remain, or `None` if the server cannot tell them from there.
-    async fn poll(&self, account: &Account, from: &str) -> Result<Option<bool>> {
+    /// remain, or `None` if the server cannot tell them from there. A
+    /// `listing` under way is told what was recorded.
+    async fn poll(
+        &self,
+        account: &Account,
+        from: &str,
+        listing: Option<&mut Cursor>,
+    ) -> Result<Option<bool>> {
         let mut request = Request::default();
         let mailboxes = get_mailboxes(&mut request);
         let changes = request.call(
@@ -483,16 +533,24 @@ impl JmapSync {
         {
             return Ok(Some(false));
         }
+        let added_ids: Vec<String> = added.iter().map(|e| e.external_id.clone()).collect();
+        let sync_state = match &listing {
+            Some(cursor) => cursor.sync_state(&changes.new_state),
+            None => synced(changes.new_state.clone()),
+        };
         account
             .observe(MailboxObserved {
                 labels,
                 added,
                 updated,
-                removed,
-                sync_state: Some(synced(changes.new_state)),
+                removed: removed.clone(),
+                sync_state: Some(sync_state),
                 ..observed()
             })
             .await?;
+        if let Some(cursor) = listing {
+            cursor.polled(changes.new_state, &added_ids, &removed);
+        }
         Ok(Some(changes.has_more_changes))
     }
 
@@ -514,26 +572,24 @@ impl JmapSync {
                 listing_before: Some(account.last_entry().await?),
             },
         };
-        let total = responses.take::<Queried>(total)?.total;
         let before = state.listing_before.expect("a listing's state");
-        account
-            .observe(MailboxObserved {
-                labels: labels(account, &mailboxes, BTreeSet::new()).await?,
-                sync_state: Some(SyncState::Listing {
-                    state: serde_json::to_value(&state).expect("serializes"),
-                    total,
-                }),
-                ..observed()
-            })
-            .await?;
-        Ok(Cursor {
+        let cursor = Cursor {
             known: account.known().await?,
             earlier: account.known_up_to(before).await?,
             state,
+            total: responses.take::<Queried>(total)?.total,
             listed: HashSet::new(),
             next: Next::First,
             unfetched: vec![],
-        })
+        };
+        account
+            .observe(MailboxObserved {
+                labels: labels(account, &mailboxes, BTreeSet::new()).await?,
+                sync_state: Some(cursor.sync_state(&cursor.state.emails)),
+                ..observed()
+            })
+            .await?;
+        Ok(cursor)
     }
 
     /// Takes the listing a step: fetches a batch of the new emails listed,
@@ -594,7 +650,7 @@ impl JmapSync {
         let mailboxes = Mailboxes::of(responses.take::<Got<Mailbox>>(mailboxes)?.list)?;
         let ids = responses.take::<Queried>(query)?.ids;
         // Emails destroyed since they were listed are recorded as removed
-        // by the first poll, which starts before the listing.
+        // by the polls.
         let mut by_id: HashMap<String, Email> = responses
             .take::<Got<Email>>(got)?
             .list

@@ -72,18 +72,33 @@ impl Uplink {
         address: &str,
         poll_interval: Duration,
     ) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(
-            SyncTask::new(
-                provider,
-                "test".into(),
-                address.into(),
-                self.dispatcher.clone(),
-                self.reader(),
-                self.dir.path(),
-                poll_interval,
-            )
-            .run(),
+        tokio::spawn(self.task(provider, address, poll_interval).run())
+    }
+
+    /// `provider`'s sync task for the account, not running: for a test to
+    /// take its steps.
+    pub fn task<P: Provider>(
+        &self,
+        provider: P,
+        address: &str,
+        poll_interval: Duration,
+    ) -> SyncTask<P> {
+        SyncTask::new(
+            provider,
+            "test".into(),
+            address.into(),
+            self.dispatcher.clone(),
+            self.reader(),
+            self.dir.path(),
+            poll_interval,
         )
+    }
+
+    /// How many entries the account has.
+    pub fn entries(&self) -> i64 {
+        self.reader()
+            .query_row("SELECT count(*) FROM mail_entry", [], |r| r.get(0))
+            .unwrap()
     }
 
     /// The entry of the message whose subject starts with `tag`.

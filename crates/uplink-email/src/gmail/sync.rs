@@ -42,6 +42,11 @@ const CONCURRENT_FETCHES: usize = 8;
 /// While listing, how many messages fetched are stored at once: at
 /// Gmail's quota, about 40 s of fetching.
 const STORE_EVERY: usize = 50;
+/// While listing, of how many messages labels are fetched at once: as
+/// much quota as [`STORE_EVERY`] fetched whole. A step takes no longer,
+/// so that the changes polled for between steps, new mail most of all,
+/// are recorded as they come.
+const RELABEL_EVERY: usize = 150;
 /// Gmail's limit for `batchModify`.
 const BATCH_MODIFY_MAX: usize = 1000;
 /// How far Gmail's clock may be behind ours, in ms: its time for a send
@@ -60,9 +65,13 @@ enum State {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Listing {
-    /// The history id when the listing began: the polls after it record
-    /// what changed from there.
-    listing_from: String,
+    /// The history id the mailbox's changes are recorded up to: as the
+    /// listing began, then as the polls between its steps went on. The
+    /// listing records the mailbox as it was; the polls, what changed
+    /// since.
+    // As it was named before the polls went on during the listing.
+    #[serde(alias = "listing_from")]
+    changes_from: String,
     /// The last entry recorded before the listing began. Those after it
     /// were fetched by the listing, so the polls cover their changes; those
     /// up to it may have changed unseen, and their labels are fetched anew.
@@ -126,16 +135,50 @@ impl GmailSync {
 /// A listing's progress through the mailbox.
 struct Cursor {
     listing: Listing,
-    /// What the account had as it began, and of that, what it had before
-    /// the listing first began.
+    /// How many messages the mailbox held as it began, for the progress
+    /// shown.
+    total: u32,
+    /// What the account has: what it had as the listing began, and what
+    /// the polls since added, less what they removed.
     known: HashSet<String>,
+    /// What it had before the listing first began.
     earlier: HashSet<String>,
-    /// Every message listed so far: what is not, at the end, has gone.
+    /// Every message listed so far, or added by a poll: what is known but
+    /// not this, at the end, has gone.
     listed: HashSet<String>,
     /// The next page to list.
     next: Next,
-    /// Of the pages listed, the new messages yet to fetch, in order.
+    /// Of the pages listed, the earlier messages whose labels are yet to
+    /// fetch, and the new messages yet to fetch, in order.
+    unlabelled: Vec<String>,
     unfetched: Vec<String>,
+}
+
+impl Cursor {
+    /// The account's sync state while listing, its changes recorded up to
+    /// `changes_from`.
+    fn sync_state(&self, changes_from: &str) -> SyncState {
+        let listing = Listing {
+            changes_from: changes_from.to_owned(),
+            ..self.listing.clone()
+        };
+        SyncState::Listing {
+            state: serde_json::to_value(State::Listing(listing)).expect("serializes"),
+            total: Some(self.total),
+        }
+    }
+
+    /// Takes in what a poll recorded, up to `history_id`: what it added
+    /// is not fetched again, nor what it removed taken as gone again.
+    fn polled(&mut self, history_id: String, added: &[String], removed: &[String]) {
+        self.listing.changes_from = history_id;
+        for id in removed {
+            self.known.remove(id);
+        }
+        self.known.extend(added.iter().cloned());
+        self.listed.extend(added.iter().cloned());
+        self.unfetched.retain(|id| !added.contains(id));
+    }
 }
 
 enum Next {
@@ -149,32 +192,39 @@ impl Provider for GmailSync {
     // Filed as it is accepted (SPEC §6.7).
     const FILES_SENT: bool = true;
 
-    /// Polls; or, listing the mailbox, takes one step: one page listed, or
-    /// one batch of its messages fetched.
+    /// Polls; and, listing the mailbox, takes one step: one page listed,
+    /// or a batch of its messages fetched, or of their labels. The polls
+    /// go on while the listing does, which takes days, so that it holds up
+    /// no new mail.
     async fn sync(&self, account: &Account) -> Result<bool> {
         let mut cursor = self.cursor.lock().await;
-        if let Some(listing) = cursor.as_mut() {
-            let more = self.list_step(account, listing).await?;
-            if !more {
-                *cursor = None;
-            }
-            return Ok(more);
-        }
-        let resumed = match account.sync_state::<State>().await? {
-            Some(State::Synced { history_id }) => {
-                if self.poll(account, &history_id).await? {
-                    return Ok(false);
+        let Some(listing) = cursor.as_mut() else {
+            let resumed = match account.sync_state::<State>().await? {
+                Some(State::Synced { history_id }) => {
+                    if self.poll(account, &history_id, None).await? {
+                        return Ok(false);
+                    }
+                    None
                 }
-                None
-            }
-            Some(State::Listing(listing)) => {
-                tracing::info!(account = account.id, "resuming the listing of the mailbox");
-                Some(listing)
-            }
-            None => None,
+                Some(State::Listing(listing)) => {
+                    tracing::info!(account = account.id, "resuming the listing of the mailbox");
+                    Some(listing)
+                }
+                None => None,
+            };
+            *cursor = Some(self.start_listing(account, resumed).await?);
+            return Ok(true);
         };
-        *cursor = Some(self.start_listing(account, resumed).await?);
-        Ok(true)
+        let from = listing.listing.changes_from.clone();
+        if !self.poll(account, &from, Some(listing)).await? {
+            *cursor = Some(self.start_listing(account, None).await?);
+            return Ok(true);
+        }
+        let more = self.list_step(account, listing).await?;
+        if !more {
+            *cursor = None;
+        }
+        Ok(more)
     }
 
     async fn push(&self, account: &Account) -> Result<()> {
@@ -267,8 +317,13 @@ impl GmailSync {
     }
 
     /// Records changes since `from`; `false` if history from there is no
-    /// longer available.
-    async fn poll(&self, account: &Account, from: &str) -> Result<bool> {
+    /// longer available. A `listing` under way is told what was recorded.
+    async fn poll(
+        &self,
+        account: &Account,
+        from: &str,
+        listing: Option<&mut Cursor>,
+    ) -> Result<bool> {
         let gmail = &self.gmail;
         let mut touched = vec![];
         let mut seen = HashSet::new();
@@ -309,6 +364,11 @@ impl GmailSync {
             // Messages may carry labels created since the last listing.
             Some(self.labels().await?)
         };
+        let added_ids: Vec<String> = added.iter().map(|e| e.external_id.clone()).collect();
+        let sync_state = match &listing {
+            Some(cursor) => cursor.sync_state(&latest),
+            None => synced(latest.clone()),
+        };
         account
             .observe(MailboxObserved {
                 account_kind: KIND,
@@ -316,11 +376,14 @@ impl GmailSync {
                 rekeyed: vec![],
                 added,
                 updated,
-                removed,
-                sync_state: Some(synced(latest)),
+                removed: removed.clone(),
+                sync_state: Some(sync_state),
             })
-            .await
-            .map(|()| true)
+            .await?;
+        if let Some(cursor) = listing {
+            cursor.polled(latest, &added_ids, &removed);
+        }
+        Ok(true)
     }
 
     /// Begins recording the whole mailbox, as of the history id read when
@@ -333,36 +396,58 @@ impl GmailSync {
         let listing = match resumed {
             Some(listing) => listing,
             None => Listing {
-                listing_from: profile.history_id,
+                changes_from: profile.history_id,
                 before: account.last_entry().await?,
             },
+        };
+        let cursor = Cursor {
+            known: account.known().await?,
+            earlier: account.known_up_to(listing.before).await?,
+            listing,
+            total: profile.messages_total,
+            listed: HashSet::new(),
+            next: Next::First,
+            unlabelled: vec![],
+            unfetched: vec![],
         };
         account
             .observe(MailboxObserved {
                 labels: Some(self.labels().await?),
-                sync_state: Some(SyncState::Listing {
-                    state: serde_json::to_value(State::Listing(listing.clone()))
-                        .expect("serializes"),
-                    total: Some(profile.messages_total),
-                }),
+                sync_state: Some(cursor.sync_state(&cursor.listing.changes_from)),
                 ..observed()
             })
             .await?;
-        Ok(Cursor {
-            known: account.known().await?,
-            earlier: account.known_up_to(listing.before).await?,
-            listing,
-            listed: HashSet::new(),
-            next: Next::First,
-            unfetched: vec![],
-        })
+        Ok(cursor)
     }
 
-    /// Takes the listing a step: fetches a batch of the new messages listed,
-    /// or lists the next page, or, at the end, records what has gone and
-    /// that the mailbox is synced. `true` if there is more. The cursor
-    /// moves only once a step is recorded, so a failed one is retried.
+    /// Takes the listing a step: fetches the labels of a batch of the
+    /// earlier messages listed, or a batch of the new ones, or lists the
+    /// next page, or, at the end, records what has gone and that the
+    /// mailbox is synced. `true` if there is more. The cursor moves only
+    /// once a step is recorded, so a failed one is retried.
     async fn list_step(&self, account: &Account, cursor: &mut Cursor) -> Result<bool> {
+        if !cursor.unlabelled.is_empty() {
+            let batch = cursor.unlabelled[..cursor.unlabelled.len().min(RELABEL_EVERY)].to_vec();
+            let fetched = batch.len();
+            // Messages deleted since they were listed are recorded as
+            // removed by the polls.
+            let updated: Vec<EntryLabels> = self
+                .fetch_labels(batch)
+                .await?
+                .into_iter()
+                .filter_map(|(_, labels)| labels)
+                .collect();
+            if !updated.is_empty() {
+                account
+                    .observe(MailboxObserved {
+                        updated,
+                        ..observed()
+                    })
+                    .await?;
+            }
+            cursor.unlabelled.drain(..fetched);
+            return Ok(true);
+        }
         if !cursor.unfetched.is_empty() {
             // Stored a few at a time, as a page takes minutes of quota: so
             // that they show, and pushes and sends go between.
@@ -387,7 +472,7 @@ impl GmailSync {
                 account
                     .observe(MailboxObserved {
                         removed: cursor.known.difference(&cursor.listed).cloned().collect(),
-                        sync_state: Some(synced(cursor.listing.listing_from.clone())),
+                        sync_state: Some(synced(cursor.listing.changes_from.clone())),
                         ..observed()
                     })
                     .await?;
@@ -396,27 +481,11 @@ impl GmailSync {
         };
         let page = self.gmail.messages(token.as_deref()).await?;
         let ids: Vec<String> = page.messages.into_iter().map(|m| m.id).collect();
-        // Messages deleted since they were listed are recorded as removed
-        // by the first poll, which starts before the listing.
-        let old = ids
+        cursor.unlabelled = ids
             .iter()
             .filter(|id| cursor.earlier.contains(*id))
             .cloned()
             .collect();
-        let updated: Vec<EntryLabels> = self
-            .fetch_labels(old)
-            .await?
-            .into_iter()
-            .filter_map(|(_, labels)| labels)
-            .collect();
-        if !updated.is_empty() {
-            account
-                .observe(MailboxObserved {
-                    updated,
-                    ..observed()
-                })
-                .await?;
-        }
         cursor.unfetched = ids
             .iter()
             .filter(|id| !cursor.known.contains(*id))

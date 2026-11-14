@@ -1434,20 +1434,28 @@ IMAP's per-folder copies, and a REST fake is practical to test against
   about 6 minutes of quota, and its messages show, and survive an
   interruption, as they come. Record the profile's
   `historyId` *before* starting, so nothing that changes during the walk
-  is missed. The listing resumes after an interruption: `sync_state`
-  holds `{listing_from, before}`, the history id it began at and the
-  last entry recorded before it. A resumed listing lists anew (page
-  tokens do not last), fetches only messages it has not, and fetches
-  labels again only of entries up to `before`, since the polls from
-  `listing_from` cover changes to those it fetched. Then the state
-  becomes `{history_id: listing_from}`, and the account `synced`.
-  The listing goes in steps, each one page listed or one batch fetched,
-  between which the account's task pushes label changes and sends due
-  mail (§6.6, §6.7): a first sync takes days, and what the user does
-  meanwhile reaches Gmail at once rather than after it. The account task
-  asks for the next step without waiting for the poll interval. Where it
-  has got (page token, ids listed, ids yet to fetch) is kept in memory
-  only, and a failed step is retried from there.
+  is missed. The listing records the mailbox as it was; what changes
+  meanwhile, new mail most of all, the polls record, which go on between
+  its steps from that history id, each step beginning with one (2 quota
+  units): a first sync takes days, and holds up no new mail. A message a
+  poll added is not fetched again as the listing reaches it, nor one it
+  removed taken as gone again. The listing resumes after an
+  interruption: `sync_state` holds `{changes_from, before}`, the history
+  id the changes are recorded up to (where the listing began, moved on
+  by the polls) and the last entry recorded before it began. A resumed
+  listing lists anew (page tokens do not last), fetches only messages it
+  has not, and fetches labels again only of entries up to `before`,
+  since the polls cover changes to those it fetched. Then the state
+  becomes `{history_id: changes_from}`, and the account `synced`.
+  History that has expired meanwhile (a poll's 404) begins the listing
+  anew. The listing goes in steps, each one page listed, or one batch
+  fetched, or the labels of 150 entries up to `before` (as much quota
+  as a batch), between which the account's task pushes label changes
+  and sends due mail (§6.6, §6.7), so that what the user does meanwhile
+  reaches Gmail at once rather than after it. The account task asks for
+  the next step without waiting for the poll interval. Where it has got
+  (page token, ids listed, ids yet to fetch) is kept in memory only, and
+  a failed step is retried from there.
 - **Quota**: Gmail allows a user 6,000 quota units a minute (projects
   created since 1 May 2026, as a user's own will be; older ones keep
   15,000) and refuses with 403 `rateLimitExceeded` for the rest of the
@@ -2147,8 +2155,10 @@ credentials it was built with, which an OAuth token outlives.
   after the last one's id, by `anchor`, so that emails gone meanwhile
   shift nothing), the new ones fetched 50 a step, and the ones known
   before it began relabelled; at its end, what was not listed is
-  removed and the state recorded (`{"emails": <state>}`), from which the
-  polls after it record what changed meanwhile. A listing interrupted
+  removed and the state recorded (`{"emails": <state>}`). What changes
+  meanwhile, the polls record, which go on between its steps, each step
+  beginning with one, and move the recorded state on: new mail is not
+  held up by the listing. A listing interrupted
   resumes, listing anew and fetching only what it has not; so does one
   whose anchor is gone (`anchorNotFound`).
 - **Push**: each email's keywords and mailboxes are patched (`Email/set`,

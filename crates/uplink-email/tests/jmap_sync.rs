@@ -368,6 +368,42 @@ async fn a_first_sync_lists_the_emails_in_steps() {
     sync.abort();
 }
 
+/// New mail is recorded as it comes while the first listing is under
+/// way, and once only.
+#[tokio::test(flavor = "multi_thread")]
+async fn mail_arriving_while_listing_is_not_held_up() {
+    let uplink = Uplink::new(MailProvider::Jmap);
+    let stalwart = Stalwart::start(uplink.dir.path()).await;
+    let other = stalwart.jmap("alice");
+    import(&other, "inbox", &message("old", "")).await;
+    let task = uplink.task(provider(&stalwart), ALICE, Duration::from_secs(3600));
+    let step = || task.provider.sync(&task.account);
+    // The listing begins, as of now.
+    assert!(step().await.unwrap());
+    // Mail arriving after it began, which its page lists too.
+    import(&other, "inbox", &message("new", "")).await;
+    // Its page listed, the new mail polled for first.
+    assert!(step().await.unwrap());
+    assert!(uplink.entry("new").is_some());
+    assert!(uplink.entry("old").is_none());
+    // The rest fetched, but for what came meanwhile.
+    assert!(step().await.unwrap());
+    assert!(uplink.entry("old").is_some());
+    import(&other, "inbox", &message("newer", "")).await;
+    assert!(step().await.unwrap());
+    assert!(uplink.entry("newer").is_some());
+    assert!(!uplink.synced());
+    // The listing ends past its last page, which is empty; emails received
+    // in the same second may make it one more.
+    let mut steps = 1;
+    while step().await.unwrap() {
+        steps += 1;
+        assert!(steps <= 2, "the listing goes on");
+    }
+    assert!(uplink.synced());
+    assert_eq!(uplink.entries(), 3);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn sends_by_submission_and_files_the_copy_in_sent() {
     let uplink = Uplink::new(MailProvider::Jmap);

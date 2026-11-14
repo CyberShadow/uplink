@@ -274,7 +274,7 @@ async fn resumes_an_interrupted_listing() {
     let db = uplink_storage::open(uplink.dir.path()).unwrap();
     db.execute(
         "UPDATE account SET synced = 0, sync_state = json_object(
-           'listing_from', json_extract(sync_state, '$.history_id'), 'before', 0)",
+           'changes_from', json_extract(sync_state, '$.history_id'), 'before', 0)",
         [],
     )
     .unwrap();
@@ -301,6 +301,43 @@ async fn resumes_an_interrupted_listing() {
         .unwrap();
     assert!(state.starts_with(r#"{"history_id":"#), "{state}");
     sync.abort();
+    provider.clean_up().await;
+}
+
+/// New mail is recorded as it comes while the first listing is under
+/// way, which takes days, and once only.
+#[tokio::test(flavor = "multi_thread")]
+async fn mail_arriving_while_listing_is_not_held_up() {
+    use uplink_email::account::Provider as _;
+    let uplink = Uplink::new(MailProvider::Gmail);
+    if common::real() {
+        eprintln!("skipped: lists the whole mailbox, step by step");
+        return;
+    }
+    let provider = Provider::start(uplink.dir.path(), None).await;
+    provider.deliver(&message("old", "")).await;
+    let task = uplink.task(
+        sync(&provider, Duration::from_millis(100)),
+        &provider.account.address,
+        Duration::from_secs(3600),
+    );
+    let step = || task.provider.sync(&task.account);
+    // The listing begins, as of now.
+    assert!(step().await.unwrap());
+    // Mail arriving after it began, which its page lists too.
+    provider.deliver(&message("new", "")).await;
+    // Its page listed, the new mail polled for first.
+    assert!(step().await.unwrap());
+    assert!(uplink.entry("new").is_some());
+    assert!(uplink.entry("old").is_none());
+    // The rest fetched, but for what came meanwhile.
+    assert!(step().await.unwrap());
+    assert!(uplink.entry("old").is_some());
+    provider.deliver(&message("newer", "")).await;
+    assert!(!step().await.unwrap());
+    assert!(uplink.entry("newer").is_some());
+    assert!(uplink.synced());
+    assert_eq!(uplink.entries(), 3);
     provider.clean_up().await;
 }
 
