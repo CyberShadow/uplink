@@ -300,7 +300,7 @@ def home(page):
     """Goes home: the rows of each bucket."""
     page.get_by_role("link", name="Home").click()
     region = page.get_by_role("region", name="Home")
-    expect(region.get_by_role("region", name="Backlog").get_by_role("listitem")).not_to_have_count(0)
+    expect(region.get_by_role("region", name="Starred").get_by_role("listitem")).not_to_have_count(0)
     page.screenshot(path=f"{SHOTS}/home.png")
     buckets = region.get_by_role("region")
     return {

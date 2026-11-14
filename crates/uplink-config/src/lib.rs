@@ -70,9 +70,10 @@ pub struct HomeBucket {
     pub badge: Option<Badge>,
 }
 
-/// What needs doing now, counted on the icon; what keeps things in
-/// order, a dot there; what is to be done some day, and what is to be
-/// read at leisure.
+/// What needs doing now, counted on the icon; what is not yet seen, a
+/// dot there; what is starred or to do; what is in the inbox, read; and
+/// the rest unread. So the inbox can be kept at zero by archiving, or
+/// kept as read, with what is still to do starred.
 fn default_home() -> Vec<HomeBucket> {
     let bucket = |name: &str, query: &str, badge| HomeBucket {
         name: name.into(),
@@ -81,19 +82,24 @@ fn default_home() -> Vec<HomeBucket> {
     };
     vec![
         bucket(
-            "Immediate",
+            "Urgent",
             "(is:mention is:new) OR is:invite OR (is:dm is:unread) OR is:overdue OR due:today \
              OR (in:inbox is:unread is:important)",
             Some(Badge::Count),
         ),
         bucket(
-            "Upkeep",
+            "Unread",
             "(is:unread is:notifying -tag:lowpriority) \
-             OR (in:inbox -category:promotions -category:social)",
+             OR (in:inbox is:unread -category:promotions -category:social)",
             Some(Badge::Dot),
         ),
-        bucket("Backlog", "is:starred OR is:todo", None),
-        bucket("Leisure", "is:unread", None),
+        bucket("Starred", "is:starred OR is:todo", None),
+        bucket(
+            "Inbox",
+            "in:inbox -category:promotions -category:social",
+            None,
+        ),
+        bucket("Other", "is:unread", None),
     ]
 }
 

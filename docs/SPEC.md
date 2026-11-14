@@ -245,17 +245,19 @@ send_delay_secs: 10
 # an item is in the first that matches it; `badge` shows it on the app's
 # icon (§12.14), by `count` or by a `dot`. Without `home`, these.
 home:
-  - name: Immediate
+  - name: Urgent
     query: (is:mention is:new) OR is:invite OR (is:dm is:unread) OR is:overdue
       OR due:today OR (in:inbox is:unread is:important)
     badge: count
-  - name: Upkeep
+  - name: Unread
     query: (is:unread is:notifying -tag:lowpriority)
-      OR (in:inbox -category:promotions -category:social)
+      OR (in:inbox is:unread -category:promotions -category:social)
     badge: dot
-  - name: Backlog
+  - name: Starred
     query: is:starred OR is:todo
-  - name: Leisure
+  - name: Inbox
+    query: in:inbox -category:promotions -category:social
+  - name: Other
     query: is:unread
 
 # The calendar (§10.2): its week's hours also in these time zones (IANA
@@ -3438,8 +3440,8 @@ configured anew; hidden, it is not kept current.
 
 A bucket of home (§3.2) with a `badge` shows on the app's icon, as
 Gmail's, Element's and Discord's do, without their calling for the user
-at whatever is unread: by default, Immediate's are counted, and Upkeep's
-make a dot; Backlog and Leisure are left for the user to come to. A
+at whatever is unread: by default, Urgent's are counted, and Unread's
+make a dot; Starred, Inbox and Other are left for the user to come to. A
 count is of all a bucket holds, until its items leave it (read, done,
 archived), as Slack's and Discord's counts of mentions stay until read;
 a dot is of what a bucket holds that is unseen (§12.15), as what is
@@ -3553,7 +3555,7 @@ top says how many messages are after it, with "Jump to first unread"
 (`Shift+PageUp`, as Element's) and "Mark as read". A mention of the user
 (a message that highlights, §9.5, `RoomEvent.highlight`) after the
 fully-read marker counts however the read marker moved: in
-`is:mention is:new`, so in Immediate's count, until catching up passes it (no
+`is:mention is:new`, so in Urgent's count, until catching up passes it (no
 mark of its own: a mention seen out of order counts until what is
 before it is caught up on, or the user is done). The bar says how many
 of those loaded have not been on screen (`@ 2`) and jumps to the oldest

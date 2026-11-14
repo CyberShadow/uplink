@@ -132,10 +132,11 @@ with subtest("flagging a message adds a to-do, which opens it"):
 
 with subtest("home lists to-dos, rooms and mail in the buckets they first match"):
     result = ui("home")
-    assert list(result) == ["Immediate", "Upkeep", "Backlog", "Leisure"], result
-    assert any("Book the train" in row for row in result["Backlog"]), result
-    # The Inbox's mail is in Immediate if important, else in Upkeep.
-    listed = "\n".join(result["Immediate"] + result["Upkeep"])
+    assert list(result) == ["Urgent", "Unread", "Starred", "Inbox", "Other"], result
+    assert any("Book the train" in row for row in result["Starred"]), result
+    # The Inbox's mail is in Urgent if important and unread, else in
+    # Unread while unread, else in Inbox.
+    listed = "\n".join(result["Urgent"] + result["Unread"] + result["Inbox"])
     assert "Deploy window" in listed and "Quarterly report" in listed, result
 
 with subtest("the history lists the user's ops, and undoes any of them"):

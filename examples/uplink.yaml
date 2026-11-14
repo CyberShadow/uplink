@@ -31,17 +31,19 @@ send_delay_secs: 10
 # the app's icon, `badge: dot` a dot while any is. Without `home`,
 # these. Changes apply without a restart.
 home:
-  - name: Immediate
+  - name: Urgent
     query: (is:mention is:new) OR is:invite OR (is:dm is:unread) OR is:overdue
       OR due:today OR (in:inbox is:unread is:important)
     badge: count
-  - name: Upkeep
+  - name: Unread
     query: (is:unread is:notifying -tag:lowpriority)
-      OR (in:inbox -category:promotions -category:social)
+      OR (in:inbox is:unread -category:promotions -category:social)
     badge: dot
-  - name: Backlog
+  - name: Starred
     query: is:starred OR is:todo
-  - name: Leisure
+  - name: Inbox
+    query: in:inbox -category:promotions -category:social
+  - name: Other
     query: is:unread
 
 # The calendar's week shows the hours in the browser's time zone; these
