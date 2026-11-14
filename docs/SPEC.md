@@ -4147,8 +4147,8 @@ uplink's day/week views at every occurrence over a 6-month range; a
 modified single occurrence (exception) shows the modification, not the
 master event.
 
-**State:** done against the emulator (patch `0005`, §15.10), with no real
-tenant to try it on yet (§15.12). The Rust tests (`uplink-calendar`'s
+**State:** done against the emulator (patch `0005`, §15.10); not yet
+against a real tenant (§15.12). The Rust tests (`uplink-calendar`'s
 `tests/graph.rs`) list a weekly series over the window, with a moved and
 a cancelled occurrence; follow changes through the delta link and move
 the window as days pass; and list anew on a 410. `integration-m365`
@@ -4449,7 +4449,7 @@ request).
   any client id and redirect URI. The Rust
   tests (`tests/m365_sync.rs`) and `integration-m365` run against it,
   arranging the Microsoft side through Graph as a real account's tests
-  would; there is no real tenant to run them against yet (§15.12).
+  would; they do not yet run against a real tenant (§15.12).
   Patch `0005` adds the calendar: `events` (create, get, `PATCH`,
   `DELETE`, of a series' occurrences too, which makes them exceptions or
   cancels them), `instances`, `calendarView` and `calendarView/delta`,
@@ -4544,11 +4544,13 @@ reason and is the always-available baseline.
 
 ### 15.12 Not yet verified against the real services
 
-There is no Microsoft 365 account to test with yet, so the M365 side is
-verified against the emulator only (§15.10). Open until it runs against
-a real tenant: the sign-in (§13.3: the authorize URL's parameters, the
-`nativeclient` redirect's page, whether the token endpoint wants
-anything more, and that the registration's permissions suffice), the
+The M365 side is verified against the emulator (§15.10), and against a
+real tenant only as far as the sign-in (§13.3: the authorize URL, the
+code's redemption, the registration's permissions) and a first sync of
+mail folders and messages. The `nativeclient` page the browser lands on
+shows the code in its URL for about a second, warning of phishing, and
+then replaces itself with "This is not the right page", so the code has
+to be copied before then. Open until it runs against a real tenant: the
 immutable-id `Prefer` header
 together with `odata.maxpagesize`, `$select` on delta queries, whether
 Graph's real delta pages report a move as a removal from one folder and
@@ -4561,16 +4563,14 @@ throttling of polling every folder every 30 s; for the calendar, that
 calendar view delta expands series and reports exceptions and cancelled
 occurrences as the emulator does, how long its delta links last, and
 that `outlook.timezone="UTC"` gives UTC times (all-day events
-included). The provider tests are
-written against endpoints passed in, so pointing them at a real account
-is a configuration step, as it is for Gmail.
+included). The provider tests are written against endpoints passed in,
+so pointing them at a real account is meant to be a configuration step;
+unlike Gmail's, they have no switch for one yet.
 
-Gmail is verified against a real account only as far as Google let a
-throwaway one sign in, which it did not (automated sign-in is refused);
-`UPLINK_TEST_GMAIL_CONFIG` runs the Gmail tests against an account
-authorized by hand. The user's own account showed (2026-11-11) that
-Gmail replaces the Message-ID and Date of mail it sends, which emulate
-now does too (§8.2); that a draft sent is a new message, the draft then
+`UPLINK_TEST_GMAIL_CONFIG` runs the Gmail tests against a real account,
+authorized by hand (Google refuses automated sign-in). A real account
+showed (2026-11-11) that Gmail replaces the Message-ID and Date of mail
+it sends, which emulate now does too (§8.2); that a draft sent is a new message, the draft then
 404 to sending again, is from others' reports against the real API,
 emulated likewise, but not yet seen on a real account. Push notifications
 (§8.1) are emulated after Google's documentation; open until they run
