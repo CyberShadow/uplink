@@ -25,7 +25,7 @@ use uplink_tx_log::{
 
 use crate::{
     outbox,
-    reconciler::{Homeserver, Kind, RoomIdRef, Stored},
+    reconciler::{self, Homeserver, Kind, RoomIdRef, Stored},
 };
 
 pub const FAVOURITE: &str = "m.favourite";
@@ -268,6 +268,14 @@ impl Kind for Tags {
     type Value = bool;
     /// The room's tags.
     type Read = Vec<String>;
+    type Request = (String, bool);
+
+    fn requests(
+        _conn: &Connection,
+        in_flight: Vec<Stored<bool>>,
+    ) -> Result<Vec<(Self::Request, Vec<Stored<bool>>)>> {
+        Ok(reconciler::each(in_flight))
+    }
 
     const CLAIMED: &'static str = "matrix.room_tags_claimed";
     const PUSHED: &'static str = "matrix.room_tag_set";
@@ -337,10 +345,9 @@ impl Kind for Tags {
     async fn push(
         homeserver: &Homeserver,
         room: &RoomIdRef,
-        tag: &str,
-        tagged: &bool,
+        (tag, tagged): &(String, bool),
     ) -> matrix_sdk::Result<()> {
-        let (user, room, tag) = (homeserver.user.clone(), room.to_owned(), tag.to_owned());
+        let (user, room, tag) = (homeserver.user.clone(), room.to_owned(), tag.clone());
         let client = &homeserver.client;
         if *tagged {
             let request = create_tag::v3::Request::new(user, room, tag, TagInfo::new());

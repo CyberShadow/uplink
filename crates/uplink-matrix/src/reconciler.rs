@@ -39,6 +39,8 @@ pub trait Kind: Send + Sync + 'static {
     type Value: Clone + PartialEq + Debug + Serialize + DeserializeOwned + Send + Sync + 'static;
     /// What reading back a room's fields of the kind tells of them.
     type Read: Debug + Serialize + Send + Sync + 'static;
+    /// What one request sets on the homeserver.
+    type Request: Send + Sync + 'static;
 
     /// The kinds of the observations of the kind's fields.
     const CLAIMED: &'static str;
@@ -64,20 +66,38 @@ pub trait Kind: Send + Sync + 'static {
         before.desired != after.desired
     }
 
-    /// Sets the field on the homeserver, by a request of its own: not the
-    /// SDK's room methods, which skip, or take for done, what its store
-    /// says is so already.
+    /// The requests that push the fields in flight, each with those it
+    /// pushes, all of one room.
+    fn requests(
+        conn: &Connection,
+        in_flight: Vec<Stored<Self::Value>>,
+    ) -> Result<Vec<(Self::Request, Vec<Stored<Self::Value>>)>>;
+
+    /// Sends the request to the homeserver, by itself: not by the SDK's
+    /// room methods, which skip, or take for done, what its store says is
+    /// so already.
     fn push(
         homeserver: &Homeserver,
         room: &RoomIdRef,
-        key: &str,
-        value: &Self::Value,
+        request: &Self::Request,
     ) -> impl Future<Output = matrix_sdk::Result<()>> + Send;
     /// Reads the room's fields from the homeserver.
     fn read(
         homeserver: &Homeserver,
         room: &RoomIdRef,
     ) -> impl Future<Output = Result<Self::Read>> + Send;
+}
+
+/// A request for each field in flight, of its key and the value pushed:
+/// of a kind the homeserver sets field by field.
+pub fn each<V: Clone>(in_flight: Vec<Stored<V>>) -> Vec<((String, V), Vec<Stored<V>>)> {
+    in_flight
+        .into_iter()
+        .map(|stored| {
+            let attempt = stored.field.attempt.as_ref().expect("in flight");
+            ((stored.key.clone(), attempt.value.clone()), vec![stored])
+        })
+        .collect()
 }
 
 /// The account's homeserver, as the sender asks it.

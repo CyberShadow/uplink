@@ -160,6 +160,14 @@ impl<V: Clone + PartialEq> Field<V> {
         push.then_some(&self.desired)
     }
 
+    /// What the provider has, as far as uplink's own pushes tell: the
+    /// value of its last push, else the value observed. Of a set the
+    /// provider writes whole, each member's part in the next write (SPEC
+    /// §6.6.4), so that a write never undoes uplink's own pushes.
+    pub fn as_pushed(&self) -> &V {
+        self.attempt.as_ref().map_or(&self.observed, |a| &a.value)
+    }
+
     /// Whether to read the field back: an applied push of what is still
     /// desired waits for an observation after it; what became of one of
     /// unknown outcome, now expired, is to be learnt; or an untrusted

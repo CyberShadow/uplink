@@ -1083,22 +1083,28 @@ impl Sender {
         anyhow::bail!("{} still to push or read after {ROUNDS} rounds", K::WHAT)
     }
 
-    /// Pushes the fields of kind `K` claimed, recording each outcome as it
-    /// ends.
+    /// Pushes the fields of kind `K` claimed, by the kind's requests,
+    /// recording each field's outcome as its request ends.
     async fn push<K: Kind>(&self) -> Result<()> {
         let account = self.account.clone();
-        let fields = read(&self.reader, move |conn| K::reconciling(conn, &account)).await?;
+        let requests = read(&self.reader, move |conn| {
+            let in_flight = K::reconciling(conn, &account)?
+                .into_iter()
+                .filter(|stored| {
+                    stored
+                        .field
+                        .attempt
+                        .as_ref()
+                        .is_some_and(|a| a.outcome == Outcome::InFlight)
+                })
+                .collect();
+            K::requests(conn, in_flight)
+        })
+        .await?;
         let mut failed = None;
-        for stored in fields {
-            let Some(attempt) = stored
-                .field
-                .attempt
-                .filter(|a| a.outcome == Outcome::InFlight)
-            else {
-                continue;
-            };
-            let room_id = <&RoomId>::try_from(stored.room_id.as_str())?;
-            let done = K::push(&self.homeserver()?, room_id, &stored.key, &attempt.value).await;
+        for (request, fields) in requests {
+            let room_id = <&RoomId>::try_from(fields[0].room_id.as_str())?;
+            let done = K::push(&self.homeserver()?, room_id, &request).await;
             let ended = ended(&done);
             if let (Err(e), Ended::NotApplied { refused: None } | Ended::Unknown { .. }) =
                 (done, &ended)
@@ -1106,13 +1112,16 @@ impl Sender {
                 let e = anyhow::Error::from(e).context(format!("setting {}", K::WHAT));
                 failed.get_or_insert(e);
             }
-            self.observe(Pushed::<K> {
-                room: stored.room,
-                key: stored.key,
-                value: attempt.value,
-                ended,
-            })
-            .await?;
+            for stored in fields {
+                let value = stored.field.attempt.expect("in flight").value;
+                self.observe(Pushed::<K> {
+                    room: stored.room,
+                    key: stored.key,
+                    value,
+                    ended: ended.clone(),
+                })
+                .await?;
+            }
         }
         failed.map_or(Ok(()), Err)
     }

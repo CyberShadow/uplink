@@ -29,7 +29,7 @@ use uplink_tx_log::{
     this_entry, Applied, Conflict, Inverse, Op,
 };
 
-use crate::reconciler::{Homeserver, Kind, RoomIdRef, Stored};
+use crate::reconciler::{self, Homeserver, Kind, RoomIdRef, Stored};
 
 pub(crate) fn parse_membership(membership: &str) -> Membership {
     match membership {
@@ -257,6 +257,14 @@ impl Kind for Memberships {
     type Value = Membership;
     /// The room's membership.
     type Read = Membership;
+    type Request = (String, Membership);
+
+    fn requests(
+        _conn: &Connection,
+        in_flight: Vec<Stored<Membership>>,
+    ) -> Result<Vec<(Self::Request, Vec<Stored<Membership>>)>> {
+        Ok(reconciler::each(in_flight))
+    }
 
     const CLAIMED: &'static str = "matrix.memberships_claimed";
     const PUSHED: &'static str = "matrix.membership_changed";
@@ -331,8 +339,7 @@ impl Kind for Memberships {
     async fn push(
         homeserver: &Homeserver,
         room: &RoomIdRef,
-        _key: &str,
-        membership: &Membership,
+        (_, membership): &(String, Membership),
     ) -> matrix_sdk::Result<()> {
         let client = &homeserver.client;
         let room = room.to_owned();

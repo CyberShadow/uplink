@@ -28,7 +28,7 @@ use uplink_tx_log::{
 
 use crate::{
     outbox,
-    reconciler::{Homeserver, Kind, RoomIdRef, Stored},
+    reconciler::{self, Homeserver, Kind, RoomIdRef, Stored},
 };
 
 /// The room account data's event type, as Element names it.
@@ -174,6 +174,14 @@ impl Kind for Orders {
     type Value = Option<String>;
     /// The room's order.
     type Read = Option<String>;
+    type Request = (String, Option<String>);
+
+    fn requests(
+        _conn: &Connection,
+        in_flight: Vec<Stored<Option<String>>>,
+    ) -> Result<Vec<(Self::Request, Vec<Stored<Option<String>>>)>> {
+        Ok(reconciler::each(in_flight))
+    }
 
     const CLAIMED: &'static str = "matrix.space_orders_claimed";
     const PUSHED: &'static str = "matrix.space_order_set";
@@ -239,8 +247,7 @@ impl Kind for Orders {
     async fn push(
         homeserver: &Homeserver,
         room: &RoomIdRef,
-        _key: &str,
-        order: &Option<String>,
+        (_, order): &(String, Option<String>),
     ) -> matrix_sdk::Result<()> {
         // No order is none in the content, as Element sets it.
         let content = match order {
