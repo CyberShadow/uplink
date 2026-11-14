@@ -24,6 +24,20 @@ pub(crate) fn own(address: &str) -> Vec<uplink_protocol::mail::Identity> {
     }]
 }
 
+/// How many of `placed` are in each label, and of each account.
+#[allow(clippy::type_complexity)]
+fn totals(placed: &[crate::query::Placed]) -> (Vec<(LabelId, u64)>, Vec<(String, u64)>) {
+    let mut labels = std::collections::BTreeMap::<LabelId, u64>::new();
+    let mut accounts = std::collections::BTreeMap::<String, u64>::new();
+    for p in placed {
+        for label in &p.labels {
+            *labels.entry(*label).or_default() += 1;
+        }
+        *accounts.entry(p.account.clone()).or_default() += 1;
+    }
+    (labels.into_iter().collect(), accounts.into_iter().collect())
+}
+
 pub(crate) struct Db {
     pub dir: TempDir,
     pub dispatcher: Dispatcher,
@@ -1503,7 +1517,39 @@ pub(crate) mod service {
             let unknown = || crate::query::Unknown::False;
             let count = crate::query::count(&tx, &accounts, &query, unknown()).unwrap();
             let mut matching = crate::query::matching(&tx, &accounts, &query, unknown()).unwrap();
-            let places = crate::query::places(&tx, &accounts, &query, unknown(), false).unwrap();
+            let placed = crate::query::placed(&tx, &accounts, &query, unknown(), false).unwrap();
+            // Of some of them, those the query matches, as it places them.
+            let some: Vec<i64> = placed
+                .iter()
+                .step_by(2)
+                .flat_map(|p| {
+                    let thread = p.key.split_once('/').map(|(_, thread)| thread.to_owned());
+                    let entry = p.key.strip_prefix('#').map(|id| id.parse::<i64>().unwrap());
+                    tx.query_row(
+                        "SELECT id FROM mail_entry WHERE thread_id = ?1 OR id = ?2 LIMIT 1",
+                        uplink_storage::rusqlite::params![thread, entry],
+                        |r| r.get::<_, i64>(0),
+                    )
+                })
+                .collect();
+            let among = uplink_query::Among {
+                entries: some.clone(),
+                ..Default::default()
+            };
+            let restricted = crate::query::placed(
+                &tx,
+                &accounts,
+                &query.clone().among(among),
+                unknown(),
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                restricted,
+                placed.iter().step_by(2).cloned().collect::<Vec<_>>(),
+                "{list}"
+            );
+            let places = totals(&placed);
             drop(tx);
             let ServerResponse::Conversations { conversations, .. } =
                 mail.list_entries(list.into(), None, 10).await.unwrap()
@@ -1538,14 +1584,7 @@ pub(crate) mod service {
             } else {
                 vec![("a".into(), conversations.len() as u64)]
             };
-            assert_eq!(
-                places,
-                crate::query::Places {
-                    labels: labels.into_iter().collect(),
-                    accounts,
-                },
-                "{list}"
-            );
+            assert_eq!(places, (labels.into_iter().collect(), accounts), "{list}");
             matching.sort();
             listed.sort();
             assert_eq!(count, listed.len() as u64, "{list}");
@@ -1565,12 +1604,12 @@ pub(crate) mod service {
                 let mut conn = db.reader();
                 let tx = conn.transaction().unwrap();
                 let unknown = crate::query::Unknown::False;
-                crate::query::places(&tx, &accounts, &query, unknown, unseen).unwrap()
+                totals(&crate::query::placed(&tx, &accounts, &query, unknown, unseen).unwrap())
             };
             let all = places(false);
             // Mail that reached the provider before uplink began to sync
             // the account is history, not news, however late it is stored.
-            assert_eq!(places(true), crate::query::Places::default());
+            assert_eq!(places(true), (vec![], vec![]));
             let news_since = |at: i64| {
                 uplink_storage::open(db.dir.path())
                     .unwrap()
@@ -1587,13 +1626,10 @@ pub(crate) mod service {
                     [inbox.0],
                 )
                 .unwrap();
-            let in_inbox = all.labels.iter().find(|(l, _)| *l == inbox).unwrap().1;
+            let in_inbox = all.0.iter().find(|(l, _)| *l == inbox).unwrap().1;
             let unseen = places(true);
-            assert!(unseen.labels.iter().all(|(l, _)| *l != inbox));
-            assert_eq!(
-                unseen.accounts,
-                [("a".to_owned(), all.accounts[0].1 - in_inbox)]
-            );
+            assert!(unseen.0.iter().all(|(l, _)| *l != inbox));
+            assert_eq!(unseen.1, [("a".to_owned(), all.1[0].1 - in_inbox)]);
         }
         // Senders once each, as first seen; attachments of any.
         let ServerResponse::Conversations { conversations, .. } =

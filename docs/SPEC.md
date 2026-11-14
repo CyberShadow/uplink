@@ -3873,14 +3873,23 @@ unread.
 
 The server derives and pushes them (`Badges`, §5.5), as home lists the
 buckets (§12.13): the marks of the places, of all of each badged
-bucket's items, unlimited: in one read per bucket, as the labels of the conversations it holds
-(distinct, not each conversation), its rooms, and whether it holds any
-to-do and any event, with, for its `dot`, those of what is unseen. It
-derives them anew after log entries (as many as came while it did, at
-once), when the buckets are configured anew, and each minute, as time
-alone moves items (into `due:today`, out of `newer_than:`); it pushes
-them only if they differ. The client sums folded places' marks itself,
-as the folds are its own.
+bucket's items, unlimited. It keeps, in memory, what each badged bucket
+holds, item by item (for its `dot`, what is unseen): each conversation
+with its account and the labels of its entries, each room with its
+messages that notify, each to-do and event; the marks are summed from
+them. After log entries (as many as came while it did, at once), it
+checks again only the items they name, in one read: of each bucket,
+what its query matches among them (of mail, among the conversations of
+the entries named), in place of what it held of them. What the log
+names otherwise, it checks whole: the events, named only by their
+calendar; a bucket's rooms, if its query names a space, which holds
+rooms however deeply. It derives them anew, each bucket whole, when the
+buckets are configured anew, after entries removed, a label list
+changed or a place seen (which change what names mean, or what is
+unseen, across items), after entries missed, after a read that failed,
+and each minute, as time alone moves items (into `due:today`, out of
+`newer_than:`). It pushes them only if they differ. The client sums
+folded places' marks itself, as the folds are its own.
 
 ### 12.15 Seen and read
 
@@ -3979,9 +3988,9 @@ What comes is mail and messages; to-dos and events are the user's own
 
 Within the hour, so that what is only newly stored (an account's first
 sync, a room's history) is not news. The server finds them as it
-derives the badges (§12.14), of the same read: in each badged bucket's
-100 most recently active items, those whose news is
-after the watermark (the latest ids of each kind, as `seen` has them,
+derives the badges (§12.14), of the same read: of the items each
+badged bucket holds of those checked again (derived anew, of its 100
+most recently active items), those whose news is after the watermark (the latest ids of each kind, as `seen` has them,
 §12.15) of the previous derivation; none at first. It tells every
 session of each (`Notice::Arrival { bucket, badge, item }`, §5.5): live
 only, so a client not connected then, as while the computer slept, is

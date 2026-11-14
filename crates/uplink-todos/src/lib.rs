@@ -84,6 +84,7 @@ fn term_matches(todo: &Todo, term: &Term, today: &str) -> bool {
         }
         Term::HasDue => todo.due.is_some(),
         Term::Done => todo.done_at.is_some(),
+        Term::Among(among) => among.todos.contains(&todo.id.0),
         // Of everything, as Trash and Spam are not of to-dos.
         Term::Anywhere => true,
         Term::After(at) => todo.created_at >= *at,

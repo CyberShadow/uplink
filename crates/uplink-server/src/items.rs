@@ -6,7 +6,7 @@
 
 use crate::seen::Watermark;
 use arc_swap::ArcSwap;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uplink_config::HomeBucket;
@@ -17,10 +17,10 @@ use uplink_protocol::{
     mail::{EntryId, ListPosition, ListScope},
     matrix::RoomEventId,
     todos::Todo,
-    Arrival, Arrived, Badge, Badges, ErrorCode, Item, ItemKind, ItemPosition, Mark, Marks, Place,
-    ServerError, ServerResponse, TxLogId, UnknownNames,
+    Arrival, Arrived, Badge, Badges, ErrorCode, Item, ItemKind, ItemPosition, LogEntry, Mark,
+    Marks, Place, ServerError, ServerEvent, ServerResponse, TxLogId, UnknownNames,
 };
-use uplink_query::{Query, Term};
+use uplink_query::{Kind, Query, Term};
 use uplink_realtime::Listing;
 use uplink_storage::rusqlite::{Connection, Transaction};
 use uplink_tx_log::answer::{error, internal, Reader, Response};
@@ -62,6 +62,136 @@ struct Bucket {
     query: Query,
 }
 
+/// What changed of the items, as log entries say: for the badges to
+/// check again.
+#[derive(Debug, Default)]
+pub struct Changed {
+    /// The items named.
+    pub among: uplink_query::Among,
+    /// The events, which the log names only by their calendars: all.
+    pub events: bool,
+    /// What the log does not name item by item: everything, as at first.
+    pub everything: bool,
+}
+
+impl Changed {
+    /// With what `entry`'s events say changed.
+    pub fn came(&mut self, entry: &LogEntry) {
+        entry.events.iter().for_each(|event| self.add(event));
+    }
+
+    /// With what `event` says changed.
+    fn add(&mut self, event: &ServerEvent) {
+        let among = &mut self.among;
+        match event {
+            ServerEvent::EntriesAdded(added) => {
+                among.entries.extend(added.entries.iter().map(|e| e.0))
+            }
+            ServerEvent::LabelsChanged(changed) => among
+                .entries
+                .extend(changed.changes.iter().map(|c| c.entry.0)),
+            ServerEvent::RoomsChanged(changed) => {
+                among.rooms.extend(changed.rooms.iter().map(|r| r.0))
+            }
+            ServerEvent::TimelineAdded(added) => among.rooms.push(added.room.0),
+            ServerEvent::TimelineFilled(filled) => among.rooms.push(filled.room.0),
+            ServerEvent::TimelineChanged(changed) => among.rooms.push(changed.room.0),
+            ServerEvent::TodosChanged(changed) => {
+                among.todos.extend(changed.todos.iter().map(|t| t.0))
+            }
+            ServerEvent::CalendarChanged(_) => self.events = true,
+            // Gone, they are of no conversation to check again; a label
+            // renamed or deleted, of what its name meant; what is seen,
+            // of every dot.
+            ServerEvent::EntriesRemoved(_)
+            | ServerEvent::LabelListChanged(_)
+            | ServerEvent::SeenChanged => self.everything = true,
+            ServerEvent::AccountChanged(_)
+            | ServerEvent::ImageRuleChanged(_)
+            | ServerEvent::DraftEdited(_)
+            | ServerEvent::DraftsChanged(_)
+            | ServerEvent::OutboxChanged(_)
+            | ServerEvent::MatrixSendsChanged(_) => {}
+        }
+    }
+}
+
+/// The badged buckets, as configured when last derived, and what each
+/// holds: kept by checking again only what changes.
+pub struct Badged {
+    buckets: Vec<Badging>,
+}
+
+struct Badging {
+    name: String,
+    badge: Badge,
+    query: Query,
+    held: Held,
+}
+
+impl Badged {
+    fn badges(&self) -> Badges {
+        let mut places = Places::default();
+        for bucket in &self.buckets {
+            places.add(bucket.badge, &bucket.held);
+        }
+        Badges {
+            marks: places.into(),
+        }
+    }
+}
+
+/// What a badged bucket holds, item by item, with where each is.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Held {
+    /// Conversations by key.
+    mail: HashMap<String, mail::Placed>,
+    /// Rooms, by what each counts: its messages that notify, or 1.
+    rooms: HashMap<uplink_protocol::matrix::RoomId, u32>,
+    todos: HashSet<uplink_protocol::todos::TodoId>,
+    events: HashSet<uplink_protocol::calendar::EventId>,
+}
+
+/// Of kinds checked again, those wholly.
+struct Whole {
+    rooms: bool,
+    events: bool,
+}
+
+/// What a bucket's query holds of what changed: of the items named, and
+/// of the kinds checked again wholly.
+struct Fresh {
+    among: Held,
+    rooms: Option<HashMap<uplink_protocol::matrix::RoomId, u32>>,
+    events: Option<HashSet<uplink_protocol::calendar::EventId>>,
+}
+
+impl Held {
+    /// The items of `among` (the mail of `conversations`), and the kinds
+    /// checked wholly, as `fresh` has them now.
+    fn update(
+        &mut self,
+        conversations: &HashSet<String>,
+        among: &uplink_query::Among,
+        fresh: Fresh,
+    ) {
+        self.mail.retain(|key, _| !conversations.contains(key));
+        self.rooms.retain(|room, _| !among.rooms.contains(&room.0));
+        self.todos.retain(|todo| !among.todos.contains(&todo.0));
+        self.events.retain(|event| !among.events.contains(&event.0));
+        self.mail.extend(fresh.among.mail);
+        self.rooms.extend(fresh.among.rooms);
+        self.todos.extend(fresh.among.todos);
+        self.events.extend(fresh.among.events);
+        if let Some(rooms) = fresh.rooms {
+            self.rooms = rooms;
+        }
+        if let Some(events) = fresh.events {
+            self.events = events;
+        }
+    }
+}
+
 /// The marks of the places, as they are added up bucket by bucket.
 #[derive(Default)]
 struct Places {
@@ -74,28 +204,28 @@ struct Places {
 }
 
 impl Places {
-    /// Adds a bucket's: a room by its messages that notify, or 1.
-    fn add(&mut self, badge: Badge, mail: &mail::Places, others: &Others) {
+    /// Adds a bucket's: a conversation in each of its labels and its
+    /// account, a room by its messages that notify, or 1.
+    fn add(&mut self, badge: Badge, held: &Held) {
         let count = |n: usize| n as u32;
-        for (label, n) in &mail.labels {
-            self.labels.entry(*label).or_default().add(badge, *n as u32);
-        }
-        for (account, n) in &mail.accounts {
+        for placed in held.mail.values() {
+            for label in &placed.labels {
+                self.labels.entry(*label).or_default().add(badge, 1);
+            }
             self.accounts
-                .entry(account.clone())
+                .entry(placed.account.clone())
                 .or_default()
-                .add(badge, *n as u32);
-            self.home.add(badge, *n as u32);
+                .add(badge, 1);
         }
-        for group in &others.rooms {
-            let n = group.room.notifying.max(1);
-            self.rooms.entry(group.room.id).or_default().add(badge, n);
+        self.home.add(badge, count(held.mail.len()));
+        for (room, n) in &held.rooms {
+            self.rooms.entry(*room).or_default().add(badge, *n);
         }
-        self.home.add(badge, count(others.rooms.len()));
-        self.todos.add(badge, count(others.todos.len()));
-        self.home.add(badge, count(others.todos.len()));
-        self.calendar.add(badge, count(others.events.len()));
-        self.home.add(badge, count(others.events.len()));
+        self.home.add(badge, count(held.rooms.len()));
+        self.todos.add(badge, count(held.todos.len()));
+        self.home.add(badge, count(held.todos.len()));
+        self.calendar.add(badge, count(held.events.len()));
+        self.home.add(badge, count(held.events.len()));
     }
 }
 
@@ -335,15 +465,15 @@ impl Items {
         Ok(ServerResponse::Home { buckets })
     }
 
-    /// What the badged buckets hold (SPEC §12.14), as `home` lists them:
-    /// the marks of the places their items are in. And what came into
-    /// them from others since the watermark `since` (SPEC §12.16), of the
-    /// `ARRIVALS_AMONG` most recently active items of each: nothing, at
-    /// first.
-    pub async fn badges(&self, since: Option<Watermark>) -> Result<Derived, ServerError> {
+    /// What the badged buckets hold (SPEC §12.14), as `home` lists them,
+    /// item by item; and so the marks of the places their items are in.
+    /// And what came into them from others since the watermark `since`
+    /// (SPEC §12.16), of the `ARRIVALS_AMONG` most recently active items
+    /// of each: nothing, at first.
+    pub async fn badged(&self, since: Option<Watermark>) -> Result<(Badged, Derived), ServerError> {
         let now = now();
         let today = uplink_query::today(now);
-        let badged: Vec<_> = self
+        let buckets: Vec<_> = self
             .buckets(now)
             .into_iter()
             .filter_map(|bucket| Some((bucket.badge?, bucket)))
@@ -353,48 +483,195 @@ impl Items {
             .read(move |conn| {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
                 let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
-                let mut marks = Places::default();
                 let seen = Seen::load(&tx).map_err(internal)?;
                 let watermark = crate::seen::latest(&tx).map_err(internal)?;
+                let mut badged = Badged { buckets: vec![] };
                 let mut arrivals = vec![];
-                for (badge, bucket) in badged {
-                    let others = others(&tx, &rooms, &bucket.query, today, now)?;
-                    // A dot is of what is unseen (SPEC §12.15).
-                    let unseen = badge == Badge::Dot;
-                    let places = mail::places(
-                        &tx,
-                        &this.mail_accounts,
-                        &bucket.query,
-                        Unknown::False,
-                        unseen,
-                    )
-                    .map_err(list_error)?;
-                    match unseen {
-                        true => marks.add(badge, &places, &seen.unseen(&others)),
-                        false => marks.add(badge, &places, &others),
-                    }
+                for (badge, bucket) in buckets {
+                    let held = this.hold(&tx, &rooms, &seen, badge, &bucket.query, today, now)?;
                     if let Some(since) = &since {
+                        let others = others(&tx, &rooms, &bucket.query, today, now)?;
                         let page = this.page(&tx, &bucket.query, others, None, ARRIVALS_AMONG)?;
-                        let arrived = this
-                            .arrived(&tx, &page.items, since, now - RECENT)?
-                            .into_iter()
-                            .map(|item| Arrival {
-                                bucket: bucket.name.clone(),
-                                badge,
-                                item,
-                            });
-                        arrivals.extend(arrived);
+                        arrivals.extend(this.arrivals(
+                            &tx,
+                            &bucket.name,
+                            badge,
+                            &page.items,
+                            since,
+                            now,
+                        )?);
                     }
+                    badged.buckets.push(Badging {
+                        name: bucket.name,
+                        badge,
+                        query: bucket.query,
+                        held,
+                    });
                 }
-                Ok(Derived {
-                    badges: Badges {
-                        marks: marks.into(),
+                let badges = badged.badges();
+                Ok((
+                    badged,
+                    Derived {
+                        badges,
+                        arrivals,
+                        watermark,
                     },
-                    arrivals,
-                    watermark,
-                })
+                ))
             })
             .await
+    }
+
+    /// `badged` kept: what `changed` names checked again, and of it what
+    /// came since the watermark `since`. What the log does not name item
+    /// by item, everything is derived anew for.
+    pub async fn rebadged(
+        &self,
+        badged: Badged,
+        changed: Changed,
+        since: Watermark,
+    ) -> Result<(Badged, Derived), ServerError> {
+        if changed.everything {
+            return self.badged(Some(since)).await;
+        }
+        let now = now();
+        let today = uplink_query::today(now);
+        let this = self.clone();
+        self.reader
+            .read(move |conn| {
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
+                let seen = Seen::load(&tx).map_err(internal)?;
+                let watermark = crate::seen::latest(&tx).map_err(internal)?;
+                let entries: Vec<EntryId> =
+                    changed.among.entries.iter().map(|&e| EntryId(e)).collect();
+                let conversations: HashSet<String> = mail::conversation_keys(&tx, &entries)
+                    .map_err(internal)?
+                    .into_iter()
+                    .collect();
+                let mut badged = badged;
+                let mut arrivals = vec![];
+                for bucket in &mut badged.buckets {
+                    let hold = |query: Query| {
+                        this.hold(&tx, &rooms, &seen, bucket.badge, &query, today, now)
+                    };
+                    let of_kind = |kind| bucket.query.clone().and(Query::Term(Term::Kind(kind)));
+                    // A space's rooms are of it however deeply, which it
+                    // changes alone.
+                    let spaces =
+                        uplink_query::names(&bucket.query, &|t| matches!(t, Term::Space(_)));
+                    let whole = Whole {
+                        rooms: spaces && !changed.among.rooms.is_empty(),
+                        events: changed.events,
+                    };
+                    let fresh = Fresh {
+                        among: hold(bucket.query.clone().among(changed.among.clone()))?,
+                        rooms: match whole.rooms {
+                            true => Some(hold(of_kind(Kind::Room))?.rooms),
+                            false => None,
+                        },
+                        events: match whole.events {
+                            true => Some(hold(of_kind(Kind::Event))?.events),
+                            false => None,
+                        },
+                    };
+                    bucket.held.update(&conversations, &changed.among, fresh);
+                    // What came is of what was stored since: what the log
+                    // named.
+                    let came = uplink_query::Among {
+                        entries: changed.among.entries.clone(),
+                        rooms: changed.among.rooms.clone(),
+                        ..Default::default()
+                    };
+                    let limit = (came.entries.len() + came.rooms.len()) as u32;
+                    if limit > 0 {
+                        let query = bucket.query.clone().among(came);
+                        let others = others(&tx, &rooms, &query, today, now)?;
+                        let page = this.page(&tx, &query, others, None, limit)?;
+                        arrivals.extend(this.arrivals(
+                            &tx,
+                            &bucket.name,
+                            bucket.badge,
+                            &page.items,
+                            &since,
+                            now,
+                        )?);
+                    }
+                }
+                let badges = badged.badges();
+                Ok((
+                    badged,
+                    Derived {
+                        badges,
+                        arrivals,
+                        watermark,
+                    },
+                ))
+            })
+            .await
+    }
+
+    /// What a badged bucket's `query` holds: of a `dot`, what is unseen
+    /// (SPEC §12.15).
+    #[allow(clippy::too_many_arguments)]
+    fn hold(
+        &self,
+        tx: &Transaction,
+        rooms: &Rooms,
+        seen: &Seen,
+        badge: Badge,
+        query: &Query,
+        today: i64,
+        now: i64,
+    ) -> Result<Held, ServerError> {
+        let unseen = badge == Badge::Dot;
+        let mail = mail::placed(tx, &self.mail_accounts, query, Unknown::False, unseen)
+            .map_err(list_error)?;
+        let others = others(tx, rooms, query, today, now)?;
+        let others = match unseen {
+            true => seen.unseen(&others),
+            false => others,
+        };
+        Ok(Held {
+            mail: mail
+                .into_iter()
+                .map(|placed| (placed.key.clone(), placed))
+                .collect(),
+            rooms: others
+                .rooms
+                .iter()
+                .map(|group| (group.room.id, group.room.notifying.max(1)))
+                .collect(),
+            todos: others.todos.iter().map(|todo| todo.id).collect(),
+            events: others.events.iter().map(|event| event.id).collect(),
+        })
+    }
+
+    /// Of `items`, a bucket's, what came from others since `since`, and
+    /// recently: what an item last active before then cannot have.
+    fn arrivals(
+        &self,
+        tx: &Transaction,
+        bucket: &str,
+        badge: Badge,
+        items: &[Item],
+        since: &Watermark,
+        now: i64,
+    ) -> Result<Vec<Arrival>, ServerError> {
+        let after = now - RECENT;
+        let recent: Vec<Item> = items
+            .iter()
+            .filter(|item| item.position().at >= after)
+            .cloned()
+            .collect();
+        Ok(self
+            .arrived(tx, &recent, since, after)?
+            .into_iter()
+            .map(|item| Arrival {
+                bucket: bucket.to_owned(),
+                badge,
+                item,
+            })
+            .collect())
     }
 
     /// What came from others since `since`, sent or received after
@@ -624,6 +901,218 @@ mod tests {
         }
     }
 
+    /// Kept by checking again what each log entry names, the badges are
+    /// as derived anew, what each bucket holds too, and what came.
+    #[tokio::test]
+    async fn kept_badges_are_as_derived_anew() {
+        use uplink_email::mailbox::{EntryLabels, MailboxObserved, NewEntry, ObservedLabel};
+        use uplink_protocol::{mail::LabelKind, todos::TodoEdit, ServerResponse};
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = Registry::new();
+        uplink_email::mailbox::register(&mut registry);
+        uplink_matrix::register(&mut registry);
+        uplink_todos::register(&mut registry);
+        crate::seen::register(&mut registry);
+        let hub = Arc::new(Hub::new(4096));
+        let dispatcher = Dispatcher::new(
+            uplink_storage::open(dir.path()).unwrap(),
+            registry,
+            hub.clone(),
+        );
+        let store = uplink_storage::store::Store::mail(dir.path());
+        let observed = |labels, added, updated| MailboxObserved {
+            account_kind: "gmail",
+            labels,
+            rekeyed: vec![],
+            added,
+            updated,
+            removed: vec![],
+            sync_state: None,
+        };
+        let names = ["INBOX", "UNREAD", "STARRED", "TRASH", "SPAM", "Label_1"];
+        let labels = names
+            .iter()
+            .map(|id| ObservedLabel {
+                external_id: id.to_string(),
+                name: id.to_string(),
+                system: !id.starts_with("Label_"),
+                kind: LabelKind::Tag,
+            })
+            .collect();
+        dispatcher
+            .observe("a".into(), observed(Some(labels), vec![], vec![]))
+            .await
+            .unwrap();
+        let entry = |id: &str, thread: &str, labels: &[&str]| {
+            let raw = format!(
+                "Message-ID: <{id}@x>\r\nFrom: bob@x\r\nTo: a@x\r\nSubject: s {id}\r\n\r\nhi\r\n"
+            );
+            let raw = raw.as_bytes();
+            NewEntry {
+                external_id: id.to_owned(),
+                thread_id: Some(thread.to_owned()),
+                received_at: now(),
+                labels: labels.iter().map(|l| l.to_string()).collect(),
+                variant: store.put(raw).unwrap(),
+                size_bytes: raw.len() as i64,
+                parsed: uplink_email::parse::parse(raw),
+            }
+        };
+        let message = |id: &str, notify: bool, highlight: bool| {
+            let raw = serde_json::json!({
+                "type": "m.room.message",
+                "event_id": id,
+                "sender": "@bob:x",
+                "origin_server_ts": now(),
+                "content": { "msgtype": "m.text", "body": "hi" },
+            });
+            uplink_matrix::rooms::ObservedEvent {
+                push: uplink_matrix::rooms::Push { notify, highlight },
+                ..uplink_matrix::rooms::ObservedEvent::parse(
+                    &raw.to_string(),
+                    None,
+                    uplink_protocol::matrix::Encryption::None,
+                )
+                .unwrap()
+            }
+        };
+        let in_room = |id: &str, events| {
+            let mut synced = room(events);
+            synced.rooms[0].room_id = id.to_owned();
+            synced.rooms[0].name = id.to_owned();
+            synced
+        };
+        let todos = uplink_todos::service::Todos::new(
+            dispatcher.clone(),
+            uplink_storage::open_reader(dir.path()).unwrap(),
+        );
+        let items = Items::new(
+            vec![uplink_storage::open_reader(dir.path()).unwrap()],
+            vec![mail::ConfiguredAccount {
+                id: "a".into(),
+                address: "a@x".into(),
+                identities: vec![],
+                provider: uplink_protocol::mail::MailProvider::Gmail,
+            }],
+            vec![uplink_matrix::service::ConfiguredAccount {
+                id: "mx".into(),
+                mxid: "@me:x".into(),
+                history_members: 100,
+            }],
+            vec![],
+        );
+        let bucket = |name: &str, query: &str, badge| HomeBucket {
+            name: name.into(),
+            query: query.into(),
+            badge: Some(badge),
+        };
+        items.configure_home(vec![
+            bucket("Urgent", "is:starred OR is:mention", Badge::Count),
+            bucket("Unread", "is:unread", Badge::Dot),
+            bucket("Later", "is:todo OR label:Label_1", Badge::Count),
+        ]);
+        let mut entries = hub.subscribe();
+        let (mut badged, first) = items.badged(None).await.unwrap();
+        let mut since = first.watermark;
+        let mut todo_ids = vec![];
+        let mut came = 0;
+        // Of the labels, by step: as many sets as there are steps of a kind.
+        let sets: [&[&str]; 5] = [
+            &["INBOX", "UNREAD"],
+            &["INBOX", "STARRED"],
+            &["Label_1", "UNREAD"],
+            &[],
+            &["TRASH", "STARRED"],
+        ];
+        for step in 0..60usize {
+            let labelled = sets[step % sets.len()];
+            match step % 6 {
+                // Mail, into one of a few conversations.
+                0 | 3 => {
+                    let id = format!("m{step}");
+                    let thread = format!("t{}", step % 4);
+                    dispatcher
+                        .observe(
+                            "a".into(),
+                            observed(None, vec![entry(&id, &thread, labelled)], vec![]),
+                        )
+                        .await
+                        .unwrap();
+                }
+                // An earlier entry relabelled.
+                1 => {
+                    let id = format!("m{}", (step / 2) / 3 * 6);
+                    let update = EntryLabels {
+                        external_id: id,
+                        labels: labelled.iter().map(|l| l.to_string()).collect(),
+                    };
+                    dispatcher
+                        .observe("a".into(), observed(None, vec![], vec![update]))
+                        .await
+                        .unwrap();
+                }
+                // A message, into one of a few rooms; or one read by the
+                // account, which leaves it.
+                2 => {
+                    let room = format!("!r{}:x", step / 6 % 3);
+                    let event = format!("$e{step}");
+                    let mut synced =
+                        in_room(&room, vec![message(&event, step % 4 == 2, step % 8 == 2)]);
+                    if step % 5 == 2 {
+                        synced.rooms[0].own_receipts = vec![event];
+                    }
+                    dispatcher.observe("mx".into(), synced).await.unwrap();
+                }
+                4 => {
+                    let created = todos
+                        .create(format!("To do {step}"), String::new(), None, None)
+                        .await
+                        .unwrap();
+                    let ServerResponse::Dispatched { .. } = created else {
+                        panic!("{created:?}")
+                    };
+                    let listed = todos.list().await.unwrap();
+                    let ServerResponse::Todos { todos: all, .. } = listed else {
+                        panic!("{listed:?}")
+                    };
+                    todo_ids = all.iter().map(|t| t.id).collect();
+                }
+                // A to-do done.
+                5 => {
+                    if let Some(&todo) = todo_ids.get(step % 3) {
+                        todos
+                            .edit(todo, TodoEdit::Done { done: true })
+                            .await
+                            .unwrap();
+                    }
+                }
+                _ => unreachable!(),
+            }
+            let mut changed = Changed::default();
+            while let Ok(entry) = entries.try_recv() {
+                changed.came(&entry);
+            }
+            assert!(!changed.everything, "step {step}");
+            let (kept, derived) = items.rebadged(badged, changed, since).await.unwrap();
+            let (anew, derived_anew) = items.badged(Some(since)).await.unwrap();
+            let held = |b: &Badged| {
+                b.buckets
+                    .iter()
+                    .map(|b| (b.name.clone(), b.held.clone()))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(held(&kept), held(&anew), "step {step}");
+            assert_eq!(derived.badges, derived_anew.badges, "step {step}");
+            assert_eq!(derived.arrivals, derived_anew.arrivals, "step {step}");
+            came += derived.arrivals.len();
+            badged = kept;
+            since = derived.watermark;
+        }
+        // Something was counted, and something came.
+        assert!(badged.badges().marks.home.count > 0);
+        assert!(came > 0);
+    }
+
     /// What came into a badged bucket since the watermark is told of, by
     /// the bucket; of an unbadged one, nothing.
     #[tokio::test]
@@ -675,13 +1164,20 @@ mod tests {
             query: query.into(),
             badge,
         };
-        let first = items.badges(None).await.unwrap();
+        let (_, first) = items.badged(None).await.unwrap();
         assert!(first.arrivals.is_empty(), "nothing came before the first");
         observe(vec![message("$2")]).await.unwrap();
         let arrivals = |buckets| {
             items.configure_home(buckets);
             let items = items.clone();
-            async move { items.badges(Some(first.watermark)).await.unwrap().arrivals }
+            async move {
+                items
+                    .badged(Some(first.watermark))
+                    .await
+                    .unwrap()
+                    .1
+                    .arrivals
+            }
         };
         let arrived = arrivals(vec![bucket("is:notifying", Some(Badge::Dot))]).await;
         let [Arrival {
@@ -897,7 +1393,7 @@ mod tests {
         };
         let room = room.id;
         assert_eq!(
-            items.badges(None).await.unwrap().badges,
+            items.badged(None).await.unwrap().1.badges,
             Badges {
                 // An invitation counts as one.
                 marks: Marks {
@@ -921,7 +1417,7 @@ mod tests {
         // seen, or in Home, which holds every bucket's.
         items.configure_home(vec![bucket("Todo", "is:todo", Some(Badge::Dot))]);
         let dots = || async {
-            let marks = items.badges(None).await.unwrap().badges.marks;
+            let marks = items.badged(None).await.unwrap().1.badges.marks;
             (marks.home.dot, marks.todos.dot)
         };
         assert_eq!(dots().await, (true, true));

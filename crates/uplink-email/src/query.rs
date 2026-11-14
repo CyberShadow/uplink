@@ -149,6 +149,8 @@ enum Condition {
     Label(Vec<LabelId>),
     /// It is the account's.
     Account(String),
+    /// It is of the conversation of one of these entries.
+    Conversations(Vec<i64>),
     /// Any other: SQL over the entry alias it is given.
     Sql(Box<dyn Fn(&str) -> String>),
     /// Of every entry, or none: as a term mail lacks (`is:room`) is false.
@@ -221,11 +223,29 @@ impl Condition {
                 ids(labels)
             ),
             Condition::Account(account) => format!("{x}.account_id = {}", literal(account)),
+            Condition::Conversations(entries) => {
+                format!("{x}.id IN ({})", of_conversations(entries))
+            }
             Condition::Sql(sql) => sql(x),
             Condition::Const(true) => "1".into(),
             Condition::Const(false) => "0".into(),
         }
     }
+}
+
+/// SQL: the entries of the conversations of `entries`.
+fn of_conversations(entries: &[i64]) -> String {
+    let entries = entries
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "SELECT m.id FROM mail_entry t
+         JOIN mail_entry m ON m.account_id = t.account_id
+                          AND (m.id = t.id OR m.thread_id = t.thread_id)
+         WHERE t.id IN ({entries})"
+    )
 }
 
 /// A string as an SQL literal.
@@ -352,6 +372,7 @@ impl Compiler<'_> {
             | Term::Overdue
             | Term::HasDue
             | Term::Done => Ok(Condition::Const(false)),
+            Term::Among(among) => Ok(Condition::Conversations(among.entries.clone())),
             Term::Anywhere => {
                 self.anywhere |= positive;
                 sql(Box::new(|_| "1".into()))
@@ -613,29 +634,32 @@ pub fn count(
     Ok(count as u64)
 }
 
-/// Where the conversations `query` lists are, as the nav links to them
-/// (SPEC §12.14): how many have an entry with each label (in scope), and
-/// how many are of each account. If `unseen`, only those whose latest
-/// entry came after each of their places was last seen (§12.15: the
-/// `seen` table's, of Home, their account's All Mail and their labels),
-/// and is news: reached the provider after uplink began to sync its
-/// account (`account.news_since`), not stored by a listing however late.
-#[derive(Debug, Default, PartialEq)]
-pub struct Places {
-    pub labels: Vec<(LabelId, u64)>,
-    pub accounts: Vec<(String, u64)>,
+/// A conversation `query` lists, where it is, as the nav links to it
+/// (SPEC §12.14): its account, and the labels of its entries (in scope).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Placed {
+    /// As `Item::key` has it.
+    pub key: String,
+    pub account: String,
+    pub labels: Vec<LabelId>,
 }
 
-pub fn places(
+/// The conversations `query` lists, where each is. If `unseen`, only
+/// those whose latest entry came after each of their places was last
+/// seen (§12.15: the `seen` table's, of Home, their account's All Mail
+/// and their labels), and is news: reached the provider after uplink
+/// began to sync its account (`account.news_since`), not stored by a
+/// listing however late.
+pub fn placed(
     tx: &Transaction,
     accounts: &[ConfiguredAccount],
     query: &Query,
     unknown: Unknown,
     unseen: bool,
-) -> Result<Places, ListError> {
+) -> Result<Vec<Placed>, ListError> {
     let (condition, scope) = compile(tx, accounts, query, unknown)?;
     if matches!(condition, Condition::Const(false)) {
-        return Ok(Places::default());
+        return Ok(vec![]);
     }
     let (from, condition) = newest(tx, &scope, condition)?;
     // Home holds every conversation of its buckets, so those it showed
@@ -660,7 +684,6 @@ pub fn places(
     };
     // The conversations once, by their newest entries; their entries by
     // their thread (by its index); and their labels.
-    let mut places = Places::default();
     let mut stmt = tx.prepare(&format!(
         "WITH newest AS MATERIALIZED (
            SELECT e.id, e.account_id, e.thread_id, e.received_at FROM {from}
@@ -679,28 +702,54 @@ pub fn places(
            JOIN seen s ON s.place = 'label:' || l.label
            GROUP BY l.conversation),
          counted AS MATERIALIZED (
-           SELECT n.id, n.account_id FROM newest n WHERE {unseen})
-         SELECT l.label, NULL, count(*) FROM labelled l JOIN counted c ON c.id = l.conversation
-         GROUP BY l.label
-         UNION ALL
-         SELECT NULL, c.account_id, count(*) FROM counted c GROUP BY c.account_id",
+           SELECT n.id, n.account_id, n.thread_id FROM newest n WHERE {unseen})
+         SELECT c.id, c.account_id, c.thread_id, l.label FROM counted c
+         LEFT JOIN labelled l ON l.conversation = c.id
+         ORDER BY c.id, l.label",
         scope = in_scope(&scope, "m"),
     ))?;
     let mut rows = stmt.query([])?;
+    let mut placed: Vec<Placed> = vec![];
+    let mut last = None;
     while let Some(row) = rows.next()? {
-        let count = row.get::<_, i64>(2)? as u64;
-        match (
-            row.get::<_, Option<i64>>(0)?,
-            row.get::<_, Option<String>>(1)?,
-        ) {
-            (Some(label), None) => places.labels.push((LabelId(label), count)),
-            (None, Some(account)) => places.accounts.push((account, count)),
-            other => unreachable!("a place is a label or an account, not {other:?}"),
+        let id: i64 = row.get(0)?;
+        if last != Some(id) {
+            let account: String = row.get(1)?;
+            let key = match row.get::<_, Option<String>>(2)? {
+                Some(thread) => format!("{account}/{thread}"),
+                None => format!("#{id}"),
+            };
+            placed.push(Placed {
+                key,
+                account,
+                labels: vec![],
+            });
+            last = Some(id);
+        }
+        if let Some(label) = row.get::<_, Option<i64>>(3)? {
+            placed
+                .last_mut()
+                .expect("pushed")
+                .labels
+                .push(LabelId(label));
         }
     }
-    places.labels.sort();
-    places.accounts.sort();
-    Ok(places)
+    Ok(placed)
+}
+
+/// The keys (as `Item::key` has them) of the conversations of these
+/// entries, of those stored.
+pub fn conversation_keys(tx: &Transaction, entries: &[EntryId]) -> Result<Vec<String>> {
+    let ids: Vec<i64> = entries.iter().map(|e| e.0).collect();
+    let keys = tx
+        .prepare(
+            "SELECT DISTINCT CASE WHEN thread_id IS NULL THEN '#' || id
+                                  ELSE account_id || '/' || thread_id END
+             FROM mail_entry WHERE id IN (SELECT value FROM json_each(?1))",
+        )?
+        .query_map([serde_json::to_string(&ids)?], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    Ok(keys)
 }
 
 /// The entries of every conversation `query` lists, in its scope, each
@@ -837,6 +886,11 @@ fn newest(tx: &Transaction, scope: &ListScope, condition: Condition) -> Result<(
                 "entry_label el",
                 "entry_label el JOIN mail_entry c ON c.id = el.entry",
                 format!("el.label IN ({}) AND el.desired", ids(labels)),
+            ),
+            Condition::Conversations(entries) => (
+                "mail_entry c",
+                "mail_entry c",
+                format!("c.id IN ({})", of_conversations(entries)),
             ),
             _ => continue,
         };

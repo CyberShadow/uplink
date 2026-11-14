@@ -71,6 +71,32 @@ pub enum Term {
     HasDue,
     /// A to-do done.
     Done,
+    /// One of these items. Not of the language, which cannot say it, but
+    /// of the server, which checks again only what changed, by the query
+    /// that lists it (the badges, SPEC §12.14).
+    Among(Box<Among>),
+}
+
+/// Items by kind, by their ids.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Among {
+    /// Mail by its entries: each of its conversation.
+    pub entries: Vec<i64>,
+    pub rooms: Vec<i64>,
+    pub todos: Vec<i64>,
+    pub events: Vec<i64>,
+}
+
+impl Query {
+    /// What both match.
+    pub fn and(self, other: Query) -> Query {
+        Query::And(vec![self, other])
+    }
+
+    /// Of these items alone: what `self` matches of `among`.
+    pub fn among(self, among: Among) -> Query {
+        self.and(Query::Term(Term::Among(Box::new(among))))
+    }
 }
 
 /// The kinds of item a query lists.

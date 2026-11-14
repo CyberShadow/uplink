@@ -415,6 +415,7 @@ fn term_matches(event: &CalendarEvent, term: &Term) -> bool {
             .any(|field| text_matches(field, text, *exact)),
         Term::Kind(kind) => *kind == Kind::Event,
         Term::Account(account) => event.account == *account,
+        Term::Among(among) => among.events.contains(&event.id.0),
         // Of everything, as Trash and Spam are not of events.
         Term::Anywhere => true,
         Term::After(at) => event.start >= *at,

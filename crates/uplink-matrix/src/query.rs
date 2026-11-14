@@ -320,6 +320,7 @@ fn of_room(
         Term::Direct => Some(room.direct),
         Term::Invited => Some(room.membership == Membership::Invited),
         Term::Space(name) => Some(spaces.within(&room.room_id, name)),
+        Term::Among(among) => Some(among.rooms.contains(&room.id.0)),
         Term::Account(account) => Some(
             accounts
                 .iter()
@@ -497,9 +498,12 @@ impl Cond {
             // Of everything, as Trash and Spam are not of messages.
             Term::Anywhere => Cond::Const(true),
             // Of its room.
-            Term::Label(_) | Term::Account(_) | Term::Direct | Term::Invited | Term::Space(_) => {
-                of_rooms(term)
-            }
+            Term::Label(_)
+            | Term::Account(_)
+            | Term::Direct
+            | Term::Invited
+            | Term::Space(_)
+            | Term::Among(_) => of_rooms(term),
             // Of mail, or of other kinds.
             Term::Text {
                 fields: Some(Fields::To | Fields::Cc | Fields::Subject),
