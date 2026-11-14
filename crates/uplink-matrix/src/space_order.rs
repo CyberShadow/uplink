@@ -28,7 +28,7 @@ use uplink_tx_log::{
 
 use crate::{
     outbox,
-    reconciler::{self, Homeserver, Kind, RoomIdRef, Stored},
+    reconciler::{self, Homeserver, Kind, Requests, RoomIdRef, Stored},
 };
 
 /// The room account data's event type, as Element names it.
@@ -179,7 +179,7 @@ impl Kind for Orders {
     fn requests(
         _conn: &Connection,
         in_flight: Vec<Stored<Option<String>>>,
-    ) -> Result<Vec<(Self::Request, Vec<Stored<Option<String>>>)>> {
+    ) -> Result<Requests<Self::Request, Option<String>>> {
         Ok(reconciler::each(in_flight))
     }
 

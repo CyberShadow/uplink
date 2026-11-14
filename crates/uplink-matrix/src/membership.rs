@@ -29,7 +29,7 @@ use uplink_tx_log::{
     this_entry, Applied, Conflict, Inverse, Op,
 };
 
-use crate::reconciler::{self, Homeserver, Kind, RoomIdRef, Stored};
+use crate::reconciler::{self, Homeserver, Kind, Requests, RoomIdRef, Stored};
 
 pub(crate) fn parse_membership(membership: &str) -> Membership {
     match membership {
@@ -262,7 +262,7 @@ impl Kind for Memberships {
     fn requests(
         _conn: &Connection,
         in_flight: Vec<Stored<Membership>>,
-    ) -> Result<Vec<(Self::Request, Vec<Stored<Membership>>)>> {
+    ) -> Result<Requests<Self::Request, Membership>> {
         Ok(reconciler::each(in_flight))
     }
 

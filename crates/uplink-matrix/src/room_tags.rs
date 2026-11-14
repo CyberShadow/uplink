@@ -25,7 +25,7 @@ use uplink_tx_log::{
 
 use crate::{
     outbox,
-    reconciler::{self, Homeserver, Kind, RoomIdRef, Stored},
+    reconciler::{self, Homeserver, Kind, Requests, RoomIdRef, Stored},
 };
 
 pub const FAVOURITE: &str = "m.favourite";
@@ -273,7 +273,7 @@ impl Kind for Tags {
     fn requests(
         _conn: &Connection,
         in_flight: Vec<Stored<bool>>,
-    ) -> Result<Vec<(Self::Request, Vec<Stored<bool>>)>> {
+    ) -> Result<Requests<Self::Request, bool>> {
         Ok(reconciler::each(in_flight))
     }
 

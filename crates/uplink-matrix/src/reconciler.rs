@@ -71,7 +71,7 @@ pub trait Kind: Send + Sync + 'static {
     fn requests(
         conn: &Connection,
         in_flight: Vec<Stored<Self::Value>>,
-    ) -> Result<Vec<(Self::Request, Vec<Stored<Self::Value>>)>>;
+    ) -> Result<Requests<Self::Request, Self::Value>>;
 
     /// Sends the request to the homeserver, by itself: not by the SDK's
     /// room methods, which skip, or take for done, what its store says is
@@ -88,9 +88,12 @@ pub trait Kind: Send + Sync + 'static {
     ) -> impl Future<Output = Result<Self::Read>> + Send;
 }
 
+/// Requests, each with the fields it pushes.
+pub type Requests<R, V> = Vec<(R, Vec<Stored<V>>)>;
+
 /// A request for each field in flight, of its key and the value pushed:
 /// of a kind the homeserver sets field by field.
-pub fn each<V: Clone>(in_flight: Vec<Stored<V>>) -> Vec<((String, V), Vec<Stored<V>>)> {
+pub fn each<V: Clone>(in_flight: Vec<Stored<V>>) -> Requests<(String, V), V> {
     in_flight
         .into_iter()
         .map(|stored| {
