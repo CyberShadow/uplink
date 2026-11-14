@@ -925,7 +925,12 @@ impl Matrix {
     /// Only to joined rooms of configured accounts, and of events stored
     /// in the room: replying to one, editing one of the account's own
     /// messages, reacting to one or redacting one; files only as uploaded.
-    pub async fn send_message(&self, room: RoomId, content: MatrixContent) -> Response {
+    pub async fn send_message(
+        &self,
+        room: RoomId,
+        key: String,
+        content: MatrixContent,
+    ) -> Response {
         let invalid = |message: String| Err(error(ErrorCode::Invalid, message));
         match &content {
             MatrixContent::Text { body, .. } if body.trim().is_empty() => {
@@ -1080,7 +1085,13 @@ impl Matrix {
                 Ok(())
             })
             .await?;
-        self.dispatcher.answer(SendMessage { room, content }).await
+        self.dispatcher
+            .answer(SendMessage {
+                room,
+                key: Some(key),
+                content,
+            })
+            .await
     }
 
     pub async fn cancel_send(&self, item: MatrixSendId) -> Response {

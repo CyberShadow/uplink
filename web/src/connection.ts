@@ -97,8 +97,9 @@ interface Pending {
 
 /** Queries can be sent again on a new connection, and so can ops that
  * refuse to apply twice: creating a draft (its id exists) and editing one
- * (its revision moved on). Other ops can't, since one may have been
- * applied before the connection dropped. */
+ * (its revision moved on); and sending a Matrix message, answered, asked
+ * again, by the entry that queued it (of its key). Other ops can't, since
+ * one may have been applied before the connection dropped. */
 function isResendable(body: ClientRequest): boolean {
   switch (body.type) {
     case 'list_accounts':
@@ -132,6 +133,7 @@ function isResendable(body: ClientRequest): boolean {
     case 'list_history':
     case 'create_draft':
     case 'edit_draft':
+    case 'send_matrix_message':
       return true
     // Of the connection they were sent on: a new one subscribes anew.
     case 'subscribe':
@@ -148,7 +150,6 @@ function isResendable(body: ClientRequest): boolean {
     case 'cancel_send':
     case 'keep_sent':
     case 'keep_observed':
-    case 'send_matrix_message':
     case 'cancel_matrix_send':
     case 'keep_matrix_sent':
     case 'mark_room_read':

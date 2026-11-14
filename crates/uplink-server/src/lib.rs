@@ -1196,8 +1196,8 @@ impl Backend for Services {
             ClientRequest::PreviewUrl { room, event, url } => {
                 return self.matrix.preview_url(room, event, url).await.into()
             }
-            ClientRequest::SendMatrixMessage { room, content } => {
-                self.matrix.send_message(room, content).await
+            ClientRequest::SendMatrixMessage { room, key, content } => {
+                self.matrix.send_message(room, key, content).await
             }
             ClientRequest::CancelMatrixSend { item } => self.matrix.cancel_send(item).await,
             ClientRequest::KeepMatrixSent { item } => self.matrix.keep_sent(item).await,

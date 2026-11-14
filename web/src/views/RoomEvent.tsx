@@ -7,7 +7,6 @@ import { render } from 'preact'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import type {
-  MatrixSend,
   MemberReceipt,
   Room,
   RoomEvent,
@@ -17,7 +16,7 @@ import type {
   UrlPreview,
 } from '../generated/protocol'
 import { useServices } from '../context'
-import type { MatrixStore } from '../stores/matrix'
+import { isLocal, type MatrixStore, type Outgoing } from '../stores/matrix'
 import { keepFocus, useEscape } from '../keymap'
 import { dateTime, time } from '../format'
 import {
@@ -47,7 +46,7 @@ import styles from './Room.module.css'
 import overlay from './Overlay.module.css'
 
 /** Of an event, the reactions and edits being sent. */
-export type Overlay = readonly MatrixSend[]
+export type Overlay = readonly Outgoing[]
 
 /** Reactions offered at once, as Element's quick ones. */
 const QUICK = ['👍', '👎', '😄', '🎉', '😕', '❤️', '🚀', '👀']
@@ -110,8 +109,10 @@ export function lineActions(line: Line, matrix: MatrixStore): LineActions {
         ?.senders.find((s) => s.sender === me && !line.pendingRedactions.has(s.event_id))
       const pending = line.overlay.find((s) => s.content.type === 'reaction' && s.content.key === key)
       if (mine) matrix.send(room.id, { type: 'redaction', event: mine.event_id })
-      else if (pending) matrix.cancelSend(pending.id)
-      else matrix.send(room.id, { type: 'reaction', event: event.event_id, key })
+      else if (pending) {
+        // Until the server has it, there is none of its to cancel.
+        if (!isLocal(pending)) matrix.cancelSend(pending.id)
+      } else matrix.send(room.id, { type: 'reaction', event: event.event_id, key })
     }
   }
   if (replyable && own && TEXT.has(content.msgtype ?? '')) actions.edit = line.edit

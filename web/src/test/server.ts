@@ -175,6 +175,8 @@ export class FakeServer implements Requester, Subscriber, Blobs {
   readonly drafts = new Map<string, Draft>()
   readonly outbox: OutboxItem[] = []
   private nextOutbox = 1
+  /** Of the Matrix sends asked for, by key, the entry that queued each. */
+  private matrixSendKeys = new Map<string, number>()
   /** Per account, what its sync task has not pushed yet, as set by
    * `pend`. */
   readonly pending = new Map<string, { failing: Failing | null; changes: PendingChanges[] }>()
@@ -944,9 +946,22 @@ export class FakeServer implements Requester, Subscriber, Blobs {
   private readonly channel: (LogEntry | (() => void))[] = []
   /** Whether a response was delivered in this task. */
   private taking = false
+  /** Whether nothing reaches the client: see `hold`. */
+  private holding = false
+
+  /** Until the function it returns is called, nothing reaches the client:
+   * the server is slow to answer, or unreachable. */
+  hold(): () => void {
+    this.holding = true
+    return () => {
+      this.holding = false
+      this.flush()
+    }
+  }
 
   private flush() {
     for (;;) {
+      if (this.holding) return
       const next = this.channel[0]
       if (next === undefined || (typeof next !== 'function' && this.taking)) return
       this.channel.shift()
@@ -1387,6 +1402,11 @@ export class FakeServer implements Requester, Subscriber, Blobs {
         }
         return { type: 'room_keys_imported', imported: 3, total: 5 }
       case 'send_matrix_message': {
+        const queuedBy = this.matrixSendKeys.get(body.key)
+        if (queuedBy !== undefined) return { type: 'dispatched', tx_log_id: queuedBy }
+        if (this.rooms.find((r) => r.id === body.room)?.membership !== 'joined') {
+          throw new RequestError({ code: 'invalid', message: `room ${body.room} is not a joined room of a configured account` })
+        }
         const id = this.nextOutbox++
         this.matrixSends.push({
           id,
@@ -1399,6 +1419,7 @@ export class FakeServer implements Requester, Subscriber, Blobs {
           queued_at: Date.now(),
         })
         const response = this.dispatched(`Sent '${sendSummary(body.content)}'`, this.matrixSendsChanged(body.room))
+        this.matrixSendKeys.set(body.key, this.head())
         this.undoable.set(this.head(), { revert: () => this.cancelMatrixSend(id, 'Undid it'), undone: false })
         return response
       }

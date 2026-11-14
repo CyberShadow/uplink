@@ -9,7 +9,10 @@ use crate::{
     service::{ConfiguredAccount, Matrix},
 };
 use serde_json::json;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use uplink_protocol::{
     compose::{AccountOutbox, Pending},
     matrix::{
@@ -197,8 +200,11 @@ impl Db {
     /// and sync it back.
     async fn sent(&self, content: MatrixContent, event_id: Option<&str>) -> TxLogId {
         let room = self.room().await;
-        let ServerResponse::Dispatched { tx_log_id } =
-            self.matrix.send_message(room.id, content).await.unwrap()
+        let ServerResponse::Dispatched { tx_log_id } = self
+            .matrix
+            .send_message(room.id, key(), content)
+            .await
+            .unwrap()
         else {
             panic!()
         };
@@ -250,7 +256,12 @@ impl Db {
 
     async fn send(&self, body: &str) -> TxLogId {
         let room = self.room().await;
-        match self.matrix.send_message(room.id, text(body)).await.unwrap() {
+        match self
+            .matrix
+            .send_message(room.id, key(), text(body))
+            .await
+            .unwrap()
+        {
             ServerResponse::Dispatched { tx_log_id } => tx_log_id,
             other => panic!("unexpected {other:?}"),
         }
@@ -365,9 +376,20 @@ async fn pinned_events_are_listed_in_the_order_pinned() {
         event: event.into(),
         pinned: true,
     };
-    assert!(db.matrix.send_message(room.id, pin("$gone")).await.is_err());
-    assert!(db.matrix.send_message(room.id, pin("nope")).await.is_err());
-    db.matrix.send_message(room.id, pin("$1")).await.unwrap();
+    assert!(db
+        .matrix
+        .send_message(room.id, key(), pin("$gone"))
+        .await
+        .is_err());
+    assert!(db
+        .matrix
+        .send_message(room.id, key(), pin("nope"))
+        .await
+        .is_err());
+    db.matrix
+        .send_message(room.id, key(), pin("$1"))
+        .await
+        .unwrap();
 }
 
 #[test]
@@ -637,12 +659,30 @@ async fn catching_up_moves_the_fully_read_marker_and_mentions_wait_for_it() {
     );
 }
 
+/// A key no other send of the tests has.
+fn key() -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!("key-{}", NEXT.fetch_add(1, Ordering::Relaxed))
+}
+
+#[tokio::test]
+async fn a_send_asked_for_again_is_answered_by_the_entry_that_queued_it() {
+    let db = Db::new();
+    db.sync(&[], &[]).await;
+    let room = db.room().await;
+    let send = || db.matrix.send_message(room.id, "resent".into(), text("hi"));
+    let first = send().await.unwrap();
+    assert!(matches!(first, ServerResponse::Dispatched { .. }));
+    assert_eq!(send().await.unwrap(), first);
+    assert_eq!(db.sends().await.len(), 1);
+}
+
 #[tokio::test]
 async fn messages_go_only_to_known_rooms() {
     let db = Db::new();
     let refused = db
         .matrix
-        .send_message(RoomId(1), text("hi"))
+        .send_message(RoomId(1), key(), text("hi"))
         .await
         .unwrap_err();
     assert_eq!(refused.code, uplink_protocol::ErrorCode::NotFound);
@@ -650,7 +690,7 @@ async fn messages_go_only_to_known_rooms() {
     let room = db.room().await;
     let refused = db
         .matrix
-        .send_message(room.id, text(" "))
+        .send_message(room.id, key(), text(" "))
         .await
         .unwrap_err();
     assert_eq!(refused.code, uplink_protocol::ErrorCode::Invalid);
@@ -1575,14 +1615,18 @@ mod relations {
             to_thread("$1", None, None),
             to_thread("$1", Some("$4"), None),
         ] {
-            db.matrix.send_message(room, content).await.unwrap();
+            db.matrix.send_message(room, key(), content).await.unwrap();
         }
         for content in [
             to_thread("$2", None, None),
             to_thread("$1", Some("$3"), None),
             to_thread("$1", None, Some("$5")),
         ] {
-            let refused = db.matrix.send_message(room, content).await.unwrap_err();
+            let refused = db
+                .matrix
+                .send_message(room, key(), content)
+                .await
+                .unwrap_err();
             assert_eq!(refused.code, uplink_protocol::ErrorCode::Invalid);
         }
 

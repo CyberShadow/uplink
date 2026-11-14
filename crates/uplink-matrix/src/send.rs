@@ -24,10 +24,10 @@ use uplink_protocol::{
         MatrixContent, MatrixSend, MatrixSendId, MatrixSendState, MatrixSendsChanged, MemberAction,
         RoomId,
     },
-    ServerEvent,
+    ServerEvent, TxLogId,
 };
 use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
-use uplink_tx_log::{this_entry, Applied, Conflict, Inverse, Observation, Observed, Op};
+use uplink_tx_log::{this_entry, Applied, Conflict, Inverse, Observation, Observed, Op, Repeated};
 
 /// The events of a change to the room's sends: its timeline's, and its
 /// account's outbox's.
@@ -274,11 +274,13 @@ fn described(tx: &Transaction, room: RoomId, content: &MatrixContent) -> Result<
     })
 }
 
-/// Queues `content` to the room.
+/// Queues `content` to the room: once of a `key`, which a client's send
+/// has (sent anew, by an undo, one has none).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SendMessage {
     pub room: RoomId,
+    pub key: Option<String>,
     pub content: MatrixContent,
 }
 
@@ -286,11 +288,24 @@ impl Op for SendMessage {
     const KIND: &'static str = "matrix.send";
 
     fn apply(self, tx: &Transaction) -> Result<Applied> {
+        if let Some(key) = &self.key {
+            let queued_by = tx
+                .query_row(
+                    "SELECT desired_by FROM matrix_send WHERE key = ?1",
+                    [key],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(entry) = queued_by {
+                return Err(Repeated(TxLogId(entry)).into());
+            }
+        }
         let id = MatrixSendId(tx.query_row(
-            "INSERT INTO matrix_send (room, content, queued_at, wanted, desired_by, state, synced)
-             VALUES (?1, ?2, ?3, 1, ?4, 'queued', 0) RETURNING id",
+            "INSERT INTO matrix_send (room, key, content, queued_at, wanted, desired_by, state, synced)
+             VALUES (?1, ?2, ?3, ?4, 1, ?5, 'queued', 0) RETURNING id",
             params![
                 self.room.0,
+                self.key,
                 serde_json::to_string(&self.content)?,
                 now_ms(),
                 this_entry(tx)?.0
@@ -332,6 +347,7 @@ impl Op for CancelMessage {
                     description: format!("Cancelled sending {}", named(&item.content)),
                     inverse: Inverse::of(&SendMessage {
                         room: item.room,
+                        key: None,
                         content: item.content,
                     }),
                     events,
@@ -393,7 +409,12 @@ impl Op for KeepSent {
                 })
             }
             "taking_back" | "taken_back" => {
-                let sent = SendMessage { room, content }.apply(tx)?;
+                let sent = SendMessage {
+                    room,
+                    key: None,
+                    content,
+                }
+                .apply(tx)?;
                 Ok(Applied {
                     description: format!("{} again", sent.description),
                     ..sent

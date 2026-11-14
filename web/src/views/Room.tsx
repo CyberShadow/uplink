@@ -21,6 +21,7 @@ import type {
   TimelineGap,
 } from '../generated/protocol'
 import { useServices } from '../context'
+import { isLocal, type LocalSend, type Outgoing } from '../stores/matrix'
 import { focusShown, keepFocus, lines, pages, useKeymap } from '../keymap'
 import styles from './Room.module.css'
 import { RoomAvatar } from './RoomAvatar'
@@ -68,7 +69,7 @@ function Timeline(props: { room: Room; words: string | null }) {
   const { matrix } = useServices()
   const timeline = matrix.timeline(room.id)
   const events = timeline.events.value
-  const sends = timeline.sends.value
+  const sends = timeline.outgoing.value
   const me = matrix.accounts.value!.find((a) => a.id === room.account)!.mxid
   const composer = useRef<HTMLTextAreaElement>(null)
   const [mode, setMode] = useState<Mode>({ type: 'new' })
@@ -106,7 +107,7 @@ function Timeline(props: { room: Room; words: string | null }) {
     ...(panel ? { up: () => setPanel(null) } : behind && { up: reading.markRead }),
   })
 
-  const [overlay, outgoing] = useMemo(() => overlaid(events ?? [], sends ?? [], null), [events, sends])
+  const [overlay, outgoing] = useMemo(() => overlaid(events ?? [], sends, null), [events, sends])
   const receipts = timeline.receipts.value
   const readers = useMemo(() => readersByEvent(events ?? [], receipts), [events, receipts])
   const gaps = timeline.gaps.value
@@ -329,7 +330,7 @@ export function Events(props: {
   list: RefObject<HTMLOListElement>
   rows: readonly Row[]
   overlay: Overlays
-  outgoing: readonly MatrixSend[]
+  outgoing: readonly Outgoing[]
   readers: ReadonlyMap<RoomEventId, readonly MemberReceipt[]>
   act: (mode: Mode) => void
   /** Of the main timeline, opens a thread by its root, and whether by a
@@ -437,9 +438,9 @@ export function Events(props: {
             )
         }
       })}
-      {props.outgoing.map((item) => (
-        <Pending key={item.id} item={item} />
-      ))}
+      {props.outgoing.map((item) =>
+        isLocal(item) ? <LocalPending key={item.key} room={room} item={item} /> : <Pending key={item.id} item={item} />,
+      )}
     </>
   )
 }
@@ -639,16 +640,16 @@ export function rows(
  * `null`: the main timeline), at the end, with their buttons. */
 export function overlaid(
   events: readonly RoomEvent[],
-  sends: readonly MatrixSend[],
+  sends: readonly Outgoing[],
   thread: string | null,
-): [Overlays, MatrixSend[]] {
+): [Overlays, Outgoing[]] {
   const loaded = new Set<string>()
   for (const event of events) {
     loaded.add(event.event_id)
     for (const reaction of event.reactions) for (const reactor of reaction.senders) loaded.add(reactor.event_id)
   }
   const overlays = new Overlays()
-  const outgoing: MatrixSend[] = []
+  const outgoing: Outgoing[] = []
   for (const item of sends) {
     const content = item.content
     const target =
@@ -657,7 +658,7 @@ export function overlaid(
         : content.type === 'text'
           ? content.replaces
           : null
-    const decided = item.wanted && item.state !== 'refused'
+    const decided = isLocal(item) ? item.error === null : item.wanted && item.state !== 'refused'
     if (target === null || !decided || !loaded.has(target)) {
       if ((content.type === 'text' ? content.thread : null) === thread) outgoing.push(item)
       continue
@@ -670,11 +671,11 @@ export function overlaid(
 
 /** Of each loaded event, the sends going out that change it. */
 export class Overlays {
-  private byTarget = new Map<string, MatrixSend[]>()
+  private byTarget = new Map<string, Outgoing[]>()
   /** Events, and reactions, being deleted. */
   readonly redacted = new Set<string>()
 
-  of(target: string): MatrixSend[] {
+  of(target: string): Outgoing[] {
     let overlay = this.byTarget.get(target)
     if (!overlay) {
       overlay = []
@@ -892,6 +893,38 @@ function Pending(props: { item: MatrixSend }) {
       <span class={styles.sendActions}>
         <MatrixSendActions item={item} compact />
       </span>
+    </li>
+  )
+}
+
+/** A message of this tab's being sent, at the end of the timeline, as
+ * the server's are: going to the server, by a spinner where its time will
+ * be; or refused by it, saying why, with the buttons to send it again or
+ * give it up. */
+function LocalPending(props: { room: Room; item: LocalSend }) {
+  const { item } = props
+  const { matrix } = useServices()
+  const timeline = matrix.timeline(props.room.id)
+  return (
+    <li class={[styles.row, item.error === null ? styles.sending : styles.pending].join(' ')}>
+      <span class={styles.time}>
+        {item.error === null && <span class={styles.spinner} role="img" aria-label="Waiting to send" title="Waiting to send" />}
+      </span>
+      <span class={styles.sender} />
+      <div class={styles.content}>
+        <span class={styles.body}>{sendSummary(item.content)}</span>
+        {item.error !== null && <span class={styles.muted}> Not sent: {item.error}</span>}
+      </div>
+      {item.error !== null && (
+        <span class={styles.sendActions}>
+          <button type="button" onMouseDown={keepFocus} onClick={() => timeline.retry(item)}>
+            Retry
+          </button>
+          <button type="button" onMouseDown={keepFocus} onClick={() => timeline.dismiss(item)}>
+            Dismiss
+          </button>
+        </span>
+      )}
     </li>
   )
 }

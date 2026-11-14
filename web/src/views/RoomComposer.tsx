@@ -104,14 +104,16 @@ export function Composer(props: {
     setEdit(null)
     setMode({ type: 'new' })
   }
-  const send = async () => {
+  /** At once: what is sent shows in the room, going out, or why it was
+   * not sent. What waits for the server (joining, leaving) clears the box
+   * too, giving a command refused back if the box is still empty. */
+  const send = () => {
     if (!sendable) return
     typing.stop()
     if (editing) {
       const original = shown(editing)
       if (value !== original.body) {
-        const content = message(value, { emote: original.msgtype === 'm.emote', replaces: editing.event_id })
-        if (!(await matrix.send(room.id, content))) return
+        matrix.send(room.id, message(value, { emote: original.msgtype === 'm.emote', replaces: editing.event_id }))
       }
       leave()
       return
@@ -126,25 +128,25 @@ export function Composer(props: {
           return
         case 'message': {
           const { body, markdown, emote } = command
-          if (!(await matrix.send(room.id, message(body, { markdown, emote, reply_to, thread })))) return
+          matrix.send(room.id, message(body, { markdown, emote, reply_to, thread }))
           reply_to = null
           break
         }
         case 'member':
         case 'name':
         case 'topic':
-          if (!(await matrix.send(room.id, command))) return
+          matrix.send(room.id, command)
           break
-        case 'join':
-          try {
-            openJoined(await matrix.join({ type: 'join_matrix_room', account: room.account, room: command.room }))
-          } catch (e) {
+        case 'join': {
+          const given = value
+          matrix.join({ type: 'join_matrix_room', account: room.account, room: command.room }).then(openJoined, (e) => {
+            setDraft((draft) => (draft === '' ? given : draft))
             setError((e as Error).message)
-            return
-          }
+          })
           break
+        }
         case 'leave':
-          if (!(await matrix.changeMembership(room.id, 'leave'))) return
+          void matrix.changeMembership(room.id, 'leave')
           break
       }
       setDraft('')
@@ -154,7 +156,7 @@ export function Composer(props: {
     setMode({ type: 'new' })
     if (files.length === 0) return
     props.attachments!.setFiles([])
-    await matrix.sendFiles(room.id, files, reply_to)
+    void matrix.sendFiles(room.id, files, reply_to)
   }
 
   return (

@@ -177,6 +177,21 @@ describe('Connection', () => {
     expect(handlers.entry.mock.calls.map(([e]) => e.id)).toEqual([6, 7])
   })
 
+  it('sends a Matrix message in flight again on a new connection, of its key', async () => {
+    const { connection } = connect()
+    const first = await accept({ cursor: 1, resumed: false })
+    const body = { type: 'send_matrix_message', room: 1, key: 'k', content: { type: 'reaction', event: '$e', key: '👍' } } as const
+    const sent = connection.request(body)
+    await first.peer.next('request')
+
+    first.peer.socket.close()
+    const second = await accept({ cursor: 1, resumed: true })
+    const resent = await second.peer.next('request')
+    expect(resent.body).toEqual(body)
+    second.peer.send({ type: 'response', request_id: resent.request_id, body: { type: 'dispatched', tx_log_id: 1 } })
+    await expect(sent).resolves.toEqual({ type: 'dispatched', tx_log_id: 1 })
+  })
+
   it('sends queries again on a new connection, but fails ops in flight', async () => {
     const { connection } = connect()
     const first = await accept({ cursor: 1, resumed: false })

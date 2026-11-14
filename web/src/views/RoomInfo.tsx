@@ -58,11 +58,10 @@ function Settings(props: { room: Room; powers: RoomPowers | null }) {
   return (
     <form
       class={styles.settings}
-      onSubmit={async (event) => {
+      onSubmit={(event) => {
         event.preventDefault()
-        if (powers.name && name !== room.name) await matrix.send(room.id, { type: 'name', name: name.trim() })
-        if (powers.topic && topic !== (room.topic ?? ''))
-          await matrix.send(room.id, { type: 'topic', topic: topic.trim() })
+        if (powers.name && name !== room.name) matrix.send(room.id, { type: 'name', name: name.trim() })
+        if (powers.topic && topic !== (room.topic ?? '')) matrix.send(room.id, { type: 'topic', topic: topic.trim() })
       }}
     >
       <label>
@@ -126,18 +125,10 @@ function Invite(props: { room: Room }) {
   return (
     <form
       class={styles.invite}
-      onSubmit={async (event) => {
+      onSubmit={(event) => {
         event.preventDefault()
-        if (
-          await matrix.send(props.room.id, {
-            type: 'member',
-            user: user.trim(),
-            action: 'invite',
-            reason: null,
-          })
-        ) {
-          setUser('')
-        }
+        matrix.send(props.room.id, { type: 'member', user: user.trim(), action: 'invite', reason: null })
+        setUser('')
       }}
     >
       <input
@@ -357,14 +348,9 @@ function MemberActions(props: { room: Room; member: MemberInfo }) {
       <Reason
         label={label(acting)}
         cancel={() => setActing(null)}
-        submit={async (reason) => {
-          const sent = await matrix.send(room.id, {
-            type: 'member',
-            user: member.user,
-            action: acting,
-            reason,
-          })
-          if (sent) setActing(null)
+        submit={(reason) => {
+          matrix.send(room.id, { type: 'member', user: member.user, action: acting, reason })
+          setActing(null)
         }}
       />
     )

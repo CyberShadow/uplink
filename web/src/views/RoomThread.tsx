@@ -26,14 +26,14 @@ export function ThreadPanel(props: {
   const { matrix } = useServices()
   const thread = matrix.thread(room.id, props.root)
   const state = thread.state.value
-  const sends = matrix.timeline(room.id).sends.value
+  const sends = matrix.timeline(room.id).outgoing.value
   const composer = useRef<HTMLTextAreaElement>(null)
   const scroller = useRef<HTMLDivElement>(null)
   const listed = useRef<HTMLOListElement>(null)
   const [mode, setMode] = useState<Mode>({ type: 'new' })
   const events = useMemo(() => (state ? [state.root, ...state.replies] : []), [state])
   const rootId = state?.root.event_id ?? null
-  const [overlay, outgoing] = useMemo(() => overlaid(events, sends ?? [], rootId), [events, sends, rootId])
+  const [overlay, outgoing] = useMemo(() => overlaid(events, sends, rootId), [events, sends, rootId])
   const list = useMemo(() => rows(events, null, me), [events, me])
   const lastOwn = useMemo(
     () =>

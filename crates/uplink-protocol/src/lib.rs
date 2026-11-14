@@ -309,8 +309,12 @@ pub enum ClientRequest {
         event: RoomEventId,
     },
     /// Send to the room: a message, a reaction, a redaction or a file.
+    /// `key`, chosen by the client (a UUID), is the send's: asked again
+    /// with it (resent on a new connection, say), it is answered with the
+    /// entry that queued it, and not sent twice.
     SendMatrixMessage {
         room: RoomId,
+        key: String,
         content: matrix::MatrixContent,
     },
     /// Take a message being sent back: at once if it has not been handed

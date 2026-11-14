@@ -1,7 +1,7 @@
 // Matrix state: accounts with their rooms, the timelines on show with
 // their messages being sent (SPEC §9, §12.6), mirrored like mail's.
 
-import { batch, signal, type Signal } from '@preact/signals'
+import { batch, computed, signal, type Signal } from '@preact/signals'
 import type {
   ClientRequest,
   LogEntry,
@@ -28,7 +28,7 @@ import type {
   VerificationAnswer,
 } from '../generated/protocol'
 import type { Blobs } from '../blobs'
-import type { Requester } from '../connection'
+import { RequestError, type Requester } from '../connection'
 import type { Ops } from './ops'
 import { Loader, query, type Response } from './query'
 
@@ -202,6 +202,7 @@ export class MatrixStore {
             this.error.value = (error as Error).message
           }
         },
+        (key, content) => this.server.request({ type: 'send_matrix_message', room, key, content }),
       )
       this.timelines.set(room, timeline)
     }
@@ -209,12 +210,13 @@ export class MatrixStore {
   }
 
   /** Quietly: what is sent shows in the room at once, which is notice
-   * enough. */
+   * enough, and why it was not sent, if it was not. */
   send(room: RoomId, content: MatrixContent) {
-    return this.ops.dispatch({ type: 'send_matrix_message', room, content }, true)
+    this.timeline(room).send(content)
   }
 
-  /** Uploads `files` and sends each, in order; stops at one that fails. */
+  /** Uploads `files` and sends each, in order; stops at one that fails to
+   * upload. */
   async sendFiles(room: RoomId, files: readonly File[], reply_to: string | null) {
     for (const file of files) {
       let uploaded
@@ -226,7 +228,7 @@ export class MatrixStore {
       }
       const mime = file.type || 'application/octet-stream'
       const content: MatrixContent = { type: 'file', blob: uploaded.blob, name: file.name, mime, reply_to }
-      if (!(await this.send(room, content))) return
+      this.send(room, content)
       // Only the first answers what it replies to.
       reply_to = null
     }
@@ -354,6 +356,24 @@ function merged(events: readonly RoomEvent[], added: readonly RoomEvent[]): Room
   return [...events, ...added.filter((e) => !known.has(e.id))].sort((a, b) => a.pos - b.pos)
 }
 
+/** A message this tab sends, until the room's sends, loaded, show it
+ * (among them, or synced back, among the events). */
+export interface LocalSend {
+  /** The send's, as the server knows it once it has it. */
+  readonly key: string
+  readonly content: MatrixContent
+  /** Why the server refused it; `null` while it goes to the server. */
+  readonly error: string | null
+}
+
+/** A message being sent: the server's, or this tab's, not yet known to
+ * be the server's. */
+export type Outgoing = MatrixSend | LocalSend
+
+export function isLocal(item: Outgoing): item is LocalSend {
+  return 'key' in item
+}
+
 /** A room's timeline from some point to its end, oldest first, and the
  * messages being sent to it, which follow. New events are loaded as they
  * are synced; earlier ones on request. */
@@ -364,6 +384,11 @@ export class Timeline {
   /** Being sent, sent and not yet synced back, or sent though cancelled;
    * `null` until loaded. */
   readonly sends = signal<readonly MatrixSend[] | null>(null)
+  /** This tab's sends, in the order sent, until `sends`, loaded, show
+   * them: they follow those. */
+  readonly local = signal<readonly LocalSend[]>([])
+  /** The sends, and this tab's after them. */
+  readonly outgoing = computed<readonly Outgoing[]>(() => [...(this.sends.value ?? []), ...this.local.value])
   /** Who is typing, as the last notice said. */
   readonly typing = signal<readonly RoomMember[]>([])
   /** How far the room's members have read. */
@@ -378,6 +403,11 @@ export class Timeline {
    * reflects. */
   private loadedAt = new Map<RoomEventId, TxLogId>()
   private loadingEarlier = false
+  /** Of the local sends the server has, by key, the entry that queued
+   * each: a load of the sends reflecting it shows it. */
+  private queuedBy = new Map<string, TxLogId>()
+  /** The entry the sends loaded last reflect. */
+  private sendsAsOf: TxLogId | null = null
   private receiptLoader = new Loader(async () => {
     const response = await this.loadReceipts()
     if (response) this.receipts.value = response.receipts
@@ -389,9 +419,61 @@ export class Timeline {
     private readonly loadEvents: (events: RoomEventId[]) => Promise<Response<'room_events'> | null>,
     private readonly loadReceipts: () => Promise<Response<'receipts'> | null>,
     private readonly fillGap: (gap: GapId) => Promise<void>,
+    private readonly sendToServer: (key: string, content: MatrixContent) => Promise<ServerResponse>,
   ) {
     this.newer.invalidate()
     this.receiptLoader.invalidate()
+  }
+
+  /** Sends `content`: shown at once, and asked of the server after what
+   * was sent before. The connection keeps it until the server has it. */
+  send(content: MatrixContent) {
+    const item = { key: crypto.randomUUID(), content, error: null }
+    this.local.value = [...this.local.value, item]
+    void this.deliver(item)
+  }
+
+  /** Sends again one the server refused. */
+  retry(item: LocalSend) {
+    const again = { ...item, error: null }
+    this.replace(item, again)
+    void this.deliver(again)
+  }
+
+  /** Gives up one the server refused. */
+  dismiss(item: LocalSend) {
+    this.local.value = this.local.value.filter((l) => l.key !== item.key)
+  }
+
+  private async deliver(item: LocalSend) {
+    let response: ServerResponse
+    try {
+      response = await this.sendToServer(item.key, item.content)
+    } catch (error) {
+      if (!(error instanceof RequestError)) throw error
+      this.replace(item, { ...item, error: error.message })
+      return
+    }
+    if (response.type !== 'dispatched') throw new Error(`unexpected response to send_matrix_message: ${response.type}`)
+    if (this.sendsAsOf !== null && this.sendsAsOf >= response.tx_log_id) this.dismiss(item)
+    else this.queuedBy.set(item.key, response.tx_log_id)
+  }
+
+  private replace(item: LocalSend, by: LocalSend) {
+    this.local.value = this.local.value.map((l) => (l.key === item.key ? by : l))
+  }
+
+  /** The sends were loaded as of entry `asOf`: those of this tab's the
+   * server had by then are among them, or synced back. */
+  private loadedSends(sends: readonly MatrixSend[], asOf: TxLogId) {
+    this.sends.value = sends
+    this.sendsAsOf = asOf
+    const shown = this.local.value.filter((l) => {
+      const by = this.queuedBy.get(l.key)
+      return by === undefined || by > asOf
+    })
+    for (const l of this.local.value) if (!shown.includes(l)) this.queuedBy.delete(l.key)
+    if (shown.length !== this.local.value.length) this.local.value = shown
   }
 
   receiptsChanged() {
@@ -496,7 +578,7 @@ export class Timeline {
         batch(() => {
           if (!last) this.moreBefore.value = response.more_before
           this.events.value = [...(events ?? []), ...response.events]
-          if (response.sends) this.sends.value = response.sends
+          if (response.sends) this.loadedSends(response.sends, response.as_of)
           this.addGaps(response.gaps)
         })
         if (response.sends) return

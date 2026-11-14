@@ -146,6 +146,14 @@ fn execute_json<O: Op>(tx: &Transaction, json: &str) -> Result<Executed> {
 #[error("{0}")]
 pub struct Conflict(pub String);
 
+/// The op was applied already, by entry `.0`: asked for again (as a
+/// request resent on a new connection is, its first answer lost), it is
+/// answered by that entry, and not applied again. Ops return it through
+/// [`anyhow::Error`].
+#[derive(Debug, thiserror::Error)]
+#[error("applied already, by entry {}", .0 .0)]
+pub struct Repeated(pub TxLogId);
+
 #[derive(Debug, thiserror::Error)]
 pub enum UndoError {
     #[error("tx_log entry {} does not exist", .0 .0)]

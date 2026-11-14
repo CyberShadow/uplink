@@ -1011,7 +1011,7 @@ than it buffers is closed; the client reconnects and resumes.
   `KeepSent { item }` (§6.7, §7); `KeepObserved { op }` — a refused
   change taken back to what the provider has (§6.6); `AlwaysShowImages
   { rule, always }` (§8.9);
-  `SendMatrixMessage { room, body }`, `CancelMatrixSend { item }`,
+  `SendMatrixMessage { room, key, content }`, `CancelMatrixSend { item }`,
   `KeepMatrixSent { item }`,
   `MarkRoomRead { room, event }`, `ChangeMembership { room, change }`,
   `OrderSpaces { changes }` (§9).
@@ -2651,8 +2651,12 @@ the backup's key. Events redacted meanwhile stay as they are.
 
 ### 9.3 Sending
 
-`matrix.send` (`SendMatrixMessage { room, content }`) queues a send in
-`matrix_send`, wanted (§6.7). Its content (`MatrixContent`, stored as
+`matrix.send` (`SendMatrixMessage { room, key, content }`) queues a send
+in `matrix_send`, wanted (§6.7). `key` is the client's for the send (a
+UUID, unique since V0058): asked again with it, as a request resent on a
+new connection is (§12.3), the op is answered by the entry that queued
+it, and not applied again (`uplink_tx_log::Repeated`). A send queued anew
+by an undo has none. Its content (`MatrixContent`, stored as
 JSON since V0026) is one of:
 
 - **text**, in Markdown: sent as `m.text` (or `m.emote`, for `/me`) with
@@ -2705,8 +2709,14 @@ Whether the account may make a change to the room is the homeserver's to
 say: a refusal needs a decision, as any.
 
 Events are named by their Matrix ids, and must be stored in the room.
-The room's timeline shows it at the end,
-with its state (`ListTimeline`), until it is synced back, and the
+The web client shows it at once at the end of the room's timeline, as
+the tab's own (`Timeline.local`), going out, and sends it after what it
+sent before; once a load of the room's sends reflects the entry that
+queued it (`as_of`), the server's shows instead, or the event synced
+back. One the server refused (the room left, say) says why, with Retry
+(the same key) and Dismiss; until the server has it, a reaction going out
+can't be taken back by toggling it. The room's timeline shows it at the
+end, with its state (`ListTimeline`), until it is synced back, and the
 outbox lists it with the account's. Cancelling it (its undo, or
 `CancelMatrixSend`) drops it while queued or refused; once claimed, it
 makes it unwanted, settled by the outcome. The sending loop claims a
@@ -3525,7 +3535,11 @@ connection, for the tab's life (§12.13). A
 subscribed to anew, and its listener reset. A query in flight when the
 socket drops is sent again on the next connection; an op is failed,
 since it may have been applied (the log will show it), except draft
-creation and edits, which can't apply twice (§7.2). The last op dispatched from the tab is shown with an Undo button,
+creation and edits, which can't apply twice (§7.2), and Matrix sends,
+answered by their first entry if asked again (§9.3). So what one writes
+in a room never waits for the server: the box clears at once, and what
+is typed next stays in it, however slow the server is to answer, or if
+it is unreachable. The last op dispatched from the tab is shown with an Undo button,
 unless what it did shows at once where it was done, which is notice
 enough: Matrix sends (the room shows them), draft creation and edits,
 attaching to a draft, and read receipts. Failures are always shown.
@@ -3755,7 +3769,9 @@ buttons.
   message), `/invite`, `/remove` (`/kick`), `/ban` and `/unban` (with a
   reason, but inviting), `/topic`, `/roomname`, `/join` (`/j`; opens the
   room) and `/leave` (`/part`). An unknown command, or one misused, says
-  so above the box, which keeps the text. Completions show above the box
+  so above the box, which keeps the text. Else the box clears at once
+  (§9.3); `/join` refused says so, giving the command back to the box if
+  nothing was written in it since. Completions show above the box
   as one types, as Element's: commands after a leading `/`, joined
   members (but the account) after `@`, by a word of their name or their
   id, inserted as a link that mentions them (then `@room`, from `@r`), and emoji after `:` and two

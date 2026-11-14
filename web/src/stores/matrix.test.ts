@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { effect } from '@preact/signals'
 import { FakeServer, ME } from '../test/server'
 import { Client } from './client'
-import { TIMELINE_PAGE } from './matrix'
+import { isLocal, TIMELINE_PAGE } from './matrix'
 import { sendSummary, text } from '../matrix'
 
 let server: FakeServer
@@ -92,17 +92,27 @@ describe('MatrixStore', () => {
     await vi.waitFor(() => expect(bodies(room.id)).toEqual(['first']))
   })
 
-  it('lists the messages being sent with the timeline, undoably until sent', async () => {
+  it('shows a message sent at once, then as the server sends it, cancellably until sent', async () => {
     const room = server.addRoom('Lounge')
     client.reset()
-    const sends = () => client.matrix.timeline(room.id).sends.value
+    const timeline = client.matrix.timeline(room.id)
+    const sends = () => timeline.sends.value
     await vi.waitFor(() => expect(sends()).toEqual([]))
-    const sent = await client.matrix.send(room.id, text('hi there'))
+    // This tab's, then the server's: one, all along.
+    const outgoing: [boolean, string][][] = []
+    const watching = effect(() => {
+      outgoing.push(timeline.outgoing.value.map((i) => [isLocal(i), sendSummary(i.content)]))
+    })
+    client.matrix.send(room.id, text('hi there'))
+    expect(timeline.outgoing.value.map(isLocal)).toEqual([true])
     await vi.waitFor(() => expect(sends()?.map((i) => sendSummary(i.content))).toEqual(['hi there']))
-    await client.ops.undo(sent!.id)
+    expect(timeline.local.value).toEqual([])
+    watching()
+    expect(outgoing).toEqual([[], [[true, 'hi there']], [[false, 'hi there']]])
+    await client.matrix.cancelSend(sends()![0].id)
     await vi.waitFor(() => expect(sends()).toEqual([]))
 
-    await client.matrix.send(room.id, text('again'))
+    client.matrix.send(room.id, text('again'))
     await vi.waitFor(() => expect(sends()).toHaveLength(1))
     // Shown once as it is synced back: sent or being sent, never both or
     // neither.

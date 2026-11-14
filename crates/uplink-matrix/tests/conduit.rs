@@ -15,7 +15,15 @@ use matrix_sdk::{
     Client,
 };
 use serde_json::json;
-use std::{path::Path, process::Stdio, sync::Arc, time::Duration};
+use std::{
+    path::Path,
+    process::Stdio,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 use tokio::sync::mpsc;
 use uplink_config::MatrixAccountConfig;
 use uplink_matrix::{client, service::ConfiguredAccount, service::Matrix, sync::Sync};
@@ -337,7 +345,7 @@ async fn messages_both_ways_in_an_encrypted_room() {
     // From uplink to the other client.
     uplink
         .matrix
-        .send_message(room.id, text("hello from uplink"))
+        .send_message(room.id, key(), text("hello from uplink"))
         .await
         .unwrap();
     let body = tokio::time::timeout(Duration::from_secs(30), async {
@@ -957,6 +965,12 @@ async fn rooms_are_tagged_as_other_clients_tag_them() {
 }
 
 /// A plain message.
+/// A key no other send of the tests has.
+fn key() -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!("key-{}", NEXT.fetch_add(1, Ordering::Relaxed))
+}
+
 fn text(body: &str) -> uplink_protocol::matrix::MatrixContent {
     uplink_protocol::matrix::MatrixContent::Text {
         body: body.into(),
@@ -1007,7 +1021,11 @@ async fn replies_edits_reactions_redactions_and_files() {
         let uplink = &uplink;
         let room = &room;
         async move {
-            uplink.matrix.send_message(room.id, content).await.unwrap();
+            uplink
+                .matrix
+                .send_message(room.id, key(), content)
+                .await
+                .unwrap();
             eventually("the send to sync back", || async {
                 (uplink.sends(room).await == 0).then_some(())
             })
@@ -1182,8 +1200,11 @@ async fn sends_undone_are_taken_back() {
     let settled = || async { (uplink.sends(&room).await == 0).then_some(()) };
     // Sends `content`, and waits for it to sync back: its op.
     let send = |content: MatrixContent| async {
-        let ServerResponse::Dispatched { tx_log_id } =
-            uplink.matrix.send_message(room.id, content).await.unwrap()
+        let ServerResponse::Dispatched { tx_log_id } = uplink
+            .matrix
+            .send_message(room.id, key(), content)
+            .await
+            .unwrap()
         else {
             panic!()
         };
@@ -1299,7 +1320,7 @@ async fn typing_and_receipts_are_noticed() {
     // Bob reads uplink's message.
     uplink
         .matrix
-        .send_message(room.id, text("read me"))
+        .send_message(room.id, key(), text("read me"))
         .await
         .unwrap();
     let sent = eventually("the message to sync back", || async {
@@ -1915,7 +1936,11 @@ async fn members_are_listed_and_managed_and_the_room_renamed() {
         let uplink = &uplink;
         let room = &room;
         async move {
-            uplink.matrix.send_message(room.id, content).await.unwrap();
+            uplink
+                .matrix
+                .send_message(room.id, key(), content)
+                .await
+                .unwrap();
             eventually("the send to go", || async {
                 (uplink.sends(room).await == 0).then_some(())
             })
@@ -1986,7 +2011,11 @@ async fn members_are_listed_and_managed_and_the_room_renamed() {
     // Kicking bob, of more power, is refused: the send needs a decision.
     uplink
         .matrix
-        .send_message(room.id, change(MemberAction::Kick, "@bob:localhost", None))
+        .send_message(
+            room.id,
+            key(),
+            change(MemberAction::Kick, "@bob:localhost", None),
+        )
         .await
         .unwrap();
     eventually("the kick to be refused", || async {

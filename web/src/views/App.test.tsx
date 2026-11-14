@@ -9,7 +9,7 @@ import { TIMELINE_PAGE } from '../stores/matrix'
 import { scrolledTo } from '../test/intersection'
 import { FakeServer, ME, RECOVERY_KEY } from '../test/server'
 import { App } from './App'
-import { text } from '../matrix'
+import { sendSummary, text } from '../matrix'
 
 let server: FakeServer
 let client: Client
@@ -1850,13 +1850,49 @@ describe('matrix', () => {
     expect(await screen.findByRole('img', { name: 'Waiting to send' })).toBeTruthy()
     expect(screen.getByText('First line second line')).toBeTruthy()
     expect((box as HTMLTextAreaElement).value).toBe('')
-    expect(server.requests).toContainEqual({ type: 'send_matrix_message', room: room.id, content: text('First line\nsecond line') })
+    expect(server.requests).toContainEqual({ type: 'send_matrix_message', key: expect.any(String), room: room.id, content: text('First line\nsecond line') })
     // The room shows it: no notice.
     expect(screen.queryByRole('status')).toBeNull()
 
     server.echo(server.matrixSends[0].id)
     await waitFor(() => expect(screen.queryByRole('img', { name: 'Waiting to send' })).toBeNull())
     expect(screen.getByText('First line second line')).toBeTruthy()
+  })
+})
+
+describe('sending at once', () => {
+  it('clears the box at once, keeping what is typed meanwhile, the server slow to answer', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const user = await start(`/rooms/${room.id}`)
+    const box = screen.getByRole('textbox', { name: 'Message Lounge' }) as HTMLTextAreaElement
+    const release = server.hold()
+    await user.keyboard('one{Enter}')
+    expect(box.value).toBe('')
+    expect(screen.getByText('one')).toBeTruthy()
+    await user.keyboard('two')
+    release()
+    await waitFor(() => expect(server.matrixSends.map((s) => sendSummary(s.content))).toEqual(['one']))
+    await waitFor(() => expect(screen.getAllByText('one')).toHaveLength(1))
+    expect(box.value).toBe('two')
+  })
+
+  it('says why the server refused one, which can be sent again or given up', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const user = await start(`/rooms/${room.id}`)
+    // Left elsewhere, as this tab does not know yet.
+    server.rooms[0].membership = 'left'
+    await user.keyboard('one{Enter}two{Enter}')
+    const refused = `Not sent: room ${room.id} is not a joined room of a configured account`
+    await waitFor(() => expect(screen.getAllByText(refused)).toHaveLength(2))
+    const row = (body: string) => screen.getByText(body).closest('li')!
+    await user.click(within(row('two')).getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByText('two')).toBeNull()
+    server.rooms[0].membership = 'joined'
+    await user.click(within(row('one')).getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(server.matrixSends.map((s) => sendSummary(s.content))).toEqual(['one']))
+    await waitFor(() => expect(screen.queryByText(refused)).toBeNull())
   })
 })
 
@@ -2103,6 +2139,7 @@ describe('room timeline', () => {
     await user.click(chip)
     expect(server.requests).toContainEqual({
       type: 'send_matrix_message',
+      key: expect.any(String),
       room: room.id,
       content: { type: 'reaction', event: event.event_id, key: '👍' },
     })
@@ -2123,7 +2160,7 @@ describe('room timeline', () => {
     })
     server.settleSends(room.id)
     await user.click(await within(line('Lunch?')).findByRole('button', { name: '👍 2', pressed: true }))
-    expect(server.requests).toContainEqual({ type: 'send_matrix_message', room: room.id, content: { type: 'redaction', event: '$r2' } })
+    expect(server.requests).toContainEqual({ type: 'send_matrix_message', key: expect.any(String), room: room.id, content: { type: 'redaction', event: '$r2' } })
     await within(line('Lunch?')).findByRole('button', { name: '👍 1', pressed: false })
 
     // Any other, from the picker.
@@ -2131,6 +2168,7 @@ describe('room timeline', () => {
     await user.click(screen.getByRole('button', { name: 'React with 🎉' }))
     expect(server.requests).toContainEqual({
       type: 'send_matrix_message',
+      key: expect.any(String),
       room: room.id,
       content: { type: 'reaction', event: event.event_id, key: '🎉' },
     })
@@ -2150,6 +2188,7 @@ describe('room timeline', () => {
     await user.keyboard('Where?{Enter}')
     expect(server.requests).toContainEqual({
       type: 'send_matrix_message',
+      key: expect.any(String),
       room: room.id,
       content: text('Where?', { reply_to: question.event_id }),
     })
@@ -2160,6 +2199,7 @@ describe('room timeline', () => {
     await user.keyboard(' thing{Enter}')
     expect(server.requests).toContainEqual({
       type: 'send_matrix_message',
+      key: expect.any(String),
       room: room.id,
       content: text('Sure thing', { replaces: mine.event_id }),
     })
@@ -2178,7 +2218,7 @@ describe('room timeline', () => {
     // Asked first; the box has the focus back.
     await user.click(within(screen.getByRole('alertdialog', { name: 'Delete message' })).getByRole('button', { name: 'Delete' }))
     expect(document.activeElement).toBe(box)
-    expect(server.requests).toContainEqual({ type: 'send_matrix_message', room: room.id, content: { type: 'redaction', event: mine.event_id } })
+    expect(server.requests).toContainEqual({ type: 'send_matrix_message', key: expect.any(String), room: room.id, content: { type: 'redaction', event: mine.event_id } })
     await within(timeline()).findByText('Deleting…')
   })
 
@@ -2274,6 +2314,7 @@ describe('room timeline', () => {
     await user.click(screen.getByRole('menuitem', { name: 'Pin' }))
     expect(server.requests).toContainEqual({
       type: 'send_matrix_message',
+      key: expect.any(String),
       room: room.id,
       content: { type: 'pin', event: latest.event_id, pinned: true },
     })
@@ -2294,6 +2335,7 @@ describe('room timeline', () => {
     await user.click(screen.getByRole('menuitem', { name: 'Unpin' }))
     expect(server.requests).toContainEqual({
       type: 'send_matrix_message',
+      key: expect.any(String),
       room: room.id,
       content: { type: 'pin', event: old.event_id, pinned: false },
     })
@@ -2321,6 +2363,7 @@ describe('room timeline', () => {
     await user.type(box, 'Works for me{Enter}')
     expect(server.requests).toContainEqual({
       type: 'send_matrix_message',
+      key: expect.any(String),
       room: room.id,
       content: text('Works for me', { thread: root.event_id }),
     })
@@ -2334,6 +2377,7 @@ describe('room timeline', () => {
     await user.keyboard('Which time?{Enter}')
     expect(server.requests).toContainEqual({
       type: 'send_matrix_message',
+      key: expect.any(String),
       room: room.id,
       content: text('Which time?', { thread: root.event_id, reply_to: '$3' }),
     })
@@ -2670,11 +2714,12 @@ describe('room timeline', () => {
     await waitFor(() =>
       expect(server.requests).toContainEqual({
         type: 'send_matrix_message',
+        key: expect.any(String),
         room: room.id,
         content: { type: 'file', blob: 'blob:hello', name: 'hello.txt', mime: 'text/plain', reply_to: null },
       }),
     )
-    expect(server.requests).toContainEqual({ type: 'send_matrix_message', room: room.id, content: text('Here') })
+    expect(server.requests).toContainEqual({ type: 'send_matrix_message', key: expect.any(String), room: room.id, content: text('Here') })
     expect(screen.queryByRole('list', { name: 'Files to send' })).toBeNull()
   })
 })

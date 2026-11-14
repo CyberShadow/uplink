@@ -1,7 +1,7 @@
 //! Answering clients' requests (SPEC §5.4): ops through the dispatcher,
 //! queries on reader connections.
 
-use crate::{Conflict, Dispatcher, Op};
+use crate::{Conflict, Dispatcher, Op, Repeated};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Semaphore;
 use uplink_protocol::{ErrorCode, ServerError, ServerResponse};
@@ -21,15 +21,19 @@ pub fn internal(e: anyhow::Error) -> ServerError {
 
 impl Dispatcher {
     /// Dispatches `op`, answering with its entry; a [`Conflict`] is the
-    /// request's refusal.
+    /// request's refusal, and one [`Repeated`] is answered with the entry
+    /// that applied it.
     pub async fn answer(&self, op: impl Op) -> Response {
-        let tx_log_id = self
-            .dispatch(op)
-            .await
-            .map_err(|e| match e.downcast::<Conflict>() {
-                Ok(conflict) => error(ErrorCode::Conflict, conflict.0),
-                Err(e) => internal(e),
-            })?;
+        let tx_log_id = match self.dispatch(op).await {
+            Ok(id) => id,
+            Err(e) => match e.downcast::<Repeated>() {
+                Ok(Repeated(id)) => id,
+                Err(e) => match e.downcast::<Conflict>() {
+                    Ok(conflict) => return Err(error(ErrorCode::Conflict, conflict.0)),
+                    Err(e) => return Err(internal(e)),
+                },
+            },
+        };
         Ok(ServerResponse::Dispatched { tx_log_id })
     }
 }
