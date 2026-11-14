@@ -1079,6 +1079,8 @@ describe('compose', () => {
     await screen.findByText('Body of First')
     await user.keyboard('r')
     const subject = await screen.findByRole('textbox', { name: 'Subject' })
+    // Writing starts in the body, at once: keys pressed next go there.
+    expect(screen.getByLabelText('Body').contains(document.activeElement)).toBe(true)
     expect((subject as HTMLInputElement).value).toBe('Re: First')
     expect((screen.getByRole('textbox', { name: 'To' }) as HTMLInputElement).value).toBe('Bob <bob@example.org>')
     const [draft] = server.drafts.values()

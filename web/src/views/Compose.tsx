@@ -79,9 +79,11 @@ function ComposeForm(props: { session: ComposeSession; draft: Draft }) {
       onUpdate: ({ editor }) => session.set('body', editor.getHTML()),
     })
     editor.current = instance
-    // Where writing starts: the recipients, or for a reply, the body.
+    // Where writing starts: the recipients, or for a reply, the body, whose
+    // selection starts at its start. Not by tiptap's `focus`, which waits
+    // for the next frame: a key pressed before it would miss the editor.
     if (session.content.peek().to === '') inputs.current.get('to')!.focus()
-    else instance.commands.focus('start')
+    else instance.view.focus()
     return () => instance.destroy()
   }, [session])
 
