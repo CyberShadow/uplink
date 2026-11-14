@@ -29,6 +29,24 @@ use uplink_tx_log::{Dispatcher, Registry};
 
 const PASSWORD: &str = "correct horse battery staple";
 
+/// A free port no other test's Conduit has: the kernel may hand out a
+/// released one again, and a Conduit given one already taken fails while
+/// its test talks to the other test's.
+fn port() -> u16 {
+    static GIVEN: std::sync::Mutex<std::collections::BTreeSet<u16>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    loop {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        if GIVEN.lock().unwrap().insert(port) {
+            return port;
+        }
+    }
+}
+
 struct Homeserver {
     url: String,
     _conduit: tokio::process::Child,
@@ -38,11 +56,7 @@ impl Homeserver {
     async fn start(dir: &Path) -> Self {
         let conduit = std::env::var_os("UPLINK_CONDUIT")
             .expect("UPLINK_CONDUIT must name the conduit binary (the dev shell sets it)");
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
+        let port = port();
         let db = dir.join("conduit");
         std::fs::create_dir(&db).unwrap();
         let config = dir.join("conduit.toml");
