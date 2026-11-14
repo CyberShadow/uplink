@@ -29,7 +29,7 @@ cursor: TxLogId, resumed: boolean, } | { "type": "response", request_id: number,
 /**
  * A notice of the moment (SPEC §5.5).
  */
-export type Notice = { "type": "home_changed" } | { "type": "calendar_configured" } | { "type": "typing" } & Typing | { "type": "receipts_changed" } & ReceiptsChanged | { "type": "security_changed" } & SecurityChanged;
+export type Notice = { "type": "home_changed" } | { "type": "calendar_configured" } | { "type": "typing" } & Typing | { "type": "receipts_changed" } & ReceiptsChanged | { "type": "security_changed" } & SecurityChanged | { "type": "arrival" } & Arrival;
 
 /**
  * Who is typing in the room, but the account: all of them, each time.
@@ -395,6 +395,14 @@ export type RoomHits = { count: number,
  * The latest, by the room's timeline.
  */
 latest: RoomEvent, };
+
+/**
+ * What came from others into a badged home bucket (SPEC §12.16): the
+ * client notifies of it, as urgently as the bucket's badge says.
+ */
+export type Arrival = { bucket: string, badge: Badge, item: Arrived, };
+
+export type Arrived = { "kind": "mail", entry: EntryId, } | { "kind": "message", room: RoomId, event: RoomEventId, };
 
 export type ErrorCode = "not_found" | "not_undoable" | "already_undone" | "conflict" | "invalid" | "internal";
 
@@ -1404,4 +1412,4 @@ refused: string | null, };
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "60a1cc7a047541d6"
+export const PROTOCOL_VERSION = "cd13520e169e814d"

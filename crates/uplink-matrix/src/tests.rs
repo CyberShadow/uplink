@@ -372,6 +372,46 @@ fn pins_keep_others_pinned_meanwhile() {
     assert_eq!(pins(&now, "$c", false), None, "not pinned");
 }
 
+/// What came of a room is its newest unread message stored since, and
+/// sent since, that notifies.
+#[tokio::test]
+async fn what_came_notifies_and_is_recent() {
+    let db = Db::new();
+    let pushed = |id: &str, sender: &str, notify: bool, ts: i64| ObservedEvent {
+        push: crate::rooms::Push {
+            notify,
+            highlight: false,
+        },
+        ts,
+        ..message(id, sender)
+    };
+    db.sync_events(vec![pushed("$1", "@bob:x", true, 3000)], &[])
+        .await;
+    let since = db.event("$1").await;
+    db.sync_events(
+        vec![
+            pushed("$2", "@bob:x", true, 3000),
+            pushed("$3", "@bob:x", false, 3000),
+            pushed("$4", ME, true, 3000),
+            // Sent long before: stored only now, as history is.
+            pushed("$5", "@bob:x", true, 1000),
+        ],
+        &[],
+    )
+    .await;
+    let room = db.room().await.id;
+    let arrived = |since: RoomEventId| {
+        let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
+        let tx = conn.transaction().unwrap();
+        crate::rooms::arrived(&tx, room, ME, since, 2000).unwrap()
+    };
+    assert_eq!(arrived(since), Some(db.event("$2").await));
+    // Read: no longer news.
+    let read = db.event("$2").await;
+    db.matrix.mark_read(room, read, false, false).await.unwrap();
+    assert_eq!(arrived(since), None);
+}
+
 #[tokio::test]
 async fn sending_is_undone_while_queued() {
     let db = Db::new();

@@ -68,6 +68,9 @@ export class Client {
       case 'security_changed':
         this.matrix.notice(notice)
         break
+      case 'arrival':
+        this.home.arrived(notice)
+        break
     }
   }
 }

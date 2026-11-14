@@ -1091,6 +1091,33 @@ pub fn sync_state(conn: &Connection, account: &str) -> Result<Option<SyncState>>
         .transpose()
 }
 
+/// Of the room's unread messages that notify, of its main timeline or
+/// its threads, the newest that came: stored after `since`, sent after
+/// `sent_after` (ms since the Unix epoch). `mxid`'s are never unread.
+pub fn arrived(
+    tx: &Transaction,
+    room: RoomId,
+    mxid: &str,
+    since: RoomEventId,
+    sent_after: i64,
+) -> Result<Option<RoomEventId>> {
+    Ok(tx
+        .query_row(
+            &format!(
+                "SELECT e.id FROM matrix_room r JOIN matrix_event e ON e.room = r.id
+                 WHERE r.id = ?1 AND e.id > ?3 AND e.ts > ?4 AND e.notify
+                   AND (r.read_up_to IS NULL OR e.pos > {read_pos})
+                   AND e.type IN ('m.room.message', 'm.room.encrypted')
+                   AND e.sender != ?2 AND NOT e.redacted AND {LISTED}
+                 ORDER BY e.id DESC LIMIT 1",
+                read_pos = pos_of("r.read_up_to"),
+            ),
+            params![room.0, mxid, since.0, sent_after],
+            |r| r.get(0).map(RoomEventId),
+        )
+        .optional()?)
+}
+
 /// The rooms of `account`, but those left (unless joining them again),
 /// most recently active first.
 /// `mxid` is the account's user: its own messages are never unread. Its

@@ -105,6 +105,26 @@ pub enum Notice {
     ReceiptsChanged(matrix::ReceiptsChanged),
     /// The account's devices, their trust or its key backup changed.
     SecurityChanged(matrix::SecurityChanged),
+    Arrival(Arrival),
+}
+
+/// What came from others into a badged home bucket (SPEC §12.16): the
+/// client notifies of it, as urgently as the bucket's badge says.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Arrival {
+    pub bucket: String,
+    pub badge: Badge,
+    pub item: Arrived,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Arrived {
+    /// Of a conversation, its newest entry that came.
+    Mail { entry: EntryId },
+    /// Of a room, its newest message that came and notifies.
+    Message { room: RoomId, event: RoomEventId },
 }
 
 // ── requests ──────────────────────────────────────────────────────────────

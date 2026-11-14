@@ -487,6 +487,44 @@ pub fn label_known(tx: &Transaction, name: &str) -> Result<bool> {
         .is_some())
 }
 
+/// Of the conversation's entries, the newest that came from others: is
+/// stored after `since`, was received after `received_after` (ms since
+/// the Unix epoch), and is not the user's own (in Sent or Drafts).
+pub fn arrived(
+    tx: &Transaction,
+    conversation: &Conversation,
+    since: EntryId,
+    received_after: i64,
+) -> Result<Option<EntryId>> {
+    let entries: Vec<i64> = std::iter::once(conversation.latest.id)
+        .chain(conversation.earlier.iter().map(|m| m.id))
+        .filter(|entry| *entry > since)
+        .map(|entry| entry.0)
+        .collect();
+    if entries.is_empty() {
+        return Ok(None);
+    }
+    Ok(tx
+        .query_row(
+            &format!(
+                "SELECT e.id FROM mail_entry e
+                 WHERE e.id IN ({}) AND e.received_at > ?1
+                   AND NOT EXISTS (
+                     SELECT 1 FROM entry_label el JOIN label l ON l.id = el.label
+                     WHERE el.entry = e.id AND el.desired AND l.external_id IN ('SENT', 'DRAFT'))
+                 ORDER BY e.id DESC LIMIT 1",
+                entries
+                    .iter()
+                    .map(i64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            [received_after],
+            |r| r.get(0).map(EntryId),
+        )
+        .optional()?)
+}
+
 /// The conversations `query` lists, newest first, after `after`.
 pub fn conversations(
     tx: &Transaction,

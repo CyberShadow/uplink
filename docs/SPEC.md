@@ -971,8 +971,9 @@ session only ever waits for entries already committed.)
 ### 5.5 Notices
 
 What is only of the moment — who is typing, that members sent read
-receipts, that the account's devices or keys changed, that the home
-view's buckets were configured anew — is not logged:
+receipts, that the account's devices or keys changed, that something
+came into a badged bucket (§12.16), that the home view's buckets were
+configured anew — is not logged:
 the server pushes it to the sessions connected as `Notice { notice }`,
 live only, never replayed. A session that falls behind the notices skips
 those it missed. A client that reconnects forgets what notices told it
@@ -2532,12 +2533,9 @@ which a verified device gives.
   Element does: a room is bold while unread, and its mark (§12.14)
   counts its messages that notify only while it is in a `count`
   bucket.
-- **Browser notifications**: once the browser lets uplink notify (a nav
-  item asks it to), the web client notifies when a room's messages that
-  notify grow while the tab is hidden or another page shows: the room's
-  name and its latest message from others (among its latest 10 events),
-  one per room, a click opening it. Those unread when the rooms are first
-  loaded are not news.
+- **Browser notifications** are of the badged home buckets (§12.16): a
+  room's message is news if it notifies, by the push rules, and its room
+  is in a badged bucket.
 - The read marker is desired state (§6.6). Showing a room, in a visible
   tab, marks it read up to the latest message from others wholly on
   screen (`MarkRoomRead`, quietly: no notice, and as shown, §12.15). The
@@ -2799,7 +2797,7 @@ link to it so. `n` and `p` open the next and previous event on show
 the meeting open, or else, of those not cancelled, the one
 on or starting within 10 minutes (the one begun last).
 
-Reminders, as Outlook's: once the browser lets uplink notify (§12.11),
+Reminders, as Outlook's: once the browser lets uplink notify (§12.16),
 the web client notifies of an event as its reminder falls due
 (`reminder` minutes before it, as Graph has it: `isReminderOn`,
 `reminderMinutesBeforeStart`), unless it is cancelled or has
@@ -3596,6 +3594,45 @@ as if it were not there, so that seeing what an undo brings back does
 not stop the rewinding; and the history (§6.3) lists it dimmed. Its
 undo is the user's. `e` on home's room, or "Mark as read", is the
 user's own.
+
+### 12.16 Notifications
+
+What comes from others into a badged bucket is notified of, as
+urgently as the bucket's badge says, as freedesktop's urgencies and
+Android's channels' importance tell apart what interrupts from what goes
+by: of a `count` bucket's, as what needs the user, the notification
+stays until dismissed, with the system's sound (`requireInteraction`);
+of a `dot` bucket's, as what is to be kept up with, it goes by, silently
+(`silent`). An unbadged bucket's (Backlog, Leisure) are not notified
+of. Reminders of events (§10.2) are as urgent as a `count` bucket's.
+
+What comes is mail and messages; to-dos and events are the user's own
+(a meeting request comes as mail):
+
+- of a conversation, its newest entry stored since the badges were last
+  derived, received within the hour, that is not the user's own (in
+  Sent or Drafts);
+- of a room, its newest unread message stored since, sent within the
+  hour, that notifies (§9.5), of its main timeline or its threads.
+
+Within the hour, so that what is only newly stored (an account's first
+sync, a room's history) is not news. The server finds them as it
+derives the badges (§12.14), of the same read: in each badged bucket's
+latest `BADGE_LIMIT` conversations and its rooms, those whose news is
+after the watermark (the latest ids of each kind, as `seen` has them,
+§12.15) of the previous derivation; none at first. It tells every
+session of each (`Notice::Arrival { bucket, badge, item }`, §5.5): live
+only, so a client not connected then, as while the computer slept, is
+not told; the badges are what remains of it.
+
+Once the browser lets uplink notify (a nav item asks it to, until it is
+answered), the web client notifies of each, unless the tab is visible
+and shows it (the conversation opened by any of its entries, the room):
+the sender and subject of mail, with its snippet, or the room's name
+and the message's sender and text; one per conversation or room, a
+later replacing it (`tag`). A click opens it: the conversation in its
+account's All Mail, or the room. Only while a client is open: the
+server does not notify (the Android app, ROADMAP, would).
 
 ## 13. Authentication & secrets
 

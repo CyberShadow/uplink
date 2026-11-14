@@ -35,9 +35,6 @@ import { Loader, query, type Response } from './query'
 /** Events loaded at once. */
 export const TIMELINE_PAGE = 50
 
-/** A notification shows the latest message among these many events. */
-const NOTIFIED_AMONG = 10
-
 export class MatrixStore {
   /** `null` until loaded. */
   readonly accounts = signal<readonly MatrixAccount[] | null>(null)
@@ -269,14 +266,11 @@ export class MatrixStore {
     return resolved.value
   }
 
-  /** The room's latest message from others among its latest events, for
-   * a notification; `null` if there is none. */
-  async latestMessage(room: RoomId, me: string): Promise<RoomEvent | null> {
-    const response = await this.query(
-      { type: 'list_timeline', room, page: { type: 'latest' }, limit: NOTIFIED_AMONG },
-      'timeline',
-    )
-    return response?.events.findLast((e) => e.kind === 'm.room.message' && e.sender !== me) ?? null
+  /** The room's event, as its timeline lists it; `null` if it lists it
+   * no longer (redacted, say). */
+  async event(room: RoomId, event: RoomEventId): Promise<RoomEvent | null> {
+    const response = await this.query({ type: 'list_room_events', room, events: [event] }, 'room_events')
+    return response?.events[0] ?? null
   }
 
   /** The room's messages that have every word of `words`, newest first,

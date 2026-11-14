@@ -1247,7 +1247,7 @@ describe('matrix', () => {
     expect(screen.queryByRole('status')).toBeNull()
   })
 
-  it('notifies of messages that notify while their room is not on show', async () => {
+  it('notifies of what comes into the badged buckets, as urgently as they say, but what is on show', async () => {
     const shown: Array<{ title: string; options: NotificationOptions; onclick: (() => void) | null }> = []
     class FakeNotification {
       static permission = 'granted'
@@ -1262,32 +1262,52 @@ describe('matrix', () => {
     }
     vi.stubGlobal('Notification', FakeNotification)
     try {
+      server.addAccount('a')
       server.addMatrixAccount()
       const lounge = server.addRoom('Lounge')
-      const quiet = server.addRoom('Quiet')
-      server.quiet.add(quiet.id)
-      // What was unread before is not news.
-      server.receive(lounge.id, { body: 'Earlier' })
       await start('/todos')
-      const nav = screen.getByRole('navigation')
-      await within(nav).findByRole('link', { name: 'Lounge' })
+      await within(screen.getByRole('navigation')).findByRole('link', { name: 'Lounge' })
 
-      server.receive(lounge.id, { body: 'Lunch?' })
+      // Of a dot bucket's: it goes by, silently.
+      const lunch = server.receive(lounge.id, { body: 'Lunch?' })
+      server.arrive('Upkeep', 'dot', { kind: 'message', room: lounge.id, event: lunch.id })
       await waitFor(() => expect(shown).toHaveLength(1))
       expect(shown[0].title).toBe('Lounge')
-      expect(shown[0].options).toEqual({ body: 'Bob: Lunch?', tag: `room-${lounge.id}` })
+      expect(shown[0].options).toEqual({
+        body: 'Bob: Lunch?',
+        tag: `room-${lounge.id}`,
+        requireInteraction: false,
+        silent: true,
+      })
 
-      // A quiet room notifies only of mentions.
-      server.receive(quiet.id, { body: 'chatter' })
-      server.receive(quiet.id, { body: `hey ${ME}` })
+      // Of a count bucket's: it stays until dismissed.
+      const rent = server.deliver('a', 'Rent', ['INBOX', 'UNREAD'], 't1')
+      server.arrive('Immediate', 'count', { kind: 'mail', entry: rent.id })
       await waitFor(() => expect(shown).toHaveLength(2))
+      expect(shown[1].title).toBe('Bob: Rent')
+      expect(shown[1].options).toEqual({
+        body: 'About rent',
+        tag: 'mail-a-t1',
+        requireInteraction: true,
+        silent: false,
+      })
 
+      // A click opens it; then a reply to it, on show, is not news.
       shown[1].onclick!()
-      await within(await screen.findByRole('list', { name: 'Timeline' })).findByText(/^hey/)
-      // Not of the room on show.
-      server.receive(quiet.id, { body: `again ${ME}` })
-      await within(screen.getByRole('list', { name: 'Timeline' })).findByText(/^again/)
+      await screen.findByRole('heading', { name: 'Rent' })
+      const reply = server.deliver('a', 'Re: Rent', ['INBOX', 'UNREAD'], 't1')
+      server.arrive('Immediate', 'count', { kind: 'mail', entry: reply.id })
+      await new Promise((resolve) => setTimeout(resolve, 50))
       expect(shown).toHaveLength(2)
+      // Nor is the room's on show; but the next mail elsewhere is.
+      shown[0].onclick!()
+      await within(await screen.findByRole('list', { name: 'Timeline' })).findByText('Lunch?')
+      const again = server.receive(lounge.id, { body: 'Now?' })
+      server.arrive('Upkeep', 'dot', { kind: 'message', room: lounge.id, event: again.id })
+      const other = server.deliver('a', 'Other', ['INBOX', 'UNREAD'])
+      server.arrive('Upkeep', 'dot', { kind: 'mail', entry: other.id })
+      await waitFor(() => expect(shown).toHaveLength(3))
+      expect(shown[2].title).toBe('Bob: Other')
     } finally {
       vi.unstubAllGlobals()
     }

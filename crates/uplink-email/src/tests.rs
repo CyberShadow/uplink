@@ -1636,6 +1636,68 @@ pub(crate) mod service {
         assert_eq!((inbox.total, inbox.unread), (3, 1));
     }
 
+    /// What came of a conversation is its newest entry stored since, and
+    /// received since, that is not the user's own.
+    #[tokio::test]
+    async fn what_came_is_from_others_and_recent() {
+        use uplink_protocol::mail::Conversation;
+        let db = Db::new();
+        let store = db.store();
+        // (id, thread, labels, sender, received_at)
+        let observe = |mail: &[(&str, &str, &[&str], &str, i64)]| {
+            let entries = mail
+                .iter()
+                .map(|&(id, thread, labels, from, received_at)| {
+                    let raw = raw(&format!("{id}@x"), from, DATE, id, "body");
+                    let mut e = new_entry(&store, id, labels, &raw);
+                    e.thread_id = Some(thread.into());
+                    e.received_at = received_at;
+                    e
+                })
+                .collect();
+            let labels = labels(&["INBOX", "SENT", "DRAFT"]);
+            db.observe("a", observed(labels, entries, vec![], &[]))
+        };
+        let latest = || {
+            db.reader()
+                .query_row("SELECT max(id) FROM mail_entry", [], |r| r.get(0))
+                .map(EntryId)
+                .unwrap()
+        };
+        observe(&[("x1", "t1", &["INBOX"], "Alice <alice@x>", 1000)]).await;
+        let since = latest();
+        observe(&[
+            ("x2", "t1", &["INBOX"], "Bob <bob@x>", 3000),
+            ("x3", "t1", &["SENT"], "a@x", 4000),
+            ("x4", "t1", &["DRAFT"], "a@x", 5000),
+            // Received long before: stored only now.
+            ("y1", "t2", &["INBOX"], "Carol <carol@x>", 1500),
+        ])
+        .await;
+        let ServerResponse::Conversations { conversations, .. } = mail_of(&db)
+            .list_entries("account:a".into(), None, 10)
+            .await
+            .unwrap()
+        else {
+            panic!()
+        };
+        let mut conn = db.reader();
+        let tx = conn.transaction().unwrap();
+        let arrived = |since: EntryId| -> Vec<Option<String>> {
+            conversations
+                .iter()
+                .map(|c: &Conversation| {
+                    let entry = crate::query::arrived(&tx, c, since, 2000).unwrap()?;
+                    let external = "SELECT external_id FROM mail_entry WHERE id = ?1";
+                    Some(tx.query_row(external, [entry.0], |r| r.get(0)).unwrap())
+                })
+                .collect()
+        };
+        // Bob's, not the user's reply or draft after it; not Carol's.
+        assert_eq!(arrived(since), [Some("x2".to_owned()), None]);
+        assert_eq!(arrived(latest()), [None, None]);
+    }
+
     #[tokio::test]
     async fn entries_page_newest_first() {
         let db = Db::new();

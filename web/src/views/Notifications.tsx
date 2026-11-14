@@ -1,55 +1,92 @@
-// Browser notifications: of Matrix messages (SPEC §12.11), as Element's
-// desktop notifications: when a room's unread messages that notify (by
-// the account's push rules) grow while the room is not on show, its
-// latest message, which a click opens; and reminders of events (SPEC
-// §10.2), as Outlook's, which a click opens.
+// Browser notifications (SPEC §12.16): of what comes from others into
+// the badged home buckets, as urgently as their badges say, which a
+// click opens; and reminders of events (SPEC §10.2), as Outlook's, which
+// a click opens.
 
 import { useEffect, useRef, useState } from 'preact/hooks'
-import type { CalendarEvent, Room, RoomId } from '../generated/protocol'
+import type { Arrival, Badge, CalendarEvent, Entry, RoomEvent } from '../generated/protocol'
 import { useServices } from '../context'
 import { displayName, shown } from '../matrix'
-import type { MatrixStore } from '../stores/matrix'
 import { Icon } from './Icon'
 import { roomPath } from './Room'
 import { calendarPath, defaultView } from './Calendar'
+import { allMailPath } from './App'
+import { messagePath } from './Todos'
 import { date, time } from '../format'
 import { shows } from './Nav'
 import styles from './Nav.module.css'
 
-/** Notifies of the rooms' messages while the user is elsewhere. */
-export function useNotifications(path: string, route: (path: string) => void) {
-  const { matrix } = useServices()
-  const rooms = matrix.rooms.value
-  // Of each room, how many notified when last seen; `null` before the
-  // rooms are first loaded, whose unread messages are not news.
-  const seen = useRef<Map<RoomId, number> | null>(null)
-  const where = useRef(path)
-  where.current = path
-  useEffect(() => {
-    if (!rooms) return
-    const previous = seen.current
-    seen.current = new Map(rooms.map((room) => [room.id, room.notifying]))
-    if (previous === null || !supported() || Notification.permission !== 'granted') return
-    for (const room of rooms) {
-      if (room.notifying <= (previous.get(room.id) ?? 0)) continue
-      if (!document.hidden && shows(where.current, roomPath(room.id))) continue
-      notify(matrix, room, route)
-    }
-  }, [rooms, matrix, route])
+/** How a notification calls for the user: of a `count` bucket's, as what
+ * needs the user, it stays until dismissed, with the system's sound; of a
+ * `dot` bucket's, as what is to be kept up with, it goes by, silently. */
+function urgency(badge: Badge): NotificationOptions {
+  switch (badge) {
+    case 'count':
+      return { requireInteraction: true, silent: false }
+    case 'dot':
+      return { requireInteraction: false, silent: true }
+  }
 }
 
-async function notify(matrix: MatrixStore, room: Room, route: (path: string) => void) {
-  const me = matrix.accounts.value!.find((a) => a.id === room.account)!.mxid
-  const latest = await matrix.latestMessage(room.id, me)
-  const body =
-    latest === null
-      ? `${room.notifying} new messages`
-      : `${displayName(latest.sender, latest.sender_name)}: ${shown(latest).body ?? latest.kind}`
-  // One per room: a later one replaces it.
-  const notification = new Notification(room.name, { body, tag: `room-${room.id}` })
+/** Notifies of what comes into the badged buckets, but what is on show. */
+export function useNotifications(path: string, route: (path: string) => void) {
+  const { home, mail, matrix } = useServices()
+  const where = useRef(path)
+  where.current = path
+  useEffect(
+    () =>
+      home.onArrival(async (arrival: Arrival) => {
+        if (!supported() || Notification.permission !== 'granted') return
+        const item = arrival.item
+        switch (item.kind) {
+          case 'mail': {
+            const entries = await mail.conversation(item.entry)
+            if (!document.hidden && entries.some((e) => showsEntry(where.current, e))) return
+            const entry = entries.find((e) => e.id === item.entry)!
+            const sender = entry.from_name ?? entry.from_addr ?? '(unknown sender)'
+            const title = `${sender}: ${entry.subject ?? '(no subject)'}`
+            const tag = `mail-${entry.account}-${entry.thread_id ?? entry.id}`
+            notify(arrival.badge, title, entry.snippet, tag, () => route(allMailPath(entry.account, entry.id)))
+            return
+          }
+          case 'message': {
+            if (!document.hidden && shows(where.current, roomPath(item.room))) return
+            const event = await matrix.event(item.room, item.event)
+            // Redacted since.
+            if (event === null) return
+            const room = matrix.rooms.value!.find((r) => r.id === item.room)!
+            notify(arrival.badge, room.name, body(event), `room-${item.room}`, () =>
+              route(roomPath(item.room)),
+            )
+            return
+          }
+        }
+      }),
+    [home, mail, matrix, route],
+  )
+}
+
+/** Of each list of mail, how many segments its path has with an entry
+ * opened, the last (as `App`'s routes have them). */
+const OPENED_IN: Record<string, number> = { inbox: 2, all: 3, search: 3, mail: 4 }
+
+/** Whether `path` shows the entry's conversation, opened by it. */
+function showsEntry(path: string, entry: Entry): boolean {
+  const segments = path.split('/').slice(1)
+  const opened = OPENED_IN[segments[0]] === segments.length && segments.at(-1) === String(entry.id)
+  return opened || path === messagePath(entry.message)
+}
+
+function body(event: RoomEvent): string {
+  return `${displayName(event.sender, event.sender_name)}: ${shown(event).body ?? event.kind}`
+}
+
+/** One per `tag`: a later one replaces it. */
+function notify(badge: Badge, title: string, body: string, tag: string, open: () => void) {
+  const notification = new Notification(title, { body, tag, ...urgency(badge) })
   notification.onclick = () => {
     window.focus()
-    route(roomPath(room.id))
+    open()
     notification.close()
   }
 }
@@ -85,7 +122,8 @@ function notifyOf(event: CalendarEvent, route: (path: string) => void) {
   const minutes = Math.round((event.start - Date.now()) / 60_000)
   const when = event.all_day ? `${date(new Date(event.start))}, all day` : `${time(event.start)}–${time(event.end)}`
   const body = [when, minutes > 0 && `in ${minutes} min`, event.location].filter(Boolean).join(' · ')
-  const notification = new Notification(event.subject, { body, tag: `event-${event.id}` })
+  // As urgent as what needs the user: it stays until dismissed.
+  const notification = new Notification(event.subject, { body, tag: `event-${event.id}`, ...urgency('count') })
   notification.onclick = () => {
     window.focus()
     route(calendarPath(defaultView(), date(new Date(event.start)), event.id))

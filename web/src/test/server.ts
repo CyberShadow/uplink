@@ -6,7 +6,9 @@ import type { Blobs } from '../blobs'
 import type { Requester } from '../connection'
 import { RequestError } from '../connection'
 import type {
+  Arrived,
   Attachment,
+  Badge,
   RoomPreview,
   Place,
   Account,
@@ -538,6 +540,12 @@ export class FakeServer implements Requester, Blobs {
     const [sent] = this.matrixSends.splice(index, 1)
     this.receive(sent.room, { sender: ME, sender_name: 'Me', body: sendSummary(sent.content) })
     this.observe('mx', this.matrixSendsChanged(sent.room))
+  }
+
+  /** Something came from others into the badged bucket, as the server
+   * tells when it derives the badges (SPEC §12.16). */
+  arrive(bucket: string, badge: Badge, item: Arrived) {
+    this.client.notice({ type: 'arrival', bucket, badge, item })
   }
 
   /** Members are typing in the room, as sync says. */

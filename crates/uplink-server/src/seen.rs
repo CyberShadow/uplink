@@ -161,7 +161,7 @@ pub fn key(place: &Place) -> String {
     }
 }
 
-fn latest(tx: &Transaction) -> Result<Watermark> {
+pub(crate) fn latest(tx: &Transaction) -> Result<Watermark> {
     Ok(tx.query_row(
         "SELECT (SELECT coalesce(max(id), 0) FROM mail_entry),
                 (SELECT coalesce(max(id), 0) FROM matrix_event),

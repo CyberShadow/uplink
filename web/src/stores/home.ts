@@ -3,7 +3,7 @@
 // a log entry may change what they list.
 
 import { batch, computed, signal } from '@preact/signals'
-import type { Badges, CalendarEvent, HomeBucket, LogEntry, ServerEvent } from '../generated/protocol'
+import type { Arrival, Badges, CalendarEvent, HomeBucket, LogEntry, ServerEvent } from '../generated/protocol'
 import type { Requester } from '../connection'
 import { rowOf, type Row } from '../items'
 import { Loader, query } from './query'
@@ -58,6 +58,8 @@ export class HomeStore {
   /** Views showing it: while none is, it goes stale unqueried, and is
    * queried afresh once one is. */
   private shown = 0
+  /** Those told of what comes into the badged buckets. */
+  private listeners = new Set<(arrival: Arrival) => void>()
 
   private loader = new Loader(async () => {
     const now = new Date()
@@ -100,6 +102,17 @@ export class HomeStore {
   /** The buckets were configured anew. */
   changed() {
     this.invalidate()
+  }
+
+  /** Tells `listener` of what comes from others into the badged buckets
+   * (SPEC §12.16), until the returned function is called. */
+  onArrival(listener: (arrival: Arrival) => void): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  arrived(arrival: Arrival) {
+    this.listeners.forEach((listener) => listener(arrival))
   }
 
   /** Moves the focus `by` rows. */

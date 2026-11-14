@@ -94,6 +94,8 @@ fn declarations() -> String {
         ItemKind,
         ItemPosition,
         RoomHits,
+        Arrival,
+        Arrived,
         ErrorCode,
         LogEntry,
         ListScope,

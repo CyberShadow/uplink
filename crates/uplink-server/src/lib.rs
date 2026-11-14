@@ -371,9 +371,14 @@ pub async fn serve_with_listener(
 
     // Set before any session is served, which is sent them at once.
     let hub = state.services.dispatcher.hub().clone();
-    let badges = state.services.items.badges().await;
-    hub.set_badges(badges.map_err(|e| anyhow::anyhow!("reading the badges: {}", e.message))?);
-    tokio::spawn(badges::keep(state.services.items.clone(), hub));
+    let derived = state.services.items.badges(None).await;
+    let derived = derived.map_err(|e| anyhow::anyhow!("reading the badges: {}", e.message))?;
+    hub.set_badges(derived.badges);
+    tokio::spawn(badges::keep(
+        state.services.items.clone(),
+        hub,
+        derived.watermark,
+    ));
 
     let app = build_app(state);
 

@@ -286,7 +286,12 @@ describe('calendar', () => {
       await start('/calendar/agenda/2026-12-01')
       await waitFor(() => expect(shown).toHaveLength(1))
       expect(shown[0].title).toBe('Standup')
-      expect(shown[0].options).toEqual({ body: '10:00–10:15 · in 8 min', tag: 'event-1' })
+      expect(shown[0].options).toEqual({
+        body: '10:00–10:15 · in 8 min',
+        tag: 'event-1',
+        requireInteraction: true,
+        silent: false,
+      })
       // Not again, as the calendar changes.
       server.calendarSynced('work')
       await new Promise((resolve) => setTimeout(resolve, 50))

@@ -103,6 +103,7 @@ Deferred:
 
 MVP:
 - M365 calendar via Graph, read-only.
+- Event reminders, as browser notifications (SPEC §10.2).
 
 Deferred:
 - M365 calendar read-write (event create/edit/delete/RSVP).
@@ -110,7 +111,6 @@ Deferred:
 - Generic CalDAV (Fastmail, Nextcloud, Radicale, etc.).
 - iCalendar (.ics) feed subscription.
 - Cross-source dedup by `UID`.
-- Event reminders / desktop notifications.
 
 ## TODO / tasks
 
@@ -154,9 +154,12 @@ MVP:
 - WebSocket transport with app-level heartbeat and exponential reconnect.
 - Server-arbitrated compare-and-swap edits for sync'd client state (drafts) using `(hash(old_value), edit_operation)`.
 - IndexedDB client-side write-through for draft text resilience.
+- Browser notifications of what comes from others into the badged home
+  buckets (mail, messages), as urgent as their badges (SPEC §12.16).
 
 Deferred:
-- OS push notifications.
+- Web Push: notifications with no client open (SPEC §12.16 needs one).
+- Notifying of invitations to rooms (they have no message to be news by).
 - Cross-device draft sync to non-browser clients.
 
 ## Mobile / Android

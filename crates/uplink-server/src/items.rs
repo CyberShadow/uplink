@@ -4,6 +4,7 @@
 //! own; a term a kind lacks is false of it. The home view (SPEC §12.13) is
 //! the matches of its buckets' queries.
 
+use crate::seen::Watermark;
 use arc_swap::ArcSwap;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -14,9 +15,10 @@ use uplink_matrix::query::{Group, Rooms};
 use uplink_protocol::{
     calendar::CalendarEvent,
     mail::{EntryId, ListPosition, ListScope},
+    matrix::RoomEventId,
     todos::Todo,
-    Activity, Badge, BadgedBucket, Badges, ErrorCode, Item, ItemKind, ItemPosition, Mark, Marks,
-    Place, ServerError, ServerResponse, BADGE_LIMIT,
+    Activity, Arrival, Arrived, Badge, BadgedBucket, Badges, ErrorCode, Item, ItemKind,
+    ItemPosition, Mark, Marks, Place, ServerError, ServerResponse, BADGE_LIMIT,
 };
 use uplink_query::{Query, Term};
 use uplink_storage::rusqlite::{Connection, Transaction};
@@ -24,6 +26,19 @@ use uplink_tx_log::answer::{error, internal, Reader, Response};
 
 /// The most items a page may ask for, as a list of mail.
 const MAX_LIMIT: u32 = uplink_email::service::MAX_LIMIT;
+
+/// How recent what came must be to be news: mail received or a message
+/// sent before, however newly it is stored (an account's first sync, a
+/// room's history), is not (SPEC §12.16).
+const RECENT: i64 = 60 * 60 * 1000;
+
+/// The badges, what came into the badged buckets since the watermark
+/// they were derived after, and the watermark they were derived at.
+pub struct Derived {
+    pub badges: Badges,
+    pub arrivals: Vec<Arrival>,
+    pub watermark: Watermark,
+}
 
 #[derive(Clone)]
 pub struct Items {
@@ -313,8 +328,10 @@ impl Items {
 
     /// What the badged buckets hold (SPEC §12.14), as `home` lists them:
     /// up to `BADGE_LIMIT` items each; and the marks of the places their
-    /// items are in, of them all.
-    pub async fn badges(&self) -> Result<Badges, ServerError> {
+    /// items are in, of them all. And what came into them from others
+    /// since the watermark `since` (SPEC §12.16), of the latest
+    /// `BADGE_LIMIT` conversations of each: nothing, at first.
+    pub async fn badges(&self, since: Option<Watermark>) -> Result<Derived, ServerError> {
         let now = now();
         let today = uplink_query::today(now);
         let badged: Vec<_> = self
@@ -329,6 +346,8 @@ impl Items {
                 let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
                 let mut marks = Places::default();
                 let seen = Seen::load(&tx).map_err(internal)?;
+                let watermark = crate::seen::latest(&tx).map_err(internal)?;
+                let mut arrivals = vec![];
                 let buckets = badged
                     .into_iter()
                     .map(|(badge, bucket)| {
@@ -349,6 +368,17 @@ impl Items {
                         }
                         let page =
                             this.page(&tx, &bucket.query, others, None, BADGE_LIMIT as u32)?;
+                        if let Some(since) = &since {
+                            let arrived = this
+                                .arrived(&tx, &page.items, since, now - RECENT)?
+                                .into_iter()
+                                .map(|item| Arrival {
+                                    bucket: bucket.name.clone(),
+                                    badge,
+                                    item,
+                                });
+                            arrivals.extend(arrived);
+                        }
                         let items = page.items.iter().map(|item| match item {
                             Item::Mail { conversation } => Activity::Mail {
                                 entry: conversation.latest.id,
@@ -367,12 +397,55 @@ impl Items {
                         })
                     })
                     .collect::<Result<_, ServerError>>()?;
-                Ok(Badges {
-                    buckets,
-                    marks: marks.into(),
+                Ok(Derived {
+                    badges: Badges {
+                        buckets,
+                        marks: marks.into(),
+                    },
+                    arrivals,
+                    watermark,
                 })
             })
             .await
+    }
+
+    /// What came from others since `since`, sent or received after
+    /// `after`: of each conversation its newest entry, of each room its
+    /// newest message that notifies; to-dos and events are the user's own.
+    fn arrived(
+        &self,
+        tx: &Transaction,
+        items: &[Item],
+        since: &Watermark,
+        after: i64,
+    ) -> Result<Vec<Arrived>, ServerError> {
+        let mut arrived = vec![];
+        for item in items {
+            match item {
+                Item::Mail { conversation } => {
+                    let since = EntryId(since.mail);
+                    let entry = mail::arrived(tx, conversation, since, after).map_err(internal)?;
+                    arrived.extend(entry.map(|entry| Arrived::Mail { entry }));
+                }
+                Item::Room { room, .. } => {
+                    let mxid = &self
+                        .matrix_accounts
+                        .iter()
+                        .find(|a| a.id == room.account)
+                        .expect("rooms are of the configured accounts")
+                        .mxid;
+                    let since = RoomEventId(since.room_event);
+                    let event = uplink_matrix::rooms::arrived(tx, room.id, mxid, since, after)
+                        .map_err(internal)?;
+                    arrived.extend(event.map(|event| Arrived::Message {
+                        room: room.id,
+                        event,
+                    }));
+                }
+                Item::Todo { .. } | Item::Event { .. } => {}
+            }
+        }
+        Ok(arrived)
     }
 
     /// The buckets, each with its query less those before it: so an item
@@ -532,6 +605,109 @@ mod tests {
     use uplink_protocol::matrix::Membership;
     use uplink_realtime::Hub;
     use uplink_tx_log::{Dispatcher, Registry};
+
+    /// A room for the account `mx`, joined, of these events.
+    fn room(events: Vec<uplink_matrix::rooms::ObservedEvent>) -> Synced {
+        Synced {
+            next_batch: "next".into(),
+            rooms: vec![ObservedRoom {
+                room_id: "!r:x".into(),
+                name: "Rent talk".into(),
+                encrypted: false,
+                membership: Membership::Joined,
+                space: false,
+                direct: false,
+                avatar: None,
+                children: vec![],
+                space_order: None,
+                tags: vec![],
+                topic: None,
+                alias: None,
+                pinned: vec![],
+                may_pin: false,
+                joined_members: 2,
+                version: "11".into(),
+                events,
+                limited: false,
+                own_receipts: vec![],
+                fully_read: None,
+            }],
+        }
+    }
+
+    /// What came into a badged bucket since the watermark is told of, by
+    /// the bucket; of an unbadged one, nothing.
+    #[tokio::test]
+    async fn arrivals_are_of_badged_buckets() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = Registry::new();
+        uplink_matrix::register(&mut registry);
+        let dispatcher = Dispatcher::new(
+            uplink_storage::open(dir.path()).unwrap(),
+            registry,
+            Arc::new(Hub::new(64)),
+        );
+        let message = |id: &str| {
+            let raw = serde_json::json!({
+                "type": "m.room.message",
+                "event_id": id,
+                "sender": "@bob:x",
+                "origin_server_ts": now(),
+                "content": { "msgtype": "m.text", "body": "rent is due" },
+            });
+            let parse = uplink_matrix::rooms::ObservedEvent::parse;
+            uplink_matrix::rooms::ObservedEvent {
+                push: uplink_matrix::rooms::Push {
+                    notify: true,
+                    highlight: false,
+                },
+                ..parse(
+                    &raw.to_string(),
+                    None,
+                    uplink_protocol::matrix::Encryption::None,
+                )
+                .unwrap()
+            }
+        };
+        let observe = |events| dispatcher.observe("mx".into(), room(events));
+        observe(vec![message("$1")]).await.unwrap();
+        let items = Items::new(
+            uplink_storage::open_reader(dir.path()).unwrap(),
+            vec![],
+            vec![uplink_matrix::service::ConfiguredAccount {
+                id: "mx".into(),
+                mxid: "@me:x".into(),
+            }],
+            vec![],
+        );
+        let bucket = |query: &str, badge| HomeBucket {
+            name: query.into(),
+            query: query.into(),
+            badge,
+        };
+        let first = items.badges(None).await.unwrap();
+        assert!(first.arrivals.is_empty(), "nothing came before the first");
+        observe(vec![message("$2")]).await.unwrap();
+        let arrivals = |buckets| {
+            items.configure_home(buckets);
+            let items = items.clone();
+            async move { items.badges(Some(first.watermark)).await.unwrap().arrivals }
+        };
+        let arrived = arrivals(vec![bucket("is:notifying", Some(Badge::Dot))]).await;
+        let [Arrival {
+            bucket: name,
+            badge: Badge::Dot,
+            item: Arrived::Message { event, .. },
+        }] = &arrived[..]
+        else {
+            panic!("{arrived:?}")
+        };
+        assert_eq!(name, "is:notifying");
+        assert!(event.0 > first.watermark.room_event);
+        assert!(arrivals(vec![bucket("is:notifying", None)])
+            .await
+            .is_empty());
+    }
 
     #[tokio::test]
     async fn queries_list_every_kind_and_names_must_be_of_one() {
@@ -716,7 +892,7 @@ mod tests {
         };
         let room = room.id;
         assert_eq!(
-            items.badges().await.unwrap(),
+            items.badges(None).await.unwrap().badges,
             Badges {
                 buckets: vec![
                     BadgedBucket {
@@ -752,7 +928,7 @@ mod tests {
         // seen, or in Home, which holds every bucket's.
         items.configure_home(vec![bucket("Todo", "is:todo", Some(Badge::Dot))]);
         let dots = || async {
-            let marks = items.badges().await.unwrap().marks;
+            let marks = items.badges(None).await.unwrap().badges.marks;
             (marks.home.dot, marks.todos.dot)
         };
         assert_eq!(dots().await, (true, true));

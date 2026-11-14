@@ -613,12 +613,17 @@ export class MailStore {
     const generation = this.openGeneration
     let entries: Entry[] | undefined
     try {
-      entries = (await query(this.server, { type: 'list_conversation', entry: open.entry }, 'entries')).entries
+      entries = await this.conversation(open.entry)
     } catch (error) {
       this.error.value = (error as Error).message
     }
     if (generation !== this.openGeneration || !entries) return
     this.open.value = { ...open, entries }
+  }
+
+  /** The entries of the entry's conversation, oldest first. */
+  async conversation(entry: EntryId): Promise<Entry[]> {
+    return (await query(this.server, { type: 'list_conversation', entry }, 'entries')).entries
   }
 
   // ── focus and selection ─────────────────────────────────────────────────

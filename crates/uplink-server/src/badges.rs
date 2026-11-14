@@ -1,7 +1,8 @@
 //! The badges (SPEC §12.14): what the badged home buckets hold, kept
-//! current in the hub, which sends them to every session.
+//! current in the hub, which sends them to every session; and what comes
+//! into them from others, which it sends as notices (SPEC §12.16).
 
-use crate::items::Items;
+use crate::{items::Items, seen::Watermark};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::time::{interval_at, Instant, MissedTickBehavior};
@@ -13,8 +14,9 @@ const EVERY: Duration = Duration::from_secs(60);
 
 /// Sets the hub's badges anew after log entries (those that come while
 /// they are read, at once), when the buckets are configured anew, and
-/// each minute. The hub's are set once already.
-pub async fn keep(items: Items, hub: Arc<Hub>) {
+/// each minute, with notices of what came since `since`, the watermark
+/// the hub's, set once already, were derived at.
+pub async fn keep(items: Items, hub: Arc<Hub>, mut since: Watermark) {
     let mut entries = hub.subscribe();
     let mut notices = hub.notices();
     let mut minute = interval_at(Instant::now() + EVERY, EVERY);
@@ -43,8 +45,14 @@ pub async fn keep(items: Items, hub: Arc<Hub>) {
                 Err(TryRecvError::Closed) => unreachable!("the hub outlives the server"),
             }
         }
-        match items.badges().await {
-            Ok(badges) => hub.set_badges(badges),
+        match items.badges(Some(since)).await {
+            Ok(derived) => {
+                hub.set_badges(derived.badges);
+                for arrival in derived.arrivals {
+                    hub.notify(Notice::Arrival(arrival));
+                }
+                since = derived.watermark;
+            }
             Err(e) => tracing::error!("badges: reading them failed: {}", e.message),
         }
     }
