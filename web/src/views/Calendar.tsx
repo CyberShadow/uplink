@@ -7,6 +7,7 @@ import { useTitle } from '../title'
 import { date as dateString, dateTime, time } from '../format'
 import { keepFocus, useKeymap } from '../keymap'
 import { linkify } from '../linkify'
+import { Confirm } from './Confirm'
 import { HtmlBody } from './HtmlBody'
 import styles from './Calendar.module.css'
 
@@ -145,14 +146,22 @@ export function Calendar(props: { view?: string; date?: string; event?: string }
       edit: () => {
         if (isOwn(calendar.opened.value)) route(editEventPath(view, date, opened, false))
       },
-      delete: async () => {
+      delete: () => {
         const details = calendar.opened.value
-        if (isOwn(details) && (await deleteEvent(details, false))) route(closed)
+        if (isOwn(details)) remove(details, false)
       },
     }),
   })
-  const deleteEvent = (details: EventDetails, series: boolean) =>
-    ops.dispatch({ type: 'delete_event', event: details.event.id, series })
+  // A meeting's cancellation, once given, has told its attendees, which
+  // no undo takes back: it is asked first (SPEC §6.8).
+  const [cancelling, setCancelling] = useState<{ details: EventDetails; series: boolean } | null>(null)
+  const deleteEvent = async (details: EventDetails, series: boolean) => {
+    if (await ops.dispatch({ type: 'delete_event', event: details.event.id, series })) route(closed)
+  }
+  const remove = (details: EventDetails, series: boolean) => {
+    if (isMeeting(details)) setCancelling({ details, series })
+    else void deleteEvent(details, series)
+  }
   /** Opens the event after the one opened (`by` 1) or before it (-1), of
    * those on show; with none opened, the first yet to end, or the last
    * begun. */
@@ -224,9 +233,16 @@ export function Calendar(props: { view?: string; date?: string; event?: string }
             details={calendar.opened.value}
             close={closed}
             edit={(series) => editEventPath(view, date, opened, series)}
-            remove={async (details, series) => {
-              if (await deleteEvent(details, series)) route(closed)
-            }}
+            remove={remove}
+          />
+        )}
+        {cancelling && (
+          <Confirm
+            title={cancelLabel(cancelling.details, cancelling.series)}
+            text="Its attendees are told it is cancelled. Once they are, undoing it invites them anew."
+            action={cancelLabel(cancelling.details, cancelling.series)}
+            confirm={() => void deleteEvent(cancelling.details, cancelling.series)}
+            close={() => setCancelling(null)}
           />
         )}
       </div>
@@ -652,6 +668,24 @@ function isOwn(details: EventDetails | 'gone' | null): details is EventDetails {
   return details !== null && details !== 'gone' && details.editable !== null
 }
 
+/** Whether the event is a meeting, whose deletion cancels it, its
+ * attendees told. */
+function isMeeting(details: EventDetails): boolean {
+  return details.attendees.length > 0
+}
+
+/** A meeting's deletion, as Outlook words it: of the meeting, or of an
+ * occurrence or the series of one. */
+function cancelLabel(details: EventDetails, series: boolean): string {
+  return series ? 'Cancel series' : details.event.recurring ? 'Cancel occurrence' : 'Cancel meeting'
+}
+
+/** The event's deletion, in words: a meeting's cancels it. */
+function removeLabel(details: EventDetails, series: boolean): string {
+  if (isMeeting(details)) return cancelLabel(details, series)
+  return series ? 'Delete series' : details.event.recurring ? 'Delete occurrence' : 'Delete'
+}
+
 /** What changes the event opened: its edits' paths, and its deletion. */
 interface Changes {
   edit: (series: boolean) => string
@@ -687,14 +721,12 @@ function EventPane(props: { details: EventDetails | 'gone' | null; close: string
 function OwnActions(props: { details: EventDetails } & Changes) {
   const { details } = props
   const { event } = details
-  const meeting = details.attendees.length > 0
-  const remove = meeting ? 'Cancel' : 'Delete'
   const scopes: { series: boolean; edit: string; remove: string }[] = event.recurring
     ? [
-        { series: false, edit: 'Edit occurrence', remove: `${remove} occurrence` },
-        ...(details.series !== null ? [{ series: true, edit: 'Edit series', remove: `${remove} series` }] : []),
+        { series: false, edit: 'Edit occurrence', remove: removeLabel(details, false) },
+        ...(details.series !== null ? [{ series: true, edit: 'Edit series', remove: removeLabel(details, true) }] : []),
       ]
-    : [{ series: false, edit: 'Edit', remove: meeting ? 'Cancel meeting' : 'Delete' }]
+    : [{ series: false, edit: 'Edit', remove: removeLabel(details, false) }]
   return (
     <div class={styles.answer} role="group" aria-label="Change">
       {scopes.map(({ series, edit }) => (

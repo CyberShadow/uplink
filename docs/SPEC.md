@@ -1404,6 +1404,39 @@ the outbox stands in for it.
 
 ---
 
+### 6.8 Asking first
+
+Actions are not confirmed: undo (§6.3) and the outbox (§6.6) are how a
+mistake is taken back. The one exception is an action that takes away,
+from other people, something they already have, because once the
+provider has it no undo can give it back as it was. Such an action asks
+first, in a dialog titled and buttoned with the action's name: that
+button has the focus, so `Enter` does it, and `Keep` (or `Esc`, or a
+click outside) leaves things as they are. A key for the action (`#`)
+asks as its button does. So far, two actions ask:
+
+- deleting one's own Matrix message (§9.3): it is redacted for everyone
+  in the room, and a redaction cannot be undone;
+- cancelling a meeting, an occurrence of one or its series (§10.4): the
+  attendees are told, and undoing it afterwards invites them anew.
+
+These do not ask, by the rule:
+
+- sending something new (mail, a Matrix message, a meeting's
+  invitations or its update, an answer to a meeting request): it waits
+  in the outbox, undoable until it is given (§6.7, §15.9), as Gmail's
+  undo send has it, rather than a dialog before it;
+- changing what is the user's own alone (labels, read state, a room's
+  tags, an event without attendees, deleted too): undo restores it,
+  as it was or as nearly as the provider allows (an event deleted comes
+  back as a new one);
+- declining a meeting request: Graph cannot take a decline back, but the
+  answer can be changed, the organizer told again, so the organizer
+  loses nothing (§10.3), and Outlook does not ask either.
+
+A new action that takes away what others have asks the same way; one
+that does not, does not.
+
 ## 7. Drafts
 
 ### 7.1 What we actually need
@@ -3062,7 +3095,7 @@ typed); moving the start moves the end with it, and a series' pattern
 follows its first day. `Ctrl+Enter` saves, `Esc` leaves unsaved. The
 event open's Delete (`#`), or Cancel meeting for a meeting with
 attendees, deletes it (of a series, the occurrence; or the series, by
-its own button).
+its own button); a meeting's cancellation asks first (§6.8).
 
 The requests are `create_event {account, fields, time_zone}`,
 `update_event {event, series, fields, edited, time_zone}`, which
@@ -3264,7 +3297,7 @@ reactions (at the first: `←`/`→` move along them, `Enter` takes one,
 other keys type one into their box; the focus leaving closes them, and
 closed, the line has it back), `p` pins or unpins it and `Delete` (on macOS, the
 key so labelled: Backspace, as Apple Mail's; elsewhere, Backspace is
-left to the browser, as Back where it is) or `#` delete one's own, once asked, as
+left to the browser, as Back where it is) or `#` delete one's own, once asked (§6.8), as
 deleting (by the menu too) cannot be undone once the homeserver has it:
 the dialog's Delete has the focus, so `Enter` deletes and `Esc` keeps
 it; what its

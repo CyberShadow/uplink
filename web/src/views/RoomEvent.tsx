@@ -18,7 +18,7 @@ import type {
 } from '../generated/protocol'
 import { useServices } from '../context'
 import type { MatrixStore } from '../stores/matrix'
-import { keepFocus, useEscape, useTakeFocus } from '../keymap'
+import { keepFocus, useEscape } from '../keymap'
 import { dateTime, time } from '../format'
 import {
   displayName,
@@ -37,6 +37,7 @@ import {
   type Permalink,
   type Shown,
 } from '../matrix'
+import { Confirm } from './Confirm'
 import { Icon } from './Icon'
 import { MenuButton, type MenuItem } from './Menu'
 import { useOpensAbove } from './popover'
@@ -238,7 +239,15 @@ export function EventRow(
         )}
         <MenuButton label="Options" icon="ellipsis-vertical" groups={[menu]} />
       </div>
-      {props.confirming && can.delete && <ConfirmDelete delete={can.delete} close={() => props.setConfirming(false)} />}
+      {props.confirming && can.delete && (
+        <Confirm
+          title="Delete message"
+          text="It is deleted for everyone in the room; once the homeserver has it, that cannot be undone."
+          action="Delete"
+          confirm={can.delete}
+          close={() => props.setConfirming(false)}
+        />
+      )}
     </li>
   )
 }
@@ -773,38 +782,6 @@ function Reactions(props: {
         )
       })}
     </ul>
-  )
-}
-
-/** Asks before deleting a message, which, once the homeserver has it,
- * cannot be undone: Enter (on Delete, which has the focus) deletes, Esc
- * does not. */
-function ConfirmDelete(props: { delete: () => void; close: () => void }) {
-  const button = useRef<HTMLButtonElement>(null)
-  useTakeFocus(button)
-  useEscape(props.close)
-  return (
-    <div class={overlay.backdrop} onClick={props.close}>
-      <div class={overlay.dialog} role="alertdialog" aria-label="Delete message" onClick={(e) => e.stopPropagation()}>
-        <h2>Delete message?</h2>
-        <p>It is deleted for everyone in the room; once the homeserver has it, that cannot be undone.</p>
-        <div class={overlay.buttons}>
-          <button type="button" onClick={props.close}>
-            Cancel
-          </button>
-          <button
-            ref={button}
-            type="button"
-            onClick={() => {
-              props.close()
-              props.delete()
-            }}
-          >
-            Delete
-          </button>
-        </div>
-      </div>
-    </div>
   )
 }
 

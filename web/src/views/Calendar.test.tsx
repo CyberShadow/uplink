@@ -447,7 +447,7 @@ describe('calendar', () => {
     await within(pane).findByRole('heading', { name: 'Long lunch' })
   })
 
-  it('deletes the event open with #, undoably, and cancels a meeting of a series as a whole', async () => {
+  it('deletes the event open with #, undoably, and cancels a meeting of a series as a whole, once asked', async () => {
     const lunch = server.calendar.find((e) => e.subject === 'Lunch')!
     const user = await start(`/calendar/week/2026-11-11/${lunch.id}`)
     await screen.findByRole('group', { name: 'Change' })
@@ -475,7 +475,15 @@ describe('calendar', () => {
     expect(within(change).getByRole('link', { name: 'Edit series' }).getAttribute('href')).toBe(
       `/calendar/week/2026-11-11/${weekly.id}/edit/series`,
     )
+    // Asked first, as its attendees, once told, are not untold.
     await user.click(within(change).getByRole('button', { name: 'Cancel series' }))
-    expect(server.eventRequests.at(-1)).toEqual({ type: 'delete_event', event: weekly.id, series: true })
+    const ask = screen.getByRole('alertdialog', { name: 'Cancel series' })
+    expect(document.activeElement).toBe(within(ask).getByRole('button', { name: 'Cancel series' }))
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(server.eventRequests.at(-1)).toEqual({ type: 'delete_event', event: lunch.id, series: false })
+    await user.click(within(change).getByRole('button', { name: 'Cancel series' }))
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(server.eventRequests.at(-1)).toEqual({ type: 'delete_event', event: weekly.id, series: true }))
   })
 })
