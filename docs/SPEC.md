@@ -4720,8 +4720,10 @@ against the tenant. The provider tests are written against endpoints passed in,
 so pointing them at a real account is meant to be a configuration step;
 unlike Gmail's, they have no switch for one yet.
 
-`UPLINK_TEST_GMAIL_CONFIG` runs the Gmail tests against a real account,
-authorized by hand (Google refuses automated sign-in). A real account
+`UPLINK_TEST_GMAIL_CONFIG` is to run the Gmail tests against a real
+account, authorized by hand (Google refuses automated sign-in); it has
+never been run, so whether the tests pass, or even work, there is open.
+A real account
 showed (2026-11-11) that Gmail replaces the Message-ID and Date of mail
 it sends, which emulate now does too (§8.2); that a draft sent is a new message, the draft then
 404 to sending again, is from others' reports against the real API,
