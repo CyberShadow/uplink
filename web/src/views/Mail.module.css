@@ -466,6 +466,11 @@
   overflow-wrap: anywhere;
 }
 
+/* As a Matrix message's. */
+.body a {
+  color: var(--accent);
+}
+
 .placeholder {
   padding: 16px;
   color: var(--muted);
