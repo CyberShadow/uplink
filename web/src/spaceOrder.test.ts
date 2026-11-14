@@ -32,6 +32,7 @@ const space = (name: string, space_order: string | null = null): Room => ({
   may_pin: false,
   space_order,
   tags: [],
+  history: { type: 'whole' },
 })
 
 /** The spaces with `changes` made, as they then go. */

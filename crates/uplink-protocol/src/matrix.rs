@@ -106,6 +106,24 @@ pub struct Room {
     /// Its tags (`m.tag`: `m.favourite`, `m.lowpriority`, the user's own
     /// `u.*`), as asked for if being changed, in order.
     pub tags: Vec<String>,
+    /// How much of its history is stored, which is what search finds
+    /// (SPEC §9.2).
+    pub history: RoomHistory,
+}
+
+/// How much of a room's history is stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RoomHistory {
+    /// All of it, as far back as the account may see.
+    Whole,
+    /// All of it since `since` (ms since the Unix epoch, the time of the
+    /// event just after its latest gap), and of earlier, what was
+    /// scrolled to; the rest is being fetched.
+    Fetching { since: i64 },
+    /// Likewise, but too large to fetch whole: no more is fetched but
+    /// what is scrolled to.
+    Partial { since: i64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

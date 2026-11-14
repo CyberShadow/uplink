@@ -193,6 +193,11 @@ kind: string, msgtype: string | null,
  */
 body: string | null, };
 
+/**
+ * How much of a room's history is stored.
+ */
+export type RoomHistory = { "type": "whole" } | { "type": "fetching", since: number, } | { "type": "partial", since: number, };
+
 export type GapId = number;
 
 /**
@@ -271,7 +276,13 @@ items: Array<Item>, next: ItemPosition | null,
 /**
  * Of its conversations.
  */
-scope: ListScope, } | { "type": "message", message: MessageContent, } | { "type": "drafts", as_of: TxLogId, drafts: Array<Draft>, } | { "type": "outbox", as_of: TxLogId, accounts: Array<AccountOutbox>, } | { "type": "rooms", as_of: TxLogId, accounts: Array<MatrixAccount>, rooms: Array<Room>, } | { "type": "timeline", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, 
+scope: ListScope, 
+/**
+ * The rooms whose messages the query looked through, of which not
+ * the whole history is stored (`Room::history`): it may not have
+ * found all it would.
+ */
+partial_rooms: Array<RoomId>, } | { "type": "message", message: MessageContent, } | { "type": "drafts", as_of: TxLogId, drafts: Array<Draft>, } | { "type": "outbox", as_of: TxLogId, accounts: Array<AccountOutbox>, } | { "type": "rooms", as_of: TxLogId, accounts: Array<MatrixAccount>, rooms: Array<Room>, } | { "type": "timeline", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, 
 /**
  * Whether there are earlier events than those listed.
  */
@@ -989,7 +1000,12 @@ space_order: string | null,
  * Its tags (`m.tag`: `m.favourite`, `m.lowpriority`, the user's own
  * `u.*`), as asked for if being changed, in order.
  */
-tags: Array<string>, };
+tags: Array<string>, 
+/**
+ * How much of its history is stored, which is what search finds
+ * (SPEC §9.2).
+ */
+history: RoomHistory, };
 
 export type Encryption = "none" | "decrypted" | "undecryptable";
 
@@ -1516,4 +1532,4 @@ export type EventChangeKind = "create" | "update" | "delete";
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "a0ffb6cac6b25202"
+export const PROTOCOL_VERSION = "7f9eb3b087c33c13"

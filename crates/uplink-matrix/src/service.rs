@@ -59,6 +59,9 @@ pub const MAX_LIMIT: u32 = 500;
 pub struct ConfiguredAccount {
     pub id: String,
     pub mxid: String,
+    /// Of rooms of at most this many joined members, the whole history is
+    /// fetched (SPEC §9.2).
+    pub history_members: u64,
 }
 
 #[derive(Clone)]
@@ -741,7 +744,7 @@ impl Matrix {
                             .map_err(internal)?
                             .is_some(),
                     });
-                    rooms.extend(rooms::rooms(&tx, &account.id, &account.mxid).map_err(internal)?);
+                    rooms.extend(rooms::rooms(&tx, account).map_err(internal)?);
                 }
                 Ok(ServerResponse::Rooms {
                     as_of,
@@ -980,10 +983,13 @@ impl Matrix {
                     .map_err(internal)?
                     .ok_or_else(|| no_room(room))?;
                 let configured = accounts.iter().find(|a| a.id == account);
-                let joined = rooms::rooms(&tx, &account, configured.map_or("", |a| &a.mxid))
-                    .map_err(internal)?
-                    .into_iter()
-                    .any(|r| r.id == room && r.membership == Membership::Joined);
+                let joined = match configured {
+                    Some(configured) => rooms::rooms(&tx, configured)
+                        .map_err(internal)?
+                        .into_iter()
+                        .any(|r| r.id == room && r.membership == Membership::Joined),
+                    None => false,
+                };
                 let Some(configured) = configured.filter(|_| joined) else {
                     return Err(error(
                         ErrorCode::Invalid,
@@ -1099,7 +1105,7 @@ impl Matrix {
                     .iter()
                     .find(|a| a.id == account)
                     .ok_or_else(|| no_room(room))?;
-                let listed = rooms::rooms(&tx, &account, &configured.mxid)
+                let listed = rooms::rooms(&tx, configured)
                     .map_err(internal)?
                     .into_iter()
                     .find(|r| r.id == room)
@@ -1141,7 +1147,7 @@ impl Matrix {
                     .iter()
                     .find(|a| a.id == account)
                     .ok_or_else(|| no_room(first.space))?;
-                let listed = rooms::rooms(&tx, &account, &configured.mxid).map_err(internal)?;
+                let listed = rooms::rooms(&tx, configured).map_err(internal)?;
                 let mut seen = std::collections::HashSet::new();
                 for change in &asked {
                     let room = listed

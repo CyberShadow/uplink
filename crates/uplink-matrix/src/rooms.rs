@@ -24,8 +24,9 @@ use std::collections::HashSet;
 use uplink_protocol::{
     matrix::{
         Encryption, EventEdit, GapId, MatrixSendsChanged, Membership, Reaction, Reactor,
-        ReadMarker, RepliedEvent, Room, RoomEvent, RoomEventId, RoomId, RoomPreview, RoomsChanged,
-        ThreadSummary, TimelineAdded, TimelineChanged, TimelineFilled, TimelineGap, TimelinePage,
+        ReadMarker, RepliedEvent, Room, RoomEvent, RoomEventId, RoomHistory, RoomId, RoomPreview,
+        RoomsChanged, ThreadSummary, TimelineAdded, TimelineChanged, TimelineFilled, TimelineGap,
+        TimelinePage,
     },
     ServerEvent,
 };
@@ -35,7 +36,9 @@ use uplink_tx_log::{Applied, Inverse, Observation, Observed, Op};
 use crate::{
     html,
     membership::{parse_desired, parse_membership},
-    outbox, room_tags, send, space_order,
+    outbox, room_tags, send,
+    service::ConfiguredAccount,
+    space_order,
 };
 
 pub const ACCOUNT_KIND: &str = "matrix";
@@ -1123,7 +1126,7 @@ pub fn arrived(
 /// `mxid` is the account's user: its own messages are never unread. Its
 /// counts are by the conditions queries find messages by (`message`,
 /// `after`).
-pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
+pub fn rooms(tx: &Transaction, account: &ConfiguredAccount) -> Result<Vec<Room>> {
     // Of room `r`, its messages from others after its marker.
     let after = |marker: Marker| {
         format!(
@@ -1153,7 +1156,8 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
                     (SELECT count(*) FROM matrix_event e WHERE {after_fully} AND e.highlight),
                     p.id, p.sender, p.sender_name, p.type,
                     coalesce(json_extract(pe.raw_json, '$.content.\"m.new_content\".msgtype'), p.msgtype),
-                    coalesce(json_extract(pe.raw_json, '$.content.\"m.new_content\".body'), p.body)
+                    coalesce(json_extract(pe.raw_json, '$.content.\"m.new_content\".body'), p.body),
+                    {HISTORY_SINCE}, {fetched}
              FROM matrix_room r
              -- Its preview: its latest message, and that's latest edit.
              LEFT JOIN matrix_event p ON p.id = (
@@ -1174,8 +1178,11 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
             unread = after(Marker::Read),
             shown_order = space_order::SHOWN,
             shown_tags = room_tags::SHOWN,
+            fetched = fetched_whole("?3"),
         ))?
-        .query_map([account, mxid], |r| {
+        .query_map(
+            params![account.id, account.mxid, account.history_members],
+            |r| {
             Ok(Room {
                 id: RoomId(r.get(0)?),
                 account: r.get(1)?,
@@ -1232,8 +1239,14 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
                     }),
                     None => None,
                 },
+                history: match (r.get::<_, Option<i64>>(35)?, r.get(36)?) {
+                    (None, _) => RoomHistory::Whole,
+                    (Some(since), true) => RoomHistory::Fetching { since },
+                    (Some(since), false) => RoomHistory::Partial { since },
+                },
             })
-        })?
+        },
+        )?
         .collect::<Result<_, _>>()?)
 }
 
@@ -1558,8 +1571,21 @@ pub struct GapToFill {
     pub before: String,
 }
 
-/// Of the account's joined rooms of at most `members` joined members,
-/// but spaces, the gap of the latest history, but those of `skip`.
+/// Of a room `r`, whether its whole history is fetched by itself (SPEC
+/// §9.2), of an account's whose `history_members` is `members` (SQL):
+/// joined rooms of at most that many joined members, but spaces.
+fn fetched_whole(members: &str) -> String {
+    format!("(r.membership = 'joined' AND NOT r.space AND r.joined_members <= {members})")
+}
+
+/// Of a room `r`, the time of the event just after its latest gap, if it
+/// has one.
+const HISTORY_SINCE: &str =
+    "(SELECT e.ts FROM matrix_gap g JOIN matrix_event e ON e.id = g.before_event
+   WHERE g.room = r.id ORDER BY e.pos DESC LIMIT 1)";
+
+/// Of the account's rooms whose whole history is fetched, the gap of the
+/// latest history, but those of `skip`.
 pub fn gap_to_fill(
     conn: &Connection,
     account: &str,
@@ -1569,14 +1595,16 @@ pub fn gap_to_fill(
     let skip = serde_json::to_string(&skip.iter().map(|g| g.0).collect::<Vec<_>>())?;
     Ok(conn
         .query_row(
-            "SELECT g.room, r.room_id, g.id, e.event_id
-             FROM matrix_gap g
-             JOIN matrix_room r ON r.id = g.room
-             JOIN matrix_event e ON e.id = g.before_event
-             WHERE r.account_id = ?1 AND r.membership = 'joined' AND NOT r.space
-               AND r.joined_members <= ?2
-               AND g.id NOT IN (SELECT value FROM json_each(?3))
-             ORDER BY e.ts DESC, g.id DESC LIMIT 1",
+            &format!(
+                "SELECT g.room, r.room_id, g.id, e.event_id
+                 FROM matrix_gap g
+                 JOIN matrix_room r ON r.id = g.room
+                 JOIN matrix_event e ON e.id = g.before_event
+                 WHERE r.account_id = ?1 AND {fetched}
+                   AND g.id NOT IN (SELECT value FROM json_each(?3))
+                 ORDER BY e.ts DESC, g.id DESC LIMIT 1",
+                fetched = fetched_whole("?2"),
+            ),
             params![account, members, skip],
             |r| {
                 Ok(GapToFill {

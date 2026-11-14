@@ -2875,6 +2875,45 @@ describe('search', () => {
     expect(location.pathname).toBe(`/rooms/${club.id}`)
   })
 
+  it('says how far rooms\' history is fetched, and what of it searches may have missed', async () => {
+    server.addMatrixAccount()
+    // Midday, that the day is the same in every time zone.
+    const since = Date.UTC(2024, 2, 3, 12)
+    const lounge = server.addRoom('Lounge')
+    lounge.history = { type: 'fetching', since }
+    server.addRoom('Hall').history = { type: 'partial', since: Date.UTC(2025, 0, 9, 12) }
+    server.addRoom('Kitchen')
+    server.receive(lounge.id, { body: 'Lunch at noon?' })
+    const user = await start()
+
+    // The nav, as of mail's first sync.
+    const nav = within(screen.getByRole('navigation'))
+    const status = await nav.findByTitle('Fetching the history of 1 room, to be searched: all of it since 2024-03-03 is stored')
+    expect(status.textContent).toBe(' (history back to 2024-03-03)')
+
+    // A search that looked through their messages.
+    await user.keyboard('/')
+    await user.keyboard('lunch{Enter}')
+    const summary = await screen.findByText('Only stored history is searched, and not all of 2 rooms is.')
+    await user.click(summary)
+    const missed = within(screen.getByRole('list', { name: 'Rooms searched in part' }))
+    expect(missed.getAllByRole('listitem').map((li) => li.textContent)).toEqual([
+      'Lounge: stored since 2024-03-03; the rest is being fetched',
+      'Hall: stored since 2025-01-09; before, only what was scrolled to',
+    ])
+    // Not of its rows.
+    expect(rows()).toHaveLength(1)
+
+    // A room's own search.
+    await user.click(rows()[0])
+    const search = await screen.findByRole('complementary', { name: 'Search' })
+    expect(
+      await within(search).findByText(
+        'Only stored history is searched: all of it stored since 2024-03-03; the rest is being fetched.',
+      ),
+    ).toBeTruthy()
+  })
+
   it('selects rooms with mail, to do to them only what applies to both', async () => {
     server.addMatrixAccount()
     const kitchen = server.addRoom('Kitchen')

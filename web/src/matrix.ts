@@ -1,7 +1,8 @@
 // What Matrix events and sends say, as the views show it (SPEC §9).
 
 import { type Linked, linkify as linkifyText, linkifyHtml } from './linkify'
-import type { MatrixContent, MemberAction, RoomEvent, RoomId, RoomPreview } from './generated/protocol'
+import type { MatrixContent, MemberAction, Room, RoomEvent, RoomId, RoomPreview } from './generated/protocol'
+import { date } from './format'
 
 /** Message types of text: shown as such, and edited. */
 export const TEXT = new Set(['m.text', 'm.notice', 'm.emote'])
@@ -321,5 +322,34 @@ export function links(body: string, html: string | null): string[] {
           (a) => a.getAttribute('href')!,
         )
   return hrefs.filter((href) => /^https?:\/\//.test(href))
+}
+
+/** How far fetching the whole history of an account's rooms has got
+ * (SPEC §9.2): how many rooms are still being fetched, and back to when
+ * all of them are stored, as the latest history is fetched first. */
+export interface HistoryProgress {
+  rooms: number
+  since: number
+}
+
+/** Of `rooms` (an account's), how far fetching their history has got;
+ * `null` if none is being fetched. */
+export function historyProgress(rooms: readonly Room[]): HistoryProgress | null {
+  const since = rooms.flatMap((room) => (room.history.type === 'fetching' ? [room.history.since] : []))
+  if (since.length === 0) return null
+  return { rooms: since.length, since: Math.max(...since) }
+}
+
+/** What of a room's history is stored, and so searched; `null` if all. */
+export function storedHistory(room: Room): string | null {
+  const { history } = room
+  switch (history.type) {
+    case 'whole':
+      return null
+    case 'fetching':
+      return `stored since ${date(new Date(history.since))}; the rest is being fetched`
+    case 'partial':
+      return `stored since ${date(new Date(history.since))}; before, only what was scrolled to`
+  }
 }
 

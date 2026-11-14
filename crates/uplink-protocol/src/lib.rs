@@ -544,6 +544,10 @@ pub enum ServerResponse {
         next: Option<ItemPosition>,
         /// Of its conversations.
         scope: mail::ListScope,
+        /// The rooms whose messages the query looked through, of which not
+        /// the whole history is stored (`Room::history`): it may not have
+        /// found all it would.
+        partial_rooms: Vec<matrix::RoomId>,
     },
     Message {
         message: Box<mail::MessageContent>,

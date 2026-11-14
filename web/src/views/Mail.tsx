@@ -1,7 +1,7 @@
 import type { Ref } from 'preact'
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
-import type { ClientRequest, Conversation, Entry, EntryId, ImageRule, Label, MessageContent, RemoteHost, Room } from '../generated/protocol'
+import type { ClientRequest, Conversation, Entry, EntryId, ImageRule, Label, MessageContent, RemoteHost, Room, RoomId } from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus, lines, useKeymap } from '../keymap'
 import {
@@ -21,6 +21,7 @@ import { HtmlBody, QuoteToggle } from './HtmlBody'
 import { MenuButton } from './Menu'
 import { forwards, splitText } from './quote'
 import { linkify } from '../linkify'
+import { storedHistory } from '../matrix'
 import { LabelPicker, MovePicker } from './LabelPicker'
 import { composePath } from './Outgoing'
 import { messagePath } from './Todos'
@@ -613,100 +614,131 @@ function MessageList(props: {
 
   const rows = mail.rows.value
   if (!list?.loaded) return <p class={styles.placeholder}>Loading…</p>
-  if (rows.length === 0) return <p class={styles.placeholder}>{list.view.kind === 'search' ? 'Nothing found.' : 'No messages.'}</p>
+  if (rows.length === 0)
+    return (
+      <>
+        <p class={styles.placeholder}>{list.view.kind === 'search' ? 'Nothing found.' : 'No messages.'}</p>
+        <PartialRooms rooms={list.partialRooms} />
+      </>
+    )
   // With several accounts, each row says whose it is.
   const accounts = mail.accounts.value ?? []
   const address = (account: string) =>
     accounts.length > 1 ? accounts.find((a) => a.id === account)!.address : null
   const own = (account: string) => accounts.find((a) => a.id === account)?.identities ?? []
   return (
-    <ul
-      class={styles.list}
-      aria-label="Messages"
-    >
-      {rows.map((row) => {
-        if (row.kind !== 'mail') {
-          const isFocused = row.key === mail.focus.value
+    <>
+      <ul
+        class={styles.list}
+        aria-label="Messages"
+      >
+        {rows.map((row) => {
+          if (row.kind !== 'mail') {
+            const isFocused = row.key === mail.focus.value
+            return (
+              <OtherRow
+                key={row.key}
+                mail={mail}
+                row={row}
+                focused={isFocused ? focused : null}
+                open={() => {
+                  mail.focus.value = row.key
+                  props.openOther(row)
+                }}
+              />
+            )
+          }
+          const { conversation } = row
+          const key = conversationKey(conversation)
+          const thread = threadOf(conversation)
+          const { latest } = conversation
+          const isFocused = key === mail.focus.value
+          const isFlagged = thread.entries.some((e) => todos.flagged.value.has(e.message))
+          const isSelected = mail.selected.value.has(key)
+          const count = thread.entries.length
+          const unread = mail.countHaving(thread, 'UNREAD')
           return (
-            <OtherRow
-              key={row.key}
-              mail={mail}
-              row={row}
-              focused={isFocused ? focused : null}
-              open={() => {
-                mail.focus.value = row.key
-                props.openOther(row)
-              }}
-            />
-          )
-        }
-        const { conversation } = row
-        const key = conversationKey(conversation)
-        const thread = threadOf(conversation)
-        const { latest } = conversation
-        const isFocused = key === mail.focus.value
-        const isFlagged = thread.entries.some((e) => todos.flagged.value.has(e.message))
-        const isSelected = mail.selected.value.has(key)
-        const count = thread.entries.length
-        const unread = mail.countHaving(thread, 'UNREAD')
-        return (
-          <li
-            key={key}
-            ref={isFocused ? focused : undefined}
-            class={[
-              styles.row,
-              isFocused && styles.focused,
-              isSelected && styles.selected,
-              unread > 0 && styles.unread,
-            ]
-              .filter(Boolean)
-              .join(' ')}
-            aria-current={isFocused || undefined}
-            aria-selected={isSelected}
-            onClick={() => props.open(conversation)}
-          >
-            <input
-              type="checkbox"
-              aria-label="Select"
-              checked={isSelected}
-              onMouseDown={keepFocus}
-              onClick={(event) => {
-                event.stopPropagation()
-                mail.toggleSelected(key)
-              }}
-            />
-            <Star mail={mail} thread={thread} />
-            <span class={styles.from}>
-              {senders(conversation.senders, own(latest.account))}
-              {count > 1 && <span class={styles.count}> {count}</span>}
-            </span>
-            <span class={styles.summary}>
-              <span class={styles.text}>
-                <span class={styles.tags}>
-                  {isFlagged && <Flag />}
-                  {address(latest.account) && <span class={styles.account}>{address(latest.account)}</span>}
-                  <LabelChips mail={mail} thread={thread} />
-                </span>
-                <span class={styles.subject}>{latest.subject ?? '(no subject)'}</span>
-                <span class={styles.snippet}>{latest.snippet}</span>
+            <li
+              key={key}
+              ref={isFocused ? focused : undefined}
+              class={[
+                styles.row,
+                isFocused && styles.focused,
+                isSelected && styles.selected,
+                unread > 0 && styles.unread,
+              ]
+                .filter(Boolean)
+                .join(' ')}
+              aria-current={isFocused || undefined}
+              aria-selected={isSelected}
+              onClick={() => props.open(conversation)}
+            >
+              <input
+                type="checkbox"
+                aria-label="Select"
+                checked={isSelected}
+                onMouseDown={keepFocus}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  mail.toggleSelected(key)
+                }}
+              />
+              <Star mail={mail} thread={thread} />
+              <span class={styles.from}>
+                {senders(conversation.senders, own(latest.account))}
+                {count > 1 && <span class={styles.count}> {count}</span>}
               </span>
-              <UnreadOf unread={unread} one={count === 1} class={styles.badge} />
-            </span>
-            <span class={styles.clip}>
-              {conversation.has_attachments && (
-                <span title="Has attachments">
-                  <Icon name="paperclip" />
+              <span class={styles.summary}>
+                <span class={styles.text}>
+                  <span class={styles.tags}>
+                    {isFlagged && <Flag />}
+                    {address(latest.account) && <span class={styles.account}>{address(latest.account)}</span>}
+                    <LabelChips mail={mail} thread={thread} />
+                  </span>
+                  <span class={styles.subject}>{latest.subject ?? '(no subject)'}</span>
+                  <span class={styles.snippet}>{latest.snippet}</span>
                 </span>
-              )}
-            </span>
-            <time class={styles.date} dateTime={new Date(latest.received_at).toISOString()}>
-              {brief(latest.received_at)}
-            </time>
+                <UnreadOf unread={unread} one={count === 1} class={styles.badge} />
+              </span>
+              <span class={styles.clip}>
+                {conversation.has_attachments && (
+                  <span title="Has attachments">
+                    <Icon name="paperclip" />
+                  </span>
+                )}
+              </span>
+              <time class={styles.date} dateTime={new Date(latest.received_at).toISOString()}>
+                {brief(latest.received_at)}
+              </time>
+            </li>
+          )
+        })}
+        {list.more && <More mail={mail} next={list.more} />}
+      </ul>
+      {!list.more && <PartialRooms rooms={list.partialRooms} />}
+    </>
+  )
+}
+
+/** The end of a search that looked through rooms of which not the whole
+ * history is stored (SPEC §9.2): what of each it may have missed. */
+function PartialRooms(props: { rooms: RoomId[] }) {
+  const { matrix } = useServices()
+  const rooms = matrix.rooms.value ?? []
+  const listed = props.rooms.flatMap((id) => rooms.filter((room) => room.id === id))
+  if (listed.length === 0) return null
+  const count = listed.length === 1 ? '1 room' : `${listed.length} rooms`
+  return (
+    <details class={styles.partial}>
+      <summary>Only stored history is searched, and not all of {count} is.</summary>
+      <ul aria-label="Rooms searched in part">
+        {listed.map((room) => (
+          <li key={room.id}>
+            {room.name}: {storedHistory(room)}
           </li>
-        )
-      })}
-      {list.more && <More mail={mail} next={list.more} />}
-    </ul>
+        ))}
+      </ul>
+    </details>
   )
 }
 

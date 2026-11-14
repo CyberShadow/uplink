@@ -2,7 +2,8 @@ import { signal } from '@preact/signals'
 import { useEffect, useRef, useState } from 'preact/hooks'
 import type { ComponentChildren, RefObject } from 'preact'
 import { useLocation } from 'preact-iso'
-import { duration } from '../format'
+import { date, duration } from '../format'
+import { historyProgress } from '../matrix'
 import { keepFocus, returnFocus, useKeymap } from '../keymap'
 import type { Account, Label, ListingProgress, MailProvider, Mark, MatrixAccount, Place, Room, RoomId } from '../generated/protocol'
 import { isInbox, markOf, NONE, shows, strongest } from '../marks'
@@ -136,6 +137,26 @@ function Syncing(props: { account: string; listing: ListingProgress | null }) {
     <span class={styles.syncing} title={`${count(listing.stored)} of about ${count(listing.total)} messages${eta}`}>
       {' '}
       (syncing, {percent}%)
+    </span>
+  )
+}
+
+/** A Matrix account's first sync, then how far fetching its rooms'
+ * history has got (SPEC §9.2): back to when all of them are stored, as
+ * the latest history is fetched first. */
+function MatrixSyncing(props: { synced: boolean; rooms: readonly Room[] }) {
+  if (!props.synced) return <span class={styles.syncing}> (syncing)</span>
+  const progress = historyProgress(props.rooms)
+  if (!progress) return null
+  const since = date(new Date(progress.since))
+  const rooms = progress.rooms === 1 ? '1 room' : `${progress.rooms} rooms`
+  return (
+    <span
+      class={styles.syncing}
+      title={`Fetching the history of ${rooms}, to be searched: all of it since ${since} is stored`}
+    >
+      {' '}
+      (history back to {since})
     </span>
   )
 }
@@ -557,7 +578,7 @@ export function Nav(props: { open: boolean }) {
             title={account.mxid}
             tooltip={account.id}
             label={`Rooms of ${account.mxid}`}
-            status={!account.synced && <span class={styles.syncing}> (syncing)</span>}
+            status={<MatrixSyncing synced={account.synced} rooms={rooms} />}
             unread={0}
             bold={rooms.some((room) => room.unread > 0)}
             mark={strongest(rooms.map(marks.room))}

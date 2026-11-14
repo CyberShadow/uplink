@@ -293,6 +293,7 @@ impl Items {
                     items: page.items,
                     next: page.next,
                     scope: page.scope,
+                    partial_rooms: rooms.partly_searched(&query),
                 })
             })
             .await
@@ -660,6 +661,7 @@ mod tests {
             vec![uplink_matrix::service::ConfiguredAccount {
                 id: "mx".into(),
                 mxid: "@me:x".into(),
+                history_members: 100,
             }],
             vec![],
         );
@@ -754,6 +756,7 @@ mod tests {
             vec![uplink_matrix::service::ConfiguredAccount {
                 id: "mx".into(),
                 mxid: "@me:x".into(),
+                history_members: 100,
             }],
             vec![],
         );

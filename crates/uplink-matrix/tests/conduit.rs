@@ -158,6 +158,7 @@ impl Uplink {
             vec![ConfiguredAccount {
                 id: account.id.clone(),
                 mxid: account.mxid.clone(),
+                history_members: account.history_members,
             }],
             uplink_storage::store::Store::blobs(dir.path()),
         );
@@ -1813,6 +1814,20 @@ async fn small_rooms_history_is_fetched_by_itself() {
     let (events, _, gaps) = page(&uplink, &large_room, TimelinePage::Latest).await;
     assert!(events.len() < 120);
     assert_eq!(gaps.len(), 1);
+    // As the rooms say.
+    use uplink_protocol::matrix::RoomHistory;
+    assert_eq!(
+        uplink.room(small.room_id()).await.unwrap().history,
+        RoomHistory::Whole
+    );
+    let first = events
+        .iter()
+        .find(|e| e.id == gaps[0].before.unwrap())
+        .unwrap();
+    assert_eq!(
+        uplink.room(large.room_id()).await.unwrap().history,
+        RoomHistory::Partial { since: first.ts }
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

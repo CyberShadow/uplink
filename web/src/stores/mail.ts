@@ -23,6 +23,7 @@ import type {
   MessageContent,
   MessageId,
   Room,
+  RoomId,
 } from '../generated/protocol'
 import type { Requester } from '../connection'
 import { compare, keyOf, rowOf, type Row } from '../items'
@@ -71,6 +72,9 @@ export interface List {
   more: ClientRequest | null
   /** The entries its conversations are made of; known once loaded. */
   scope: ListScope | null
+  /** The rooms a search looked through the messages of, of which not the
+   * whole history is stored (SPEC §9.2): it may have missed some. */
+  partialRooms: RoomId[]
 }
 
 export type Other = Exclude<ListedItem, { kind: 'mail' }>
@@ -429,7 +433,15 @@ export class MailStore {
     if (this.list.value && sameView(this.list.value.view, view)) return
     this.generation++
     batch(() => {
-      this.list.value = { view, loaded: false, conversations: [], others: [], more: null, scope: null }
+      this.list.value = {
+        view,
+        loaded: false,
+        conversations: [],
+        others: [],
+        more: null,
+        scope: null,
+        partialRooms: [],
+      }
       this.focus.value = null
       this.select(new Set())
     })
@@ -469,27 +481,40 @@ export class MailStore {
       return
     }
     this.listLoad = load
-    let page: Pick<List, 'conversations' | 'others' | 'more' | 'scope'> | undefined
+    let page: Pick<List, 'conversations' | 'others' | 'more' | 'scope' | 'partialRooms'> | undefined
     try {
       switch (request.type) {
         case 'list_message_entries': {
           const response = await query(this.server, request, 'entries')
-          page = { conversations: response.entries.map(alone), others: [], more: null, scope: EVERY }
+          page = {
+            conversations: response.entries.map(alone),
+            others: [],
+            more: null,
+            scope: EVERY,
+            partialRooms: [],
+          }
           break
         }
         case 'list_items': {
-          const { items, next, scope } = await query(this.server, request, 'items')
+          const { items, next, scope, partial_rooms } = await query(this.server, request, 'items')
           page = {
             conversations: items.flatMap((item) => (item.kind === 'mail' ? [item.conversation] : [])),
             others: items.filter((item): item is Other => item.kind !== 'mail'),
             more: next && { ...request, after: next, limit: PAGE },
             scope,
+            partialRooms: partial_rooms,
           }
           break
         }
         case 'list_entries': {
           const { conversations, next, scope } = await query(this.server, request, 'conversations')
-          page = { conversations, others: [], more: next && { ...request, after: next, limit: PAGE }, scope }
+          page = {
+            conversations,
+            others: [],
+            more: next && { ...request, after: next, limit: PAGE },
+            scope,
+            partialRooms: [],
+          }
           break
         }
         default:
@@ -509,9 +534,9 @@ export class MailStore {
               [...current.conversations, ...page.conversations],
               [...current.others, ...page.others],
             ]
-      const { more, scope } = page
+      const { more, scope, partialRooms } = page
       batch(() => {
-        this.list.value = { ...current, loaded: true, conversations, others, more, scope }
+        this.list.value = { ...current, loaded: true, conversations, others, more, scope, partialRooms }
         this.keepFocus(current)
       })
     }

@@ -8,7 +8,9 @@
 
 use anyhow::Result;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use uplink_protocol::matrix::{Membership, Room, RoomEvent, RoomEventId, RoomHits, RoomId};
+use uplink_protocol::matrix::{
+    Membership, Room, RoomEvent, RoomEventId, RoomHistory, RoomHits, RoomId,
+};
 use uplink_query::{text_matches, Fields, Kind, Query, Term};
 use uplink_storage::rusqlite::{params_from_iter, types::Value, Transaction};
 
@@ -63,7 +65,7 @@ impl<'a> Rooms<'a> {
     pub fn load(tx: &Transaction, accounts: &'a [ConfiguredAccount]) -> Result<Self> {
         let mut all = vec![];
         for account in accounts {
-            all.extend(rooms::rooms(tx, &account.id, &account.mxid)?);
+            all.extend(rooms::rooms(tx, account)?);
         }
         let spaces = Spaces::of(&all);
         Ok(Self {
@@ -80,18 +82,7 @@ impl<'a> Rooms<'a> {
 
     /// Those `query` matches, the most recently active first.
     pub fn matching(&self, tx: &Transaction, query: &Query) -> Result<Vec<Group>> {
-        let mut groups = vec![];
-        let mut undecided = vec![];
-        for room in self.listed() {
-            match uplink_query::decides(query, &|term| self.of_room(room, term)) {
-                Some(true) => groups.push(Group {
-                    room: room.clone(),
-                    hits: None,
-                }),
-                Some(false) => {}
-                None => undecided.push(room),
-            }
-        }
+        let (mut groups, undecided) = self.decided(query);
         if let Some(mut search) = self.search(query, &undecided, true) {
             let sql = format!(
                 "SELECT e.room, count(*), max(e.pos), e.id {from} GROUP BY e.room",
@@ -129,6 +120,38 @@ impl<'a> Rooms<'a> {
         }
         groups.sort_by(|a, b| b.active().cmp(&a.active()).then(a.room.id.cmp(&b.room.id)));
         Ok(groups)
+    }
+
+    /// Those `query` matches by their own terms, and those whose messages
+    /// decide.
+    fn decided(&self, query: &Query) -> (Vec<Group>, Vec<&Room>) {
+        let mut groups = vec![];
+        let mut undecided = vec![];
+        for room in self.listed() {
+            match uplink_query::decides(query, &|term| self.of_room(room, term)) {
+                Some(true) => groups.push(Group {
+                    room: room.clone(),
+                    hits: None,
+                }),
+                Some(false) => {}
+                None => undecided.push(room),
+            }
+        }
+        (groups, undecided)
+    }
+
+    /// Of the rooms whose messages `query` looks through, those of which
+    /// not the whole history is stored (SPEC §9.2): it may miss some.
+    pub fn partly_searched(&self, query: &Query) -> Vec<RoomId> {
+        let (_, undecided) = self.decided(query);
+        match self.search(query, &undecided, true) {
+            Some(_) => undecided
+                .into_iter()
+                .filter(|room| room.history != RoomHistory::Whole)
+                .map(|room| room.id)
+                .collect(),
+            None => vec![],
+        }
     }
 
     /// The room listed by this id, if it is.

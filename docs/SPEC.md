@@ -2495,6 +2495,21 @@ notify nor highlight (§9.5). (Planned: for large rooms, the history
 around the account's own messages, `/messages` filtered by sender,
 which needs gaps bounded on both sides; and a room's own choice of how
 much.)
+
+How much is stored shows, as it is what search finds. A listed room
+says it (`Room::history`): `whole`; or, of a room with gaps, `fetching`
+or `partial` (too large to be fetched whole), with `since`, the time of
+the event just after its latest gap, since which all of it is stored.
+The nav says of a synced account whose rooms are being fetched, as of
+mail's first listing, "(history back to 2024-03-03)": the latest `since`
+of those, as the latest history is fetched first, so every one is
+stored since then; its tooltip, how many rooms are left. A search's
+`Items` name the rooms whose messages it looked through (those their
+own terms leave undecided) of which not the whole history is stored
+(`partial_rooms`), which the list says under it, once all is loaded:
+"Only stored history is searched, and not all of 2 rooms is.", which
+unfolds into each room's `since`; a room's own search (§12.11) says,
+after its last result, what of the room is stored.
 Events that arrive undecryptable are decrypted once their keys come
 (the observation `matrix.decrypted`, which updates the stored event in
 place, logging a `TimelineChanged` of it and of what it relates to, as

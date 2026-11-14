@@ -484,6 +484,7 @@ export class FakeServer implements Requester, Blobs {
       may_pin: true,
       space_order: null,
       tags: [],
+      history: { type: 'whole' },
     }
     this.rooms.push(room)
     this.events.set(room.id, [])
@@ -1600,8 +1601,10 @@ export class FakeServer implements Requester, Blobs {
     const { conversations, scope } = this.listEntries(query, null, Infinity)
     const words = query.split(/\s+/).filter((w) => w !== '' && !w.includes(':')).map((w) => w.toLowerCase())
     const has = (text: string | null) => words.length > 0 && words.every((w) => (text ?? '').toLowerCase().includes(w))
-    const rooms = this.matrixRooms()
-      .filter((r) => !r.space)
+    const listed = this.matrixRooms().filter((r) => !r.space)
+    // Those whose messages are looked through.
+    const searched = listed.filter((room) => words.length > 0 && !has(room.name))
+    const rooms = listed
       .flatMap((room): Item[] => {
         if (has(room.name)) return [{ kind: 'room', room, hits: null }]
         const hits = this.events.get(room.id)!.filter((e) => e.kind === 'm.room.message' && has(e.body))
@@ -1615,7 +1618,13 @@ export class FakeServer implements Requester, Blobs {
       ...this.todos.filter((t) => t.done_at === null && has(`${t.title} ${t.notes}`)).map((todo): Item => ({ kind: 'todo', todo })),
       ...this.calendar.filter((e) => has(e.subject)).map((event): Item => ({ kind: 'event', event })),
     ]
-    return { type: 'items', as_of: this.head(), ...page(items, after, limit), scope }
+    return {
+      type: 'items',
+      as_of: this.head(),
+      ...page(items, after, limit),
+      scope,
+      partial_rooms: searched.filter((room) => room.history.type !== 'whole').map((room) => room.id),
+    }
   }
 
   private sortedTodos(): Todo[] {

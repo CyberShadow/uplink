@@ -8,7 +8,7 @@ import type { Room, RoomEvent } from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus } from '../keymap'
 import { dateTime } from '../format'
-import { displayName, senderColor, shown } from '../matrix'
+import { displayName, senderColor, shown, storedHistory } from '../matrix'
 import styles from './Room.module.css'
 // Its header as the room info's.
 import panel from './RoomInfo.module.css'
@@ -42,6 +42,7 @@ export function RoomSearch(props: { room: Room; words: string; close: () => void
     [matrix, room.id],
   )
   useEffect(() => void search(words, null), [search, words])
+  const stored = storedHistory(room)
 
   return (
     <aside class={styles.thread} aria-label="Search">
@@ -84,6 +85,11 @@ export function RoomSearch(props: { room: Room; words: string; close: () => void
               >
                 More
               </button>
+            </li>
+          )}
+          {!found.more && stored !== null && (
+            <li class={`${styles.muted} ${styles.searchLine}`}>
+              Only stored history is searched: all of it {stored}.
             </li>
           )}
         </ol>

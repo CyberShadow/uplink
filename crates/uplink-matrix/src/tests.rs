@@ -43,10 +43,7 @@ impl Db {
         let matrix = Matrix::new(
             dispatcher.clone(),
             uplink_storage::open_reader(dir.path()).unwrap(),
-            vec![ConfiguredAccount {
-                id: "mx".into(),
-                mxid: ME.into(),
-            }],
+            vec![account()],
             uplink_storage::store::Store::blobs(dir.path()),
         );
         Self {
@@ -256,6 +253,16 @@ impl Db {
             ServerResponse::Dispatched { tx_log_id } => tx_log_id,
             other => panic!("unexpected {other:?}"),
         }
+    }
+}
+
+/// The account's configuration: of rooms of at most two members, the whole
+/// history is fetched.
+fn account() -> ConfiguredAccount {
+    ConfiguredAccount {
+        id: "mx".into(),
+        mxid: ME.into(),
+        history_members: 2,
     }
 }
 
@@ -1819,7 +1826,6 @@ fn messages_mention_the_users_they_link_and_whom_they_reply_to() {
 
 mod query {
     use super::*;
-    use crate::service::ConfiguredAccount;
 
     fn room(id: &str, name: &str) -> ObservedRoom {
         ObservedRoom {
@@ -1844,6 +1850,61 @@ mod query {
             joined_members: 2,
             version: "11".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn rooms_say_how_much_history_is_stored_and_searches_which_they_miss() {
+        use uplink_protocol::matrix::RoomHistory;
+        let db = Db::new();
+        // Synced with a gap before its event: of two, fetched; of three,
+        // not; and one of nothing missing.
+        let mut small = room("!small:x", "Small");
+        small.events = vec![message("$1", "@bob:x")];
+        small.limited = true;
+        small.tags = vec!["u.Projects".into()];
+        let mut large = room("!large:x", "Large");
+        large.events = vec![message("$2", "@bob:x")];
+        large.limited = true;
+        large.joined_members = 3;
+        let mut whole = room("!whole:x", "Whole");
+        whole.events = vec![message("$3", "@bob:x")];
+        db.observe(Synced {
+            next_batch: "next".into(),
+            rooms: vec![small, large, whole],
+        })
+        .await
+        .unwrap();
+        let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
+        let tx = conn.transaction().unwrap();
+        let history = |name: &str| {
+            crate::rooms::rooms(&tx, &account())
+                .unwrap()
+                .into_iter()
+                .find(|r| r.name == name)
+                .unwrap()
+                .history
+        };
+        let since = 1_700_000_000_000; // `message` events' time
+        assert_eq!(history("Small"), RoomHistory::Fetching { since });
+        assert_eq!(history("Large"), RoomHistory::Partial { since });
+        assert_eq!(history("Whole"), RoomHistory::Whole);
+
+        let accounts = [account()];
+        let rooms = crate::query::Rooms::load(&tx, &accounts).unwrap();
+        let partly = |query: &str| -> Vec<String> {
+            let query = uplink_query::parse(query, 0).unwrap();
+            let mut names: Vec<String> = rooms
+                .partly_searched(&query)
+                .into_iter()
+                .map(|id| rooms.room(id).unwrap().name.clone())
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(partly("hello"), ["Large", "Small"]);
+        assert_eq!(partly("hello tag:projects"), ["Small"]);
+        // Decided by the rooms' own terms: no message is looked at.
+        assert!(partly("is:dm").is_empty());
     }
 
     #[tokio::test]
@@ -1874,10 +1935,7 @@ mod query {
         let matching = |query: &str| -> Vec<String> {
             let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
             let tx = conn.transaction().unwrap();
-            let accounts = [ConfiguredAccount {
-                id: "mx".into(),
-                mxid: ME.into(),
-            }];
+            let accounts = [account()];
             let query = uplink_query::parse(query, 0).unwrap();
             let mut names: Vec<String> = crate::query::Rooms::load(&tx, &accounts)
                 .unwrap()
@@ -1911,7 +1969,7 @@ mod query {
         assert!(known("favourite") && known("low_priority") && known("Projects"));
         assert!(!known("inbox"));
         // Reading a room marks it read up to its latest event.
-        let rooms = crate::rooms::rooms(&tx, "mx", ME).unwrap();
+        let rooms = crate::rooms::rooms(&tx, &account()).unwrap();
         let latest = |name: &str| rooms.iter().find(|r| r.name == name).unwrap().latest;
         assert!(latest("Team chat").is_some());
         assert_eq!(latest("Bob"), None);
@@ -1987,10 +2045,7 @@ mod query {
         let matching = |query: &str| -> Vec<String> {
             let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
             let tx = conn.transaction().unwrap();
-            let accounts = [ConfiguredAccount {
-                id: "mx".into(),
-                mxid: ME.into(),
-            }];
+            let accounts = [account()];
             let query = uplink_query::parse(query, 0).unwrap();
             // The hits of the rooms found by their messages, as each
             // room's own search finds them.
@@ -2037,10 +2092,7 @@ mod query {
         let groups = |query: &str| -> Vec<(String, Option<(u32, String)>)> {
             let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
             let tx = conn.transaction().unwrap();
-            let accounts = [ConfiguredAccount {
-                id: "mx".into(),
-                mxid: ME.into(),
-            }];
+            let accounts = [account()];
             let query = uplink_query::parse(query, 0).unwrap();
             crate::query::Rooms::load(&tx, &accounts)
                 .unwrap()
@@ -2083,7 +2135,7 @@ mod query {
         // edit is not one of its own); a room with none has none.
         let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
         let tx = conn.transaction().unwrap();
-        let rooms = crate::rooms::rooms(&tx, "mx", ME).unwrap();
+        let rooms = crate::rooms::rooms(&tx, &account()).unwrap();
         // Its counts are of what the terms of its messages find.
         let ops = rooms.iter().find(|r| r.name == "Ops").unwrap();
         assert_eq!((ops.unread, ops.mentions, ops.highlighted), (1, 1, 0));

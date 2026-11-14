@@ -285,6 +285,7 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
             AccountConfig::Matrix(matrix) => Some(uplink_matrix::service::ConfiguredAccount {
                 id: matrix.id.clone(),
                 mxid: matrix.mxid.clone(),
+                history_members: matrix.history_members,
             }),
             AccountConfig::Gmail(_)
             | AccountConfig::M365(_)
