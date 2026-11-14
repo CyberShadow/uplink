@@ -210,12 +210,12 @@ function shownEvents(events: readonly CalendarEvent[], from: number, to: number)
 const JOIN_BEFORE = 10 * 60_000
 
 /** The meeting to join: the one opened; or, with none, of those not
- * cancelled or declined, going on or starting within {@link
+ * cancelled, going on or starting within {@link
  * JOIN_BEFORE}, the one begun (or beginning) last. */
 function joinable(events: readonly CalendarEvent[], opened: number | null, now: number): CalendarEvent | undefined {
   if (opened !== null) return events.find((e) => e.id === opened)
   return events
-    .filter((e) => e.join_url && !e.cancelled && e.response !== 'declined' && !e.all_day)
+    .filter((e) => e.join_url && !e.cancelled && !e.all_day)
     .filter((e) => e.start - JOIN_BEFORE <= now && now < e.end)
     .sort((a, b) => b.start - a.start)[0]
 }
@@ -253,13 +253,11 @@ function status(event: CalendarEvent): string {
 }
 
 /** The event's classes, by its status, as Outlook shows them: cancelled
- * struck through, declined faded, unanswered or tentative hatched, free
- * hollow. */
+ * struck through, unanswered or tentative hatched, free hollow. */
 function eventClass(event: CalendarEvent, opened: number | null): string {
   return [
     styles.event,
     event.cancelled && styles.cancelled,
-    event.response === 'declined' && styles.declined,
     (event.response === 'notResponded' || event.response === 'tentativelyAccepted' || event.show_as === 'tentative') &&
       styles.tentative,
     event.show_as === 'free' && styles.free,

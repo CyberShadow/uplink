@@ -56,7 +56,7 @@ async function notify(matrix: MatrixStore, room: Room, route: (path: string) => 
 
 /** Reminds of events as their reminders fall due, as Outlook does: each
  * once (a reminder already due, at once, unless the event has begun);
- * not of those cancelled or declined. */
+ * not of those cancelled (those declined are not listed). */
 export function useReminders(route: (path: string) => void) {
   const { calendar } = useServices()
   useEffect(() => calendar.watchUpcoming(), [calendar])
@@ -66,7 +66,7 @@ export function useReminders(route: (path: string) => void) {
   useEffect(() => {
     if (!events || !supported() || Notification.permission !== 'granted') return
     const timers = events
-      .filter((e) => e.reminder !== null && !e.cancelled && e.response !== 'declined')
+      .filter((e) => e.reminder !== null && !e.cancelled)
       .filter((e) => !reminded.current.has(`${e.id}@${e.start}`))
       .map((e) => {
         const remind = () => {

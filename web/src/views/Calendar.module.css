@@ -297,11 +297,6 @@
   border-left: 3px solid var(--calendar, var(--accent));
 }
 
-.declined {
-  opacity: 0.55;
-  border-left-color: var(--muted);
-}
-
 .cancelled {
   opacity: 0.6;
   border-left-color: var(--muted);

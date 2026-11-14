@@ -344,7 +344,7 @@ async fn shows_a_meeting_s_status_and_details() {
             "start": utc("2026-11-11T14:00:00"),
             "end": utc("2026-11-11T15:00:00"),
             "organizer": { "emailAddress": { "name": "Bob", "address": "bob@example.com" } },
-            "responseStatus": { "response": "declined" },
+            "responseStatus": { "response": "accepted" },
             "isCancelled": true,
             "isReminderOn": false,
         }))
@@ -371,7 +371,7 @@ async fn shows_a_meeting_s_status_and_details() {
                 "Canceled: Retro",
                 true,
                 ShowAs::Busy,
-                EventResponse::Declined
+                EventResponse::Accepted
             ),
         ]
     );
@@ -491,19 +491,17 @@ async fn answers_meeting_requests() {
             .collect::<Vec<_>>()
     };
 
-    // Shown at once; given as the sync task pushes.
+    // Shown at once (one declined, as not listed); given as the sync task
+    // pushes.
     let accepted = respond("Planning", EventResponse::Accepted).await;
     respond("Retro", EventResponse::TentativelyAccepted).await;
     respond("Offsite", EventResponse::Declined).await;
-    assert_eq!(
-        answers().await,
-        [
-            ("Planning".into(), EventResponse::Accepted),
-            ("Retro".into(), EventResponse::TentativelyAccepted),
-            ("Offsite".into(), EventResponse::Declined),
-            ("Mine".into(), EventResponse::Organizer),
-        ]
-    );
+    let answered = [
+        ("Planning".into(), EventResponse::Accepted),
+        ("Retro".into(), EventResponse::TentativelyAccepted),
+        ("Mine".into(), EventResponse::Organizer),
+    ];
+    assert_eq!(answers().await, answered);
     assert_eq!(outbox().len(), 3);
     setup.sync.push().await.unwrap();
     assert_eq!(outbox(), []);
@@ -519,13 +517,10 @@ async fn answers_meeting_requests() {
     // Declined, it leaves the calendar, as Exchange moves it to Deleted
     // Items; the others are as answered.
     setup.sync.sync(NOW + 60_000).await.unwrap();
+    assert_eq!(answers().await, answered);
     assert_eq!(
-        answers().await,
-        [
-            ("Planning".into(), EventResponse::Accepted),
-            ("Retro".into(), EventResponse::TentativelyAccepted),
-            ("Mine".into(), EventResponse::Organizer),
-        ]
+        setup.calendar.get(id("Offsite")).await.unwrap_err().code,
+        uplink_protocol::ErrorCode::NotFound
     );
 
     // An answer given cannot be taken back: undone, it needs a decision,

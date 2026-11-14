@@ -285,12 +285,14 @@ fn event_of(r: &uplink_storage::rusqlite::Row) -> Result<CalendarEvent> {
     })
 }
 
-/// The events overlapping `from`–`to` (ms), by start.
+/// The events overlapping `from`–`to` (ms), by start; but those declined,
+/// which Outlook does not show (SPEC §10.2).
 pub fn events_between(tx: &Transaction, from: i64, to: i64) -> Result<Vec<CalendarEvent>> {
     let mut statement = tx.prepare(&format!(
         "SELECT {EVENT_COLUMNS}
          FROM calendar_event
          WHERE start_ts < ?2 AND (end_ts > ?1 OR (end_ts = start_ts AND start_ts >= ?1))
+           AND coalesce(desired_response, response) != 'declined'
          ORDER BY start_ts, id"
     ))?;
     let mut rows = statement.query([from, to])?;

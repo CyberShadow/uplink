@@ -289,3 +289,35 @@ async fn an_answer_asked_for_prevails_until_synced_and_survives_listings() {
         ErrorCode::Invalid
     );
 }
+
+#[tokio::test]
+async fn declined_events_are_not_listed_but_open() {
+    let db = Db::new();
+    let request = |subject: &str, response| ObservedEvent {
+        response,
+        ..event(subject, subject, 9 * HOUR, 10 * HOUR)
+    };
+    db.observe(
+        true,
+        vec![
+            request("Offsite", EventResponse::Declined),
+            request("Planning", EventResponse::NotResponded),
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(db.subjects(0, 24 * HOUR).await, ["Planning"]);
+    let id = db.events().await[0].id;
+
+    // Declined: off the calendar at once, but still to be opened (and
+    // answered otherwise).
+    db.calendar
+        .respond(id, EventResponse::Declined)
+        .await
+        .unwrap();
+    assert!(db.events().await.is_empty());
+    let ServerResponse::Event { details, .. } = db.calendar.get(id).await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(details.event.response, EventResponse::Declined);
+}

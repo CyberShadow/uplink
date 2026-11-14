@@ -183,20 +183,15 @@ describe('calendar', () => {
     expect(screen.queryByRole('complementary', { name: 'Event' })).toBeNull()
   })
 
-  it('shows an event cancelled or declined as such, and one gone as gone', async () => {
+  it('shows an event cancelled as such, none declined, and one gone as gone', async () => {
     server.addEvent('work', 'Canceled: Retro', '2026-11-11T19:00:00Z', '2026-11-11T20:00:00Z', {
       cancelled: true,
       response: 'accepted',
     })
     server.addEvent('work', 'Offsite prep', '2026-11-11T21:00:00Z', '2026-11-11T22:00:00Z', { response: 'declined' })
     await start('/calendar/week/2026-11-11')
-    const [retro, prep] = await waitFor(() => {
-      const events = within(day('Wednesday 2026-11-11')).getAllByRole('link')
-      expect(events).toHaveLength(2)
-      return events
-    })
+    const retro = await waitFor(() => within(day('Wednesday 2026-11-11')).getByRole('link'))
     expect(retro.title).toBe('Canceled: Retro\nCancelled · Accepted · shown as Busy')
-    expect(prep.title).toBe('Offsite prep\nDeclined · shown as Busy')
 
     history.replaceState(null, '', '/calendar/agenda/2026-11-11/99')
     dispatchEvent(new PopStateEvent('popstate'))

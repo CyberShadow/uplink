@@ -1225,6 +1225,7 @@ export class FakeServer implements Requester, Blobs {
           as_of: this.head(),
           events: this.calendar
             .filter((e) => e.start < body.to && (e.end > body.from || e.start >= body.from))
+            .filter((e) => e.response !== 'declined')
             .sort((a, b) => a.start - b.start),
           time_zones: this.timeZones,
         }

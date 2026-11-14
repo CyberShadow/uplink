@@ -2725,21 +2725,22 @@ fortnight from the date. Recurring events are marked ↻, changed
 occurrences ↻*. Every account's calendar is in the one view; with several,
 each has a colour (its events' edge), named in a legend above it, in
 their tooltips and in the event opened. As Outlook shows them, an event cancelled (but still
-on the calendar) is struck through, one declined faded, one not yet
-answered or tentative hatched, one shown as free hollow; uplink hides
-none of them. An event is a link:
+on the calendar) is struck through, one not yet answered or tentative
+hatched, one shown as free hollow; one declined (answered so, or asked
+to be) is not listed, as Outlook does not show it, though it can still
+be opened by its link. An event is a link:
 `/calendar/<view>/<date>/<event>` opens it beside the view (over it,
 on a phone), with what `get_event` has, and a button to join its
 online meeting; `Esc` closes it. Home's agenda and search's events
 link to it so. `n` and `p` open the next and previous event on show
 (with none open, the first yet to end, or the last begun); `J` joins
-the meeting open, or else, of those not cancelled or declined, the one
+the meeting open, or else, of those not cancelled, the one
 on or starting within 10 minutes (the one begun last).
 
 Reminders, as Outlook's: once the browser lets uplink notify (§12.11),
 the web client notifies of an event as its reminder falls due
 (`reminder` minutes before it, as Graph has it: `isReminderOn`,
-`reminderMinutesBeforeStart`), unless it is cancelled, declined, or has
+`reminderMinutesBeforeStart`), unless it is cancelled or has
 begun (a reminder due while no client was open is given on opening one,
 if the event is yet to begin). It watches the coming two days' events
 (`list_events`), listed anew as the calendar changes and as time
@@ -2769,8 +2770,9 @@ records what Graph made of it (`calendar.response_given`): given, the
 answer is no longer pending; refused (a 4xx; 404 for an event gone),
 it waits for a decision. A sync that finds the answer as asked settles
 it too; one finding another keeps the answer asked for, which is still
-pushed. Exchange moves a declined meeting to Deleted Items, so the next
-sync takes it off the calendar, with nothing left to undo.
+pushed. A meeting declined leaves the calendar on show at once (§10.2);
+Exchange moves it to Deleted Items, so the next sync takes it off the
+calendar, with nothing left to undo.
 
 Graph has no way to take an answer back, only to change it: undoing an
 answer already given asks for "not responded", which is refused at once
