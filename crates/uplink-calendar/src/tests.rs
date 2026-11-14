@@ -123,6 +123,7 @@ fn event(id: &str, subject: &str, start: i64, end: i64) -> ObservedEvent {
         response: EventResponse::Organizer,
         join_url: None,
         reminder: None,
+        modified: start,
         raw: "{}".into(),
     }
 }

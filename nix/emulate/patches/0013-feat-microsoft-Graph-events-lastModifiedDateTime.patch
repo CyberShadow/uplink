@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Vladimir Panteleev <git@cy.md>
+Date: Sat, 14 Nov 2026 10:00:00 +0000
+Subject: [PATCH] feat(microsoft): Graph events' lastModifiedDateTime
+
+As Graph lists it of every event: when the event (or its series) last
+changed.
+---
+ packages/@emulators/microsoft/src/__tests__/calendar.test.ts | 1 +
+ packages/@emulators/microsoft/src/calendar.ts                 | 1 +
+ 2 files changed, 2 insertions(+)
+
+diff --git a/packages/@emulators/microsoft/src/__tests__/calendar.test.ts b/packages/@emulators/microsoft/src/__tests__/calendar.test.ts
+--- a/packages/@emulators/microsoft/src/__tests__/calendar.test.ts
++++ b/packages/@emulators/microsoft/src/__tests__/calendar.test.ts
+@@ -71,6 +71,7 @@
+     await create({ subject: "Last year", start: utc("2025-11-10T14:00:00"), end: utc("2025-11-10T15:00:00") });
+     const series = await create(weekly);
+     expect(series.type).toBe("seriesMaster");
++    expect(Date.parse(series.lastModifiedDateTime)).toBeGreaterThan(Date.now() - 60_000);
+     expect(await view()).toEqual([
+       ["Standup", "2026-11-02T09:00:00.0000000", "occurrence"],
+       ["Standup", "2026-11-05T09:00:00.0000000", "occurrence"],
+diff --git a/packages/@emulators/microsoft/src/calendar.ts b/packages/@emulators/microsoft/src/calendar.ts
+--- a/packages/@emulators/microsoft/src/calendar.ts
++++ b/packages/@emulators/microsoft/src/calendar.ts
+@@ -133,6 +133,7 @@
+     isAllDay: fields.is_all_day,
+     location: { displayName: fields.location },
+     recurrence: instance ? null : event.recurrence,
++    lastModifiedDateTime: event.updated_at,
+     isCancelled: fields.is_cancelled,
+     showAs: fields.show_as,
+     responseStatus: { response: fields.response, time: "0001-01-01T00:00:00Z" },

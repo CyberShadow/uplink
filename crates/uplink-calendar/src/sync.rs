@@ -100,6 +100,7 @@ struct Event {
     online_meeting_url: Option<String>,
     is_reminder_on: bool,
     reminder_minutes_before_start: i64,
+    last_modified_date_time: String,
 }
 
 #[derive(Deserialize)]
@@ -134,9 +135,7 @@ impl DateTime {
             "a time in {}, not UTC",
             self.time_zone
         );
-        let time = mail_parser::DateTime::parse_rfc3339(&self.date_time)
-            .with_context(|| format!("dateTime {}", self.date_time))?;
-        Ok(time.to_timestamp() * 1000)
+        ms(&self.date_time)
     }
 }
 
@@ -373,9 +372,17 @@ fn observed(item: serde_json::Value) -> Result<ObservedEvent> {
         reminder: event
             .is_reminder_on
             .then_some(event.reminder_minutes_before_start),
+        modified: ms(&event.last_modified_date_time)?,
         external_id: event.id,
         raw,
     })
+}
+
+/// Ms since the epoch of an RFC 3339 time, to the second.
+fn ms(time: &str) -> Result<i64> {
+    let parsed =
+        mail_parser::DateTime::parse_rfc3339(time).with_context(|| format!("time {time}"))?;
+    Ok(parsed.to_timestamp() * 1000)
 }
 
 fn now_ms() -> i64 {

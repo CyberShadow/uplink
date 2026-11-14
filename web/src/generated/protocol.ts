@@ -1295,7 +1295,11 @@ join_url: string | null,
  * How many minutes before its start the user is reminded of it, if
  * at all.
  */
-reminder: number | null, };
+reminder: number | null, 
+/**
+ * When it last changed, as its calendar says: ms since the epoch.
+ */
+modified: number, };
 
 /**
  * How an event has the user's time shown to others (Graph `showAs`).
@@ -1377,4 +1381,4 @@ refused: string | null, };
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "65821baf8d3e86d5"
+export const PROTOCOL_VERSION = "26ba1b8f0ebf0b32"

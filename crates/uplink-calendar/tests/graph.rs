@@ -178,6 +178,14 @@ async fn shows_every_occurrence_of_a_series_and_its_exceptions() {
     let events = setup.events(NOW, NOW + 182 * DAY).await;
     assert_eq!(events.len(), 26);
     assert!(events.iter().all(|e| e.recurring && e.location == "Room 4"));
+    // Changed when the series and its exception were, just now.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    assert!(events
+        .iter()
+        .all(|e| (now - 60_000..=now).contains(&e.modified)));
     let changed: Vec<_> = events.iter().filter(|e| e.exception).collect();
     assert_eq!(changed.len(), 1);
     assert_eq!(changed[0].subject, "Standup, later");

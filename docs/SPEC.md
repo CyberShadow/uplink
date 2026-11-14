@@ -597,6 +597,7 @@ CREATE TABLE calendar_event (
   response        TEXT NOT NULL,            -- responseStatus.response
   join_url        TEXT,                     -- its online meeting's (V0047)
   reminder        INTEGER,                  -- minutes before; NULL: none (V0048)
+  modified_ts     INTEGER NOT NULL,         -- lastModifiedDateTime, ms (V0051)
   raw             TEXT NOT NULL,            -- the event's Graph JSON
   UNIQUE (account_id, external_id)
 );
@@ -4157,7 +4158,8 @@ request).
   else's meeting (`organizer`, `responseStatus`, `isCancelled`), so that
   tests and screenshots can seed one; `0009`, events' reminders;
   `0010`, answers to meeting requests (`accept`, `tentativelyAccept`,
-  `decline`, which takes the event off the calendar).
+  `decline`, which takes the event off the calendar); `0013`, events'
+  `lastModifiedDateTime` (by which lists of every kind order them, §8.7).
 - **IMAP, POP3, SMTP and JMAP:** Stalwart (single-binary Rust mail
   server, from nixpkgs; IMAP, POP3, SMTP and JMAP), a real server rather
   than a fake. The Rust tests (`tests/imap_sync.rs`, `tests/pop3_sync.rs`,

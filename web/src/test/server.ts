@@ -254,6 +254,7 @@ export class FakeServer implements Requester, Blobs {
       response: 'organizer',
       join_url: null,
       reminder: null,
+      modified: Date.now(),
       ...more,
     }
     this.calendar.push(event)

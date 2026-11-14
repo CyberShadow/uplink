@@ -37,6 +37,8 @@ pub struct CalendarEvent {
     /// How many minutes before its start the user is reminded of it, if
     /// at all.
     pub reminder: Option<i64>,
+    /// When it last changed, as its calendar says: ms since the epoch.
+    pub modified: i64,
 }
 
 /// How an event has the user's time shown to others (Graph `showAs`).
