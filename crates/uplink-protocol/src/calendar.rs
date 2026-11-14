@@ -34,6 +34,9 @@ pub struct CalendarEvent {
     pub response: EventResponse,
     /// Where to join its online meeting.
     pub join_url: Option<String>,
+    /// How many minutes before its start the user is reminded of it, if
+    /// at all.
+    pub reminder: Option<i64>,
 }
 
 /// How an event has the user's time shown to others (Graph `showAs`).

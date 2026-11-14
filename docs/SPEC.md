@@ -591,6 +591,7 @@ CREATE TABLE calendar_event (
   show_as         TEXT NOT NULL,            -- showAs: free, tentative, busy, …
   response        TEXT NOT NULL,            -- responseStatus.response
   join_url        TEXT,                     -- its online meeting's (V0047)
+  reminder        INTEGER,                  -- minutes before; NULL: none (V0048)
   raw             TEXT NOT NULL,            -- the event's Graph JSON
   UNIQUE (account_id, external_id)
 );
@@ -2670,7 +2671,18 @@ online meeting; `Esc` closes it. Home's agenda and search's events
 link to it so. `n` and `p` open the next and previous event on show
 (with none open, the first yet to end, or the last begun); `J` joins
 the meeting open, or else, of those not cancelled or declined, the one
-on or starting within 10 minutes (the one begun last). All-day events are on their (UTC) dates, which
+on or starting within 10 minutes (the one begun last).
+
+Reminders, as Outlook's: once the browser lets uplink notify (§12.11),
+the web client notifies of an event as its reminder falls due
+(`reminder` minutes before it, as Graph has it: `isReminderOn`,
+`reminderMinutesBeforeStart`), unless it is cancelled, declined, or has
+begun (a reminder due while no client was open is given on opening one,
+if the event is yet to begin). It watches the coming two days' events
+(`list_events`), listed anew as the calendar changes and as time
+passes. Each event is reminded of once per client, and again only if
+it moves; a click opens it. Only while a client is open: the server
+does not remind (the Android app, ROADMAP, would). All-day events are on their (UTC) dates, which
 are the same days wherever one is; timed events are shown in the
 browser's time zone. `j`/`k` move by day, week or fortnight, `t` goes
 to today, `d`, `w` and `a` switch views, `g c` goes to the calendar.
@@ -4010,7 +4022,7 @@ request).
   attendees, HTML body, `showAs` and online meeting (`isOnlineMeeting`
   gives it a `joinUrl`), and takes what Graph sets itself of someone
   else's meeting (`organizer`, `responseStatus`, `isCancelled`), so that
-  tests and screenshots can seed one.
+  tests and screenshots can seed one; `0009`, events' reminders.
 - **IMAP, POP3, SMTP and JMAP:** Stalwart (single-binary Rust mail
   server, from nixpkgs; IMAP, POP3, SMTP and JMAP), a real server rather
   than a fake. The Rust tests (`tests/imap_sync.rs`, `tests/pop3_sync.rs`,

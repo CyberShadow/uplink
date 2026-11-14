@@ -1,0 +1,116 @@
+From ff481963011eb0f6b66b13139da25b7f7ea995e4 Mon Sep 17 00:00:00 2001
+From: Vladimir Panteleev <git@cy.md>
+Date: Sat, 14 Nov 2026 00:10:18 +0000
+Subject: [PATCH] feat(microsoft): Graph calendar: events' reminders
+
+An event has isReminderOn and reminderMinutesBeforeStart (15 by default,
+as Graph's), as given on create or PATCH.
+---
+ packages/@emulators/microsoft/README.md           |  2 +-
+ .../microsoft/src/__tests__/calendar.test.ts      | 15 +++++++++++++++
+ packages/@emulators/microsoft/src/calendar.ts     | 12 ++++++++++++
+ packages/@emulators/microsoft/src/entities.ts     |  3 +++
+ .../@emulators/microsoft/src/routes/calendar.ts   |  2 ++
+ 5 files changed, 33 insertions(+), 1 deletion(-)
+
+diff --git a/packages/@emulators/microsoft/README.md b/packages/@emulators/microsoft/README.md
+index 64b1c55..833d8ec 100644
+--- a/packages/@emulators/microsoft/README.md
++++ b/packages/@emulators/microsoft/README.md
+@@ -63,7 +63,7 @@ Each user's mailbox starts with the well-known folders (Inbox, Drafts, Sent Item
+ 
+ Events live in the user's one calendar. Times are UTC: requests give them with `timeZone: "UTC"` (others are refused), and responses give them so, as with `Prefer: outlook.timezone="UTC"`. A series' `recurrence` may follow a `daily`, `weekly`, `absoluteMonthly` or `absoluteYearly` pattern, over an `endDate`, `numbered` or `noEnd` range (expanded three years ahead). Changing or deleting one of its occurrences, by the occurrence's id, makes an exception of it.
+ 
+-An event keeps its `body` (`text` or `html`), `showAs` and `attendees` as given; `isOnlineMeeting: true` gives it an `onlineMeeting.joinUrl` at the emulator. What Graph sets itself of a meeting someone else organizes, the emulator takes too, to seed one: its `organizer`, the user's `responseStatus` (`notResponded` by default, `organizer` for the user's own) and `isCancelled`.
++An event keeps its `body` (`text` or `html`), `showAs`, `attendees` and reminder (`isReminderOn`, `reminderMinutesBeforeStart`; 15 minutes by default) as given; `isOnlineMeeting: true` gives it an `onlineMeeting.joinUrl` at the emulator. What Graph sets itself of a meeting someone else organizes, the emulator takes too, to seed one: its `organizer`, the user's `responseStatus` (`notResponded` by default, `organizer` for the user's own) and `isCancelled`.
+ 
+ `calendarView` lists the events overlapping `startDateTime`–`endDateTime`, series as their occurrences and exceptions. Its `delta` lists them, then, from its `@odata.deltaLink`, those changed since, and as `@removed` those deleted, cancelled or moved out of the window. An unknown delta token answers 410 `SyncStateNotFound`.
+ 
+diff --git a/packages/@emulators/microsoft/src/__tests__/calendar.test.ts b/packages/@emulators/microsoft/src/__tests__/calendar.test.ts
+index d20f874..b8ebcc2 100644
+--- a/packages/@emulators/microsoft/src/__tests__/calendar.test.ts
++++ b/packages/@emulators/microsoft/src/__tests__/calendar.test.ts
+@@ -225,4 +225,19 @@ describe("Microsoft Graph calendar", () => {
+     expect([listed.isCancelled, listed.responseStatus.response]).toEqual([true, "declined"]);
+     expect((await request("/v1.0/me/events", { method: "POST", body: JSON.stringify({ ...meeting, showAs: "away" }) })).status).toBe(400);
+   });
++
++  it("keeps an event's reminder, 15 minutes by default", async () => {
++    const plain = await create({ subject: "Plain", start: utc("2026-11-10T09:00:00"), end: utc("2026-11-10T10:00:00") });
++    expect([plain.isReminderOn, plain.reminderMinutesBeforeStart]).toEqual([true, 15]);
++    const early = await create({
++      subject: "Early",
++      start: utc("2026-11-10T11:00:00"),
++      end: utc("2026-11-10T12:00:00"),
++      reminderMinutesBeforeStart: 30,
++    });
++    expect([early.isReminderOn, early.reminderMinutesBeforeStart]).toEqual([true, 30]);
++    await json(`/v1.0/me/events/${early.id}`, { method: "PATCH", body: JSON.stringify({ isReminderOn: false }) });
++    const listed = (await json(`/v1.0/me/calendarView?${WINDOW}`)).value.find((e: any) => e.id === early.id);
++    expect(listed.isReminderOn).toBe(false);
++  });
+ });
+diff --git a/packages/@emulators/microsoft/src/calendar.ts b/packages/@emulators/microsoft/src/calendar.ts
+index 6c815c9..42527fb 100644
+--- a/packages/@emulators/microsoft/src/calendar.ts
++++ b/packages/@emulators/microsoft/src/calendar.ts
+@@ -141,6 +141,8 @@ export function formatEvent(
+     isOnlineMeeting: fields.join_url !== null,
+     onlineMeetingProvider: fields.join_url !== null ? "teamsForBusiness" : "unknown",
+     onlineMeeting: fields.join_url !== null ? { joinUrl: fields.join_url } : null,
++    isReminderOn: fields.reminder !== null,
++    reminderMinutesBeforeStart: fields.reminder ?? 0,
+     webLink: `https://outlook.office365.com/owa/?itemid=${encodeURIComponent(instance?.id ?? event.event_id)}&exvsurl=1&path=/calendar/item`,
+   };
+ }
+@@ -175,6 +177,7 @@ export function instancesOf(event: MicrosoftEvent): Instance[] {
+       organizer: event.organizer,
+       attendees: event.attendees,
+       join_url: event.join_url,
++      reminder: event.reminder,
+       start: originalStart,
+       end: utcString(utcMs(originalStart) + duration),
+       ...exception,
+@@ -258,6 +261,15 @@ export function fieldsOf(body: Record<string, unknown>): Partial<MicrosoftEventF
+     if (!RESPONSES.includes(response as string)) return null;
+     fields.response = response as string;
+   }
++  if ("isReminderOn" in body) {
++    if (typeof body.isReminderOn !== "boolean") return null;
++    if (!body.isReminderOn) fields.reminder = null;
++  }
++  if ("reminderMinutesBeforeStart" in body && body.isReminderOn !== false) {
++    const minutes = body.reminderMinutesBeforeStart;
++    if (typeof minutes !== "number" || !Number.isInteger(minutes) || minutes < 0) return null;
++    fields.reminder = minutes;
++  }
+   if ("isCancelled" in body) {
+     if (typeof body.isCancelled !== "boolean") return null;
+     fields.is_cancelled = body.isCancelled;
+diff --git a/packages/@emulators/microsoft/src/entities.ts b/packages/@emulators/microsoft/src/entities.ts
+index 8f11cea..b701eb5 100644
+--- a/packages/@emulators/microsoft/src/entities.ts
++++ b/packages/@emulators/microsoft/src/entities.ts
+@@ -85,6 +85,9 @@ export interface MicrosoftEventFields {
+   attendees: unknown[];
+   /** The online meeting's, if it is one. */
+   join_url: string | null;
++  /** Minutes before its start the user is reminded; `null` for no
++   * reminder. */
++  reminder: number | null;
+ }
+ 
+ /** A Graph recurrence: its pattern and range, as Graph has them. */
+diff --git a/packages/@emulators/microsoft/src/routes/calendar.ts b/packages/@emulators/microsoft/src/routes/calendar.ts
+index 98f48e6..dee7051 100644
+--- a/packages/@emulators/microsoft/src/routes/calendar.ts
++++ b/packages/@emulators/microsoft/src/routes/calendar.ts
+@@ -99,6 +99,8 @@ export function calendarRoutes({ app, store, baseUrl }: RouteContext): void {
+       attendees: [],
+       // As a Teams meeting's, at the emulator.
+       join_url: body.isOnlineMeeting === true ? `${baseUrl}/meet/${eventId}` : null,
++      // Graph's default.
++      reminder: 15,
+       ...fields,
+       start: fields.start,
+       end: fields.end,

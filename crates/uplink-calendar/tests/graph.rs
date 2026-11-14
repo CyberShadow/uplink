@@ -337,11 +337,14 @@ async fn shows_a_meeting_s_status_and_details() {
             "organizer": { "emailAddress": { "name": "Bob", "address": "bob@example.com" } },
             "responseStatus": { "response": "declined" },
             "isCancelled": true,
+            "isReminderOn": false,
         }))
         .await;
     setup.sync.sync(NOW).await.unwrap();
 
     let events = setup.events(NOW, NOW + 7 * DAY).await;
+    // Graph's default reminder, 15 minutes; none, of one turned off.
+    assert_eq!(events[0].reminder, Some(15));
     let status: Vec<_> = events
         .iter()
         .map(|e| (e.subject.as_str(), e.cancelled, e.show_as, e.response))
@@ -363,6 +366,7 @@ async fn shows_a_meeting_s_status_and_details() {
             ),
         ]
     );
+    assert_eq!(events[1].reminder, None);
     let ServerResponse::Event { details, .. } = setup.calendar.get(events[0].id).await.unwrap()
     else {
         panic!()

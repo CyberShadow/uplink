@@ -261,4 +261,44 @@ describe('calendar', () => {
     expect(location.pathname).toBe('/calendar/week/2026-11-11/2')
     opened.mockRestore()
   })
+
+  it('reminds of events as their reminders fall due, each once', async () => {
+    const shown: Array<{ title: string; options: NotificationOptions; onclick: (() => void) | null }> = []
+    class FakeNotification {
+      static permission = 'granted'
+      onclick: (() => void) | null = null
+      constructor(
+        readonly title: string,
+        readonly options: NotificationOptions,
+      ) {
+        shown.push(this)
+      }
+      close() {}
+    }
+    vi.stubGlobal('Notification', FakeNotification)
+    // Tuesday 09:52 here: Standup's reminder (15 min) is due, Lunch's
+    // (5 min) is not, Review has none.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-11-10T14:52:00Z'))
+    try {
+      server.calendar[0].reminder = 15
+      server.calendar[2].reminder = 5
+      server.addEvent('work', 'Declined', '2026-11-10T15:00:00Z', '2026-11-10T15:30:00Z', { reminder: 15, response: 'declined' })
+      server.addEvent('work', 'Cancelled', '2026-11-10T15:00:00Z', '2026-11-10T15:30:00Z', { reminder: 15, cancelled: true })
+      server.addEvent('work', 'Begun', '2026-11-10T14:30:00Z', '2026-11-10T15:30:00Z', { reminder: 15 })
+      // Wherever the calendar is.
+      await start('/calendar/agenda/2026-12-01')
+      await waitFor(() => expect(shown).toHaveLength(1))
+      expect(shown[0].title).toBe('Standup')
+      expect(shown[0].options).toEqual({ body: '10:00–10:15 · in 8 min', tag: 'event-1' })
+      // Not again, as the calendar changes.
+      server.calendarSynced('work')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(shown).toHaveLength(1)
+      shown[0].onclick!()
+      expect(location.pathname).toBe('/calendar/week/2026-11-10/1')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
 })

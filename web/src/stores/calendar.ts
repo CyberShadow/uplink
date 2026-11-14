@@ -12,6 +12,10 @@ export interface Range {
   to: number
 }
 
+/** How far ahead events are reminded of: beyond Outlook's longest
+ * reminder but for weeks' (an all-day event's is 18 hours before). */
+export const UPCOMING = 2 * 86_400_000
+
 export class CalendarStore {
   /** The range on show; `null` before one is. */
   readonly range = signal<Range | null>(null)
@@ -85,9 +89,41 @@ export class CalendarStore {
     this.loader.invalidate()
   }
 
+  /** The events of the coming {@link UPCOMING} (and those on), to be
+   * reminded of; `null` while not watched, or until they are in. */
+  readonly upcoming = signal<readonly CalendarEvent[] | null>(null)
+  private upcomingLoader: Loader | null = null
+
+  /** Keeps {@link upcoming} current, as time passes too, until the
+   * returned function is called. */
+  watchUpcoming(): () => void {
+    const load = () => {
+      const from = Date.now()
+      this.upcomingLoader = new Loader(async () => {
+        try {
+          const response = await query(this.server, { type: 'list_events', from, to: from + UPCOMING }, 'events')
+          this.upcoming.value = response.events
+        } catch (error) {
+          this.error.value = (error as Error).message
+        }
+      })
+      this.upcomingLoader.invalidate()
+    }
+    load()
+    // Well within the stretch loaded, so that nothing comes into it
+    // unloaded.
+    const timer = setInterval(load, UPCOMING / 4)
+    return () => {
+      clearInterval(timer)
+      this.upcomingLoader = null
+      this.upcoming.value = null
+    }
+  }
+
   reset() {
     this.loader.invalidate()
     this.openedLoader.invalidate()
+    this.upcomingLoader?.invalidate()
   }
 
   /** The calendar was configured anew: not logged, so a query in flight
@@ -101,6 +137,7 @@ export class CalendarStore {
     if (entry.events.some((event) => event.type === 'calendar_changed')) {
       this.loader.invalidate()
       this.openedLoader.invalidate()
+      this.upcomingLoader?.invalidate()
     }
   }
 }

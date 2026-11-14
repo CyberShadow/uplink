@@ -87,6 +87,8 @@ struct Event {
     online_meeting: Option<OnlineMeeting>,
     /// Of online meetings of providers other than Teams.
     online_meeting_url: Option<String>,
+    is_reminder_on: bool,
+    reminder_minutes_before_start: i64,
 }
 
 #[derive(Deserialize)]
@@ -289,6 +291,9 @@ fn observed(item: serde_json::Value) -> Result<ObservedEvent> {
             .online_meeting
             .and_then(|m| m.join_url)
             .or(event.online_meeting_url),
+        reminder: event
+            .is_reminder_on
+            .then_some(event.reminder_minutes_before_start),
         external_id: event.id,
         raw,
     })

@@ -1284,7 +1284,12 @@ response: EventResponse,
 /**
  * Where to join its online meeting.
  */
-join_url: string | null, };
+join_url: string | null, 
+/**
+ * How many minutes before its start the user is reminded of it, if
+ * at all.
+ */
+reminder: number | null, };
 
 /**
  * How an event has the user's time shown to others (Graph `showAs`).
@@ -1352,4 +1357,4 @@ zone: string, };
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "cd0bce8fc5f01d9d"
+export const PROTOCOL_VERSION = "ac557b128f85947b"

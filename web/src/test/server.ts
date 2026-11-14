@@ -246,6 +246,7 @@ export class FakeServer implements Requester, Blobs {
       show_as: 'busy',
       response: 'organizer',
       join_url: null,
+      reminder: null,
       ...more,
     }
     this.calendar.push(event)

@@ -19,7 +19,7 @@ import { GoToLabel } from './LabelPicker'
 import { Mail } from './Mail'
 import { Nav } from './Nav'
 import { NoticeBar } from './NoticeBar'
-import { useNotifications } from './Notifications'
+import { useNotifications, useReminders } from './Notifications'
 import { RoomView } from './Room'
 import { composePath, Drafts, Outbox } from './Outgoing'
 import { SearchBox } from './SearchBox'
@@ -53,6 +53,7 @@ function Shell() {
   const [navOpen, setNavOpen] = useState(false)
   useEffect(() => setNavOpen(false), [path])
   useNotifications(path, route)
+  useReminders(route)
   useFavicon(home.badges.value)
   useSeen()
   // A view shown has the focus it had, if gone back or forward to; else

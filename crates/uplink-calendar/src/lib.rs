@@ -53,6 +53,7 @@ pub struct ObservedEvent {
     pub show_as: ShowAs,
     pub response: EventResponse,
     pub join_url: Option<String>,
+    pub reminder: Option<i64>,
     /// The provider's JSON of it; not in the log, which records what
     /// changed rather than the provider's every word.
     #[serde(skip)]
@@ -86,8 +87,8 @@ impl Observation for CalendarObserved {
             tx.execute(
                 "INSERT INTO calendar_event
                    (account_id, external_id, series, exception, subject, location, preview,
-                    start_ts, end_ts, all_day, cancelled, show_as, response, join_url, raw)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                    start_ts, end_ts, all_day, cancelled, show_as, response, join_url, reminder, raw)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
                  ON CONFLICT (account_id, external_id) DO UPDATE SET
                    series = excluded.series, exception = excluded.exception,
                    subject = excluded.subject, location = excluded.location,
@@ -95,7 +96,7 @@ impl Observation for CalendarObserved {
                    end_ts = excluded.end_ts, all_day = excluded.all_day,
                    cancelled = excluded.cancelled, show_as = excluded.show_as,
                    response = excluded.response, join_url = excluded.join_url,
-                   raw = excluded.raw",
+                   reminder = excluded.reminder, raw = excluded.raw",
                 params![
                     account,
                     event.external_id,
@@ -111,6 +112,7 @@ impl Observation for CalendarObserved {
                     name(event.show_as),
                     name(event.response),
                     event.join_url,
+                    event.reminder,
                     event.raw,
                 ],
             )?;
@@ -228,7 +230,7 @@ fn named<T: serde::de::DeserializeOwned>(name: String) -> Result<T> {
 }
 
 const EVENT_COLUMNS: &str = "id, account_id, subject, location, preview, start_ts, end_ts, all_day,
-     series IS NOT NULL, exception, cancelled, show_as, response, join_url";
+     series IS NOT NULL, exception, cancelled, show_as, response, join_url, reminder";
 
 fn event_of(r: &uplink_storage::rusqlite::Row) -> Result<CalendarEvent> {
     Ok(CalendarEvent {
@@ -246,6 +248,7 @@ fn event_of(r: &uplink_storage::rusqlite::Row) -> Result<CalendarEvent> {
         show_as: named(r.get(11)?)?,
         response: named(r.get(12)?)?,
         join_url: r.get(13)?,
+        reminder: r.get(14)?,
     })
 }
 
@@ -274,5 +277,5 @@ pub fn event(tx: &Transaction, id: EventId) -> Result<Option<(CalendarEvent, Str
     let Some(row) = rows.next()? else {
         return Ok(None);
     };
-    Ok(Some((event_of(row)?, row.get(14)?)))
+    Ok(Some((event_of(row)?, row.get(15)?)))
 }
