@@ -582,7 +582,8 @@ pub fn arrived(
         .optional()?)
 }
 
-/// The conversations `query` lists, newest first, after `after`.
+/// The conversations `query` lists, newest first, after `after`: up to
+/// `limit`, and where the next page is, if there are more.
 pub fn conversations(
     tx: &Transaction,
     accounts: &[ConfiguredAccount],
@@ -592,12 +593,15 @@ pub fn conversations(
     limit: u32,
 ) -> Result<Page, ListError> {
     let (condition, scope) = compile(tx, accounts, query, unknown)?;
-    let conversations = match condition {
+    let mut conversations = match condition {
         // Of none, as a query of other kinds is: nothing to look for.
         Condition::Const(false) => vec![],
-        condition => page(tx, &scope, condition, after, limit)?,
+        // One too many, to know if there are more.
+        condition => page(tx, &scope, condition, after, limit + 1)?,
     };
-    let next = (conversations.len() == limit as usize).then(|| {
+    let more = conversations.len() > limit as usize;
+    conversations.truncate(limit as usize);
+    let next = more.then(|| {
         let last = &conversations
             .last()
             .expect("a full page is not empty")

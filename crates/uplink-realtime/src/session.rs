@@ -1,5 +1,5 @@
 use crate::hub::Hub;
-use crate::window::{Listing, Window, Windows};
+use crate::window::{Held, Listing, Window, Windows};
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use futures_util::{stream::FuturesUnordered, StreamExt};
 use std::{convert::Infallible, future::Future, sync::Arc, time::Duration};
@@ -9,8 +9,8 @@ use tokio::{
     time::{interval_at, Instant, MissedTickBehavior},
 };
 use uplink_protocol::{
-    ClientRequest, ErrorCode, LogEntry, ServerError, ServerResponse, SubscriptionId, TxLogId,
-    UnknownNames, WsClientMsg, WsServerMsg, MAX_PAGE,
+    Changed, ClientRequest, ErrorCode, LogEntry, ServerError, ServerResponse, SubscriptionId,
+    TxLogId, UnknownNames, WsClientMsg, WsServerMsg, MAX_PAGE,
 };
 
 /// WebSocket subprotocol spoken by [`run_session`] (SPEC §5.1).
@@ -46,12 +46,15 @@ pub trait Backend: Send + Sync {
         -> impl Future<Output = anyhow::Result<Replay>> + Send;
 
     /// What a subscription's window lists (SPEC §5.7): the first `limit`
-    /// items of what `query` matches, however many.
+    /// items of what `query` matches, however many. What it `held` when
+    /// last listed is kept but for what `changed` since.
     fn window(
         &self,
         query: String,
         unknown: UnknownNames,
         limit: u32,
+        held: Held,
+        changed: Changed,
     ) -> impl Future<Output = Result<Listing, ServerError>> + Send;
 }
 
@@ -197,7 +200,7 @@ async fn session(
     }
     let mut followed = Followed {
         cursor: replay.head,
-        stale: false,
+        changed: Changed::default(),
     };
     // Requests answered later, by their ids.
     let mut answers = FuturesUnordered::new();
@@ -246,11 +249,9 @@ async fn session(
                 let current = (**badges.borrow_and_update()).clone();
                 send(socket, &WsServerMsg::Badges { badges: current }).await?;
             }
-            _ = minute.tick() => followed.stale = true,
-            () = std::future::ready(()), if followed.stale || windows.any_due() => {
-                if std::mem::take(&mut followed.stale) {
-                    windows.all_due();
-                }
+            _ = minute.tick() => followed.changed.merge(Changed::everything()),
+            () = std::future::ready(()), if !followed.changed.is_empty() || windows.any_due() => {
+                windows.came(&std::mem::take(&mut followed.changed));
                 refresh(socket, backend, &mut live, &mut followed, &mut windows).await?;
             }
         }
@@ -261,9 +262,9 @@ async fn session(
 struct Followed {
     /// The last entry sent.
     cursor: TxLogId,
-    /// Whether what the windows list may have changed since they were
-    /// last listed: by an entry sent since, or by time.
-    stale: bool,
+    /// What changed of what the windows list, by the entries sent (or
+    /// time) since they were last told.
+    changed: Changed,
 }
 
 /// Does a request of subscriptions (SPEC §5.7).
@@ -297,8 +298,16 @@ async fn subscription(
                     message: format!("subscription {} exists", subscription.0),
                 });
             }
-            let listing = backend.window(query.clone(), unknown, limit).await?;
             let mut window = Window::new(query, unknown, limit);
+            let listing = backend
+                .window(
+                    window.query.clone(),
+                    unknown,
+                    limit,
+                    window.held(),
+                    Changed::everything(),
+                )
+                .await?;
             let response = listed(&mut window, listing);
             windows.insert(subscription, window);
             Ok(response)
@@ -308,12 +317,20 @@ async fn subscription(
             limit,
         } => {
             let limit = page(limit)?;
-            let window = windows
-                .get_mut(subscription)
+            // Of what changed since it was listed too, so that what it
+            // holds is current, to list more after.
+            let (window, changed) = windows
+                .take_changed(subscription)
                 .ok_or_else(|| not_found(subscription))?;
             let limit = window.limit + limit;
             let listing = backend
-                .window(window.query.clone(), window.unknown, limit)
+                .window(
+                    window.query.clone(),
+                    window.unknown,
+                    limit,
+                    window.held(),
+                    changed,
+                )
                 .await?;
             window.limit = limit;
             Ok(listed(window, listing))
@@ -346,7 +363,7 @@ async fn refresh(
     followed: &mut Followed,
     windows: &mut Windows,
 ) -> Result<(), End> {
-    let Some((subscription, window)) = windows.next_due() else {
+    let Some((subscription, window, changed)) = windows.next_due() else {
         // Due as time passed, of none.
         return Ok(());
     };
@@ -354,7 +371,13 @@ async fn refresh(
     // It listed fine before: what fails now is the server's (or a label
     // gone, which the client hears of as it subscribes again).
     let listing = backend
-        .window(window.query.clone(), window.unknown, window.limit)
+        .window(
+            window.query.clone(),
+            window.unknown,
+            window.limit,
+            window.held(),
+            changed,
+        )
         .await
         .map_err(|e| End::Close {
             code: CLOSE_INTERNAL_ERROR,
@@ -425,7 +448,7 @@ async fn forward(
         Ok(entry) if entry.id <= followed.cursor => Ok(()),
         Ok(entry) => {
             followed.cursor = entry.id;
-            followed.stale |= entry.events.iter().any(|e| e.may_change_lists());
+            followed.changed.came(&entry);
             send(
                 socket,
                 &WsServerMsg::Entry {

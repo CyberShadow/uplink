@@ -6,9 +6,12 @@
 
 use crate::seen::Watermark;
 use arc_swap::ArcSwap;
-use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, HashMap, HashSet},
+};
 use uplink_config::HomeBucket;
 use uplink_email::query::{self as mail, ListError, Unknown};
 use uplink_matrix::query::{Group, Rooms};
@@ -17,8 +20,8 @@ use uplink_protocol::{
     mail::{EntryId, ListPosition, ListScope},
     matrix::RoomEventId,
     todos::Todo,
-    Arrival, Arrived, Badge, Badges, ErrorCode, Item, ItemKind, ItemPosition, LogEntry, Mark,
-    Marks, Place, ServerError, ServerEvent, ServerResponse, TxLogId, UnknownNames,
+    Arrival, Arrived, Badge, Badges, Changed, ErrorCode, Item, ItemKind, ItemPosition, Mark, Marks,
+    Place, ServerError, ServerResponse, TxLogId, UnknownNames,
 };
 use uplink_query::{Kind, Query, Term};
 use uplink_realtime::Listing;
@@ -62,58 +65,28 @@ struct Bucket {
     query: Query,
 }
 
-/// What changed of the items, as log entries say: for the badges to
-/// check again.
-#[derive(Debug, Default)]
-pub struct Changed {
-    /// The items named.
-    pub among: uplink_query::Among,
-    /// The events, which the log names only by their calendars: all.
-    pub events: bool,
-    /// What the log does not name item by item: everything, as at first.
-    pub everything: bool,
+/// The items `changed` names, to check again of a query.
+fn among(changed: &Changed) -> uplink_query::Among {
+    uplink_query::Among {
+        entries: changed.entries.iter().map(|e| e.0).collect(),
+        rooms: changed.rooms.iter().map(|r| r.0).collect(),
+        todos: changed.todos.iter().map(|t| t.0).collect(),
+        events: vec![],
+    }
 }
 
-impl Changed {
-    /// With what `entry`'s events say changed.
-    pub fn came(&mut self, entry: &LogEntry) {
-        entry.events.iter().for_each(|event| self.add(event));
-    }
+/// Whether `query` holds rooms by a space, which holds them however
+/// deeply: when a room changes, so may which rooms it holds.
+fn of_spaces(query: &Query) -> bool {
+    uplink_query::names(query, &|t| matches!(t, Term::Space(_)))
+}
 
-    /// With what `event` says changed.
-    fn add(&mut self, event: &ServerEvent) {
-        let among = &mut self.among;
-        match event {
-            ServerEvent::EntriesAdded(added) => {
-                among.entries.extend(added.entries.iter().map(|e| e.0))
-            }
-            ServerEvent::LabelsChanged(changed) => among
-                .entries
-                .extend(changed.changes.iter().map(|c| c.entry.0)),
-            ServerEvent::RoomsChanged(changed) => {
-                among.rooms.extend(changed.rooms.iter().map(|r| r.0))
-            }
-            ServerEvent::TimelineAdded(added) => among.rooms.push(added.room.0),
-            ServerEvent::TimelineFilled(filled) => among.rooms.push(filled.room.0),
-            ServerEvent::TimelineChanged(changed) => among.rooms.push(changed.room.0),
-            ServerEvent::TodosChanged(changed) => {
-                among.todos.extend(changed.todos.iter().map(|t| t.0))
-            }
-            ServerEvent::CalendarChanged(_) => self.events = true,
-            // Gone, they are of no conversation to check again; a label
-            // renamed or deleted, of what its name meant; what is seen,
-            // of every dot.
-            ServerEvent::EntriesRemoved(_)
-            | ServerEvent::LabelListChanged(_)
-            | ServerEvent::SeenChanged => self.everything = true,
-            ServerEvent::AccountChanged(_)
-            | ServerEvent::ImageRuleChanged(_)
-            | ServerEvent::DraftEdited(_)
-            | ServerEvent::DraftsChanged(_)
-            | ServerEvent::OutboxChanged(_)
-            | ServerEvent::MatrixSendsChanged(_) => {}
-        }
-    }
+/// The keys of the conversations of the entries `changed` names.
+fn conversations(tx: &Transaction, changed: &Changed) -> Result<HashSet<String>, ServerError> {
+    Ok(mail::conversation_keys(tx, &changed.entries)
+        .map_err(internal)?
+        .into_iter()
+        .collect())
 }
 
 /// The badged buckets, as configured when last derived, and what each
@@ -401,21 +374,106 @@ impl Items {
     }
 
     /// A subscription's window (SPEC §5.7): the first `limit` items of
-    /// what `query` matches, as `list` lists them, however many.
+    /// what `query` matches, as `list` lists them, however many. Of what
+    /// it `held`, only what `changed` is checked again: what the query
+    /// matches of it now takes its place, and what it no longer matches
+    /// leaves, which more after it replaces.
     pub async fn window(
         &self,
         query: String,
         unknown: UnknownNames,
         limit: u32,
+        held: uplink_realtime::Held,
+        changed: Changed,
     ) -> Result<Listing, ServerError> {
-        let (as_of, page, partial_rooms) = self.read_page(query, unknown, None, limit).await?;
-        Ok(Listing {
-            as_of,
-            items: page.items,
-            more: page.next.is_some(),
-            scope: page.scope,
-            partial_rooms,
-        })
+        if changed.everything {
+            let (as_of, page, partial_rooms) = self.read_page(query, unknown, None, limit).await?;
+            return Ok(Listing {
+                as_of,
+                items: page.items,
+                more: page.next.is_some(),
+                scope: page.scope,
+                partial_rooms,
+            });
+        }
+        let now = now();
+        let today = uplink_query::today(now);
+        // It listed, so it parses; its names were known then.
+        let query = uplink_query::parse(&query, now).map_err(|e| invalid(e.0))?;
+        let this = self.clone();
+        self.reader
+            .read(move |conn| {
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
+                let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
+                let page = |query: &Query, after, limit| {
+                    let others = others(&tx, &rooms, query, today, now)?;
+                    this.page(&tx, query, others, after, limit)
+                };
+                let conversations = conversations(&tx, &changed)?;
+                let whole_rooms = of_spaces(&query) && !changed.rooms.is_empty();
+                let touched = |item: &Item| match item {
+                    Item::Mail { .. } => conversations.contains(&item.key().0),
+                    Item::Room { room, .. } => whole_rooms || changed.rooms.contains(&room.id),
+                    Item::Todo { todo } => changed.todos.contains(&todo.id),
+                    Item::Event { .. } => changed.events,
+                };
+                // What it matches of what changed: of the first `limit`,
+                // as no more can be of the window, and one too many, as
+                // then it has more.
+                let Page {
+                    items: mut fresh,
+                    scope,
+                    ..
+                } = page(&query.clone().among(among(&changed)), None, limit + 1)?;
+                let of_kind = |kind| query.clone().and(Query::Term(Term::Kind(kind)));
+                for (kind, whole) in [(Kind::Room, whole_rooms), (Kind::Event, changed.events)] {
+                    if whole {
+                        fresh.extend(page(&of_kind(kind), None, limit + 1)?.items);
+                    }
+                }
+                // Of more than it held, what is after its last is not known
+                // whole: it is listed after it, if needed.
+                let last = held
+                    .more
+                    .then(|| held.items.last().expect("more is after some").position());
+                let mut items: Vec<Item> = held
+                    .items
+                    .into_iter()
+                    .filter(|item| !touched(item))
+                    .chain(fresh)
+                    .filter(|item| last.is_none_or(|last| item.position() <= last))
+                    .map(|item| (item.key(), item))
+                    .collect::<HashMap<_, _>>()
+                    .into_values()
+                    .collect();
+                items.sort_by_key(Item::position);
+                let more = match (items.len().cmp(&(limit as usize)), last) {
+                    (Ordering::Greater, _) => {
+                        items.truncate(limit as usize);
+                        true
+                    }
+                    // What is after it is listed: to fill it, and to know if
+                    // there is more, one too many.
+                    (Ordering::Less | Ordering::Equal, Some(last)) => {
+                        let left = limit as usize - items.len();
+                        let mut after = page(&query, Some(last), left as u32 + 1)?.items;
+                        let more = after.len() > left;
+                        after.truncate(left);
+                        items.extend(after);
+                        more
+                    }
+                    (Ordering::Less | Ordering::Equal, None) => false,
+                };
+                Ok(Listing {
+                    as_of,
+                    items,
+                    more,
+                    scope,
+                    partial_rooms: rooms.partly_searched(&query),
+                })
+            })
+            .await
     }
 
     async fn read_page(
@@ -542,12 +600,8 @@ impl Items {
                 let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
                 let seen = Seen::load(&tx).map_err(internal)?;
                 let watermark = crate::seen::latest(&tx).map_err(internal)?;
-                let entries: Vec<EntryId> =
-                    changed.among.entries.iter().map(|&e| EntryId(e)).collect();
-                let conversations: HashSet<String> = mail::conversation_keys(&tx, &entries)
-                    .map_err(internal)?
-                    .into_iter()
-                    .collect();
+                let conversations = conversations(&tx, &changed)?;
+                let among = among(&changed);
                 let mut badged = badged;
                 let mut arrivals = vec![];
                 for bucket in &mut badged.buckets {
@@ -555,16 +609,12 @@ impl Items {
                         this.hold(&tx, &rooms, &seen, bucket.badge, &query, today, now)
                     };
                     let of_kind = |kind| bucket.query.clone().and(Query::Term(Term::Kind(kind)));
-                    // A space's rooms are of it however deeply, which it
-                    // changes alone.
-                    let spaces =
-                        uplink_query::names(&bucket.query, &|t| matches!(t, Term::Space(_)));
                     let whole = Whole {
-                        rooms: spaces && !changed.among.rooms.is_empty(),
+                        rooms: of_spaces(&bucket.query) && !changed.rooms.is_empty(),
                         events: changed.events,
                     };
                     let fresh = Fresh {
-                        among: hold(bucket.query.clone().among(changed.among.clone()))?,
+                        among: hold(bucket.query.clone().among(among.clone()))?,
                         rooms: match whole.rooms {
                             true => Some(hold(of_kind(Kind::Room))?.rooms),
                             false => None,
@@ -574,12 +624,12 @@ impl Items {
                             false => None,
                         },
                     };
-                    bucket.held.update(&conversations, &changed.among, fresh);
+                    bucket.held.update(&conversations, &among, fresh);
                     // What came is of what was stored since: what the log
                     // named.
                     let came = uplink_query::Among {
-                        entries: changed.among.entries.clone(),
-                        rooms: changed.among.rooms.clone(),
+                        entries: among.entries.clone(),
+                        rooms: among.rooms.clone(),
                         ..Default::default()
                     };
                     let limit = (came.entries.len() + came.rooms.len()) as u32;
@@ -902,9 +952,10 @@ mod tests {
     }
 
     /// Kept by checking again what each log entry names, the badges are
-    /// as derived anew, what each bucket holds too, and what came.
+    /// as derived anew, what each bucket holds too, and what came; and
+    /// windows are as listed anew.
     #[tokio::test]
-    async fn kept_badges_are_as_derived_anew() {
+    async fn kept_badges_and_windows_are_as_derived_anew() {
         use uplink_email::mailbox::{EntryLabels, MailboxObserved, NewEntry, ObservedLabel};
         use uplink_protocol::{mail::LabelKind, todos::TodoEdit, ServerResponse};
         let dir = tempfile::tempdir().unwrap();
@@ -1012,6 +1063,28 @@ mod tests {
             bucket("Later", "is:todo OR label:Label_1", Badge::Count),
         ]);
         let mut entries = hub.subscribe();
+        // Few, for items to leave them, and more to come in after.
+        let window = |query: &str, limit, held, changed| {
+            items.window(query.into(), UnknownNames::False, limit, held, changed)
+        };
+        let anew = || uplink_realtime::Held {
+            items: vec![],
+            more: false,
+        };
+        let mut windows = vec![];
+        for (query, limit) in [
+            ("is:unread", 2),
+            ("is:starred OR is:mention", 3),
+            ("is:todo OR label:Label_1", 2),
+            ("is:unread OR is:todo", 4),
+            ("label:INBOX", 3),
+        ] {
+            let listing = window(query, limit, anew(), Changed::everything())
+                .await
+                .unwrap();
+            windows.push((query, limit, listing));
+        }
+        let mut left = 0;
         let (mut badged, first) = items.badged(None).await.unwrap();
         let mut since = first.watermark;
         let mut todo_ids = vec![];
@@ -1027,15 +1100,19 @@ mod tests {
         for step in 0..60usize {
             let labelled = sets[step % sets.len()];
             match step % 6 {
-                // Mail, into one of a few conversations.
+                // Mail, into one of a few conversations; or, as a sync
+                // lists them, into several at once.
                 0 | 3 => {
                     let id = format!("m{step}");
                     let thread = format!("t{}", step % 4);
+                    let mut added = vec![entry(&id, &thread, labelled)];
+                    if step % 4 == 3 {
+                        added.extend((1..5).map(|n| {
+                            entry(&format!("{id}-{n}"), &format!("b{step}-{n}"), labelled)
+                        }));
+                    }
                     dispatcher
-                        .observe(
-                            "a".into(),
-                            observed(None, vec![entry(&id, &thread, labelled)], vec![]),
-                        )
+                        .observe("a".into(), observed(None, added, vec![]))
                         .await
                         .unwrap();
                 }
@@ -1093,6 +1170,30 @@ mod tests {
                 changed.came(&entry);
             }
             assert!(!changed.everything, "step {step}");
+            for (query, limit, listing) in &mut windows {
+                let held = uplink_realtime::Held {
+                    items: listing.items.clone(),
+                    more: listing.more,
+                };
+                let kept = window(query, *limit, held, changed.clone()).await.unwrap();
+                let listed = window(query, *limit, anew(), Changed::everything())
+                    .await
+                    .unwrap();
+                let keys = |l: &Listing| l.items.iter().map(Item::key).collect::<Vec<_>>();
+                assert_eq!(keys(&kept), keys(&listed), "{query}, step {step}");
+                assert_eq!(kept.items, listed.items, "{query}, step {step}");
+                assert_eq!(kept.more, listed.more, "{query}, step {step}");
+                assert_eq!(
+                    kept.partial_rooms, listed.partial_rooms,
+                    "{query}, step {step}"
+                );
+                left += listing
+                    .items
+                    .iter()
+                    .filter(|item| !kept.items.iter().any(|k| k.key() == item.key()))
+                    .count();
+                *listing = kept;
+            }
             let (kept, derived) = items.rebadged(badged, changed, since).await.unwrap();
             let (anew, derived_anew) = items.badged(Some(since)).await.unwrap();
             let held = |b: &Badged| {
@@ -1111,6 +1212,30 @@ mod tests {
         // Something was counted, and something came.
         assert!(badged.badges().marks.home.count > 0);
         assert!(came > 0);
+        assert!(left > 0, "items left windows");
+        // An empty window, and more come at once than it holds.
+        let listing = window("label:SPAM", 2, anew(), Changed::everything())
+            .await
+            .unwrap();
+        assert!(listing.items.is_empty());
+        let added = (0..3)
+            .map(|n| entry(&format!("s{n}"), &format!("s{n}"), &["SPAM"]))
+            .collect();
+        dispatcher
+            .observe("a".into(), observed(None, added, vec![]))
+            .await
+            .unwrap();
+        let mut changed = Changed::default();
+        while let Ok(entry) = entries.try_recv() {
+            changed.came(&entry);
+        }
+        let held = uplink_realtime::Held {
+            items: listing.items,
+            more: listing.more,
+        };
+        let kept = window("label:SPAM", 2, held, changed).await.unwrap();
+        assert_eq!(kept.items.len(), 2);
+        assert!(kept.more);
     }
 
     /// What came into a badged bucket since the watermark is told of, by
@@ -1354,7 +1479,16 @@ mod tests {
         let mut windows = vec![];
         for bucket in &buckets {
             let window = items
-                .window(bucket.query.clone(), UnknownNames::False, 10)
+                .window(
+                    bucket.query.clone(),
+                    UnknownNames::False,
+                    10,
+                    uplink_realtime::Held {
+                        items: vec![],
+                        more: false,
+                    },
+                    Changed::everything(),
+                )
                 .await
                 .unwrap();
             windows.push((bucket.name.as_str(), window));
@@ -1379,7 +1513,16 @@ mod tests {
         // As a search's, the name is refused.
         assert_eq!(
             items
-                .window(buckets[2].query.clone(), UnknownNames::Invalid, 10)
+                .window(
+                    buckets[2].query.clone(),
+                    UnknownNames::Invalid,
+                    10,
+                    uplink_realtime::Held {
+                        items: vec![],
+                        more: false
+                    },
+                    Changed::everything()
+                )
                 .await
                 .err()
                 .unwrap()

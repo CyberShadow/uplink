@@ -3,13 +3,13 @@
 //! into them from others, which it sends as notices (SPEC §12.16).
 
 use crate::{
-    items::{Badged, Changed, Items},
+    items::{Badged, Items},
     seen::Watermark,
 };
 use std::{sync::Arc, time::Duration};
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::time::{interval_at, Instant, MissedTickBehavior};
-use uplink_protocol::Notice;
+use uplink_protocol::{Changed, Notice};
 use uplink_realtime::Hub;
 
 /// Time alone moves items, into `due:today` or out of `newer_than:`.

@@ -1060,28 +1060,73 @@ pub enum ServerEvent {
     SeenChanged,
 }
 
-impl ServerEvent {
-    /// Whether it may change what a query lists (SPEC §8.7): which items
-    /// match, in what order, or what they show.
-    pub fn may_change_lists(&self) -> bool {
-        match self {
-            Self::EntriesAdded(_)
-            | Self::EntriesRemoved(_)
-            | Self::LabelsChanged(_)
-            | Self::LabelListChanged(_)
-            | Self::RoomsChanged(_)
-            | Self::TimelineAdded(_)
-            | Self::TimelineFilled(_)
-            | Self::TimelineChanged(_)
-            | Self::TodosChanged(_)
-            | Self::CalendarChanged(_)
-            | Self::SeenChanged => true,
-            Self::ImageRuleChanged(_)
-            | Self::AccountChanged(_)
-            | Self::DraftEdited(_)
-            | Self::DraftsChanged(_)
-            | Self::OutboxChanged(_)
-            | Self::MatrixSendsChanged(_) => false,
+/// What changed of the items, as log entries say (SPEC §8.7): which
+/// items, in what order, or what they show. For what is derived of them,
+/// lists and badges, to be checked again of those alone.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Changed {
+    /// Mail by its entries: each of its conversation.
+    pub entries: Vec<EntryId>,
+    pub rooms: Vec<RoomId>,
+    pub todos: Vec<TodoId>,
+    /// The events, which the log names only by their calendars: all.
+    pub events: bool,
+    /// What the log does not name item by item: everything.
+    pub everything: bool,
+}
+
+impl Changed {
+    /// Of everything.
+    pub fn everything() -> Self {
+        Self {
+            everything: true,
+            ..Self::default()
+        }
+    }
+
+    /// Whether nothing changed.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// With what `entry`'s events say changed.
+    pub fn came(&mut self, entry: &LogEntry) {
+        entry.events.iter().for_each(|event| self.add(event));
+    }
+
+    /// With what changed in `other` too.
+    pub fn merge(&mut self, other: Changed) {
+        self.entries.extend(other.entries);
+        self.rooms.extend(other.rooms);
+        self.todos.extend(other.todos);
+        self.events |= other.events;
+        self.everything |= other.everything;
+    }
+
+    fn add(&mut self, event: &ServerEvent) {
+        match event {
+            ServerEvent::EntriesAdded(added) => self.entries.extend(&added.entries),
+            ServerEvent::LabelsChanged(changed) => {
+                self.entries.extend(changed.changes.iter().map(|c| c.entry))
+            }
+            ServerEvent::RoomsChanged(changed) => self.rooms.extend(&changed.rooms),
+            ServerEvent::TimelineAdded(added) => self.rooms.push(added.room),
+            ServerEvent::TimelineFilled(filled) => self.rooms.push(filled.room),
+            ServerEvent::TimelineChanged(changed) => self.rooms.push(changed.room),
+            ServerEvent::TodosChanged(changed) => self.todos.extend(&changed.todos),
+            ServerEvent::CalendarChanged(_) => self.events = true,
+            // Gone, they are of no conversation to check again; a label
+            // renamed or deleted, of what its name meant; what is seen,
+            // of what every item shows unread.
+            ServerEvent::EntriesRemoved(_)
+            | ServerEvent::LabelListChanged(_)
+            | ServerEvent::SeenChanged => self.everything = true,
+            ServerEvent::ImageRuleChanged(_)
+            | ServerEvent::AccountChanged(_)
+            | ServerEvent::DraftEdited(_)
+            | ServerEvent::DraftsChanged(_)
+            | ServerEvent::OutboxChanged(_)
+            | ServerEvent::MatrixSendsChanged(_) => {}
         }
     }
 }

@@ -3,8 +3,8 @@
 
 use std::collections::{hash_map::Entry, HashMap, HashSet, VecDeque};
 use uplink_protocol::{
-    mail::ListScope, matrix::RoomId, Item, ItemKey, Listed, SubscriptionId, TxLogId, UnknownNames,
-    WindowChange,
+    mail::ListScope, matrix::RoomId, Changed, Item, ItemKey, Listed, SubscriptionId, TxLogId,
+    UnknownNames, WindowChange,
 };
 
 /// What a window lists, as of a log position.
@@ -18,6 +18,15 @@ pub struct Listing {
     pub scope: ListScope,
     /// The rooms it looked through not whole ([`WindowChange`]'s).
     pub partial_rooms: Vec<RoomId>,
+}
+
+/// What a window holds, as the client was last sent it: to be listed
+/// again from, checking again only what changed.
+pub struct Held {
+    /// The most recently active first.
+    pub items: Vec<Item>,
+    /// Whether its query matches more.
+    pub more: bool,
 }
 
 /// A session's windows, by subscription, and those due to be listed
@@ -43,38 +52,46 @@ impl Windows {
         self.windows.contains_key(&subscription)
     }
 
-    pub fn get_mut(&mut self, subscription: SubscriptionId) -> Option<&mut Window> {
-        self.windows.get_mut(&subscription)
-    }
-
     pub fn remove(&mut self, subscription: SubscriptionId) -> Option<Window> {
         self.due.retain(|&due| due != subscription);
         self.windows.remove(&subscription)
     }
 
-    /// What every window lists may have changed: each is due, after those
-    /// due already.
-    pub fn all_due(&mut self) {
-        for &subscription in self.windows.keys() {
+    /// What changed may change what every window lists: each is due,
+    /// after those due already, to check again what changed since it was
+    /// last listed.
+    pub fn came(&mut self, changed: &Changed) {
+        for (&subscription, window) in &mut self.windows {
+            window.changed.merge(changed.clone());
             if !self.due.contains(&subscription) {
                 self.due.push_back(subscription);
             }
         }
     }
 
+    /// What changed since the window was last listed, as it is listed
+    /// now, outside of its turn.
+    pub fn take_changed(&mut self, subscription: SubscriptionId) -> Option<(&mut Window, Changed)> {
+        let window = self.windows.get_mut(&subscription)?;
+        self.due.retain(|&due| due != subscription);
+        let changed = std::mem::take(&mut window.changed);
+        Some((window, changed))
+    }
+
     pub fn any_due(&self) -> bool {
         !self.due.is_empty()
     }
 
-    /// The window due the longest, no longer due.
-    pub fn next_due(&mut self) -> Option<(SubscriptionId, &mut Window)> {
+    /// The window due the longest, no longer due, and what changed since
+    /// it was last listed.
+    pub fn next_due(&mut self) -> Option<(SubscriptionId, &mut Window, Changed)> {
         let subscription = self.due.pop_front()?;
-        Some((
-            subscription,
-            self.windows
-                .get_mut(&subscription)
-                .expect("due windows are"),
-        ))
+        let window = self
+            .windows
+            .get_mut(&subscription)
+            .expect("due windows are");
+        let changed = std::mem::take(&mut window.changed);
+        Some((subscription, window, changed))
     }
 }
 
@@ -87,6 +104,8 @@ pub struct Window {
     items: HashMap<ItemKey, Item>,
     more: bool,
     partial_rooms: Vec<RoomId>,
+    /// What changed since it was last listed.
+    changed: Changed,
 }
 
 impl Window {
@@ -99,6 +118,17 @@ impl Window {
             items: HashMap::new(),
             more: false,
             partial_rooms: vec![],
+            changed: Changed::default(),
+        }
+    }
+
+    /// What it holds.
+    pub fn held(&self) -> Held {
+        let mut items: Vec<Item> = self.items.values().cloned().collect();
+        items.sort_by_key(Item::position);
+        Held {
+            items,
+            more: self.more,
         }
     }
 
@@ -211,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn windows_are_listed_in_turn() {
+    fn windows_are_listed_in_turn_of_what_changed_since() {
         let mut windows = Windows::default();
         for id in 1..=3 {
             windows.insert(
@@ -219,23 +249,38 @@ mod tests {
                 Window::new("q".into(), UnknownNames::Invalid, 1),
             );
         }
-        let next = |windows: &mut Windows| windows.next_due().map(|(id, _)| id.0);
+        let next =
+            |windows: &mut Windows| windows.next_due().map(|(id, _, changed)| (id.0, changed));
+        let todos = |ids: &[i64]| Changed {
+            todos: ids.iter().map(|&id| TodoId(id)).collect(),
+            ..Changed::default()
+        };
         assert_eq!(next(&mut windows), None);
-        windows.all_due();
-        let first = next(&mut windows).unwrap();
-        // Due again before the others are listed, it is listed after them.
-        windows.all_due();
+        windows.came(&todos(&[1]));
+        let (first, changed) = next(&mut windows).unwrap();
+        assert_eq!(changed, todos(&[1]));
+        // Due again before the others are listed, it is listed after them,
+        // and they of all that changed since they were.
+        windows.came(&todos(&[2]));
         let mut rest = vec![next(&mut windows).unwrap(), next(&mut windows).unwrap()];
-        assert!(!rest.contains(&first));
-        assert_eq!(next(&mut windows), Some(first));
+        assert!(rest
+            .iter()
+            .all(|(id, changed)| *id != first && *changed == todos(&[1, 2])));
+        assert_eq!(next(&mut windows), Some((first, todos(&[2]))));
         assert_eq!(next(&mut windows), None);
+        // Listed out of turn, it is due no more.
+        windows.came(&todos(&[3]));
+        let (_, changed) = windows.take_changed(SubscriptionId(first)).unwrap();
+        assert_eq!(changed, todos(&[3]));
         // Gone, it is due no more.
-        windows.all_due();
+        windows.came(&todos(&[4]));
         windows.remove(SubscriptionId(first));
-        rest.sort();
+        rest.sort_by_key(|(id, _)| *id);
         let mut listed = vec![next(&mut windows).unwrap(), next(&mut windows).unwrap()];
-        listed.sort();
-        assert_eq!(listed, rest);
+        listed.sort_by_key(|(id, _)| *id);
+        let ids = |l: &[(u64, Changed)]| l.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+        assert_eq!(ids(&listed), ids(&rest));
+        assert!(listed.iter().all(|(_, changed)| *changed == todos(&[3, 4])));
         assert!(!windows.any_due());
     }
 }

@@ -35,9 +35,9 @@ use uplink_email::{gmail, imap, jmap, m365, pop3, query::ConfiguredAccount, serv
 use uplink_matrix::service::Matrix;
 use uplink_protocol::{
     mail::{ConversationAction, ConversationSet, MailProvider},
-    ClientRequest, ErrorCode, Notice, ServerError, ServerResponse, TxLogId, UnknownNames,
+    Changed, ClientRequest, ErrorCode, Notice, ServerError, ServerResponse, TxLogId, UnknownNames,
 };
-use uplink_realtime::{Answer, Backend, Hub, Listing, Replay};
+use uplink_realtime::{Answer, Backend, Held, Hub, Listing, Replay};
 use uplink_storage::seal::MasterKey;
 use uplink_todos::service::Todos;
 use uplink_tx_log::{Dispatcher, LogReader, Registry, UndoError};
@@ -1321,8 +1321,12 @@ impl Backend for Services {
         query: String,
         unknown: UnknownNames,
         limit: u32,
+        held: Held,
+        changed: Changed,
     ) -> Result<Listing, ServerError> {
-        self.items.window(query, unknown, limit).await
+        self.items
+            .window(query, unknown, limit, held, changed)
+            .await
     }
 }
 

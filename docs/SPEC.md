@@ -1099,16 +1099,25 @@ whether the query matches more than it has, and, as `Items` says, the
 rooms it looked through of which not the whole history is stored
 (`partial_rooms`), which change as it is fetched. Applied to what the client
 had, it gives what the window has now; the client orders the items by
-position. The session keeps, of each window, its query, its size, and
-the items it last sent: after a log entry with an event that may change
-what a query lists (`ServerEvent::may_change_lists`: of mail, rooms and
-their timelines, to-dos, calendars and what is seen, not a draft's
-keystrokes), once the entries that came meanwhile are sent, and each
-minute (time alone moves items, into `due:today`), it lists each window
-again as of then, and sends `WindowChanged { subscription, change }`
-for those that changed, after the entries it reflects. It lists them one
-at a time, in turn, those due longest first, each due once however many
-entries came: a request waits for one listing at most. So the client
+position. The session keeps, of each window, its query, its size, the
+items it last sent, and what changed of the items since (`Changed`, of
+the events of the entries it sent: mail by its entries, rooms, to-dos;
+the events, named only by their calendars, whole; of none, a draft's
+keystrokes). Once the entries that came meanwhile are sent, it lists
+each window again as of then, and sends `WindowChanged { subscription,
+change }` for those that changed, after the entries it reflects. Of what
+it held, it checks again only what changed: what the query matches of
+it (of mail, of the conversations of the entries named; of a query
+naming a space, its rooms whole, as a room changed may change which
+rooms it holds) takes its place, of as many as the window holds (and
+one too many, to know if there are more), and what the query no longer
+matches leaves; what comes after what it held is listed after it, to
+fill it. Each minute (time alone moves items, into `due:today`), and
+after an event the log does not name items by (entries removed, a
+label list changed, a place seen, §12.15), it lists each whole. It
+lists them one at a time, in turn, those due longest first, each due
+once however many entries came: a request waits for one listing at
+most, and a listing reads what changed, not the window. So the client
 needs no reloads, and neither judges what a query matches, nor
 truncates what it has paged through: a window has exactly the first
 items it was widened to, whatever comes and goes before them; an item

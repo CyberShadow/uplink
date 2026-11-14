@@ -9,10 +9,10 @@ use uplink_protocol::{
     compose::{DraftId, DraftsChanged},
     mail::ListScope,
     todos::{Todo, TodoId, TodosChanged},
-    ClientRequest, ErrorCode, Item, LogEntry, ServerError, ServerEvent, ServerResponse, Source,
-    SubscriptionId, TxLogId, UnknownNames, WindowChange, WsClientMsg, WsServerMsg,
+    Changed, ClientRequest, ErrorCode, Item, LogEntry, ServerError, ServerEvent, ServerResponse,
+    Source, SubscriptionId, TxLogId, UnknownNames, WindowChange, WsClientMsg, WsServerMsg,
 };
-use uplink_realtime::{run_session, Answer, Backend, Hub, Listing, Replay};
+use uplink_realtime::{run_session, Answer, Backend, Held, Hub, Listing, Replay};
 
 /// What every query matches, the most recently active first, as of the
 /// last entry published.
@@ -41,6 +41,8 @@ impl Backend for Lists {
         _query: String,
         _unknown: UnknownNames,
         limit: u32,
+        _held: Held,
+        _changed: Changed,
     ) -> Result<Listing, ServerError> {
         let state = self.0.lock().unwrap();
         Ok(Listing {

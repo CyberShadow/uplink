@@ -135,7 +135,7 @@ interface FakeWindow {
 }
 
 /** Whether it may change what a query lists, as the server says
- * (`ServerEvent::may_change_lists`). */
+ * (`Changed`, of what each event names). */
 function mayChangeLists(event: ServerEvent): boolean {
   switch (event.type) {
     case 'entries_added':
