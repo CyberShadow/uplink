@@ -2333,7 +2333,10 @@ stored yet, newest first, until one that is, which closes the gap; they
 go just before the gap's event, one apart (so no position ever
 changes; a gap holds 2^20 - 1 events). A new gap before the oldest
 replaces the old, unless the gap closed or the room's start was
-reached. It logs `TimelineFilled` (the listed events added, and the
+reached. The account's own read receipts and fully-read marker, as its
+client keeps them, move the markers as a sync's do (§9.5): the events a
+sync named them for may not have been stored then, and those fetched
+before them are read. It logs `TimelineFilled` (the listed events added, and the
 gap left), and `TimelineChanged` of the events they relate to.
 Events that arrive undecryptable are decrypted once their keys come
 (the observation `matrix.decrypted`, which updates the stored event in

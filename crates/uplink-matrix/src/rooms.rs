@@ -1586,6 +1586,10 @@ pub struct Filled {
     pub events: Vec<ObservedEvent>,
     /// Whether the homeserver has no earlier events.
     pub start: bool,
+    /// The events of the account's own read receipts, and of its
+    /// fully-read marker, which may be among those fetched (SPEC §9.5).
+    pub own_receipts: Vec<String>,
+    pub fully_read: Option<String>,
 }
 
 impl Observation for Filled {
@@ -1661,6 +1665,9 @@ impl Observation for Filled {
         };
         let redacted = redact(tx, self.room, &self.version)?;
         let touched = touched(tx, &added, &redacted)?;
+        // What is before them is read, as of synced events.
+        observe_receipts(tx, self.room, &self.own_receipts)?;
+        observe_fully_read(tx, self.room, self.fully_read.as_deref())?;
         let listed: Vec<RoomEventId> = listed_events(tx, self.room, &added)?
             .into_iter()
             .map(|e| e.id)

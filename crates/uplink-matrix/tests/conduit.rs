@@ -1626,12 +1626,34 @@ async fn gaps_are_filled_from_the_homeserver() {
             bob_room
                 .send(RoomMessageEventContent::text_plain(body))
                 .await
-                .unwrap();
+                .unwrap()
+                .response
+                .event_id
         }
     };
+    let mut read = None;
     for i in 0..60 {
-        send(format!("before {i}")).await;
+        let event = send(format!("before {i}")).await;
+        if i == 29 {
+            read = Some(event);
+        }
     }
+    // Read on another device up to there, which the first sync's
+    // timeline does not reach.
+    alice_phone
+        .sync_once(SyncSettings::default())
+        .await
+        .unwrap();
+    alice_phone
+        .get_room(bob_room.room_id())
+        .unwrap()
+        .send_single_receipt(
+            matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType::Read,
+            matrix_sdk::ruma::events::receipt::ReceiptThread::Unthreaded,
+            read.unwrap(),
+        )
+        .await
+        .unwrap();
 
     let uplink = Uplink::new(&homeserver);
     let sync = uplink.pair_and_sync().await;
@@ -1685,6 +1707,11 @@ async fn gaps_are_filled_from_the_homeserver() {
         .collect();
     assert_eq!(bodies, expected, "every message, in order, once");
     assert_eq!(events[0].kind, "m.room.create", "back to the room's start");
+    assert_eq!(
+        uplink.room(bob_room.room_id()).await.unwrap().unread,
+        30 + 40,
+        "those fetched before the receipt's event are read"
+    );
     assert!(events.windows(2).all(|w| w[0].pos < w[1].pos));
     // Paging by position, as clients do.
     let middle = events

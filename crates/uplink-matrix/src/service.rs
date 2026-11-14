@@ -528,6 +528,8 @@ impl Matrix {
                         version: page.version,
                         events: page.events,
                         start: page.start,
+                        own_receipts: page.own_receipts,
+                        fully_read: page.fully_read,
                     },
                 )
                 .await
