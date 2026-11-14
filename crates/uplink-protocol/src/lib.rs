@@ -546,7 +546,7 @@ pub enum ServerResponse {
         scope: mail::ListScope,
     },
     Message {
-        message: mail::MessageContent,
+        message: Box<mail::MessageContent>,
     },
     Drafts {
         as_of: TxLogId,

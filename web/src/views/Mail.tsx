@@ -739,7 +739,7 @@ function ConversationView(props: {
   const responder = (kind: Response, entry: Entry) => async () => {
     const content = await mail.loadMessage(entry.message)
     if (!content) return
-    const own = mail.accounts.value?.find((a) => a.id === entry.account)?.identities ?? []
+    const own = mail.accounts.value!.find((a) => a.id === entry.account)!.identities
     const draft = respond(kind, content, own)
     const id = await drafts.create(entry.account, draft.content, draft.inReplyTo)
     if (!id) return

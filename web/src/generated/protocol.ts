@@ -577,6 +577,13 @@ export type ListPosition = { received_at: number, entry: EntryId, };
 
 export type MessageContent = { id: MessageId, message_id: string, subject: string | null, from_addr: string | null, from_name: string | null, to_addrs: Array<string>, cc_addrs: Array<string>, 
 /**
+ * The addresses it was sent to as the user's mail server says, the
+ * envelope's before forwarding rewrote it (`X-Original-To:`), and as
+ * mail servers delivered it (`Delivered-To:`, latest first): what a
+ * response is from (SPEC §8.5).
+ */
+original_to: Array<string>, delivered_to: Array<string>, 
+/**
  * The `Date:` header, unix seconds.
  */
 date_sent: number | null, body_text: string, 
@@ -1509,4 +1516,4 @@ export type EventChangeKind = "create" | "update" | "delete";
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "82b90214acd0f7bb"
+export const PROTOCOL_VERSION = "a0ffb6cac6b25202"

@@ -97,6 +97,31 @@ pub fn parse(raw: &[u8]) -> Parsed {
     }
 }
 
+/// The addresses the message was sent to as the envelope had them:
+/// `X-Original-To:`'s, then `Delivered-To:`'s, each in the order of the
+/// headers (the latest delivery's first).
+pub fn envelope_recipients(raw: &[u8]) -> (Vec<String>, Vec<String>) {
+    let parser = MessageParser::new()
+        .header_address(HeaderName::Other("X-Original-To".into()))
+        .header_address(HeaderName::DeliveredTo);
+    let Some(message) = parser.parse_headers(raw) else {
+        return (vec![], vec![]);
+    };
+    let of = |name: HeaderName| -> Vec<String> {
+        message
+            .header_values(name)
+            .filter_map(|value| value.as_address())
+            .flat_map(Address::iter)
+            .filter_map(|a| a.address())
+            .map(str::to_owned)
+            .collect()
+    };
+    (
+        of(HeaderName::Other("X-Original-To".into())),
+        of(HeaderName::DeliveredTo),
+    )
+}
+
 /// Whether the message has attachments other than images its HTML body
 /// shows.
 pub fn has_attachments(raw: &[u8]) -> bool {
@@ -256,6 +281,36 @@ pub(crate) mod tests {
 
     fn raw(headers: &str, body: &str) -> Vec<u8> {
         format!("{}\r\n\r\n{body}", headers.replace('\n', "\r\n")).into_bytes()
+    }
+
+    #[test]
+    fn envelope_recipients_are_the_headers() {
+        let raw = raw(
+            "Delivered-To: thecybershadow@gmail.com\n\
+             Received: by x\n\
+             x-original-to: shop@example.com\n\
+             delivered-to: Alice+net@gmail.com\n\
+             Delivered-To: <alice@example.com>\n\
+             From: bob@example.org\n\
+             To: someone@example.org",
+            "hi",
+        );
+        assert_eq!(
+            envelope_recipients(&raw),
+            (
+                vec!["shop@example.com".to_owned()],
+                vec![
+                    "thecybershadow@gmail.com".to_owned(),
+                    "Alice+net@gmail.com".to_owned(),
+                    "alice@example.com".to_owned()
+                ]
+            )
+        );
+        assert_eq!(envelope_recipients(&raw_without()), (vec![], vec![]));
+    }
+
+    fn raw_without() -> Vec<u8> {
+        raw("From: bob@example.org", "hi")
     }
 
     #[test]

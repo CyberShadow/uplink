@@ -151,6 +151,7 @@ impl Mail {
                     })?;
                 let raw = store.get(&VariantHash(variant)).map_err(internal)?;
                 let parsed = parse(&raw);
+                let (original_to, delivered_to) = parse::envelope_recipients(&raw);
                 let (body_html, remote) = match html_body(&raw) {
                     Some((html, remote)) => (Some(html), remote),
                     None => (None, Remote::default()),
@@ -162,7 +163,7 @@ impl Mail {
                 )
                 .map_err(internal)?;
                 Ok(ServerResponse::Message {
-                    message: MessageContent {
+                    message: Box::new(MessageContent {
                         id: message,
                         message_id,
                         subject: parsed.subject,
@@ -170,6 +171,8 @@ impl Mail {
                         from_name: parsed.from_name,
                         to_addrs: parsed.to_addrs,
                         cc_addrs: parsed.cc_addrs,
+                        original_to,
+                        delivered_to,
                         date_sent: parsed.date_sent,
                         body_text: parsed.body_text,
                         body_html,
@@ -181,7 +184,7 @@ impl Mail {
                         tracking_pixels: remote.pixels,
                         image_rules,
                         attachments: parse::attachments(&raw),
-                    },
+                    }),
                 })
             })
             .await

@@ -2,7 +2,7 @@
 
 import type { DraftContent, Identity, MessageContent, MessageId } from '../generated/protocol'
 import { dateTime } from '../format'
-import { isOwn } from '../identities'
+import { defaultAddress, isOwn } from '../identities'
 
 export type Response = 'reply' | 'replyAll' | 'forward'
 
@@ -14,9 +14,10 @@ export interface NewDraft {
 export const EMPTY: DraftContent = { from: '', to: '', cc: '', bcc: '', subject: '', body: '' }
 
 /** A draft responding to `message`, from the account of identities
- * `own`. */
+ * `own`: from the address it was sent to. */
 export function respond(kind: Response, message: MessageContent, own: readonly Identity[]): NewDraft {
   const subject = message.subject ?? ''
+  const from = sentTo(message, own)
   const sender = message.from_addr ? mailbox(message.from_name, message.from_addr) : ''
   const date = dateTime((message.date_sent ?? 0) * 1000)
   if (kind === 'forward') {
@@ -30,6 +31,7 @@ export function respond(kind: Response, message: MessageContent, own: readonly I
     return {
       content: {
         ...EMPTY,
+        from,
         subject: prefixed('Fwd', subject),
         body: `<p></p><p>${header.map(escape).join('<br>')}</p>${paragraphs(message.body_text)}`,
       },
@@ -45,6 +47,7 @@ export function respond(kind: Response, message: MessageContent, own: readonly I
   return {
     content: {
       ...EMPTY,
+      from,
       to: sender,
       cc: others.join(', '),
       subject: prefixed('Re', subject),
@@ -52,6 +55,26 @@ export function respond(kind: Response, message: MessageContent, own: readonly I
     },
     inReplyTo: message.id,
   }
+}
+
+/** The address of the account's that `message` was sent to, to respond
+ * from (SPEC §8.5): its `X-Original-To`, which the user's mail server
+ * adds as it forwards; a `Delivered-To` but the account's own (every
+ * copy in the account is delivered to it), as forwarding rewrites
+ * them to addresses that are not the user's own, but for an identity's;
+ * its To, its Cc, and its From, for the user's own mail. Empty, for the
+ * account's own address, if none is. */
+function sentTo(message: MessageContent, own: readonly Identity[]): string {
+  const account = defaultAddress(own).toLowerCase()
+  const delivered = message.delivered_to.filter((addr) => addr.toLowerCase() !== account)
+  const found = [
+    ...message.original_to,
+    ...delivered,
+    ...message.to_addrs,
+    ...message.cc_addrs,
+    ...(message.from_addr ? [message.from_addr] : []),
+  ].find((addr) => isOwn(own, addr))
+  return found === undefined || found.toLowerCase() === account ? '' : found
 }
 
 function prefixed(prefix: string, subject: string): string {

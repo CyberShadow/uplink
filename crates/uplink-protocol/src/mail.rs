@@ -240,6 +240,12 @@ pub struct MessageContent {
     pub from_name: Option<String>,
     pub to_addrs: Vec<String>,
     pub cc_addrs: Vec<String>,
+    /// The addresses it was sent to as the user's mail server says, the
+    /// envelope's before forwarding rewrote it (`X-Original-To:`), and as
+    /// mail servers delivered it (`Delivered-To:`, latest first): what a
+    /// response is from (SPEC §8.5).
+    pub original_to: Vec<String>,
+    pub delivered_to: Vec<String>,
     /// The `Date:` header, unix seconds.
     pub date_sent: Option<i64>,
     pub body_text: String,

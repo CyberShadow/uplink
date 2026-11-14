@@ -1754,7 +1754,22 @@ IMAP's per-folder copies, and a REST fake is practical to test against
   §8.11, §8.13).
 - **Replies and forwards** are prefilled by the client from the loaded
   message: `Re:`/`Fwd:` subject, recipients (reply-all drops the
-  account's identities, §3.2), and the body quoted. A forward takes the
+  account's identities, §3.2), and the body quoted. A response is from
+  the address of the account's the original was sent to (as the
+  message has it, `MessageContent.original_to` and `delivered_to`
+  among its headers): its `X-Original-To:`, which the user's mail
+  server adds before forwarding rewrites the envelope; else a
+  `Delivered-To:` (as forwarding rewrites those, to addresses such as
+  `alice+net@gmail.com`, one counts only as an identity's, and not the
+  account's own address, to which every copy in the account is
+  delivered); else its To, else its Cc; else its From, for the user's
+  own mail followed up; else, or if that is the account's own address,
+  the From is left empty, for it. A domain identity's yields the
+  address itself. The headers are of the message's preferred copy
+  (§4.4), which may be another account's: only the responding
+  account's identities count among them. Mail Bcc'd to the user, or
+  through a list, names none, until the mail server adds
+  `X-Original-To:`; it is from the account's own address. A forward takes the
   original's files along (§7.4).
 
 ### 8.6 Persistence of sent mail

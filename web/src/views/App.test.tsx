@@ -1128,6 +1128,25 @@ describe('compose', () => {
     await screen.findByText('Body of First')
   })
 
+  it('replies from the address the message was sent to', async () => {
+    server.addAccount('home', [], [{ domain: 'shop.example', name: 'Shop' }])
+    const sent = server.deliver('home', 'Order')
+    server.recipients.set(sent.message, {
+      to_addrs: ['undisclosed-recipients:;'],
+      delivered_to: ['home@example.com', 'home+fwd@example.com'],
+      original_to: ['orders@shop.example'],
+    })
+    const user = await start('/mail/home/INBOX')
+    await user.keyboard('{Enter}')
+    await screen.findByText('Body of Order')
+    await user.keyboard('r')
+    const from = (await screen.findByRole('combobox', { name: 'From' })) as HTMLInputElement
+    expect(from.value).toBe('orders@shop.example')
+    await screen.findByText('As Shop')
+    const [draft] = server.drafts.values()
+    expect(draft.content.from).toBe('orders@shop.example')
+  })
+
   it('attaches files, and removes them', async () => {
     const user = await start('/mail/work/INBOX')
     await user.keyboard('c')

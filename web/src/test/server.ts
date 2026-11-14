@@ -717,6 +717,12 @@ export class FakeServer implements Requester, Blobs {
   readonly text = new Map<number, string>()
   /** Attachments by message, for messages that have some. */
   readonly attachments = new Map<number, Attachment[]>()
+  /** Recipients by message, for messages not to their account's address
+   * alone. */
+  readonly recipients = new Map<
+    number,
+    Partial<Pick<MessageContent, 'to_addrs' | 'cc_addrs' | 'original_to' | 'delivered_to'>>
+  >()
 
   labelsOf(entry: EntryId): LabelId[] {
     return this.entries.find((e) => e.id === entry)!.labels
@@ -884,6 +890,9 @@ export class FakeServer implements Requester, Blobs {
             from_name: entry.from_name,
             to_addrs: [`${entry.account}@example.com`],
             cc_addrs: [],
+            original_to: [],
+            delivered_to: [],
+            ...this.recipients.get(entry.message),
             date_sent: entry.received_at / 1000,
             body_text: this.text.get(entry.message) ?? `Body of ${entry.subject}`,
             body_html: this.html.get(entry.message) ?? null,
