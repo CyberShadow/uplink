@@ -178,7 +178,7 @@ function Timeline(props: { room: Room; words: string | null }) {
         </header>
         {room.membership_error !== null && (
           <p class={styles.error} role="alert">
-            The homeserver refused: {room.membership_error}. <a href="/outbox">Undo the change</a> to keep the room
+            The homeserver refused: {room.membership_error}. <a href="/history">Undo the change</a> to keep the room
             as it is.
           </p>
         )}

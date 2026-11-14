@@ -363,7 +363,7 @@ describe('calendar', () => {
     expect(server.responses.map((r) => r.response)).toEqual(['accepted'])
 
     // In the outbox until given, with its Undo.
-    await user.click(screen.getByRole('link', { name: /Outbox/ }))
+    await user.click(screen.getByRole('link', { name: /History/ }))
     const outbox = await screen.findByRole('list', { name: 'Outbox of work: calendar' })
     expect(within(outbox).getByText("Accepted 'Planning'")).toBeTruthy()
     await user.click(within(outbox).getByRole('button', { name: 'Undo' }))
@@ -416,7 +416,7 @@ describe('calendar', () => {
     await waitFor(() => expect(timed('Wednesday 2026-11-11').map((e) => e.textContent)).toEqual(['14:00 Planning ↻']))
 
     // In the outbox until given, with its Undo.
-    await user.click(screen.getByRole('link', { name: /Outbox/ }))
+    await user.click(screen.getByRole('link', { name: /History/ }))
     const outbox = await screen.findByRole('list', { name: 'Outbox of work: calendar' })
     expect(within(outbox).getByText("Created 'Planning'")).toBeTruthy()
     await user.click(within(outbox).getByRole('button', { name: 'Undo' }))

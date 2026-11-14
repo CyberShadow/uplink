@@ -1134,7 +1134,9 @@ The `Undo { tx_log_id }` request:
 Redo of an undo is just "undo the undo entry". This means the user can
 toggle back and forth.
 
-The history view (`/history`, M10) lists the user's ops, newest first,
+The history view (`/history`, M10; linked below the accounts in the
+nav, as of all of them) shows the outbox (§6.6), then lists the user's
+ops, newest first,
 from `ListHistory` (a partial index on `tx_log(id) WHERE account_id IS
 NULL` keeps that quick however many observations syncing records), with
 Undo on each not yet undone, and Redo on undo entries. The client loads
@@ -1247,8 +1249,8 @@ When sync observes a remote change:
 - an entry the provider deleted takes its pending changes with it: there
   is nothing left for them to apply to.
 
-**The outbox** (`/outbox`) shows everything not yet reconciled: per
-account, the ops whose desired state the provider does not reflect yet,
+**The outbox** (atop the history, §6.3) shows everything not yet
+reconciled: per account, the ops whose desired state the provider does not reflect yet,
 newest first, each with what is left of it ("Archived 214
 conversations: 180 to go") and its state: waiting (a send's delay),
 being pushed, retrying (with the account's error, and since when), or
@@ -1257,8 +1259,8 @@ actions that resolve it). Each has its Undo. Changes pending from before
 ops were recorded with them (V0018) are listed together, as made
 earlier. Sends are listed until the
 provider's copy is synced (§8.6), so a sent mail stays until it is in
-Sent. The nav shows the outbox's count, and marks it while an account's
-pushes are failing or something needs a decision. An empty outbox means
+Sent. The nav shows the outbox's count on the history, and marks it
+while an account's pushes are failing or something needs a decision. An empty outbox means
 the providers, as last observed, match what the user has done.
 
 ### 6.7 Sends: desired state fulfilled once
@@ -3036,7 +3038,7 @@ Vitest runs from the same config (jsdom).
 ```
 src/views/
 ├── App.tsx                # shell: header, nav, routes, notice bar
-├── Nav.tsx                # drafts/outbox, mail labels, Matrix rooms
+├── Nav.tsx                # views, mail labels, Matrix rooms, history
 ├── Home.tsx               # the agenda and the buckets (§12.13)
 ├── Mail.tsx               # conversation list and conversation view
 ├── Found.tsx              # a search's rooms, messages, to-dos, events
@@ -3050,7 +3052,7 @@ src/views/
 ├── RoomComposer.tsx       # the box to write to a room
 ├── Security.tsx           # a Matrix account's device and keys (§12.12)
 ├── Todos.tsx              # the to-do list
-├── History.tsx            # the user's ops, with Undo
+├── History.tsx            # the outbox, then the user's ops, with Undo
 ├── Calendar.tsx           # week and agenda (§10.2)
 ├── SearchBox.tsx
 ├── NoticeBar.tsx          # the last op, with Undo
@@ -3211,8 +3213,8 @@ as a native list does), `Enter` chooses and `Esc` closes.
   yet.
 
 - **The arrows move in lists as `j`/`k`**, as Slack's and Discord's do:
-  `↓`/`↑` in the mail list, a room's timeline, home, the to-dos, the
-  history and the outbox; not in an open conversation or the calendar,
+  `↓`/`↑` in the mail list, a room's timeline, home, the to-dos and the
+  history; not in an open conversation or the calendar,
   where they scroll.
 - **`?` shows the shortcuts**: how keys work (what a box keeps, `Esc`,
   sequences), then those the view on show binds ("Here"), then the rest
@@ -4538,13 +4540,13 @@ visible. Routes (handled by `preact-iso`):
 | `/help/search`                         | The query language, with examples (§8.7) |
 | `/message/:message`                    | A message's conversation (from a to-do) |
 | `/compose/:draft`                      | Compose (new or continued draft)       |
-| `/drafts`, `/outbox`                   | Drafts; what is not yet at the providers (§6.6) |
+| `/drafts`                              | Drafts                                 |
 | `/rooms/:room`                         | Room timeline (uplink's room id)       |
 | `/rooms/:room/search/:words`           | The timeline, and its messages searched (§12.11) |
 | `/matrix/:account/space/:space`        | Space overview (deferred)              |
 | `/calendar/:view/:date`                | Calendar, `week` or `agenda` (§10.2)   |
 | `/todos`                               | Todo list                              |
-| `/history`                             | The user's ops, with Undo (§6.3)       |
+| `/history`                             | What is not yet at the providers (§6.6), then the user's ops, with Undo (§6.3) |
 
 ### 16.3 Nav tree as a WS query
 

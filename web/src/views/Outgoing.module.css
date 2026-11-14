@@ -1,10 +1,5 @@
 /* The outbox: a section per account, each a list of what is not yet at
    its provider. */
-.outbox {
-  flex: 1;
-  overflow: auto;
-}
-
 .account {
   margin: 0;
   padding: 12px 16px 4px;

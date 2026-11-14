@@ -1,4 +1,5 @@
-// The user's ops, newest first, each with its Undo (SPEC §6.3, §12.4).
+// The user's ops, newest first, each with its Undo (SPEC §6.3, §12.4),
+// below what of them is not yet at the providers: the outbox (§6.6).
 // Undoing an undo is a redo.
 
 import { useEffect, useRef, useState } from 'preact/hooks'
@@ -8,6 +9,7 @@ import { useTitle } from '../title'
 import { keepFocus, lines, useKeymap } from '../keymap'
 import styles from './History.module.css'
 import { dateTime } from '../format'
+import { Outbox } from './Outgoing'
 
 export function History() {
   useTitle('History')
@@ -32,24 +34,44 @@ export function History() {
     undo: () => current && current.undone_by === null && ops.undo(current.entry.id),
   })
 
-  if (entries === null) return <p class={styles.placeholder}>Loading…</p>
-  if (entries.length === 0) return <p class={styles.placeholder}>Nothing done yet.</p>
   return (
-    <ul
-      class={styles.list}
-      aria-label="History"
+    <div
+      class={styles.page}
       onScroll={(event) => {
         const el = event.currentTarget
         if (el.scrollTop + el.clientHeight > el.scrollHeight - 200) history.loadMore()
       }}
     >
+      <section aria-label="Outbox">
+        <h2 class={styles.heading}>Outbox</h2>
+        <Outbox />
+      </section>
+      <section aria-label="History">
+        <h2 class={styles.heading}>History</h2>
+        <Entries entries={entries} focus={focus} focused={focused} setFocus={setFocus} />
+      </section>
+    </div>
+  )
+}
+
+function Entries(props: {
+  entries: readonly HistoryEntry[] | null
+  focus: number
+  focused: preact.Ref<HTMLLIElement>
+  setFocus: (i: number) => void
+}) {
+  const { entries } = props
+  if (entries === null) return <p class={styles.placeholder}>Loading…</p>
+  if (entries.length === 0) return <p class={styles.placeholder}>Nothing done yet.</p>
+  return (
+    <ul class={styles.list} aria-label="History">
       {entries.map((h, i) => (
         <Item
           key={h.entry.id}
           history={h}
-          focused={i === focus}
-          itemRef={i === focus ? focused : undefined}
-          onFocus={() => setFocus(i)}
+          focused={i === props.focus}
+          itemRef={i === props.focus ? props.focused : undefined}
+          onFocus={() => props.setFocus(i)}
         />
       ))}
     </ul>

@@ -30,8 +30,7 @@ async function start(path = '/mail/work/INBOX') {
   client.reset()
   if (path.startsWith('/rooms/')) await screen.findByRole('list', { name: 'Timeline' })
   else if (path === '/todos') await screen.findByRole('region', { name: 'To-dos' })
-  else if (path === '/history') await screen.findByRole('list', { name: 'History' })
-  else if (path === '/outbox') await screen.findByText(/^The outbox is empty/)
+  else if (path === '/history') await screen.findByText(/^The outbox is empty/)
   else if (path.startsWith('/matrix/')) await screen.findByRole('heading', { name: /^Security of/ })
   else if (path === '/') await screen.findByRole('region', { name: 'Home' })
   else await screen.findByRole('list', { name: 'Messages' })
@@ -1131,7 +1130,7 @@ describe('compose', () => {
 
 describe('outbox', () => {
   it('lists what is not yet at the providers, by op, with what was refused', async () => {
-    const user = await start('/outbox')
+    const user = await start('/history')
     await screen.findByText('The outbox is empty: everything you did is at the providers.')
     server.pend('work', { error: 'connection refused', since: Date.UTC(2026, 10, 10, 9) }, [
       { op: { id: 7, description: 'Starred 1 message', ts: Date.UTC(2026, 10, 10, 9) }, entries: 1, refused: [] },
@@ -1149,12 +1148,12 @@ describe('outbox', () => {
       'Archived 3 messages2 messages waiting; Gmail refused 1 message: Invalid label',
     ])
     // The nav counts both, and marks that something needs attention.
-    const count = within(screen.getByRole('link', { name: /Outbox/ })).getByText('2')
+    const count = within(screen.getByRole('link', { name: /History/ })).getByText('2')
     expect(count.title).toBe('Something needs your attention')
 
     // Keeping Gmail's resolves the refusal.
     await user.click(within(rows[1]).getByRole('button', { name: 'Keep Gmail’s' }))
-    await screen.findByText('Kept what the provider has')
+    expect((await screen.findByRole('status')).textContent).toContain('Kept what the provider has')
     await waitFor(() =>
       expect(within(section).queryByRole('button', { name: 'Keep Gmail’s' })).toBeNull(),
     )
@@ -1186,7 +1185,7 @@ describe('outbox', () => {
   it('lists Matrix messages sent though cancelled, until kept sent', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')
-    const user = await start('/outbox')
+    const user = await start('/history')
     server.sentThoughCancelledToRoom(room.id, { type: 'topic', topic: 'oops' })
     const section = await screen.findByRole('region', { name: 'mx' })
     const [row] = within(section).getAllByRole('listitem')
@@ -1194,7 +1193,7 @@ describe('outbox', () => {
     expect(row.querySelector('[class*=summary]')!.textContent).toBe(
       'Topic: oopsCannot undo (already sent)',
     )
-    expect(within(screen.getByRole('link', { name: /Outbox/ })).getByText('1').title).toBe(
+    expect(within(screen.getByRole('link', { name: /History/ })).getByText('1').title).toBe(
       'Something needs your attention',
     )
     await user.click(within(row).getByRole('button', { name: 'OK' }))
@@ -1204,23 +1203,23 @@ describe('outbox', () => {
   it('lists Matrix messages being taken back, needing nothing of the user', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')
-    await start('/outbox')
+    await start('/history')
     server.sentThoughCancelledToRoom(room.id, text('oops'))
     const section = await screen.findByRole('region', { name: 'mx' })
     const [row] = within(section).getAllByRole('listitem')
     expect(row.querySelector('[class*=summary]')!.textContent).toBe('oopsUndoing…')
     expect(within(row).queryByRole('button')).toBeNull()
-    expect(within(screen.getByRole('link', { name: /Outbox/ })).getByText('1').title).not.toBe(
+    expect(within(screen.getByRole('link', { name: /History/ })).getByText('1').title).not.toBe(
       'Something needs your attention',
     )
   })
 
   it('asks about mail sent though cancelled, until kept sent', async () => {
-    const user = await start('/outbox')
+    const user = await start('/history')
     server.sentThoughCancelled('work', 'Lunch')
     const section = await screen.findByRole('region', { name: 'work' })
     expect(within(section).getByText('cannot undo (already sent)')).toBeTruthy()
-    const count = within(screen.getByRole('link', { name: /Outbox/ })).getByText('1')
+    const count = within(screen.getByRole('link', { name: /History/ })).getByText('1')
     expect(count.title).toBe('Something needs your attention')
     await user.click(within(section).getByRole('button', { name: 'OK' }))
     await screen.findByText('The outbox is empty: everything you did is at the providers.')
@@ -1376,7 +1375,7 @@ describe('matrix', () => {
     expect(notice.textContent).toContain("Moved 'Gamma'")
 
     // Pending in the outbox until the homeserver has it.
-    await user.click(within(screen.getByRole('navigation')).getByRole('link', { name: /Outbox/ }))
+    await user.click(within(screen.getByRole('navigation')).getByRole('link', { name: /History/ }))
     const pending = await screen.findByText("Moved 'Gamma'", { selector: '[class*=subject]' })
     expect(pending.closest('li')!.textContent).toContain('to go: Gamma')
     server.spaceOrdersSet()
@@ -1455,7 +1454,7 @@ describe('matrix', () => {
     await user.keyboard('{Escape}l')
     await user.keyboard('fav{Enter}')
     await waitFor(() => expect(room.tags).toEqual(['m.favourite']))
-    await user.click(within(screen.getByRole('navigation')).getByRole('link', { name: /^Outbox/ }))
+    await user.click(within(screen.getByRole('navigation')).getByRole('link', { name: /^History/ }))
     const pending = await screen.findByText("Tagged 'Lounge' m.favourite", { selector: '[class*=subject]' })
     expect(pending.closest('li')!.textContent).toContain('to go: +Favourite Lounge')
     server.roomTagsSet()
@@ -2942,6 +2941,30 @@ describe('history', () => {
     expect(items()[1].textContent).toContain('undone')
     await user.keyboard('gi')
     await waitFor(() => expect(subjects()).toEqual(['First', 'Second', 'Third']))
+  })
+
+  it('lists what is not yet at the providers above what was done, linked below the accounts', async () => {
+    server.addMatrixAccount()
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('e')
+    await waitFor(() => expect(subjects()).toEqual(['Second', 'Third']))
+    const archived = server.lastDescription()
+    server.pend('work', null, [
+      { op: { id: 7, description: 'Starred 1 message', ts: Date.UTC(2026, 10, 10, 9) }, entries: 1, refused: [] },
+    ])
+    const nav = screen.getByRole('navigation')
+    const last = within(nav).getAllByRole('link').at(-1)!
+    expect(last.textContent).toMatch(/^History/)
+    expect(last.closest('ul')!.previousElementSibling!.getAttribute('aria-label')).toMatch(/^Rooms of /)
+    await user.click(last)
+
+    const [outbox, done] = await screen.findAllByRole('region', { name: /^(Outbox|History)$/ })
+    expect(outbox.getAttribute('aria-label')).toBe('Outbox')
+    await within(outbox).findByText('Starred 1 message')
+    expect(done.getAttribute('aria-label')).toBe('History')
+    expect(within(done).getAllByRole('listitem').map((i) => i.querySelector('[class*=description]')!.textContent)).toEqual([
+      archived,
+    ])
   })
 })
 

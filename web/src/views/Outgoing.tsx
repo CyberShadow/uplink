@@ -74,8 +74,9 @@ export function Drafts() {
   )
 }
 
+/** What is not yet at the providers, per account; part of the history
+ * (History.tsx). */
 export function Outbox() {
-  useTitle('Outbox')
   const { drafts, mail } = useServices()
   const accounts = drafts.outbox.value
   // Re-render every second, for the countdowns.
@@ -95,7 +96,7 @@ export function Outbox() {
   }
   const provider = (account: string) => mail.accounts.value?.find((a) => a.id === account)?.provider
   return (
-    <div class={outgoing.outbox}>
+    <>
       {accounts.map((account) => (
         <AccountSection
           key={`${account.account}:${account.pending.kind}`}
@@ -103,7 +104,7 @@ export function Outbox() {
           provider={provider(account.account)}
         />
       ))}
-    </div>
+    </>
   )
 }
 
@@ -114,7 +115,7 @@ function AccountSection(props: { account: AccountOutbox; provider: MailProvider 
   const title = pending.kind === 'calendar' ? `${account}: calendar` : account
   return (
     <section aria-label={title}>
-      <h2 class={outgoing.account}>{title}</h2>
+      <h3 class={outgoing.account}>{title}</h3>
       {failing && (
         <p class={outgoing.failing} role="alert">
           Not reaching {name} since {dateTime(failing.since)}: {failing.error}

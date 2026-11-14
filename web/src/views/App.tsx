@@ -21,7 +21,7 @@ import { Nav } from './Nav'
 import { NoticeBar } from './NoticeBar'
 import { useNotifications, useReminders } from './Notifications'
 import { RoomView } from './Room'
-import { composePath, Drafts, Outbox } from './Outgoing'
+import { composePath, Drafts } from './Outgoing'
 import { SearchBox } from './SearchBox'
 import { SearchHelp } from './SearchHelp'
 import { SecurityView } from './Security'
@@ -155,7 +155,6 @@ function Shell() {
           <Route path="/calendar/:view/:date/:event?" component={Calendar} />
           <Route path="/compose/:draft" component={Compose} />
           <Route path="/drafts" component={Drafts} />
-          <Route path="/outbox" component={Outbox} />
           <Route path="/rooms/:room" component={RoomView} />
           <Route path="/rooms/:room/search/:words" component={RoomView} />
           <Route path="/matrix/:account/security" component={SecurityView} />

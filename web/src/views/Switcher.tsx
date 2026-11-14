@@ -8,7 +8,7 @@ import { useServices } from '../context'
 import type { Label } from '../generated/protocol'
 import { allMailPath, mailPath } from './App'
 import { Icon } from './Icon'
-import { labelIcon, labelName, linksTo, navLabels, shows, views } from './Nav'
+import { BELOW, labelIcon, labelName, linksTo, navLabels, shows, views, type View } from './Nav'
 import { Picker } from './Picker'
 import { roomPath } from './Room'
 import { RoomAvatar } from './RoomAvatar'
@@ -27,13 +27,9 @@ interface Destination {
 function useDestinations(): Destination[] {
   const { mail, matrix } = useServices()
   const accounts = mail.accounts.value ?? []
+  const view = (view: View) => ({ href: view.href, name: view.name, account: null, lead: <Icon name={view.icon} /> })
   return [
-    ...views(accounts).map((view) => ({
-      href: view.href,
-      name: view.name,
-      account: null,
-      lead: <Icon name={view.icon} />,
-    })),
+    ...views(accounts).map(view),
     ...accounts.flatMap((account) => {
       const { system, user } = navLabels(account)
       const label = (l: Label) => ({
@@ -55,6 +51,7 @@ function useDestinations(): Destination[] {
           lead: <RoomAvatar room={room} />,
         })),
     ),
+    ...BELOW.map(view),
   ]
 }
 

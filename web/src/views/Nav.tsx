@@ -67,7 +67,7 @@ export function labelIcon(label: Label): IconName {
   return label.kind === 'folder' ? 'folder' : 'tag'
 }
 
-/** A view above the accounts. */
+/** A view above the accounts, or below them. */
 export interface View {
   href: string
   icon: IconName
@@ -81,12 +81,13 @@ export function views(accounts: readonly Account[]): View[] {
     { href: '/', icon: 'house', name: 'Home' },
     ...(accounts.length > 1 ? [{ href: inboxPath(), icon: 'inbox' as const, name: 'All inboxes' }] : []),
     { href: '/drafts', icon: 'file', name: 'Drafts' },
-    { href: '/outbox', icon: 'clock-arrow-up', name: 'Outbox' },
-    { href: '/history', icon: 'undo-2', name: 'History' },
     { href: '/todos', icon: 'list-todo', name: 'To-dos' },
     { href: '/calendar', icon: 'calendar', name: 'Calendar' },
   ]
 }
+
+/** The views below the accounts: what was done in all of them. */
+export const BELOW: readonly View[] = [{ href: '/history', icon: 'undo-2', name: 'History' }]
 
 export { shows }
 
@@ -178,7 +179,7 @@ export function foldsOver(
   matrixAccounts: readonly MatrixAccount[],
   rooms: readonly Room[],
 ): string[][] {
-  const places: string[][] = views(mailAccounts)
+  const places: string[][] = [...views(mailAccounts), ...BELOW]
     .filter((view) => shows(path, view.href))
     .map(() => [])
   for (const account of mailAccounts) {
@@ -514,19 +515,22 @@ export function Nav(props: { open: boolean }) {
     [inboxPath()]: [mail.accounts.value?.reduce((unread, account) => unread + inboxUnread(account), 0) ?? 0, 'unread'],
     '/': [0, 'size'],
     '/drafts': [drafts.drafts.value?.size ?? 0, 'size'],
-    '/outbox': [outboxCount(outbox), outboxNeedsAttention(outbox) ? 'alert' : 'size'],
-    '/history': [0, 'size'],
+    // What of it is not yet at the providers.
+    '/history': [outboxCount(outbox), outboxNeedsAttention(outbox) ? 'alert' : 'size'],
     '/todos': [todos.todos.value?.filter((t) => t.done_at === null).length ?? 0, 'size'],
     '/calendar': [0, 'size'],
   }
+  const viewItems = (list: readonly View[]) => (
+    <ul>
+      {list.map((view) => {
+        const [count, tone] = counts[view.href]!
+        return item(view.href, view.icon, view.name, count, tone, marks.view(view.href))
+      })}
+    </ul>
+  )
   return (
     <nav ref={nav} class={props.open ? `${styles.nav} ${styles.open}` : styles.nav}>
-      <ul>
-        {views(mail.accounts.value ?? []).map((view) => {
-          const [count, tone] = counts[view.href]!
-          return item(view.href, view.icon, view.name, count, tone, marks.view(view.href))
-        })}
-      </ul>
+      {viewItems(views(mail.accounts.value ?? []))}
       {mail.accounts.value?.map((account) => (
         <Section
           key={account.id}
@@ -570,6 +574,7 @@ export function Nav(props: { open: boolean }) {
           </Section>
         )
       })}
+      {viewItems(BELOW)}
       {starting !== null && <RoomStarter account={starting} close={() => setStarting(null)} />}
     </nav>
   )
