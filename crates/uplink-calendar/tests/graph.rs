@@ -11,9 +11,12 @@ use uplink_email::{
     oauth::Credentials,
 };
 use uplink_protocol::{
-    calendar::{AttendeeKind, CalendarEvent, EventResponse, Person, ShowAs},
+    calendar::{
+        AttendeeKind, CalendarEvent, EventChangeKind, EventField, EventFields, EventResponse,
+        Person, Recurrence, RecurrenceEnd, RecurrencePattern, ShowAs, Weekday,
+    },
     compose::Pending,
-    ServerResponse,
+    ServerResponse, TxLogId,
 };
 use uplink_realtime::Hub;
 use uplink_storage::seal::MasterKey;
@@ -428,8 +431,12 @@ async fn shows_a_meeting_s_status_and_details() {
         .ends_with(&format!("/meet/{id}")));
     assert!(details.web_link.unwrap().contains("itemid="));
     assert!(
-        details.raw.contains("\"isOnlineMeeting\": true"),
-        "{}",
+        details
+            .raw
+            .as_ref()
+            .unwrap()
+            .contains("\"isOnlineMeeting\": true"),
+        "{:?}",
         details.raw
     );
 
@@ -488,11 +495,11 @@ async fn answers_meeting_requests() {
     let outbox = || {
         let mut conn = uplink_storage::open_reader(setup.dir.path()).unwrap();
         let tx = conn.transaction().unwrap();
-        uplink_calendar::respond::outbox(&tx)
+        uplink_calendar::outbox(&tx)
             .unwrap()
             .into_iter()
             .flat_map(|a| match a.pending {
-                Pending::Calendar { responses } => responses,
+                Pending::Calendar { responses, .. } => responses,
                 other => panic!("{other:?}"),
             })
             .map(|r| (r.subject, r.response, r.refused))
@@ -641,4 +648,364 @@ async fn sign_in(account: &M365AccountConfig) -> String {
         .await
         .unwrap();
     signed_in.headers()["location"].to_str().unwrap().to_owned()
+}
+
+/// What the calendar's outbox has of event writes: kind, subject, series.
+fn writes(setup: &Setup) -> Vec<(EventChangeKind, String, bool)> {
+    let mut conn = uplink_storage::open_reader(setup.dir.path()).unwrap();
+    let tx = conn.transaction().unwrap();
+    uplink_calendar::outbox(&tx)
+        .unwrap()
+        .into_iter()
+        .flat_map(|a| match a.pending {
+            Pending::Calendar { changes, .. } => changes,
+            other => panic!("{other:?}"),
+        })
+        .map(|c| (c.change, c.subject, c.series))
+        .collect()
+}
+
+fn fields(subject: &str, start: i64, end: i64) -> EventFields {
+    EventFields {
+        subject: subject.into(),
+        location: String::new(),
+        body: String::new(),
+        start,
+        end,
+        all_day: false,
+        required: String::new(),
+        optional: String::new(),
+        online_meeting: false,
+        reminder: Some(15),
+        show_as: ShowAs::Busy,
+        recurrence: None,
+    }
+}
+
+fn dispatched(response: uplink_tx_log::answer::Response) -> TxLogId {
+    match response {
+        Ok(ServerResponse::Dispatched { tx_log_id }) => tx_log_id,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Tuesday 2026-11-10 10:00 in Prague (CET): 09:00 UTC.
+const REVIEW: i64 = 1_794_301_200_000;
+const HOUR: i64 = 3_600_000;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn creates_changes_and_deletes_events() {
+    let setup = Setup::new().await;
+    setup.sync.sync(NOW).await.unwrap();
+    let prague = "Europe/Prague".to_owned();
+    let subjects = || async {
+        setup
+            .events(NOW, NOW + 200 * DAY)
+            .await
+            .into_iter()
+            .map(|e| (e.subject, e.start))
+            .collect::<Vec<_>>()
+    };
+
+    // A meeting: shown at once, created as the sync pushes, in Prague's
+    // time, its attendee invited.
+    let review = EventFields {
+        location: "Room 4".into(),
+        body: "<p>The <b>draft</b></p>".into(),
+        required: "Bob <bob@example.com>".into(),
+        online_meeting: true,
+        ..fields("Review", REVIEW, REVIEW + HOUR)
+    };
+    dispatched(
+        setup
+            .calendar
+            .create("test".into(), review.clone(), prague.clone())
+            .await,
+    );
+    let shown = setup.events(NOW, NOW + DAY * 2).await;
+    assert_eq!(
+        (shown[0].subject.as_str(), shown[0].start, shown[0].response),
+        ("Review", REVIEW, EventResponse::Organizer)
+    );
+    let id = shown[0].id;
+    assert_eq!(
+        writes(&setup),
+        [(EventChangeKind::Create, "Review".into(), false)]
+    );
+    assert!(setup.sync.push().await.unwrap());
+    assert_eq!(writes(&setup), []);
+    let at_graph = setup
+        .call(
+            reqwest::Method::GET,
+            "/calendarView?startDateTime=2026-11-10T00:00:00Z&endDateTime=2026-11-11T00:00:00Z",
+            None,
+        )
+        .await;
+    let created = &at_graph["value"][0];
+    assert_eq!(created["subject"], "Review");
+    assert_eq!(created["start"]["dateTime"], "2026-11-10T09:00:00.0000000");
+    assert_eq!(
+        created["originalStartTimeZone"],
+        "Central Europe Standard Time"
+    );
+    assert_eq!(
+        created["attendees"][0]["emailAddress"]["address"],
+        "bob@example.com"
+    );
+    assert_eq!(created["body"]["content"], "<p>The <b>draft</b></p>");
+    assert!(created["onlineMeeting"]["joinUrl"].is_string());
+    setup.sync.sync(NOW + 1).await.unwrap();
+    let synced = setup.events(NOW, NOW + DAY * 2).await;
+    assert_eq!((synced.len(), synced[0].id), (1, id));
+    assert!(synced[0].join_url.is_some());
+    let ServerResponse::Event { details, .. } = setup.calendar.get(id).await.unwrap() else {
+        panic!()
+    };
+    let editable = details.editable.unwrap();
+    assert_eq!(
+        (editable.required.as_str(), editable.location.as_str()),
+        ("\"Bob\" <bob@example.com>", "Room 4")
+    );
+
+    // An edit undone before it is given gives nothing.
+    let moved = EventFields {
+        subject: "Review, moved".into(),
+        ..fields("", REVIEW + HOUR, REVIEW + 2 * HOUR)
+    };
+    let edit = dispatched(
+        setup
+            .calendar
+            .update(
+                id,
+                false,
+                moved.clone(),
+                vec![EventField::Subject, EventField::Time],
+                prague.clone(),
+            )
+            .await,
+    );
+    assert_eq!(subjects().await, [("Review, moved".into(), REVIEW + HOUR)]);
+    assert_eq!(
+        writes(&setup),
+        [(EventChangeKind::Update, "Review, moved".into(), false)]
+    );
+    setup.dispatcher.undo(edit).await.unwrap();
+    assert_eq!(subjects().await, [("Review".into(), REVIEW)]);
+    assert_eq!(writes(&setup), []);
+    // Given: only what was edited.
+    dispatched(
+        setup
+            .calendar
+            .update(
+                id,
+                false,
+                moved,
+                vec![EventField::Subject, EventField::Time],
+                prague.clone(),
+            )
+            .await,
+    );
+    setup.sync.push().await.unwrap();
+    assert_eq!(writes(&setup), []);
+    let at_graph = setup
+        .call(
+            reqwest::Method::GET,
+            &format!("/events/{}", created["id"].as_str().unwrap()),
+            None,
+        )
+        .await;
+    assert_eq!(
+        (
+            &at_graph["subject"],
+            &at_graph["start"]["dateTime"],
+            &at_graph["location"]["displayName"]
+        ),
+        (
+            &json!("Review, moved"),
+            &json!("2026-11-10T10:00:00.0000000"),
+            &json!("Room 4")
+        )
+    );
+    assert_eq!(at_graph["attendees"].as_array().unwrap().len(), 1);
+
+    // A series, Mondays at 10:00 in Prague, across the change to summer
+    // time: its first occurrence shown at once, all once given.
+    let first = 1_805_706_000_000; // 2027-03-22 09:00 UTC
+    let weekly = EventFields {
+        recurrence: Some(Recurrence {
+            pattern: RecurrencePattern::Weekly {
+                days: vec![Weekday::Monday],
+            },
+            interval: 1,
+            until: RecurrenceEnd::After { count: 3 },
+        }),
+        ..fields("Weekly", first, first + HOUR / 2)
+    };
+    dispatched(
+        setup
+            .calendar
+            .create("test".into(), weekly, prague.clone())
+            .await,
+    );
+    assert_eq!(
+        subjects().await,
+        [
+            ("Review, moved".into(), REVIEW + HOUR),
+            ("Weekly".into(), first)
+        ]
+    );
+    assert_eq!(
+        writes(&setup),
+        [(EventChangeKind::Create, "Weekly".into(), true)]
+    );
+    setup.sync.step(NOW + 2).await.unwrap();
+    let weeks = [first, 1_806_307_200_000, 1_806_912_000_000];
+    assert_eq!(
+        subjects().await,
+        [
+            ("Review, moved".into(), REVIEW + HOUR),
+            ("Weekly".into(), weeks[0]),
+            ("Weekly".into(), weeks[1]),
+            ("Weekly".into(), weeks[2]),
+        ]
+    );
+    assert_eq!(writes(&setup), []);
+
+    // The series changed: shown on its occurrences at once.
+    let occurrences = setup.events(first - DAY, first + 20 * DAY).await;
+    let ServerResponse::Event { details, .. } =
+        setup.calendar.get(occurrences[1].id).await.unwrap()
+    else {
+        panic!()
+    };
+    let series = details.series.expect("the series' fields");
+    assert_eq!(series.start, first);
+    let renamed = EventFields {
+        subject: "Weekly sync".into(),
+        ..series
+    };
+    dispatched(
+        setup
+            .calendar
+            .update(
+                occurrences[1].id,
+                true,
+                renamed,
+                vec![EventField::Subject],
+                prague.clone(),
+            )
+            .await,
+    );
+    assert_eq!(
+        setup
+            .events(first - DAY, first + 20 * DAY)
+            .await
+            .iter()
+            .map(|e| e.subject.as_str())
+            .collect::<Vec<_>>(),
+        ["Weekly sync"; 3]
+    );
+    assert_eq!(
+        writes(&setup),
+        [(EventChangeKind::Update, "Weekly sync".into(), true)]
+    );
+    setup.sync.step(NOW + 3).await.unwrap();
+    assert_eq!(writes(&setup), []);
+    assert_eq!(setup.events(first - DAY, first + 20 * DAY).await.len(), 3);
+
+    // One occurrence deleted: off at once, and at the provider.
+    let occurrences = setup.events(first - DAY, first + 20 * DAY).await;
+    dispatched(setup.calendar.delete(occurrences[1].id, false).await);
+    assert_eq!(setup.events(first - DAY, first + 20 * DAY).await.len(), 2);
+    setup.sync.step(NOW + 4).await.unwrap();
+    let starts: Vec<i64> = setup
+        .events(first - DAY, first + 20 * DAY)
+        .await
+        .iter()
+        .map(|e| e.start)
+        .collect();
+    assert_eq!(starts, [weeks[0], weeks[2]]);
+
+    // The meeting deleted is cancelled, its attendee told; undone, it is
+    // created anew.
+    let deleted = dispatched(setup.calendar.delete(id, false).await);
+    assert_eq!(setup.events(NOW, NOW + DAY * 2).await, []);
+    setup.sync.step(NOW + 5).await.unwrap();
+    assert!(setup
+        .log()
+        .contains(&"Cancelled 'Review, moved'".to_owned()));
+    let gone = setup
+        .call(
+            reqwest::Method::GET,
+            "/calendarView?startDateTime=2026-11-10T00:00:00Z&endDateTime=2026-11-11T00:00:00Z",
+            None,
+        )
+        .await;
+    assert_eq!(gone["value"], json!([]));
+    setup.dispatcher.undo(deleted).await.unwrap();
+    assert_eq!(
+        setup
+            .events(NOW, NOW + DAY * 2)
+            .await
+            .iter()
+            .map(|e| e.subject.as_str())
+            .collect::<Vec<_>>(),
+        ["Review, moved"]
+    );
+    setup.sync.step(NOW + 6).await.unwrap();
+    let again = setup
+        .call(
+            reqwest::Method::GET,
+            "/calendarView?startDateTime=2026-11-10T00:00:00Z&endDateTime=2026-11-11T00:00:00Z",
+            None,
+        )
+        .await;
+    assert_eq!(again["value"][0]["subject"], "Review, moved");
+    assert_eq!(
+        again["value"][0]["attendees"][0]["emailAddress"]["address"],
+        "bob@example.com"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_event_created_though_its_outcome_was_unknown_is_found_by_its_transaction_id() {
+    let setup = Setup::new().await;
+    setup.sync.sync(NOW).await.unwrap();
+    dispatched(
+        setup
+            .calendar
+            .create(
+                "test".into(),
+                fields("Once", REVIEW, REVIEW + HOUR),
+                "UTC".into(),
+            )
+            .await,
+    );
+    // As if a push had created it, its answer lost.
+    let transaction_id: String = uplink_storage::open_reader(setup.dir.path())
+        .unwrap()
+        .query_row("SELECT transaction_id FROM calendar_event", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    setup
+        .create(json!({
+            "subject": "Once",
+            "start": utc("2026-11-10T09:00:00"),
+            "end": utc("2026-11-10T10:00:00"),
+            "transactionId": transaction_id,
+        }))
+        .await;
+    setup.sync.sync(NOW + 1).await.unwrap();
+    assert_eq!(writes(&setup), []);
+    assert_eq!(setup.events(NOW, NOW + DAY * 2).await.len(), 1);
+    assert!(!setup.sync.push().await.unwrap());
+    let at_graph = setup
+        .call(
+            reqwest::Method::GET,
+            "/calendarView?startDateTime=2026-11-10T00:00:00Z&endDateTime=2026-11-11T00:00:00Z",
+            None,
+        )
+        .await;
+    assert_eq!(at_graph["value"].as_array().unwrap().len(), 1);
 }

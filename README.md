@@ -118,8 +118,9 @@ It is built for people who live in their inbox and want it fast:
 </p>
 
 - **Your calendar, at a glance.**
-  By week or as an agenda, recurring meetings and all; open a meeting
-  for who is coming, its notes, and the link to join it.
+  By day, week or as an agenda, recurring meetings and all; open a meeting
+  for who is coming, its notes, and the link to join it; answer it, or
+  plan your own, with its attendees, Teams link and recurrence.
 
 <p align="center">
   <picture>
@@ -166,7 +167,7 @@ uplink is young. What it connects to so far:
 |          | Supported                                   | Planned                                    |
 |----------|---------------------------------------------|--------------------------------------------|
 | Mail     | Gmail, Microsoft 365, any IMAP, POP3 or JMAP server |                                    |
-| Calendar | Microsoft 365 (viewing)                     | Editing; Google Calendar, CalDAV, iCalendar feeds |
+| Calendar | Microsoft 365                               | Google Calendar, CalDAV, iCalendar feeds   |
 | Chat     | Matrix, and every network bridged to it     |                                            |
 | To-dos   | uplink's own                                | Google Tasks, Microsoft To Do, CalDAV      |
 
@@ -263,7 +264,7 @@ ID that you (or your organization's administrator) create.
    `https://login.microsoftonline.com/common/oauth2/nativeclient`.
 3. Under API permissions, add the Microsoft Graph delegated permissions
    `Mail.ReadWrite`, `Mail.Send` and `Calendars.ReadWrite` (to answer
-   meeting requests). If your
+   meeting requests, and to create and edit events). If your
    organization does not let users consent to applications, an
    administrator grants them.
 4. In `uplink.yaml`, uncomment the Microsoft 365 account, set `id` and

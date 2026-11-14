@@ -6,12 +6,14 @@
 //! its window, so as days pass the window is moved by listing it anew.
 //!
 //! It is also the calendar's reconciler (§6.6): after each sync, and as
-//! the user answers meeting requests, it gives Graph the answers asked
-//! for (§10.3).
+//! the user answers meeting requests and writes events, it gives Graph
+//! the answers asked for (§10.3), and the events created, changed and
+//! deleted (§10.4).
 
 use crate::{
     respond::{self, ResponseGiven, CANNOT_TAKE_BACK},
-    CalendarObserved, ObservedEvent,
+    write::{self, EventWritten, Outcome, Request},
+    CalendarObserved, ObservedEvent, ObservedSeries,
 };
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -22,7 +24,7 @@ use std::{
 };
 use tokio::sync::broadcast::{self, error::RecvError};
 use uplink_config::M365AccountConfig;
-use uplink_email::m365::api::{Changed, Graph};
+use uplink_email::m365::api::{Changed, Graph, Written};
 use uplink_protocol::{
     calendar::{EventResponse, ShowAs},
     LogEntry, ServerEvent, Source,
@@ -85,6 +87,8 @@ struct Event {
     #[serde(rename = "type")]
     kind: String,
     series_master_id: Option<String>,
+    /// Only of one created with one.
+    transaction_id: Option<String>,
     subject: Option<String>,
     body_preview: Option<String>,
     location: Option<Location>,
@@ -122,14 +126,14 @@ struct Location {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct DateTime {
+pub(crate) struct DateTime {
     date_time: String,
     time_zone: String,
 }
 
 impl DateTime {
     /// Ms since the epoch; times are asked for in UTC.
-    fn ms(&self) -> Result<i64> {
+    pub(crate) fn ms(&self) -> Result<i64> {
         anyhow::ensure!(
             self.time_zone.eq_ignore_ascii_case("UTC"),
             "a time in {}, not UTC",
@@ -162,11 +166,7 @@ impl CalendarSync {
         let mut wake = self.dispatcher.hub().subscribe();
         let mut backoff = Duration::from_secs(1);
         loop {
-            let step = async {
-                self.sync(now_ms()).await?;
-                self.push().await
-            };
-            match step.await {
+            match self.step(now_ms()).await {
                 Ok(()) => {
                     backoff = Duration::from_secs(1);
                     self.wait(&mut wake).await;
@@ -178,6 +178,17 @@ impl CalendarSync {
                 }
             }
         }
+    }
+
+    /// One round, as of `now` (ms): syncs, pushes, and syncs again if it
+    /// wrote an event, so that what was written shows as the provider has
+    /// it (a series created, its occurrences).
+    pub async fn step(&self, now: i64) -> Result<()> {
+        self.sync(now).await?;
+        if self.push().await? {
+            self.sync(now).await?;
+        }
+        Ok(())
     }
 
     /// Waits out the poll interval, or until the user changes the
@@ -198,9 +209,10 @@ impl CalendarSync {
         }
     }
 
-    /// Gives Graph the answers to meeting requests asked for, recording
-    /// what it made of each.
-    pub async fn push(&self) -> Result<()> {
+    /// Gives Graph the answers to meeting requests asked for, and the
+    /// events written, recording what it made of each; whether it wrote
+    /// any event.
+    pub async fn push(&self) -> Result<bool> {
         let reader = self.reader.clone();
         let account = self.account.clone();
         let wanted = tokio::task::spawn_blocking(move || {
@@ -231,7 +243,52 @@ impl CalendarSync {
                 )
                 .await?;
         }
-        Ok(())
+        let reader = self.reader.clone();
+        let account = self.account.clone();
+        let writes = tokio::task::spawn_blocking(move || {
+            let mut conn = reader.lock().expect("reader poisoned");
+            let tx = conn.transaction()?;
+            write::wanted(&tx, &account)
+        })
+        .await??;
+        let wrote = !writes.is_empty();
+        for write in writes {
+            let outcome = match &write.request {
+                Request::Create(body) => self.graph.create("/events", body).await?,
+                Request::Patch(path, body) => self.graph.patch(path, body).await?,
+                Request::Delete(path) => match self.graph.delete(path).await? {
+                    Changed::Done | Changed::Gone => Written::Gone,
+                    Changed::Refused(reason) => Written::Refused(reason),
+                },
+                Request::Cancel(path) => {
+                    let body = serde_json::json!({ "comment": "" });
+                    match self.graph.act(&format!("{path}/cancel"), &body).await? {
+                        Changed::Done | Changed::Gone => Written::Gone,
+                        Changed::Refused(reason) => Written::Refused(reason),
+                    }
+                }
+            };
+            let outcome = match outcome {
+                Written::Done(json) => Outcome::Written(json.to_string()),
+                // One to change gone is gone; one to create is not.
+                Written::Gone => match write.request {
+                    Request::Create(_) => bail!("Graph answered 404 to creating an event"),
+                    _ => Outcome::Gone,
+                },
+                Written::Refused(reason) => Outcome::Refused(reason),
+            };
+            self.dispatcher
+                .observe(
+                    self.account.clone(),
+                    EventWritten {
+                        target: write.target,
+                        by: write.by,
+                        outcome,
+                    },
+                )
+                .await?;
+        }
+        Ok(wrote)
     }
 
     /// Records the calendar's changes since the last sync, as of `now`
@@ -288,6 +345,27 @@ impl CalendarSync {
         if !full && events.is_empty() && removed.is_empty() {
             return Ok(());
         }
+        // The masters of the series whose occurrences changed, as they
+        // may have: they say how a series recurs.
+        let mut series = vec![];
+        let mut masters: Vec<&str> = events.iter().filter_map(|e| e.series.as_deref()).collect();
+        masters.sort_unstable();
+        masters.dedup();
+        for id in masters {
+            // Gone since: its occurrences will be, at the next sync.
+            let Some(master) = self
+                .graph
+                .fetch::<serde_json::Value>(&format!("/events/{id}"))
+                .await?
+            else {
+                continue;
+            };
+            series.push(ObservedSeries {
+                external_id: id.to_owned(),
+                transaction_id: master["transactionId"].as_str().map(str::to_owned),
+                raw: master.to_string(),
+            });
+        }
         let sync_state = SyncState {
             start,
             end,
@@ -301,6 +379,7 @@ impl CalendarSync {
                     replace: full,
                     events,
                     removed,
+                    series,
                     sync_state: serde_json::to_value(sync_state).expect("serializes"),
                 },
             )
@@ -346,8 +425,8 @@ fn changes_calendar(entry: &LogEntry) -> bool {
         .any(|e| matches!(e, ServerEvent::CalendarChanged(_)))
 }
 
-/// An event of a delta page, as recorded.
-fn observed(item: serde_json::Value) -> Result<ObservedEvent> {
+/// An event of a delta page (or as Graph answers a write), as recorded.
+pub(crate) fn observed(item: serde_json::Value) -> Result<ObservedEvent> {
     let raw = item.to_string();
     let event: Event = serde_json::from_value(item).with_context(|| format!("event {raw}"))?;
     Ok(ObservedEvent {
@@ -374,6 +453,7 @@ fn observed(item: serde_json::Value) -> Result<ObservedEvent> {
             .then_some(event.reminder_minutes_before_start),
         modified: ms(&event.last_modified_date_time)?,
         external_id: event.id,
+        transaction_id: event.transaction_id,
         raw,
     })
 }

@@ -10,7 +10,7 @@ use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use uplink_protocol::{
     calendar::{CalendarChanged, EventId, EventResponse, PendingResponse},
-    compose::{AccountOutbox, OutboxChanged, Pending, PendingOp},
+    compose::PendingOp,
     ServerEvent, TxLogId,
 };
 use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Transaction};
@@ -49,7 +49,10 @@ pub fn answerable(observed: EventResponse) -> bool {
 }
 
 /// The account's answers being given, as the outbox compares them.
-fn pending_of(tx: &Transaction, account: &str) -> Result<Vec<(i64, String, Option<String>)>> {
+pub(crate) fn pending_of(
+    tx: &Transaction,
+    account: &str,
+) -> Result<Vec<(i64, String, Option<String>)>> {
     Ok(tx
         .prepare(
             "SELECT id, desired_response, response_refused FROM calendar_event
@@ -57,24 +60,6 @@ fn pending_of(tx: &Transaction, account: &str) -> Result<Vec<(i64, String, Optio
         )?
         .query_map([account], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<Result<_, _>>()?)
-}
-
-/// What a change to the account's events did to its answers being
-/// given: run `change`, then tell the outbox if they changed.
-pub(crate) fn telling_outbox<T>(
-    tx: &Transaction,
-    account: &str,
-    events: &mut Vec<ServerEvent>,
-    change: impl FnOnce() -> Result<T>,
-) -> Result<T> {
-    let before = pending_of(tx, account)?;
-    let result = change()?;
-    if pending_of(tx, account)? != before {
-        events.push(ServerEvent::OutboxChanged(OutboxChanged {
-            accounts: vec![account.to_owned()],
-        }));
-    }
-    Ok(result)
 }
 
 /// Answers a meeting request, as `response`; or, as an inverse, takes an
@@ -119,7 +104,7 @@ impl Op for Respond {
         let mut events = vec![ServerEvent::CalendarChanged(CalendarChanged {
             account: account.clone(),
         })];
-        telling_outbox(tx, &account, &mut events, || {
+        crate::telling_outbox(tx, &account, &mut events, || {
             let wanted = (self.response != observed).then(|| name(self.response));
             tx.execute(
                 "UPDATE calendar_event SET desired_response = ?2, response_by = ?3,
@@ -191,7 +176,7 @@ impl Observation for ResponseGiven {
         let subject = subject.unwrap_or_default();
         let mut events = vec![];
         let response = name(self.response);
-        telling_outbox(tx, account, &mut events, || {
+        crate::telling_outbox(tx, account, &mut events, || {
             match &self.refused {
                 // Unless asked otherwise meanwhile (that is the sync's
                 // next step), refused until the user decides.
@@ -225,8 +210,8 @@ impl Observation for ResponseGiven {
     }
 }
 
-/// Each account with answers being given, in id order.
-pub fn outbox(tx: &Transaction) -> Result<Vec<AccountOutbox>> {
+/// Each account's answers being given, newest first.
+pub(crate) fn outbox(tx: &Transaction) -> Result<Vec<(String, PendingResponse)>> {
     type Row = (String, i64, String, String, Option<String>, PendingOp);
     let rows: Vec<Row> = tx
         .prepare(
@@ -250,26 +235,18 @@ pub fn outbox(tx: &Transaction) -> Result<Vec<AccountOutbox>> {
             ))
         })?
         .collect::<Result<_, _>>()?;
-    let mut accounts: Vec<AccountOutbox> = vec![];
-    for (account, event, subject, response, refused, op) in rows {
-        if accounts.last().is_none_or(|a| a.account != account) {
-            accounts.push(AccountOutbox {
+    rows.into_iter()
+        .map(|(account, event, subject, response, refused, op)| {
+            Ok((
                 account,
-                failing: None,
-                pending: Pending::Calendar { responses: vec![] },
-            });
-        }
-        let Pending::Calendar { responses } = &mut accounts.last_mut().expect("pushed").pending
-        else {
-            unreachable!("pushed as of the calendar")
-        };
-        responses.push(PendingResponse {
-            event: EventId(event),
-            subject,
-            response: named(response)?,
-            op,
-            refused,
-        });
-    }
-    Ok(accounts)
+                PendingResponse {
+                    event: EventId(event),
+                    subject,
+                    response: named(response)?,
+                    op,
+                    refused,
+                },
+            ))
+        })
+        .collect()
 }

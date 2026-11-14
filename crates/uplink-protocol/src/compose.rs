@@ -176,6 +176,8 @@ pub enum Pending {
     Calendar {
         /// Meeting requests being answered, newest first.
         responses: Vec<crate::calendar::PendingResponse>,
+        /// Events being created, changed or deleted, newest first.
+        changes: Vec<crate::calendar::PendingEventChange>,
     },
 }
 

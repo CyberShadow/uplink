@@ -188,6 +188,15 @@ fn declarations() -> String {
         AttendeeKind,
         TimeZone,
         PendingResponse,
+        EventFields,
+        EventField,
+        Recurrence,
+        RecurrencePattern,
+        Weekday,
+        WeekIndex,
+        RecurrenceEnd,
+        PendingEventChange,
+        EventChangeKind,
         CalendarChanged,
     );
     out

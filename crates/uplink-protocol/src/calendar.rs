@@ -82,6 +82,152 @@ pub struct PendingResponse {
     pub refused: Option<String>,
 }
 
+/// An event as the user makes it (SPEC §10.4): a single event, an
+/// occurrence of a series, or a series.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct EventFields {
+    pub subject: String,
+    pub location: String,
+    /// HTML, as a message's body is written.
+    pub body: String,
+    /// Ms since the Unix epoch; of an all-day event, UTC midnights, of its
+    /// first day and of the day after its last. Of a series, its first
+    /// occurrence's.
+    pub start: i64,
+    pub end: i64,
+    pub all_day: bool,
+    /// Its attendees, as typed: comma-separated, each `addr` or
+    /// `Name <addr>`.
+    pub required: String,
+    pub optional: String,
+    /// It is a Teams meeting.
+    pub online_meeting: bool,
+    /// Minutes before its start the user is reminded of it, if at all.
+    pub reminder: Option<i64>,
+    pub show_as: ShowAs,
+    /// How a series recurs; `None` of a single event or an occurrence.
+    pub recurrence: Option<Recurrence>,
+}
+
+/// What an edit of an event changes: the fields the user edited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum EventField {
+    Subject,
+    Location,
+    Body,
+    /// Its start, end and whether it is all-day.
+    Time,
+    /// Its required and optional attendees.
+    Attendees,
+    OnlineMeeting,
+    Reminder,
+    ShowAs,
+    Recurrence,
+}
+
+/// How a series recurs, as Graph has it (`patternedRecurrence`): every
+/// `interval` days, weeks, months or years, as `pattern` says which,
+/// from its first occurrence until `until`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Recurrence {
+    pub pattern: RecurrencePattern,
+    pub interval: u32,
+    pub until: RecurrenceEnd,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RecurrencePattern {
+    Daily,
+    Weekly {
+        days: Vec<Weekday>,
+    },
+    /// On a day of the month.
+    AbsoluteMonthly {
+        day: u8,
+    },
+    /// On the `index`th of `days` of the month (e.g. its second Tuesday).
+    RelativeMonthly {
+        index: WeekIndex,
+        days: Vec<Weekday>,
+    },
+    AbsoluteYearly {
+        month: u8,
+        day: u8,
+    },
+    RelativeYearly {
+        month: u8,
+        index: WeekIndex,
+        days: Vec<Weekday>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum Weekday {
+    Sunday,
+    Monday,
+    Tuesday,
+    Wednesday,
+    Thursday,
+    Friday,
+    Saturday,
+}
+
+/// Which of the month's such days (Graph `weekIndex`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum WeekIndex {
+    First,
+    Second,
+    Third,
+    Fourth,
+    Last,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RecurrenceEnd {
+    Never,
+    /// Its last occurrence is on or before the date (`YYYY-MM-DD`, in the
+    /// series' time zone).
+    On {
+        date: String,
+    },
+    After {
+        count: u32,
+    },
+}
+
+/// An event being created, changed or deleted (SPEC §10.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PendingEventChange {
+    /// The event, of the series if the change is; `None` once it is gone
+    /// (deleted, its deletion still to be given).
+    pub event: Option<EventId>,
+    pub subject: String,
+    pub change: EventChangeKind,
+    /// Of the series, rather than of one event.
+    pub series: bool,
+    /// The op that asked: undoing it takes the change back.
+    pub op: crate::compose::PendingOp,
+    /// Why the provider refused, if it did: it needs a decision, which
+    /// undoing the op or changing the event again makes.
+    pub refused: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum EventChangeKind {
+    Create,
+    Update,
+    Delete,
+}
+
 /// What a calendar shows of an event opened: all it has, as the provider
 /// has it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -98,8 +244,14 @@ pub struct EventDetails {
     pub remote_images: Vec<crate::mail::RemoteHost>,
     /// Where the provider's web app shows it.
     pub web_link: Option<String>,
-    /// The provider's JSON of it, indented.
-    pub raw: String,
+    /// What the user can edit of it, as shown, if it is the user's own (not
+    /// a meeting request, nor cancelled): its body as `body_html` has it.
+    pub editable: Option<EventFields>,
+    /// Of an occurrence of the user's own series, the series', once the
+    /// calendar has it.
+    pub series: Option<EventFields>,
+    /// The provider's JSON of it, indented; `None` while being created.
+    pub raw: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -235,7 +235,7 @@ export function outboxCount(outbox: readonly AccountOutbox[]): number {
       case 'matrix':
         return n + pending.sends.length + pending.memberships.length + (pending.receipts.length > 0 ? 1 : 0)
       case 'calendar':
-        return n + pending.responses.length
+        return n + pending.responses.length + pending.changes.length
     }
   }, 0)
 }
@@ -255,7 +255,7 @@ export function outboxNeedsAttention(outbox: readonly AccountOutbox[]): boolean 
           pending.memberships.some((m) => m.refused !== null)
         )
       case 'calendar':
-        return pending.responses.some((r) => r.refused !== null)
+        return [...pending.responses, ...pending.changes].some((r) => r.refused !== null)
     }
   })
 }

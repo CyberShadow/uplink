@@ -36,6 +36,16 @@ export function calendarPath(view: CalendarView, date: string, event?: number): 
   return `/calendar/${view}/${date}${event === undefined ? '' : `/${event}`}`
 }
 
+/** The form of a new event, from the view of `date`. */
+export function newEventPath(view: CalendarView, date: string): string {
+  return `${calendarPath(view, date)}/new`
+}
+
+/** The form that edits the event opened, or its series. */
+function editEventPath(view: CalendarView, date: string, event: number, series: boolean): string {
+  return `${calendarPath(view, date, event)}/edit${series ? '/series' : ''}`
+}
+
 /** Local midnight of `YYYY-MM-DD`. */
 function midnight(date: string): Date {
   const [y, m, d] = date.split('-').map(Number)
@@ -87,7 +97,7 @@ function isOn(event: CalendarEvent, day: Date): boolean {
   return event.start < end && (event.end > start || (event.end === event.start && event.start >= start))
 }
 
-function viewOf(name: string | undefined): CalendarView {
+export function viewOf(name: string | undefined): CalendarView {
   if (name === undefined) return defaultView()
   if (name === 'day' || name === 'week' || name === 'agenda') return name
   throw new Error(`no calendar view ${name}`)
@@ -96,7 +106,7 @@ function viewOf(name: string | undefined): CalendarView {
 /** The day, week or agenda from `date`, of every account's calendar; with
  * `event`, that event opened beside it. */
 export function Calendar(props: { view?: string; date?: string; event?: string }) {
-  const { calendar } = useServices()
+  const { calendar, ops } = useServices()
   const { route } = useLocation()
   const view = viewOf(props.view)
   const date = props.date ?? today()
@@ -129,8 +139,20 @@ export function Calendar(props: { view?: string; date?: string; event?: string }
       const url = joinable(events ?? [], opened, Date.now())?.join_url
       if (url) open(url, '_blank', 'noopener,noreferrer')
     },
-    ...(opened !== null && { up: () => route(closed) }),
+    compose: () => route(newEventPath(view, date)),
+    ...(opened !== null && {
+      up: () => route(closed),
+      edit: () => {
+        if (isOwn(calendar.opened.value)) route(editEventPath(view, date, opened, false))
+      },
+      delete: async () => {
+        const details = calendar.opened.value
+        if (isOwn(details) && (await deleteEvent(details, false))) route(closed)
+      },
+    }),
   })
+  const deleteEvent = (details: EventDetails, series: boolean) =>
+    ops.dispatch({ type: 'delete_event', event: details.event.id, series })
   /** Opens the event after the one opened (`by` 1) or before it (-1), of
    * those on show; with none opened, the first yet to end, or the last
    * begun. */
@@ -175,6 +197,9 @@ export function Calendar(props: { view?: string; date?: string; event?: string }
           <a href={calendarPath('agenda', date)} aria-current={view === 'agenda' ? 'page' : undefined}>
             Agenda
           </a>
+          <a class={styles.new} href={newEventPath(view, date)} title="New event (c)">
+            New event
+          </a>
         </nav>
         {calendars.size > 0 && (
           <ul class={styles.legend} aria-label="Calendars">
@@ -194,7 +219,16 @@ export function Calendar(props: { view?: string; date?: string; event?: string }
         ) : (
           <Agenda days={days} events={events} link={link} opened={opened} />
         )}
-        {opened !== null && <EventPane details={calendar.opened.value} close={closed} />}
+        {opened !== null && (
+          <EventPane
+            details={calendar.opened.value}
+            close={closed}
+            edit={(series) => editEventPath(view, date, opened, series)}
+            remove={async (details, series) => {
+              if (await deleteEvent(details, series)) route(closed)
+            }}
+          />
+        )}
       </div>
     </section>
     </CalendarsContext.Provider>
@@ -613,8 +647,19 @@ function AttendeeItem(props: { attendee: Attendee }) {
   )
 }
 
+/** Whether the event opened is the user's own, to change. */
+function isOwn(details: EventDetails | 'gone' | null): details is EventDetails {
+  return details !== null && details !== 'gone' && details.editable !== null
+}
+
+/** What changes the event opened: its edits' paths, and its deletion. */
+interface Changes {
+  edit: (series: boolean) => string
+  remove: (details: EventDetails, series: boolean) => void
+}
+
 /** All the calendar has of the event opened, beside the calendar. */
-function EventPane(props: { details: EventDetails | 'gone' | null; close: string }) {
+function EventPane(props: { details: EventDetails | 'gone' | null; close: string } & Changes) {
   const { details } = props
   const event = details !== null && details !== 'gone' ? details.event : null
   return (
@@ -630,13 +675,49 @@ function EventPane(props: { details: EventDetails | 'gone' | null; close: string
       ) : details === 'gone' ? (
         <p class={styles.muted}>This event is no longer on the calendar.</p>
       ) : (
-        <Details details={details} />
+        <Details details={details} edit={props.edit} remove={props.remove} />
       )}
     </aside>
   )
 }
 
-function Details(props: { details: EventDetails }) {
+/** Of the user's own event, its edit and its deletion, as Outlook words
+ * them: a meeting's deletion cancels it; of a series, of the occurrence
+ * or of all of it. */
+function OwnActions(props: { details: EventDetails } & Changes) {
+  const { details } = props
+  const { event } = details
+  const meeting = details.attendees.length > 0
+  const remove = meeting ? 'Cancel' : 'Delete'
+  const scopes: { series: boolean; edit: string; remove: string }[] = event.recurring
+    ? [
+        { series: false, edit: 'Edit occurrence', remove: `${remove} occurrence` },
+        ...(details.series !== null ? [{ series: true, edit: 'Edit series', remove: `${remove} series` }] : []),
+      ]
+    : [{ series: false, edit: 'Edit', remove: meeting ? 'Cancel meeting' : 'Delete' }]
+  return (
+    <div class={styles.answer} role="group" aria-label="Change">
+      {scopes.map(({ series, edit }) => (
+        <a key={edit} class={styles.change} href={props.edit(series)} title={series ? undefined : 'Edit (e)'} onMouseDown={keepFocus}>
+          {edit}
+        </a>
+      ))}
+      {scopes.map(({ series, remove }) => (
+        <button
+          key={remove}
+          type="button"
+          title={series ? undefined : 'Delete (#)'}
+          onMouseDown={keepFocus}
+          onClick={() => props.remove(details, series)}
+        >
+          {remove}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function Details(props: { details: EventDetails } & Changes) {
   const calendars = useContext(CalendarsContext)
   const { event, organizer, attendees, web_link } = props.details
   const { join_url } = event
@@ -657,6 +738,7 @@ function Details(props: { details: EventDetails }) {
         </a>
       )}
       {answerable(event) && <Answer event={event} />}
+      {props.details.editable !== null && <OwnActions details={props.details} edit={props.edit} remove={props.remove} />}
       <dl class={styles.facts}>
         {calendars.has(event.account) && (
           <>
@@ -703,7 +785,7 @@ function Details(props: { details: EventDetails }) {
       )}
       <details class={styles.raw}>
         <summary>Provider's JSON</summary>
-        <pre>{props.details.raw}</pre>
+        <pre>{props.details.raw ?? 'Not yet at the provider.'}</pre>
       </details>
     </>
   )

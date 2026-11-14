@@ -53,20 +53,23 @@ export class CalendarStore {
     })
   }
 
+  /** The details of the event of `id` as they are, or `'gone'`; `null`
+   * if they could not be had, as {@link error} says. */
+  async details(id: EventId): Promise<EventDetails | 'gone' | null> {
+    try {
+      return (await query(this.server, { type: 'get_event', event: id }, 'event')).details
+    } catch (error) {
+      if (error instanceof RequestError && error.error.code === 'not_found') return 'gone'
+      this.error.value = (error as Error).message
+      return null
+    }
+  }
+
   private detailsLoader(id: EventId | null): Loader {
     return new Loader(async () => {
       if (id === null) return
-      let details: EventDetails | 'gone'
-      try {
-        details = (await query(this.server, { type: 'get_event', event: id }, 'event')).details
-      } catch (error) {
-        if (!(error instanceof RequestError && error.error.code === 'not_found')) {
-          this.error.value = (error as Error).message
-          return
-        }
-        details = 'gone'
-      }
-      if (this.openedId.value === id) this.opened.value = details
+      const details = await this.details(id)
+      if (details !== null && this.openedId.value === id) this.opened.value = details
     })
   }
 

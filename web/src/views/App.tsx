@@ -31,6 +31,7 @@ import { useTitle } from '../title'
 import styles from './App.module.css'
 
 const Compose = lazy(() => import('./Compose'))
+const EventEditor = lazy(() => import('./EventEditor'))
 
 export function App(props: { client: Client; status: ReadonlySignal<Status> }) {
   const { ops, mail, drafts, matrix, todos, history, calendar, home } = props.client
@@ -149,6 +150,8 @@ function Shell() {
           <Route path="/todos" component={Todos} />
           <Route path="/history" component={History} />
           <Route path="/calendar" component={Calendar} />
+          <Route path="/calendar/:view/:date/new" component={EventEditor} />
+          <Route path="/calendar/:view/:date/:event/edit/:scope?" component={EventEditor} />
           <Route path="/calendar/:view/:date/:event?" component={Calendar} />
           <Route path="/compose/:draft" component={Compose} />
           <Route path="/drafts" component={Drafts} />

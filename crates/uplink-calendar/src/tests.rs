@@ -67,6 +67,7 @@ impl Db {
                     replace,
                     events,
                     removed: removed.iter().map(|r| (*r).to_owned()).collect(),
+                    series: vec![],
                     sync_state: serde_json::json!({}),
                 },
             )
@@ -87,11 +88,11 @@ impl Db {
     fn pending(&self) -> Vec<(String, EventResponse)> {
         let mut conn = uplink_storage::open_reader(self._dir.path()).unwrap();
         let tx = conn.transaction().unwrap();
-        crate::respond::outbox(&tx)
+        crate::outbox(&tx)
             .unwrap()
             .into_iter()
             .flat_map(|a| match a.pending {
-                Pending::Calendar { responses } => responses,
+                Pending::Calendar { responses, .. } => responses,
                 other => panic!("{other:?}"),
             })
             .map(|r| (r.subject, r.response))
@@ -110,6 +111,7 @@ impl Db {
 fn event(id: &str, subject: &str, start: i64, end: i64) -> ObservedEvent {
     ObservedEvent {
         external_id: id.into(),
+        transaction_id: None,
         series: None,
         exception: false,
         subject: subject.into(),
@@ -321,4 +323,59 @@ async fn declined_events_are_not_listed_but_open() {
         panic!()
     };
     assert_eq!(details.event.response, EventResponse::Declined);
+}
+
+#[tokio::test]
+async fn an_event_being_created_survives_listings_and_goes_with_its_undo() {
+    let db = Db::new();
+    db.observe(true, vec![event("a", "Standup", 9 * HOUR, 10 * HOUR)], &[])
+        .await;
+    let fields = uplink_protocol::calendar::EventFields {
+        subject: "Review".into(),
+        location: String::new(),
+        body: "<p>Draft</p>".into(),
+        start: 11 * HOUR,
+        end: 12 * HOUR,
+        all_day: false,
+        required: String::new(),
+        optional: String::new(),
+        online_meeting: false,
+        reminder: None,
+        show_as: ShowAs::Busy,
+        recurrence: None,
+    };
+    let ServerResponse::Dispatched { tx_log_id } = db
+        .calendar
+        .create("work".into(), fields.clone(), "Europe/Prague".into())
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    let created = db.events().await.pop().unwrap();
+    assert_eq!(
+        (
+            created.subject.as_str(),
+            created.preview.as_str(),
+            created.response
+        ),
+        ("Review", "Draft", EventResponse::Organizer)
+    );
+    // Not yet at the provider: a listing without it keeps it.
+    db.observe(true, vec![], &[]).await;
+    assert_eq!(db.subjects(0, 24 * HOUR).await, ["Review"]);
+    // Deleted before it was given: gone, nothing to give.
+    db.dispatcher.undo(tx_log_id).await.unwrap();
+    assert!(db.events().await.is_empty());
+    let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
+    assert!(crate::outbox(&conn.transaction().unwrap())
+        .unwrap()
+        .is_empty());
+    // A time zone Graph does not know is refused.
+    let refused = db
+        .calendar
+        .create("work".into(), fields, "Mars/Olympus".into())
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Invalid);
 }

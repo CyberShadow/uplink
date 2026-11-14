@@ -444,6 +444,30 @@ pub enum ClientRequest {
         event: calendar::EventId,
         response: calendar::EventResponse,
     },
+    /// Creates an event, or a series, on the account's calendar; its
+    /// attendees are invited. Its times, and how it recurs, are of
+    /// `time_zone` (IANA's name: the client's).
+    CreateEvent {
+        account: String,
+        fields: Box<calendar::EventFields>,
+        time_zone: String,
+    },
+    /// Changes the `edited` fields of the user's own event to `fields`'
+    /// (the others are not read), or of its series; its attendees are
+    /// told.
+    UpdateEvent {
+        event: calendar::EventId,
+        series: bool,
+        fields: Box<calendar::EventFields>,
+        edited: Vec<calendar::EventField>,
+        time_zone: String,
+    },
+    /// Deletes the user's own event, or its series; a meeting is
+    /// cancelled, its attendees told.
+    DeleteEvent {
+        event: calendar::EventId,
+        series: bool,
+    },
     /// All to-dos.
     ListTodos,
     /// Flagging a message for follow-up is creating a to-do of it.

@@ -252,7 +252,7 @@ shown: boolean,
 /**
  * Caught up on too: the user is done with it (SPEC §12.15).
  */
-fully: boolean, } | { "type": "mark_room_fully_read", room: RoomId, event: RoomEventId, } | { "type": "set_typing", room: RoomId, typing: boolean, } | { "type": "list_receipts", room: RoomId, } | { "type": "list_members", room: RoomId, } | { "type": "list_pinned", room: RoomId, } | { "type": "list_thread", room: RoomId, root: RoomEventId, } | { "type": "search_room", room: RoomId, query: string, before: RoomEventId | null, limit: number, } | { "type": "preview_url", room: RoomId, event: RoomEventId, url: string, } | { "type": "create_matrix_room", account: string, room: NewRoom, } | { "type": "start_direct_chat", account: string, user: string, } | { "type": "join_matrix_room", account: string, room: string, } | { "type": "resolve_room_alias", account: string, alias: string, } | { "type": "get_matrix_security", account: string, } | { "type": "recover_matrix", account: string, recovery: string, } | { "type": "verify_matrix_device", account: string, device: string | null, } | { "type": "answer_verification", account: string, flow_id: string, answer: VerificationAnswer, } | { "type": "import_room_keys", account: string, blob: BlobId, passphrase: string, } | { "type": "change_membership", room: RoomId, change: MembershipChange, } | { "type": "order_spaces", changes: Array<SpaceOrderChange>, } | { "type": "modify_room_tags", rooms: Array<RoomId>, add: Array<string>, remove: Array<string>, } | { "type": "list_events", from: number, to: number, } | { "type": "get_event", event: EventId, } | { "type": "respond_to_event", event: EventId, response: EventResponse, } | { "type": "list_todos" } | { "type": "create_todo", title: string, notes: string, due: string | null, message: MessageId | null, } | { "type": "edit_todo", todo: TodoId, edit: TodoEdit, } | { "type": "delete_todo", todo: TodoId, };
+fully: boolean, } | { "type": "mark_room_fully_read", room: RoomId, event: RoomEventId, } | { "type": "set_typing", room: RoomId, typing: boolean, } | { "type": "list_receipts", room: RoomId, } | { "type": "list_members", room: RoomId, } | { "type": "list_pinned", room: RoomId, } | { "type": "list_thread", room: RoomId, root: RoomEventId, } | { "type": "search_room", room: RoomId, query: string, before: RoomEventId | null, limit: number, } | { "type": "preview_url", room: RoomId, event: RoomEventId, url: string, } | { "type": "create_matrix_room", account: string, room: NewRoom, } | { "type": "start_direct_chat", account: string, user: string, } | { "type": "join_matrix_room", account: string, room: string, } | { "type": "resolve_room_alias", account: string, alias: string, } | { "type": "get_matrix_security", account: string, } | { "type": "recover_matrix", account: string, recovery: string, } | { "type": "verify_matrix_device", account: string, device: string | null, } | { "type": "answer_verification", account: string, flow_id: string, answer: VerificationAnswer, } | { "type": "import_room_keys", account: string, blob: BlobId, passphrase: string, } | { "type": "change_membership", room: RoomId, change: MembershipChange, } | { "type": "order_spaces", changes: Array<SpaceOrderChange>, } | { "type": "modify_room_tags", rooms: Array<RoomId>, add: Array<string>, remove: Array<string>, } | { "type": "list_events", from: number, to: number, } | { "type": "get_event", event: EventId, } | { "type": "respond_to_event", event: EventId, response: EventResponse, } | { "type": "create_event", account: string, fields: EventFields, time_zone: string, } | { "type": "update_event", event: EventId, series: boolean, fields: EventFields, edited: Array<EventField>, time_zone: string, } | { "type": "delete_event", event: EventId, series: boolean, } | { "type": "list_todos" } | { "type": "create_todo", title: string, notes: string, due: string | null, message: MessageId | null, } | { "type": "edit_todo", todo: TodoId, edit: TodoEdit, } | { "type": "delete_todo", todo: TodoId, };
 
 export type ServerResponse = { "type": "undone", tx_log_id: TxLogId, } | { "type": "dispatched", tx_log_id: TxLogId, } | { "type": "done" } | { "type": "matrix_security", security: MatrixSecurity, } | { "type": "room_keys_imported", imported: number, total: number, } | { "type": "accounts", as_of: TxLogId, accounts: Array<Account>, } | { "type": "conversations", as_of: TxLogId, conversations: Array<Conversation>, 
 /**
@@ -791,7 +791,11 @@ receipts: Array<RoomId>, } | { "kind": "calendar",
 /**
  * Meeting requests being answered, newest first.
  */
-responses: Array<PendingResponse>, };
+responses: Array<PendingResponse>, 
+/**
+ * Events being created, changed or deleted, newest first.
+ */
+changes: Array<PendingEventChange>, };
 
 export type Failing = { error: string, 
 /**
@@ -1347,9 +1351,19 @@ body_text: string | null, remote_images: Array<RemoteHost>,
  */
 web_link: string | null, 
 /**
- * The provider's JSON of it, indented.
+ * What the user can edit of it, as shown, if it is the user's own (not
+ * a meeting request, nor cancelled): its body as `body_html` has it.
  */
-raw: string, };
+editable: EventFields | null, 
+/**
+ * Of an occurrence of the user's own series, the series', once the
+ * calendar has it.
+ */
+series: EventFields | null, 
+/**
+ * The provider's JSON of it, indented; `None` while being created.
+ */
+raw: string | null, };
 
 export type Person = { 
 /**
@@ -1393,9 +1407,90 @@ op: PendingOp,
 refused: string | null, };
 
 /**
+ * An event as the user makes it (SPEC §10.4): a single event, an
+ * occurrence of a series, or a series.
+ */
+export type EventFields = { subject: string, location: string, 
+/**
+ * HTML, as a message's body is written.
+ */
+body: string, 
+/**
+ * Ms since the Unix epoch; of an all-day event, UTC midnights, of its
+ * first day and of the day after its last. Of a series, its first
+ * occurrence's.
+ */
+start: number, end: number, all_day: boolean, 
+/**
+ * Its attendees, as typed: comma-separated, each `addr` or
+ * `Name <addr>`.
+ */
+required: string, optional: string, 
+/**
+ * It is a Teams meeting.
+ */
+online_meeting: boolean, 
+/**
+ * Minutes before its start the user is reminded of it, if at all.
+ */
+reminder: number | null, show_as: ShowAs, 
+/**
+ * How a series recurs; `None` of a single event or an occurrence.
+ */
+recurrence: Recurrence | null, };
+
+/**
+ * What an edit of an event changes: the fields the user edited.
+ */
+export type EventField = "subject" | "location" | "body" | "time" | "attendees" | "online_meeting" | "reminder" | "show_as" | "recurrence";
+
+/**
+ * How a series recurs, as Graph has it (`patternedRecurrence`): every
+ * `interval` days, weeks, months or years, as `pattern` says which,
+ * from its first occurrence until `until`.
+ */
+export type Recurrence = { pattern: RecurrencePattern, interval: number, until: RecurrenceEnd, };
+
+export type RecurrencePattern = { "type": "daily" } | { "type": "weekly", days: Array<Weekday>, } | { "type": "absolute_monthly", day: number, } | { "type": "relative_monthly", index: WeekIndex, days: Array<Weekday>, } | { "type": "absolute_yearly", month: number, day: number, } | { "type": "relative_yearly", month: number, index: WeekIndex, days: Array<Weekday>, };
+
+export type Weekday = "sunday" | "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday";
+
+/**
+ * Which of the month's such days (Graph `weekIndex`).
+ */
+export type WeekIndex = "first" | "second" | "third" | "fourth" | "last";
+
+export type RecurrenceEnd = { "type": "never" } | { "type": "on", date: string, } | { "type": "after", count: number, };
+
+/**
+ * An event being created, changed or deleted (SPEC §10.4).
+ */
+export type PendingEventChange = { 
+/**
+ * The event, of the series if the change is; `None` once it is gone
+ * (deleted, its deletion still to be given).
+ */
+event: EventId | null, subject: string, change: EventChangeKind, 
+/**
+ * Of the series, rather than of one event.
+ */
+series: boolean, 
+/**
+ * The op that asked: undoing it takes the change back.
+ */
+op: PendingOp, 
+/**
+ * Why the provider refused, if it did: it needs a decision, which
+ * undoing the op or changing the event again makes.
+ */
+refused: string | null, };
+
+export type EventChangeKind = "create" | "update" | "delete";
+
+/**
  * An account's calendar changed.
  */
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "f90661600d01bb1b"
+export const PROTOCOL_VERSION = "330ef43a326c6cd8"

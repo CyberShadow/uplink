@@ -1259,6 +1259,25 @@ impl Backend for Services {
             ClientRequest::RespondToEvent { event, response } => {
                 self.calendar.respond(event, response).await
             }
+            ClientRequest::CreateEvent {
+                account,
+                fields,
+                time_zone,
+            } => self.calendar.create(account, *fields, time_zone).await,
+            ClientRequest::UpdateEvent {
+                event,
+                series,
+                fields,
+                edited,
+                time_zone,
+            } => {
+                self.calendar
+                    .update(event, series, *fields, edited, time_zone)
+                    .await
+            }
+            ClientRequest::DeleteEvent { event, series } => {
+                self.calendar.delete(event, series).await
+            }
             ClientRequest::CreateTodo {
                 title,
                 notes,

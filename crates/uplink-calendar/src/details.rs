@@ -3,9 +3,13 @@
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use uplink_email::remote::Remote;
 use uplink_protocol::{
-    calendar::{Attendee, AttendeeKind, CalendarEvent, EventDetails, EventResponse, Person},
+    calendar::{
+        Attendee, AttendeeKind, CalendarEvent, EventDetails, EventField, EventFields,
+        EventResponse, Person,
+    },
     mail::RemoteHost,
 };
 
@@ -72,11 +76,10 @@ fn person(address: EmailAddress) -> Result<Person> {
     })
 }
 
-/// The details of `event`, of its provider's JSON `raw`.
-pub fn details(event: CalendarEvent, raw: &str) -> Result<EventDetails> {
-    let json: serde_json::Value = serde_json::from_str(raw).context("an event's JSON")?;
-    let graph: Event = serde_json::from_value(json.clone()).context("an event's details")?;
-    let (body_html, body_text, remote) = match graph.body {
+/// The body of an event, as clients show it: sanitized HTML (and the
+/// remote images it refers to), or text.
+fn body(body: Option<Body>) -> (Option<String>, Option<String>, Remote) {
+    match body {
         Some(Body {
             content_type: ContentType::Html,
             content,
@@ -87,26 +90,102 @@ pub fn details(event: CalendarEvent, raw: &str) -> Result<EventDetails> {
         Some(Body {
             content_type: ContentType::Text,
             content,
-        }) => (None, Some(content), Default::default()),
-        None => (None, None, Default::default()),
+        }) => (None, Some(content), Remote::default()),
+        None => (None, None, Remote::default()),
+    }
+}
+
+/// The details of `event`: of its provider's JSON `raw` (`None` while
+/// being created), under the `edited` fields of `shown` still to be given;
+/// and, of the user's own, what the edit form starts from (of it, and of
+/// its series).
+pub fn details(
+    event: CalendarEvent,
+    raw: Option<&str>,
+    shown: Option<(EventFields, BTreeSet<EventField>)>,
+    editable: Option<(EventFields, Option<EventFields>)>,
+) -> Result<EventDetails> {
+    let json: Option<serde_json::Value> = raw
+        .map(serde_json::from_str)
+        .transpose()
+        .context("an event's JSON")?;
+    let graph: Option<Event> = json
+        .clone()
+        .map(serde_json::from_value)
+        .transpose()
+        .context("an event's details")?;
+    let (organizer, observed_attendees, observed_body, web_link) = match graph {
+        Some(graph) => (graph.organizer, graph.attendees, graph.body, graph.web_link),
+        None => (None, vec![], None, None),
+    };
+    let mut attendees = observed_attendees
+        .into_iter()
+        .map(|a| {
+            Ok(Attendee {
+                person: person(a.email_address)?,
+                kind: a.kind,
+                response: a.status.response,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut body_of = observed_body;
+    if let Some((fields, edited)) = &shown {
+        if edited.contains(&EventField::Attendees) {
+            // As asked, with the answers given so far; rooms as they are.
+            let mut asked: Vec<Attendee> = attendees
+                .iter()
+                .filter(|a| a.kind == AttendeeKind::Resource)
+                .cloned()
+                .collect();
+            for (list, kind) in [
+                (&fields.required, AttendeeKind::Required),
+                (&fields.optional, AttendeeKind::Optional),
+            ] {
+                for (name, address) in uplink_email::compose::parse_addresses(list)? {
+                    let given = attendees.iter().find(|a| {
+                        a.person
+                            .address
+                            .as_deref()
+                            .is_some_and(|a| a.eq_ignore_ascii_case(&address))
+                    });
+                    asked.push(Attendee {
+                        person: Person {
+                            name: name.unwrap_or_else(|| address.clone()),
+                            address: Some(address),
+                        },
+                        kind,
+                        response: given.map_or(EventResponse::None, |a| a.response),
+                    });
+                }
+            }
+            attendees = asked;
+        }
+        if edited.contains(&EventField::Body) {
+            body_of = Some(Body {
+                content_type: ContentType::Html,
+                content: fields.body.clone(),
+            });
+        }
+    }
+    let (body_html, body_text, remote) = body(body_of);
+    // The form edits HTML: a body as clients show it.
+    let as_shown = |mut fields: EventFields| {
+        fields.body = body(Some(Body {
+            content_type: ContentType::Html,
+            content: fields.body,
+        }))
+        .0
+        .expect("HTML");
+        fields
+    };
+    let (editable, series) = match editable {
+        Some((own, series)) => (Some(as_shown(own)), series.map(as_shown)),
+        None => (None, None),
     };
     Ok(EventDetails {
         event,
-        organizer: graph
-            .organizer
-            .map(|o| person(o.email_address))
-            .transpose()?,
-        attendees: graph
-            .attendees
-            .into_iter()
-            .map(|a| {
-                Ok(Attendee {
-                    person: person(a.email_address)?,
-                    kind: a.kind,
-                    response: a.status.response,
-                })
-            })
-            .collect::<Result<_>>()?,
+        organizer: organizer.map(|o| person(o.email_address)).transpose()?,
+        attendees,
         body_html,
         body_text,
         remote_images: remote
@@ -114,7 +193,9 @@ pub fn details(event: CalendarEvent, raw: &str) -> Result<EventDetails> {
             .into_iter()
             .map(|(host, images)| RemoteHost { host, images })
             .collect(),
-        web_link: graph.web_link,
-        raw: serde_json::to_string_pretty(&json).expect("serializes"),
+        web_link,
+        editable,
+        series,
+        raw: json.map(|json| serde_json::to_string_pretty(&json).expect("serializes")),
     })
 }

@@ -1,5 +1,5 @@
 import { signal } from '@preact/signals'
-import { cleanup, render, screen, waitFor, within } from '@testing-library/preact'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Client } from '../stores/client'
@@ -352,6 +352,8 @@ describe('calendar', () => {
         .filter((b) => b.getAttribute('aria-pressed') === 'true')
         .map((b) => b.textContent)
     expect(pressed()).toEqual([])
+    // Not one's own, to change.
+    expect(within(pane).queryByRole('group', { name: 'Change' })).toBeNull()
     await user.click(within(answer).getByRole('button', { name: 'Tentative' }))
     await waitFor(() => expect(pressed()).toEqual(['Tentative']))
     expect(within(screen.getByRole('status')).getByText("Tentatively accepted 'Planning'")).toBeTruthy()
@@ -375,5 +377,105 @@ describe('calendar', () => {
     const pane = await screen.findByRole('complementary', { name: 'Event' })
     await within(pane).findByText('You organize it')
     expect(within(pane).queryByRole('group', { name: 'Your answer' })).toBeNull()
+  })
+
+  it('creates an event with c, with attendees and a recurrence, undoably through the outbox', async () => {
+    const user = await start('/calendar/week/2026-11-11')
+    await user.keyboard('c')
+    expect(location.pathname).toBe('/calendar/week/2026-11-11/new')
+    const form = await screen.findByRole('form', { name: 'New event' })
+    // Writing starts at the subject.
+    await waitFor(() => expect(document.activeElement).toBe(within(form).getByRole('textbox', { name: 'Subject' })))
+    await user.keyboard('Planning')
+    await user.type(within(form).getByRole('textbox', { name: 'Required' }), 'Ann <ann@example.com>')
+    // The end moves with the start, as long after it as it was.
+    fireEvent.input(within(form).getByLabelText('From'), { target: { value: '2026-11-11T14:00' } })
+    expect((within(form).getByLabelText('To') as HTMLInputElement).value).toBe('2026-11-11T14:30')
+    await user.selectOptions(within(form).getByRole('combobox', { name: 'Repeat' }), 'weekly')
+    // On the day it starts, and on Fridays too.
+    expect((within(form).getByRole('checkbox', { name: 'we' }) as HTMLInputElement).checked).toBe(true)
+    await user.click(within(form).getByRole('checkbox', { name: 'fr' }))
+    await user.click(within(form).getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(location.pathname).toBe('/calendar/week/2026-11-11'))
+    expect(server.eventRequests).toEqual([
+      {
+        type: 'create_event',
+        account: 'work',
+        time_zone: 'America/New_York',
+        fields: expect.objectContaining({
+          subject: 'Planning',
+          required: 'Ann <ann@example.com>',
+          start: Date.parse('2026-11-11T19:00:00Z'),
+          end: Date.parse('2026-11-11T19:30:00Z'),
+          all_day: false,
+          reminder: 15,
+          recurrence: { pattern: { type: 'weekly', days: ['wednesday', 'friday'] }, interval: 1, until: { type: 'never' } },
+        }),
+      },
+    ])
+    await waitFor(() => expect(timed('Wednesday 2026-11-11').map((e) => e.textContent)).toEqual(['14:00 Planning ↻']))
+
+    // In the outbox until given, with its Undo.
+    await user.click(screen.getByRole('link', { name: /Outbox/ }))
+    const outbox = await screen.findByRole('list', { name: 'Outbox of work: calendar' })
+    expect(within(outbox).getByText("Created 'Planning'")).toBeTruthy()
+    await user.click(within(outbox).getByRole('button', { name: 'Undo' }))
+    await screen.findByText('The outbox is empty: everything you did is at the providers.')
+    expect(server.calendar.map((e) => e.subject)).not.toContain('Planning')
+  })
+
+  it('edits the event open with e, sending only what was edited, and saves with Ctrl+Enter', async () => {
+    const lunch = server.calendar.find((e) => e.subject === 'Lunch')!
+    const user = await start(`/calendar/week/2026-11-11/${lunch.id}`)
+    await screen.findByRole('group', { name: 'Change' })
+    await user.keyboard('e')
+    expect(location.pathname).toBe(`/calendar/week/2026-11-11/${lunch.id}/edit`)
+    const form = await screen.findByRole('form', { name: 'Edit event' })
+    const subject = within(form).getByRole('textbox', { name: 'Subject' }) as HTMLInputElement
+    expect(subject.value).toBe('Lunch')
+    // No recurrence to give an event that is not a series.
+    expect(within(form).queryByRole('combobox', { name: 'Repeat' })).toBeNull()
+    await user.clear(subject)
+    await user.type(subject, 'Long lunch')
+    await user.keyboard('{Control>}{Enter}{/Control}')
+    // Back, to the event, on its day.
+    await waitFor(() => expect(location.pathname).toBe(`/calendar/week/2026-11-10/${lunch.id}`))
+    expect(server.eventRequests).toEqual([
+      expect.objectContaining({ type: 'update_event', event: lunch.id, series: false, edited: ['subject'] }),
+    ])
+    const pane = await screen.findByRole('complementary', { name: 'Event' })
+    await within(pane).findByRole('heading', { name: 'Long lunch' })
+  })
+
+  it('deletes the event open with #, undoably, and cancels a meeting of a series as a whole', async () => {
+    const lunch = server.calendar.find((e) => e.subject === 'Lunch')!
+    const user = await start(`/calendar/week/2026-11-11/${lunch.id}`)
+    await screen.findByRole('group', { name: 'Change' })
+    await user.keyboard('#')
+    await waitFor(() => expect(location.pathname).toBe('/calendar/week/2026-11-11'))
+    await waitFor(() => expect(timed('Tuesday 2026-11-10').map((e) => e.textContent)).not.toContain('12:00 Lunch'))
+    await user.keyboard('z')
+    await waitFor(() => expect(timed('Tuesday 2026-11-10').map((e) => e.textContent)).toContain('12:00 Lunch'))
+
+    const weekly = server.addEvent(
+      'work',
+      'Weekly',
+      '2026-11-12T15:00:00Z',
+      '2026-11-12T16:00:00Z',
+      { recurring: true },
+      {
+        attendees: [{ person: { name: 'Ann', address: 'ann@example.com' }, kind: 'required', response: 'accepted' }],
+        series: { ...server.calendar[0], body: '', required: 'ann@example.com', optional: '', online_meeting: false, recurrence: null } as never,
+      },
+    )
+    server.calendarSynced('work')
+    await user.click(await screen.findByRole('link', { name: /Weekly/ }))
+    const change = await screen.findByRole('group', { name: 'Change' })
+    expect(within(change).getAllByRole('link').map((l) => l.textContent)).toEqual(['Edit occurrence', 'Edit series'])
+    expect(within(change).getByRole('link', { name: 'Edit series' }).getAttribute('href')).toBe(
+      `/calendar/week/2026-11-11/${weekly.id}/edit/series`,
+    )
+    await user.click(within(change).getByRole('button', { name: 'Cancel series' }))
+    expect(server.eventRequests.at(-1)).toEqual({ type: 'delete_event', event: weekly.id, series: true })
   })
 })

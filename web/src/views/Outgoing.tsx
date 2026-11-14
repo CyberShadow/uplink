@@ -249,6 +249,22 @@ function CalendarRows(props: { pending: Extract<Pending, { kind: 'calendar' }>; 
           </span>
         </li>
       ))}
+      {props.pending.changes.map(({ op, refused }) => (
+        <li key={`change:${op.id}`} class={styles.row}>
+          <Unused />
+          <span class={styles.from}>{dateTime(op.ts)}</span>
+          <span class={styles.summary}>
+            <span class={styles.subject}>{op.description}</span>
+            <span class={styles.snippet}>{refused !== null ? `${props.provider} refused: ${refused}` : 'to go'}</span>
+          </span>
+          <span />
+          <span class={outgoing.actions}>
+            <button type="button" onMouseDown={keepFocus} onClick={() => ops.undo(op.id)}>
+              Undo
+            </button>
+          </span>
+        </li>
+      ))}
     </>
   )
 }

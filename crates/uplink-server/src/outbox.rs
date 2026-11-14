@@ -27,7 +27,7 @@ impl Outbox {
                 let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
                 let mut accounts = uplink_email::outbox::outbox(&tx).map_err(internal)?;
                 accounts.extend(uplink_matrix::outbox::outbox(&tx).map_err(internal)?);
-                accounts.extend(uplink_calendar::respond::outbox(&tx).map_err(internal)?);
+                accounts.extend(uplink_calendar::outbox(&tx).map_err(internal)?);
                 accounts.sort_by(|a, b| a.account.cmp(&b.account));
                 Ok(ServerResponse::Outbox { as_of, accounts })
             })

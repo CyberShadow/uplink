@@ -17,6 +17,8 @@ import type {
   EventDetails,
   EventResponse,
   PendingResponse,
+  PendingEventChange,
+  EventFields,
   ClientRequest,
   Conversation,
   Draft,
@@ -149,6 +151,11 @@ export class FakeServer implements Requester, Blobs {
   private readonly given = new Map<number, EventResponse>()
   /** Of events, what else they have. */
   private readonly eventDetails = new Map<number, Partial<Omit<EventDetails, 'event' | 'raw'>>>()
+  /** Events being created, changed or deleted, newest last; what the
+   * sync has not given the provider yet. */
+  readonly writes: { account: string; change: PendingEventChange }[] = []
+  /** The requests to write events, as made. */
+  readonly eventRequests: ClientRequest[] = []
   readonly todos: Todo[] = []
   private nextTodo = 1
   private matrixAccounts: MatrixAccount[] = []
@@ -285,6 +292,63 @@ export class FakeServer implements Requester, Blobs {
   /** Says that `account`'s calendar changed. */
   calendarSynced(account: string) {
     this.observe(account, [{ type: 'calendar_changed', account }])
+  }
+
+  /** The events of `account` written, as its sync would have it. */
+  eventsWritten(account: string) {
+    for (let i = this.writes.length - 1; i >= 0; i--) if (this.writes[i].account === account) this.writes.splice(i, 1)
+    this.observe(account, [
+      { type: 'calendar_changed', account },
+      { type: 'outbox_changed', accounts: [account] },
+    ])
+  }
+
+  /** Writes an event as the server's ops do: at once, pending until the
+   * sync gives it; undone, as before. */
+  private writeEvent(
+    account: string,
+    description: string,
+    write: Omit<PendingEventChange, 'op' | 'refused'>,
+    apply: () => () => void,
+  ): number {
+    const revert = apply()
+    const tx = this.commit({ type: 'user' }, description, [
+      { type: 'calendar_changed', account },
+      { type: 'outbox_changed', accounts: [account] },
+    ])
+    const pending = { account, change: { ...write, op: { id: tx, description, ts: Date.now() }, refused: null } }
+    this.writes.push(pending)
+    this.undoable.set(tx, {
+      revert: () => {
+        revert()
+        this.writes.splice(this.writes.indexOf(pending), 1)
+        return this.commit({ type: 'user' }, `Undid: ${description}`, [
+          { type: 'calendar_changed', account },
+          { type: 'outbox_changed', accounts: [account] },
+        ])
+      },
+      undone: false,
+    })
+    return tx
+  }
+
+  /** What the edit form starts from, of an event of the user's own. */
+  private editable(event: CalendarEvent): EventFields | null {
+    if ((event.response !== 'organizer' && event.response !== 'none') || event.cancelled) return null
+    return {
+      subject: event.subject,
+      location: event.location,
+      body: '',
+      start: event.start,
+      end: event.end,
+      all_day: event.all_day,
+      required: '',
+      optional: '',
+      online_meeting: event.join_url !== null,
+      reminder: event.reminder,
+      show_as: event.show_as,
+      recurrence: null,
+    }
   }
 
   /** Answers the meeting request as the server applies `Respond`: shown
@@ -961,13 +1025,18 @@ export class FakeServer implements Requester, Blobs {
             },
           })
         }
-        for (const account of new Set(this.responses.map((r) => this.calendar.find((e) => e.id === r.event)!.account))) {
+        const answering = this.responses.map((r) => this.calendar.find((e) => e.id === r.event)!.account)
+        for (const account of new Set([...answering, ...this.writes.map((w) => w.account)])) {
           accounts.push({
             account,
             failing: null,
             pending: {
               kind: 'calendar',
               responses: this.responses.filter((r) => this.calendar.find((e) => e.id === r.event)!.account === account).reverse(),
+              changes: this.writes
+                .filter((w) => w.account === account)
+                .map((w) => w.change)
+                .reverse(),
             },
           })
         }
@@ -1233,9 +1302,73 @@ export class FakeServer implements Requester, Blobs {
             body_text: null,
             remote_images: [],
             web_link: null,
+            editable: this.editable(event),
+            series: null,
             raw: JSON.stringify({ subject: event.subject }, null, 2),
             ...this.eventDetails.get(event.id),
           },
+        }
+      }
+      case 'create_event': {
+        this.eventRequests.push(body)
+        const { fields } = body
+        let created: CalendarEvent
+        return {
+          type: 'dispatched',
+          tx_log_id: this.writeEvent(
+            body.account,
+            `Created '${fields.subject}'`,
+            { event: this.calendar.length + 1, subject: fields.subject, change: 'create', series: fields.recurrence !== null },
+            () => {
+              created = this.addEvent(body.account, fields.subject, new Date(fields.start).toISOString(), new Date(fields.end).toISOString(), {
+                location: fields.location,
+                all_day: fields.all_day,
+                recurring: fields.recurrence !== null,
+                show_as: fields.show_as,
+                reminder: fields.reminder,
+              }, { editable: fields, body_html: fields.body })
+              return () => this.calendar.splice(this.calendar.indexOf(created), 1)
+            },
+          ),
+        }
+      }
+      case 'update_event': {
+        this.eventRequests.push(body)
+        const event = this.calendar.find((e) => e.id === body.event)!
+        const before = { ...event }
+        const fields = body.fields
+        return {
+          type: 'dispatched',
+          tx_log_id: this.writeEvent(
+            event.account,
+            `Changed '${body.edited.includes('subject') ? fields.subject : event.subject}'`,
+            { event: event.id, subject: event.subject, change: 'update', series: body.series },
+            () => {
+              if (body.edited.includes('subject')) event.subject = fields.subject
+              if (body.edited.includes('location')) event.location = fields.location
+              if (body.edited.includes('time')) Object.assign(event, { start: fields.start, end: fields.end, all_day: fields.all_day })
+              if (body.edited.includes('show_as')) event.show_as = fields.show_as
+              if (body.edited.includes('reminder')) event.reminder = fields.reminder
+              return () => Object.assign(event, before)
+            },
+          ),
+        }
+      }
+      case 'delete_event': {
+        this.eventRequests.push(body)
+        const event = this.calendar.find((e) => e.id === body.event)!
+        return {
+          type: 'dispatched',
+          tx_log_id: this.writeEvent(
+            event.account,
+            `Deleted '${event.subject}'`,
+            { event: null, subject: event.subject, change: 'delete', series: body.series },
+            () => {
+              const at = this.calendar.indexOf(event)
+              this.calendar.splice(at, 1)
+              return () => this.calendar.splice(at, 0, event)
+            },
+          ),
         }
       }
       case 'respond_to_event':

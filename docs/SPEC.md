@@ -582,14 +582,32 @@ CREATE TABLE matrix_send (     -- (V0023: was matrix_outbox)
 );
 -- Full-text search of Matrix messages is deferred.
 
--- ── calendar (M365 read-only; as built, V0012; §10) ──────────────────
+-- ── calendar (M365; as built, V0012, V0054; §10) ─────────────────────
+-- A series' master, which calendar views do not list (V0054): its JSON,
+-- fetched as its occurrences are seen, says how it recurs; a change to
+-- the series is desired of it (§10.4).
+CREATE TABLE calendar_series (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id       TEXT NOT NULL REFERENCES account(id),
+  external_id      TEXT,              -- Graph id; NULL while being created
+  transaction_id   TEXT,              -- Graph's, of one uplink creates
+  raw              TEXT,              -- the master's JSON, once fetched
+  desired          TEXT,              -- JSON: to create, fields edited, or delete
+  desired_by       INTEGER REFERENCES tx_log(id),
+  desired_refused  TEXT,              -- why the provider refused it
+  UNIQUE (account_id, external_id),
+  UNIQUE (account_id, transaction_id)
+);
 -- One row per event *instance*, as a Graph calendar view lists them:
--- single events, and each occurrence or exception of a series.
+-- single events, and each occurrence or exception of a series. Its
+-- columns are as shown: what is desired of it, or of its series, over
+-- what the provider has (`raw`).
 CREATE TABLE calendar_event (
-  id              INTEGER PRIMARY KEY,
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
   account_id      TEXT NOT NULL REFERENCES account(id),
-  external_id     TEXT NOT NULL,            -- Graph id of the instance
-  series          TEXT,                     -- seriesMasterId, if recurring
+  external_id     TEXT,                     -- Graph id; NULL while being created
+  transaction_id  TEXT,                     -- Graph's, of one uplink creates (V0054)
+  series_id       INTEGER REFERENCES calendar_series(id),  -- if recurring (V0054)
   exception       INTEGER NOT NULL,         -- an occurrence changed from its series
   subject         TEXT NOT NULL,
   location        TEXT NOT NULL,
@@ -603,8 +621,15 @@ CREATE TABLE calendar_event (
   join_url        TEXT,                     -- its online meeting's (V0047)
   reminder        INTEGER,                  -- minutes before; NULL: none (V0048)
   modified_ts     INTEGER NOT NULL,         -- lastModifiedDateTime, ms (V0051)
-  raw             TEXT NOT NULL,            -- the event's Graph JSON
-  UNIQUE (account_id, external_id)
+  raw             TEXT,                     -- the event's Graph JSON; NULL while being created
+  desired_response TEXT,                    -- an answer pending (V0049, §10.3)
+  response_by     INTEGER REFERENCES tx_log(id),
+  response_refused TEXT,
+  desired         TEXT,                     -- as calendar_series' (V0054, §10.4)
+  desired_by      INTEGER REFERENCES tx_log(id),
+  desired_refused TEXT,
+  UNIQUE (account_id, external_id),
+  UNIQUE (account_id, transaction_id)
 );
 CREATE INDEX calendar_event_by_start ON calendar_event(start_ts);
 -- The window listed and its delta link: {start, end, delta_link}.
@@ -1158,7 +1183,8 @@ provider made of a push):
 - whether a mail or a Matrix message is sent (§6.7);
 - a Matrix room's membership (§9.7) and read receipt, and a space's
   order (§9.5);
-- the user's answer to a meeting request (§10.3).
+- the user's answer to a meeting request (§10.3);
+- the user's own events created, changed and deleted (§10.4).
 
 **Where an entry is.** A label is of one of three kinds (`label.kind`):
 a *tag*, under no rule of where an entry is (Gmail's labels, read and
@@ -1179,7 +1205,8 @@ Each account runs a reconciler (its sync task) that, after every commit
 touching its state, pushes the differences — Gmail `messages.batchModify`
 and draft `send`; Graph `PATCH`, `move` and draft `send`; Matrix sends,
 joins, leaves, receipts and space orders; Graph `accept`,
-`tentativelyAccept` and `decline` (the calendar's sync task). The UI shows desired state
+`tentativelyAccept` and `decline`, and events' `POST`, `PATCH`,
+`DELETE` and `cancel` (the calendar's sync task). The UI shows desired state
 immediately, so actions feel instant and survive a provider outage.
 
 A difference is *pending* until the provider is observed to match. Each
@@ -2846,7 +2873,67 @@ the outbox, apart from the account's mail.
 
 Answering needs the registration's `Calendars.ReadWrite` permission
 (§13.3). Not yet: a comment with the answer, answering without telling
-the organizer, proposing a new time, and creating or editing events.
+the organizer, and proposing a new time.
+
+### 10.4 Creating and editing events
+
+The user's own events (those they organize, or appointments; not
+cancelled) can be edited and deleted, and events created, as Outlook's:
+its subject, required and optional attendees (address lists as typed,
+as a draft's), start and end (or the days of an all-day event), how it
+recurs, location, whether it is a Teams meeting, its reminder, how it
+shows (busy, free, …) and its description (HTML, edited in TipTap, as a
+draft's body). How it recurs is Graph's `patternedRecurrence`: daily,
+weekly on chosen days, monthly or yearly on a date or on the first to
+fourth or last such weekday, every so many, until further notice, a
+date or a number of times. Of a series, an occurrence (its times as
+moved, but not how it recurs) or the series as a whole is edited, or
+deleted.
+
+`/calendar/<view>/<date>/new` is the form of a new event, from the view
+(`c`, or New event): on the date, from the next half hour today (09:00
+on another day), for 30 minutes, reminded 15 minutes before.
+`…/<event>/edit` edits the event open (`e`, or Edit), and
+`…/<event>/edit/series` its series. The form starts from the event as
+the calendar has it when opened (later changes do not change what is
+typed); moving the start moves the end with it, and a series' pattern
+follows its first day. `Ctrl+Enter` saves, `Esc` leaves unsaved. The
+event open's Delete (`#`), or Cancel meeting for a meeting with
+attendees, deletes it (of a series, the occurrence; or the series, by
+its own button).
+
+The requests are `create_event {account, fields, time_zone}`,
+`update_event {event, series, fields, edited, time_zone}`, which
+changes only the fields `edited` (as the form had them changed), and
+`delete_event {event, series}`; `time_zone` is the browser's (IANA),
+which Graph is given in Windows' names (CLDR's mapping, generated by
+`crates/uplink-calendar/windows_zones.py`) so that a series recurs at
+its local times across daylight saving time. They are the ops
+`calendar.create_event`, `calendar.update_event` and
+`calendar.delete_event`, desired state (§6.6, V0054): what is asked of
+an event, or of a series (`calendar_series`, whose master's JSON the
+sync fetches as its occurrences are seen), is its `desired`, and an
+event's columns are as shown, `desired` over what the provider has, so
+the calendar shows it at once. A field edited back to what the provider
+has is no longer pending. A series' change shows on its occurrences
+but for their times, which follow once Graph has expanded it anew; a
+series created shows its first occurrence until then. Undoing a
+creation deletes the event (nothing to give, if not yet given); undoing
+an edit asks for the fields as they were; undoing a deletion
+(`calendar.restore_event`) takes it back if not yet given, and else
+creates the event anew (an occurrence comes back as a single event).
+
+The calendar's sync task gives them to Graph, then lists the calendar
+again to see what Graph made of them: a creation `POST /me/events`
+(attendees told by Graph), an edit `PATCH /me/events/{id}` of the
+fields edited, a deletion `DELETE`, or, of a meeting with attendees,
+`POST …/cancel`, which tells them. All-day events are given as dates in
+UTC; a Teams meeting as `onlineMeetingProvider: teamsForBusiness`.
+Each creation has a random `transactionId`: should its outcome be
+unknown, a listing that finds an event with it adopts it, and creating
+it again gives the one created. A write refused waits for a decision
+(undoing it, or changing the event again), and is listed in the
+outbox with the answers, as is every write pending (`PendingEventChange`).
 
 ---
 

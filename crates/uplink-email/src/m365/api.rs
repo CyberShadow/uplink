@@ -348,6 +348,34 @@ impl Graph {
         changed(self.send(Method::POST, &self.url(path), Some(body)).await?).await
     }
 
+    /// POSTs `body` to `path` below `/me`, creating what it says.
+    pub async fn create<B: Serialize>(&self, path: &str, body: &B) -> Result<Written> {
+        written(self.send(Method::POST, &self.url(path), Some(body)).await?).await
+    }
+
+    /// PATCHes what is at `path` below `/me` with `body`.
+    pub async fn patch<B: Serialize>(&self, path: &str, body: &B) -> Result<Written> {
+        written(
+            self.send(Method::PATCH, &self.url(path), Some(body))
+                .await?,
+        )
+        .await
+    }
+
+    /// DELETEs what is at `path` below `/me`.
+    pub async fn delete(&self, path: &str) -> Result<Changed> {
+        changed(
+            self.send::<()>(Method::DELETE, &self.url(path), None)
+                .await?,
+        )
+        .await
+    }
+
+    /// What is at `path` below `/me`; `None` on 404.
+    pub async fn fetch<T: DeserializeOwned>(&self, path: &str) -> Result<Option<T>> {
+        self.get(&self.url(path)).await
+    }
+
     /// The URL of `path` below `/me`.
     pub fn url(&self, path: &str) -> String {
         format!("{}{path}", self.base)
@@ -456,6 +484,29 @@ pub enum Changed {
     /// Refused, for this reason: a 4xx other than for authorization or
     /// rate, which pass.
     Refused(String),
+}
+
+/// What Graph made of a write that answers with what it wrote.
+#[derive(Debug, PartialEq)]
+pub enum Written {
+    /// Done: what is there now, as Graph has it.
+    Done(serde_json::Value),
+    /// What it was of no longer exists.
+    Gone,
+    /// Refused, for this reason, as [`Changed::Refused`].
+    Refused(String),
+}
+
+async fn written(response: reqwest::Response) -> Result<Written> {
+    if !response.status().is_success() {
+        return Ok(match changed(response).await? {
+            Changed::Gone => Written::Gone,
+            Changed::Refused(reason) => Written::Refused(reason),
+            Changed::Done => unreachable!("a success"),
+        });
+    }
+    let url = response.url().path().to_owned();
+    decode(&url, response).await.map(Written::Done)
 }
 
 async fn changed(response: reqwest::Response) -> Result<Changed> {
