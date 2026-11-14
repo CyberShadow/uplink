@@ -50,3 +50,14 @@ pub fn grant(account: &M365AccountConfig) -> Grant {
         ],
     }
 }
+
+/// How `account`'s refresh token is redeemed for a token for Exchange's
+/// IMAP: the same, for its resource (SPEC §8.3).
+pub fn imap_grant(account: &M365AccountConfig) -> Grant {
+    let mut grant = grant(account);
+    grant.refresh_form = vec![
+        ("client_id", account.oauth.client_id.clone()),
+        ("resource", account.oauth.imap_resource.clone()),
+    ];
+    grant
+}

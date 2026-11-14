@@ -262,8 +262,11 @@ ID that you (or your organization's administrator) create.
 2. Under Authentication, add the platform *Mobile and desktop
    applications* with the custom redirect URI `http://127.0.0.1`.
 3. Under API permissions, add the Microsoft Graph delegated permissions
-   `Mail.ReadWrite`, `Mail.Send` and `Calendars.ReadWrite` (to answer
-   meeting requests, and to create and edit events). If your
+   `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite` (to answer
+   meeting requests, and to create and edit events) and
+   `IMAP.AccessAsUser.All` (by which uplink is told of new mail as it
+   comes, waiting on the Inbox by IMAP; without it, mail is checked for
+   every 30 s, and the account shows "(not watched)"). If your
    organization does not let users consent to applications, an
    administrator grants them.
 4. In `uplink.yaml`, uncomment the Microsoft 365 account, set `id` and

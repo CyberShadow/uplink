@@ -147,6 +147,11 @@ impl Graph {
         Self::new(http, &config.oauth.resource, credentials)
     }
 
+    /// What it signs in with.
+    pub fn credentials(&self) -> &Credentials {
+        &self.credentials
+    }
+
     /// The API of `resource`, e.g. `https://graph.microsoft.com`.
     pub fn new(http: reqwest::Client, resource: &str, credentials: Credentials) -> Self {
         Self {

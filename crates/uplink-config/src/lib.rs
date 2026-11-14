@@ -305,9 +305,21 @@ pub struct M365AccountConfig {
     #[serde(default)]
     pub identities: Vec<Identity>,
     pub oauth: M365OAuthConfig,
+    /// Exchange's IMAP server, by which the Inbox is watched (SPEC §8.3):
+    /// Exchange Online's, unless set.
+    #[serde(default = "M365AccountConfig::exchange_online")]
+    pub imap: MailServer,
 }
 
 impl M365AccountConfig {
+    fn exchange_online() -> MailServer {
+        MailServer {
+            host: "outlook.office365.com".into(),
+            port: None,
+            security: Security::Tls,
+        }
+    }
+
     pub fn identities(&self) -> Vec<Identity> {
         identities(&self.address, &self.name, &self.identities)
     }
@@ -324,6 +336,9 @@ pub struct M365OAuthConfig {
     pub authority: String,
     #[serde(default = "M365OAuthConfig::graph")]
     pub resource: String,
+    /// What the token for IMAP is of (SPEC §8.3): Exchange Online's.
+    #[serde(default = "M365OAuthConfig::exchange")]
+    pub imap_resource: String,
     /// `<data_dir>/accounts/<id>.token`.
     #[serde(skip)]
     pub token_file: PathBuf,
@@ -336,6 +351,10 @@ impl M365OAuthConfig {
 
     fn graph() -> String {
         "https://graph.microsoft.com".into()
+    }
+
+    fn exchange() -> String {
+        "https://outlook.office.com".into()
     }
 }
 
@@ -1094,8 +1113,14 @@ accounts:
                 client_id: "11111111-2222-3333-4444-555555555555".into(),
                 authority: "https://login.microsoftonline.com/common".into(),
                 resource: "https://graph.microsoft.com".into(),
+                imap_resource: "https://outlook.office.com".into(),
                 token_file: PathBuf::from("/var/lib/uplink/accounts/alice-m365.token"),
             }
+        );
+        // Its Inbox watched by Exchange Online's IMAP.
+        assert_eq!(
+            (m.imap.host.as_str(), m.imap.imap_port()),
+            ("outlook.office365.com", 993)
         );
 
         let AccountConfig::Imap(ref i) = cfg.accounts[2] else {

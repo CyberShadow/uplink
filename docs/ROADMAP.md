@@ -72,8 +72,9 @@ MVP:
 - Gmail via the Gmail API: `history.list` as its push notifications tell
   of changes, pulled from Cloud Pub/Sub over REST, and polled every 60 s
   besides (see SPEC §8.1).
-- M365 via Graph (mail) with delta-link polling every 30 s (no push;
-  see SPEC §8.3 and §15.11 — EWS Streaming deferred).
+- M365 via Graph (mail), its delta links polled every 30 s, and taken
+  as IDLE at Exchange's IMAP tells of the Inbox changing (SPEC §8.3,
+  §15.11).
 - Any IMAP server, polled every 30 s; with NOTIFY, every folder watched,
   else its Inbox and the folders the account names, by IDLE (SPEC
   §8.10).
@@ -86,10 +87,6 @@ MVP:
 - Per-account configuration via single YAML file.
 
 Deferred:
-- M365 push via EWS Streaming Notifications (or whatever first-party
-  Outlook successor uses if one ships first — research bundled with
-  the implementation work). See SPEC §15.11. The polling baseline
-  stays in place as the always-available fallback.
 - Labels of the user's own for POP3 accounts (which have only the
   system ones, as uplink makes no labels yet).
 - Deciding an SMTP send of unknown outcome in the outbox ("send again",

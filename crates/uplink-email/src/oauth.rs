@@ -107,6 +107,10 @@ pub struct Credentials {
     grant: Arc<Grant>,
     key: Arc<MasterKey>,
     current: Arc<Mutex<Option<(String, Instant)>>>,
+    /// Held while the refresh token is redeemed, by every [`Credentials`]
+    /// of it: a redemption may rotate it, after which the one it replaced
+    /// may no longer be taken.
+    redeeming: Arc<Mutex<()>>,
 }
 
 impl Credentials {
@@ -116,6 +120,24 @@ impl Credentials {
             grant: Arc::new(grant),
             key,
             current: Arc::new(Mutex::new(None)),
+            redeeming: Arc::new(Mutex::new(())),
+        }
+    }
+
+    /// Access tokens of the same refresh token, redeemed as `grant` says,
+    /// e.g. for another resource.
+    pub fn redeemed_as(&self, grant: Grant) -> Self {
+        assert_eq!(
+            (&grant.account, &grant.token_file),
+            (&self.grant.account, &self.grant.token_file),
+            "of the same refresh token"
+        );
+        Self {
+            http: self.http.clone(),
+            grant: Arc::new(grant),
+            key: self.key.clone(),
+            current: Arc::new(Mutex::new(None)),
+            redeeming: self.redeeming.clone(),
         }
     }
 
@@ -131,7 +153,12 @@ impl Credentials {
                 return Ok(token.clone());
             }
         }
-        let token = self.refresh().await?;
+        // Seen through though the caller goes, so that a refresh token
+        // rotated is kept: the one it replaced may no longer be taken.
+        let refreshing = self.clone();
+        let token = tokio::spawn(async move { refreshing.refresh().await })
+            .await
+            .expect("a refresh does not panic")?;
         *current = Some(token.clone());
         Ok(token.0)
     }
@@ -142,6 +169,7 @@ impl Credentials {
     }
 
     async fn refresh(&self) -> Result<(String, Instant)> {
+        let _redeeming = self.redeeming.lock().await;
         let grant = &self.grant;
         let stored = seal::read::<Token>(&self.key, &grant.account, &grant.token_file)?;
         let requested = Instant::now();

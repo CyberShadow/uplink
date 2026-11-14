@@ -1,5 +1,6 @@
 //! The sync of a Microsoft 365 account (SPEC §8.3–8.4): folder delta
-//! polling, pushes by moving and updating messages, and sending.
+//! polling, woken by IDLE on Exchange's IMAP as the Inbox changes; pushes
+//! by moving and updating messages, and sending.
 //!
 //! Folders are labels of which an entry has exactly one; the well-known
 //! ones take the ids of the Gmail system labels that mean the same, so
@@ -11,10 +12,13 @@ use super::api::{Changed, Delta, Flag, FlagStatus, Graph, Importance, Message, M
 use crate::{
     account::{Account, Outgoing, Pending, Provider, SendError, SyncTask},
     compose::{SendDrafted, SentCopy},
+    imap::watch::{Watched, Watcher},
+    mail_server::sign_in::{self, SignIn},
     mailbox::{
         self, EntryLabels, LabelChange, LabelsPushed, LabelsRefused, MailboxObserved, NewEntry,
         ObservedLabel,
     },
+    watching::Told,
 };
 use anyhow::{bail, Context, Result};
 use futures_util::{stream, StreamExt, TryStreamExt};
@@ -22,8 +26,10 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     path::Path,
+    sync::OnceLock,
     time::Duration,
 };
+use tokio_rustls::TlsConnector;
 use uplink_config::M365AccountConfig;
 use uplink_protocol::mail::{EntryId, LabelKind};
 use uplink_tx_log::Dispatcher;
@@ -62,7 +68,8 @@ struct SyncState {
     folders: BTreeMap<String, String>,
 }
 
-/// The sync task of `config`'s account, reaching it through `graph` and
+/// The sync task of `config`'s account, reaching it through `graph`,
+/// watching it by IMAP with a token of the same refresh token, and
 /// storing mail under `data_root`.
 pub fn task(
     config: &M365AccountConfig,
@@ -70,8 +77,16 @@ pub fn task(
     dispatcher: Dispatcher,
     data_root: &Path,
 ) -> Result<SyncTask<M365Sync>> {
+    let exchange = graph
+        .credentials()
+        .redeemed_as(super::oauth::imap_grant(config));
     Ok(SyncTask::new(
-        M365Sync { graph },
+        M365Sync::new(
+            graph,
+            watched(config),
+            SignIn::OAuth(exchange),
+            sign_in::tls(vec![])?,
+        ),
         config.id.clone(),
         config.identities(),
         dispatcher,
@@ -81,8 +96,37 @@ pub fn task(
     ))
 }
 
+/// What of the account is watched: its Inbox, at Exchange's IMAP server,
+/// signed in as its address.
+pub fn watched(config: &M365AccountConfig) -> Watched {
+    Watched {
+        account: config.id.clone(),
+        server: config.imap.clone(),
+        user: config.address.clone(),
+        folders: vec![],
+    }
+}
+
 pub struct M365Sync {
-    pub graph: Graph,
+    graph: Graph,
+    watched: Watched,
+    /// Into Exchange's IMAP, by a token for it (SPEC §8.3).
+    sign_in: SignIn,
+    tls: TlsConnector,
+    /// Begun as the task first waits.
+    watcher: OnceLock<Watcher>,
+}
+
+impl M365Sync {
+    pub fn new(graph: Graph, watched: Watched, sign_in: SignIn, tls: TlsConnector) -> Self {
+        Self {
+            graph,
+            watched,
+            sign_in,
+            tls,
+            watcher: OnceLock::new(),
+        }
+    }
 }
 
 /// A folder uplink shows.
@@ -309,6 +353,18 @@ impl Provider for M365Sync {
         self.graph.send_draft(&draft).await?;
         // Graph keeps our Message-ID (SPEC §8.4).
         Ok(SentCopy::OurMessageId)
+    }
+
+    /// What IDLE on Exchange's IMAP tells of the Inbox, watched from the
+    /// first wait on: Graph's delta of each folder is then taken, as for
+    /// a poll.
+    async fn told(&self) -> Told {
+        self.watcher
+            .get_or_init(|| {
+                Watcher::start(self.watched.clone(), self.sign_in.clone(), self.tls.clone())
+            })
+            .told()
+            .await
     }
 }
 

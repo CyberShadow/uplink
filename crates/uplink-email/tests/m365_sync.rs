@@ -5,6 +5,7 @@ mod common;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use common::{
+    dovecot::Dovecot,
     eventually, message,
     uplink::{label_set, Uplink},
 };
@@ -13,7 +14,13 @@ use serde_json::{json, Value};
 use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
 use uplink_config::{M365AccountConfig, M365OAuthConfig};
 use uplink_email::{
-    m365::{api::Graph, oauth, sync::M365Sync},
+    imap::session::{self, Connection},
+    m365::{
+        api::Graph,
+        oauth,
+        sync::{self, M365Sync},
+    },
+    mail_server::sign_in::SignIn,
     oauth::Credentials,
 };
 use uplink_protocol::{compose::SendState, mail::MailProvider, ServerResponse};
@@ -22,10 +29,12 @@ use uplink_storage::seal::MasterKey;
 const ALICE: &str = "alice@example.com";
 const BOB: &str = "bob@example.com";
 
-/// emulate's Microsoft 365, with Alice's account authorized for uplink.
+/// emulate's Microsoft 365, with Alice's account authorized for uplink;
+/// a Dovecot of hers is its Exchange's IMAP, signing her in by a token
+/// Graph takes.
 struct Microsoft {
     account: M365AccountConfig,
-    key: Arc<MasterKey>,
+    exchange: Dovecot,
     base: String,
     http: reqwest::Client,
     alice: Credentials,
@@ -45,6 +54,7 @@ impl Microsoft {
         .await;
         let key_path = dir.join("master.key");
         let key = Arc::new(MasterKey::open(&key_path).unwrap());
+        let exchange = Dovecot::start_with_tokens(dir, &format!("{base}/v1.0/me")).await;
         let account = M365AccountConfig {
             id: "test".into(),
             address: ALICE.into(),
@@ -54,31 +64,43 @@ impl Microsoft {
                 client_id: "uplink-test".into(),
                 authority: format!("{base}/common"),
                 resource: base.clone(),
+                imap_resource: base.clone(),
                 token_file: dir.join("accounts/test.token"),
             },
+            imap: exchange.server(),
         };
         let http = reqwest::Client::new();
         authorize(&http, &account, &key).await;
         Self {
-            alice: Credentials::new(http.clone(), oauth::grant(&account), key.clone()),
+            alice: Credentials::new(http.clone(), oauth::grant(&account), key),
             account,
-            key,
+            exchange,
             base,
             http,
             _emulate: emulate,
         }
     }
 
+    /// Another mail client of Alice's, at Exchange's IMAP.
+    async fn exchange_client(&self) -> Connection {
+        let sign_in = SignIn::OAuth(self.alice.redeemed_as(oauth::imap_grant(&self.account)));
+        session::connect(&self.account.imap, ALICE, &sign_in, &self.exchange.tls)
+            .await
+            .unwrap()
+    }
+
     /// The sync task's provider.
     fn provider(&self) -> M365Sync {
-        let credentials = Credentials::new(
-            self.http.clone(),
-            oauth::grant(&self.account),
-            self.key.clone(),
-        );
-        M365Sync {
-            graph: Graph::new(self.http.clone(), &self.account.oauth.resource, credentials),
-        }
+        // Of Alice's refresh token, as the test's own calls are, which
+        // emulate revokes as it rotates it.
+        let credentials = self.alice.redeemed_as(oauth::grant(&self.account));
+        let exchange = credentials.redeemed_as(oauth::imap_grant(&self.account));
+        M365Sync::new(
+            Graph::new(self.http.clone(), &self.account.oauth.resource, credentials),
+            sync::watched(&self.account),
+            SignIn::OAuth(exchange),
+            self.exchange.tls.clone(),
+        )
     }
 
     /// An access token for another of the tenant's users.
@@ -262,6 +284,34 @@ fn dispatched(response: ServerResponse) -> uplink_protocol::TxLogId {
         panic!("{response:?}")
     };
     tx_log_id
+}
+
+/// The Inbox is watched by IDLE at Exchange's IMAP, signed in by a token
+/// for it (SPEC §8.3): what it tells of wakes the sync, which takes
+/// Graph's deltas, though the poll is an hour away.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_inbox_is_watched_by_idle_at_exchange() {
+    let uplink = Uplink::new(MailProvider::M365);
+    let microsoft = Microsoft::start(uplink.dir.path()).await;
+    let sync = uplink.start_polling(microsoft.provider(), ALICE, Duration::from_secs(3600));
+    eventually("the first sync", || async { uplink.synced().then_some(()) }).await;
+    // The watch begun, its beginning's sync taken.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(uplink.watch_failing().await, None);
+
+    // Graph's mailbox has it; the poll does not come.
+    microsoft.deliver(&message("pushed", "")).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(uplink.entry("pushed"), None, "not polled meanwhile");
+    // Exchange's IMAP tells of it.
+    let mut other = microsoft.exchange_client().await;
+    other
+        .session
+        .append("INBOX", None, None, message("told", "").as_slice())
+        .await
+        .unwrap();
+    uplink.arrived("pushed").await;
+    sync.abort();
 }
 
 #[tokio::test(flavor = "multi_thread")]

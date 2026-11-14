@@ -1715,22 +1715,27 @@ IMAP's per-folder copies, and a REST fake is practical to test against
   per folder on first call, then `@odata.deltaLink` for subsequent calls.
   Library: `reqwest` (no Rust Graph SDK; Graph is JSON+OAuth, easy to call
   directly). Raw MIME for storage via `/messages/{id}/$value`.
-- **IMAP**: not used. All M365 mail flows through Graph, which also
-  serves the calendar, so one sign-in covers both.
-- **Push — interim**: poll the delta link every 30 s per folder. Cheap
-  under Graph throttling for a single user. The user must never see UI
-  for "manual refresh"; polling is silent.
-- **Push — future**: real Outlook gets push via MAPI HangingNotification
-  (a long-poll over HTTPS, no public endpoint required). The closest
-  third-party-accessible equivalent on M365 today is EWS Streaming
-  Notifications (same long-poll pattern; it needs `EWS.AccessAsUser.All`
-  on the app registration). EWS is being retired by Microsoft (last
-  announced sunset October 2026, slipping). A future milestone will:
-  (a) research what current first-party clients (new Outlook for Windows,
-  OWA, Outlook Mobile) actually use today — possibly a Graph-native
-  streaming mechanism that doesn't yet appear in public docs — and
-  (b) implement whichever of EWS Streaming or its Graph successor is
-  cheapest. Until then, polling is the only mechanism. See §15.11.
+- **Polling**: the delta link of every folder, every 30 s. Cheap under
+  Graph throttling for a single user. The user must never see UI for
+  "manual refresh"; polling is silent.
+- **Push**: IDLE (RFC 2177) on the Inbox at Exchange's IMAP
+  (`imap`, default `outlook.office365.com`, TLS), by the IMAP watch of
+  §8.10, wakes the sync, which takes every folder's delta as for a
+  poll; IMAP carries no mail, only the wake. It signs in by XOAUTH2 as
+  the account's address, with an access token for Exchange
+  (`oauth.imap_resource`, default `https://outlook.office.com`) of the
+  same refresh token as Graph's (§13.3), which the registration's
+  Graph `IMAP.AccessAsUser.All` permission allows. A test tenant
+  (2026-11-14) told new mail by `EXISTS` about 3 s after Graph accepted
+  it, a message read by `FETCH` and one moved out by `EXPUNGE` within a
+  second; mail sent to the account was in uplink 2.6–5 s after. Exchange
+  has IDLE but not NOTIFY, so other folders wait for the poll. A tenant
+  that has IMAP off, or a registration without the permission, has the
+  watch fail, which is shown (§8.14), and the account polled. Why not
+  else: EWS (whose streaming notifications were the plan) is being
+  switched off in Exchange Online, from 2026-10-01 to 2027-04-01, and
+  Graph's change notifications need a public HTTPS endpoint (or an Azure
+  Event Hub) (§15.11).
 - **Ids**: every request asks for immutable ids (`Prefer:
   IdType="ImmutableId"`), so a message keeps its id when it moves, and
   is one `mail_entry` whatever folder it is in.
@@ -2421,8 +2426,9 @@ credentials it was built with, which an OAuth token outlives.
 
 ### 8.14 Watches failing
 
-A provider's watch (Gmail's Pub/Sub, §8.1; IMAP's IDLE or NOTIFY,
-§8.10; JMAP's event source, §8.13) is what makes changes show as they
+A provider's watch (Gmail's Pub/Sub, §8.1; Microsoft 365's IDLE at
+Exchange's IMAP, §8.3; IMAP's IDLE or NOTIFY, §8.10; JMAP's event
+source, §8.13) is what makes changes show as they
 happen; while it fails, they show at the next poll only, which the user
 cannot tell from the mail by itself. So the account records, as an
 observation (`account.watch_failing`, "Not watched, only polled: …",
@@ -4054,8 +4060,8 @@ own. The flow is Gmail's (§13.2: PKCE, a loopback redirect, the URL
 pasted from a browser on another machine), but at the v1 (classic)
 endpoint with a `resource=` parameter rather than v2 OIDC with
 `scope=`, so the permissions are those configured on the registration
-(Graph `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite`) rather
-than requested per sign-in:
+(Graph `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite`,
+`IMAP.AccessAsUser.All`) rather than requested per sign-in:
 
 - `oauth.client_id`: the registration's application id. Required.
 - `oauth.authority`: default `https://login.microsoftonline.com/common`;
@@ -4072,19 +4078,23 @@ than requested per sign-in:
   replaces itself (§15.12).
 - Authorize parameters: `response_type=code`, `redirect_uri`,
   `code_challenge` (S256), `state`, `login_hint=<email>`,
-  `resource=https://graph.microsoft.com` (or
-  `https://outlook.office365.com` for the EWS resource when we need it).
+  `resource=https://graph.microsoft.com`.
 - Token exchange parameters: `grant_type=authorization_code`, `code`,
   `redirect_uri`, `client_id`, `code_verifier`. No `scope`, no
   `resource`.
 - Cross-resource refresh: at the v1 endpoint, a refresh token issued
   against one resource can be redeemed for an access token against
-  another by re-stating `resource=<target>` on the refresh POST. We
-  do not currently rely on this — Graph is the only resource we hit —
-  but the future EWS Streaming work (§8.3) will use it to mint
-  `outlook.office365.com` tokens from the same sign-in.
+  another by re-stating `resource=<target>` on the refresh POST: the
+  Inbox's watch (§8.3) gets its token for Exchange's IMAP
+  (`https://outlook.office.com`) so, from the one sign-in. A
+  registration given the permission after the sign-in needs none anew,
+  its consent being the registration's.
 - Refresh tokens may or may not rotate per call. Persistence atomically
-  replaces the sealed token on every successful refresh (§15.4).
+  replaces the sealed token on every successful refresh (§15.4). The
+  account's redemptions for each resource take turns, each reading the
+  token the last stored, as a provider may refuse one it has rotated
+  (emulate does; Entra does not, so far); and one begun is seen through
+  though its caller goes, so a token rotated is not lost.
 
 ### 13.4 Sealing OAuth secrets at rest
 
@@ -4661,33 +4671,28 @@ request).
 
 ### 15.11 M365 push mechanism is a moving target
 
-MVP M365 push is polling the Graph delta link every 30 s per folder
-(§8.3). This is "good enough, not great" — real Outlook gets sub-second
-push via MAPI HangingNotification. The eventual replacement for our
-polling is EWS Streaming Notifications, which:
+M365 push is IDLE on the Inbox at Exchange Online's IMAP, waking the
+Graph sync (§8.3); real Outlook gets push via MAPI HangingNotification,
+which is not offered to others. What was weighed (2026-11-14):
 
-- works today, given `EWS.AccessAsUser.All` on the app registration,
-- is a long-poll over HTTPS, so no public endpoint is required, but
-- is on Microsoft's retirement list (last announced sunset October 2026,
-  has slipped before).
-
-Before implementing EWS Streaming we should also research what current
-first-party clients (new Outlook for Windows, OWA, Outlook Mobile)
-actually use today; Microsoft may have shipped a Graph-native streaming
-mechanism that simply isn't documented yet. That research is bundled
-with the EWS Streaming work — whichever option is cheaper at the time
-becomes the implementation. The two non-options:
-
-- Graph webhook subscriptions require a publicly reachable HTTPS endpoint
-  on the uplink host; incompatible with the "self-hosted on your laptop"
+- EWS Streaming Notifications (a long-poll over HTTPS, so no public
+  endpoint): the earlier plan, but Exchange Online blocks EWS from
+  2026-10-01, in phases, and removes it on 2027-04-01. Off the table.
+- Graph change notifications: delivered to a publicly reachable HTTPS
+  webhook, or to an Azure Event Hub or Event Grid the user would have to
+  pay for and set up; incompatible with the "self-hosted on your laptop"
   baseline. Off the table.
+- IMAP IDLE: works with the delegated permission and the sign-in uplink
+  already has; tells of the Inbox only (Exchange has no NOTIFY), so
+  other folders are polled. Chosen.
 - Manual refresh UI. Off the table on principle — the user must never
   see a "refresh" button.
 
-**Risk horizon**: when (not if) Microsoft retires EWS and has not shipped
-a Graph-native streaming alternative we can use, M365 push reverts to
-polling. The polling code-path stays in the codebase for exactly this
-reason and is the always-available baseline.
+**Risk horizon**: Microsoft may yet switch off IMAP, or OAuth for it,
+in Exchange Online, as it did basic authentication, and has not shipped
+a Graph-native stream a client can hold. Then M365 push reverts to
+polling: the polling code path stays for exactly this reason, and is
+what a tenant with IMAP off gets today.
 
 ---
 
@@ -4697,8 +4702,8 @@ The M365 side is verified against the emulator (§15.10), and against a
 real tenant only as far as the sign-in (§13.3: the authorize URL with
 PKCE and the loopback redirect, which Entra ID matches to the
 registered `http://127.0.0.1` whatever its port, the code's redemption,
-the registration's permissions) and a first sync of mail folders and
-messages. (The `nativeclient` redirect, before, showed the code for
+the registration's permissions), a first sync of mail folders and
+messages, and the Inbox's watch by IMAP IDLE (§8.3). (The `nativeclient` redirect, before, showed the code for
 about a second, warning of phishing, and then replaced its page with
 "This is not the right page".) Open until it runs against a real
 tenant: the

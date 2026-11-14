@@ -28,8 +28,28 @@ fn id(flag: &str) -> String {
     String::from_utf8(out.stdout).unwrap().trim().to_owned()
 }
 
+/// How Dovecot signs Alice in.
+enum Auth<'a> {
+    /// By her password.
+    Password,
+    /// By XOAUTH2, a token being valid if `url` answers with her address
+    /// as `mail` to a request bearing it (as Microsoft Graph's `/me`
+    /// does).
+    Token { url: &'a str },
+}
+
 impl Dovecot {
     pub async fn start(dir: &Path) -> Self {
+        Self::start_with(dir, Auth::Password).await
+    }
+
+    /// Signing Alice in by XOAUTH2, by a token `url` (e.g. Graph's `/me`)
+    /// takes, answering with her address as `mail`.
+    pub async fn start_with_tokens(dir: &Path, url: &str) -> Self {
+        Self::start_with(dir, Auth::Token { url }).await
+    }
+
+    async fn start_with(dir: &Path, auth: Auth<'_>) -> Self {
         let dovecot = std::env::var_os("UPLINK_DOVECOT")
             .expect("UPLINK_DOVECOT must name the dovecot binary (the dev shell sets it)");
         let dir = dir.join("dovecot");
@@ -39,6 +59,27 @@ impl Dovecot {
         std::fs::write(dir.join("cert.pem"), cert.pem()).unwrap();
         std::fs::write(dir.join("key.pem"), key_pair.serialize_pem()).unwrap();
         std::fs::write(dir.join("passwd"), "alice:{PLAIN}alice-secret::::::\n").unwrap();
+        let passdb = match auth {
+            Auth::Password => format!(
+                "auth_mechanisms = plain
+passdb passwd-file {{
+  passwd_file_path = {}/passwd
+}}",
+                dir.display()
+            ),
+            Auth::Token { url } => format!(
+                "auth_mechanisms = xoauth2
+auth_username_format = %{{user}}
+passdb oauth2 {{
+  mechanisms_filter = xoauth2
+}}
+oauth2 {{
+  introspection_mode = auth
+  introspection_url = {url}
+  username_attribute = mail
+}}"
+            ),
+        };
         let ([imap], _picking) = super::free_ports().await;
         let d = dir.display();
         let (user, group) = (id("-un"), id("-gn"));
@@ -56,10 +97,7 @@ listen = 127.0.0.1
 default_internal_user = {user}
 default_internal_group = {group}
 default_login_user = {user}
-auth_mechanisms = plain
-passdb passwd-file {{
-  passwd_file_path = {d}/passwd
-}}
+{passdb}
 userdb static {{
   fields {{
     uid = {uid}
@@ -129,12 +167,17 @@ service anvil {{
 
     /// Alice's account, her password sealed for uplink. Dovecot has no
     /// SMTP: uplink sends nothing in these tests.
-    pub fn account(&self) -> ImapAccountConfig {
-        let server = MailServer {
+    /// Its IMAP server, as an account names it.
+    pub fn server(&self) -> MailServer {
+        MailServer {
             host: "localhost".into(),
             port: Some(self.imap),
             security: Security::Tls,
-        };
+        }
+    }
+
+    pub fn account(&self) -> ImapAccountConfig {
+        let server = self.server();
         let account = ImapAccountConfig {
             id: "test-alice".into(),
             address: "alice@example.com".into(),
