@@ -301,4 +301,17 @@ describe('calendar', () => {
       vi.unstubAllGlobals()
     }
   })
+
+  it('shows a timed event of a day or more in the all-day row, and one overnight on both days', async () => {
+    server.addEvent('work', 'Conference', '2026-11-11T14:00:00Z', '2026-11-13T22:00:00Z')
+    server.addEvent('work', 'Night shift', '2026-11-14T03:00:00Z', '2026-11-14T07:00:00Z')
+    await start('/calendar/week/2026-11-11')
+    await waitFor(() => expect(allDay('Wednesday 2026-11-11')).toEqual(['09:00 → Conference']))
+    expect(allDay('Thursday 2026-11-12')).toEqual(['→ Conference', 'Offsite'])
+    expect(allDay('Friday 2026-11-13')).toEqual(['→ 17:00 Conference'])
+    expect(timed('Wednesday 2026-11-11')).toEqual([])
+    // 22:00 to 02:00 here.
+    expect(timed('Friday 2026-11-13').map((e) => e.textContent)).toEqual(['22:00 Night shift'])
+    expect(timed('Saturday 2026-11-14').map((e) => e.textContent)).toEqual(['until 02:00 Night shift'])
+  })
 })

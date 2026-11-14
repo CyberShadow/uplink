@@ -262,6 +262,25 @@ function tooltip(event: CalendarEvent): string {
 
 type Link = (event: CalendarEvent) => string
 
+/** Whether the event goes in a week's all-day row: an all-day one, or, as
+ * Outlook has them, a timed one of a day or more. */
+function inAllDayRow(event: CalendarEvent): boolean {
+  return event.all_day || event.end - event.start >= DAY
+}
+
+/** Of a timed event in the all-day row, its times on `day`: its start on
+ * its first day, its end on its last, else that it goes on. */
+function spanTimes(event: CalendarEvent, day: Date): string {
+  const start = day.getTime()
+  const end = addDays(day, 1).getTime()
+  const first = event.start >= start
+  const last = event.end <= end
+  if (first && last) return `${time(event.start)}–${time(event.end)} `
+  if (first) return `${time(event.start)} → `
+  if (last) return `→ ${time(event.end)} `
+  return '→ '
+}
+
 /** The hour's tick, in `zone` (the browser's, if none): of the hour
  * starting at `ms`. With other zones on show, compact: `13`, or `13:30`
  * in a zone off by a half hour. */
@@ -363,10 +382,11 @@ function Week(props: {
             </h2>
             <ul class={styles.allDay} aria-label="All day">
               {on
-                .filter((e) => e.all_day)
+                .filter(inAllDayRow)
                 .map((e) => (
                   <li key={e.id}>
                     <a class={eventClass(e, props.opened)} href={props.link(e)} title={tooltip(e)} onMouseDown={keepFocus}>
+                      {!e.all_day && <time>{spanTimes(e, day)}</time>}
                       <span class={styles.subject}>{e.subject}</span>
                       <Marks event={e} />
                     </a>
@@ -376,7 +396,7 @@ function Week(props: {
             <div class={styles.hours} style={{ height: `${24 * HOUR_PX}px` }}>
             <ul aria-label="Timed">
               {laidOut(
-                on.filter((e) => !e.all_day),
+                on.filter((e) => !inAllDayRow(e)),
                 day,
               ).map(({ event: e, top, height, lane, lanes }) => (
                 <li
@@ -394,7 +414,8 @@ function Week(props: {
                     title={tooltip(e)}
                     onMouseDown={keepFocus}
                   >
-                    <time>{time(e.start)}</time> <span class={styles.subject}>{e.subject}</span>
+                    <time>{e.start >= start ? time(e.start) : `until ${time(e.end)}`}</time>{' '}
+                    <span class={styles.subject}>{e.subject}</span>
                     <Marks event={e} />
                     {e.location && <span class={styles.location}> · {e.location}</span>}
                   </a>

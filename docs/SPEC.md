@@ -2650,7 +2650,10 @@ cannot be previewed shows none.
 in it on a phone (narrower than 700px), which a week's seven columns
 would not fit. `/calendar/week/<date>`: the week from Monday, a column a day, all-day
 events in a row above the hours, timed events at local times and side
-by side where they overlap. The days' heads and all-day rows line up
+by side where they overlap. A timed event of a day or more is in the all-day
+row too, as Outlook has it, with its start on its first day and its end
+on its last (`09:00 →`, `→`, `→ 17:00`); one shorter that goes past
+midnight is in both days' columns, the second's saying `until` its end. The days' heads and all-day rows line up
 across the week (a grid's rows) and stay as the hours scroll; the
 hours are ticked in a column on the left; today is tinted, and the
 time a line across it. The hours are ticked in the browser's time
