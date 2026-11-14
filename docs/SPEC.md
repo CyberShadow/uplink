@@ -921,11 +921,12 @@ than it buffers is closed; the client reconnects and resumes.
   `ResolveRoomAlias { account, alias }` — the room an address is of
   (§9.7);
   `SearchRoom { room, query, before, limit }` — the room's messages
-  (of the main timeline and its threads, not deleted) whose text, or an
-  edit's, has every word of the query (ignoring the case of ASCII
-  letters, as SQLite's `LIKE`), newest first, a page at a time, and
-  whether there are more. Messages are stored decrypted, so encrypted
-  rooms are searched too.
+  (of the main timeline and its threads, not deleted) the query, of the
+  query language (§8.7), matches as a room's messages decide it: its
+  words of their text, or an edit's (ignoring the case of ASCII
+  letters, as SQLite's `LIKE`), not the room's name; newest first, a
+  page at a time, and whether there are more. Messages are stored
+  decrypted, so encrypted rooms are searched too.
 - `Undo { tx_log_id }`; `ListHistory { before, limit }` — the user's
   ops, newest first, each with the entry that undid it, if any (§6.3).
 - `ListDrafts` — all drafts. `ListOutbox` — per account, its push
@@ -1747,16 +1748,21 @@ and dates, of its creation; done ones are left out unless the query
 names `is:done` outside a negation, as Trash is. Of events: `account:`
 and dates, of their start. A label or
 account no kind has is an error. `ListItems { query, after, limit }`
-lists them all in one read: a page of conversations (as
-`ListEntries`, a later page of them alone), and every room (most
-recently active first), to-do (as listed) and event (those yet to end,
-soonest first, then those past, latest first) matched, and the latest
-50 messages of rooms its messages decide (`FoundMessage { room, event
-}`). The search box at the top searches everything this way, but in
-a room, where it searches the room's messages (§12.11): the search page
-lists rooms, messages, to-dos and events found above the mail, each a
-link to it (a message to its room); it lists again when rooms, to-dos or
-calendars change, as it does when mail does. Today, which `due:` and
+lists them all in one read, as one list, a page at a time: `Item`s of
+every kind (a conversation, a room, a to-do, an event), the most
+recently active first, by an `ItemPosition { at, kind, id }` — a
+conversation's latest entry's receipt, a room's latest message matched
+(else its last event), a to-do's last change, an event's (Graph's
+`lastModifiedDateTime`); ties by kind (mail, rooms, to-dos, events),
+then id, newest first. `after` is the position of the last item of the
+previous page, `next` that of this one's if there are more. A room its
+messages decide is one item, with its hits (`RoomHits { count, latest
+}`: how many of its messages match, and the latest of them), and opens
+that search of it (§12.11); one its own terms decide has none. The
+search box at the top searches everything this way, but in a room,
+where it searches the room's messages (§12.11): the search page lists
+every kind in mail's list, each row a link to its item; it lists again
+when rooms, to-dos or calendars change, as it does when mail does. Today, which `due:` and
 `is:overdue` count from, is the server's, of UTC (`uplink_query::today`)
 as dates are: the user is assumed to be on UTC, until time zones are
 supported (ROADMAP). Rooms, to-dos and events are few, so they are
@@ -3265,10 +3271,12 @@ buttons.
   room's). Any message not of a thread starts one, by its "Reply in
   thread" button. While a room shows, the search box at the top (which
   `/` focuses) searches it, not mail ("Search Lounge", without the
-  query language's help link): its route (`/rooms/:room/search/:words`)
-  shows a search of the room's messages (`SearchRoom`) in the panel,
-  over any other, which closing it shows again: the messages found, newest first, by
-  sender and time, the words marked, more on request; a click shows one
+  query language's help link): its route (`/rooms/:room/search/:words`,
+  where a search of everything opens a room found by its messages)
+  shows a search of the room's messages (`SearchRoom`, of the query
+  language) in the panel, over any other, which closing it shows again:
+  the messages found, newest first, by sender and time, the words and
+  phrases sought marked, more on request; a click shows one
   in the timeline (loading earlier pages until it is, then scrolling to
   it and highlighting it), or one of a thread in its thread. One panel
   shows at a time: the room's info, a member's profile, a thread, or a
@@ -3385,19 +3393,20 @@ account's security is loaded for it.
 names and counts, which scroll to them, and the buckets, configured in
 `home` (§3.2), in order. `ListHome { limit }` lists them, in one
 read: each bucket's query, less every earlier bucket's
-(`(q₃) -(q₁) -(q₂)`), as `ListItems` lists it (§8.7), with up to `limit`
-conversations and whether there are more; so an item is in the first
-bucket that matches it. Unlike a search, a label or tag no kind has is
-false rather than an error, since the default buckets name Gmail's
-labels and Element's tags, which some accounts lack. A bucket's rows are
-its to-dos (by due date), its events, then its mail and rooms, the most
-recently active first (a room's row says, as mail's its subject and
-snippet, what is new — `3 new`, `2 mentioning you` — and its latest
-message, `Bob: Lunch?`, as last edited: `Room.preview`); it shows 20 at most (the client's `limit`), its
-count saying `20+` when there may be more mail, with a link "Show all"
+(`(q₃) -(q₁) -(q₂)`), as `ListItems` lists it (§8.7): its first page of
+up to `limit` items, and whether there are more; so an item is in the
+first bucket that matches it. Unlike a search, a label or tag no kind
+has is false rather than an error, since the default buckets name
+Gmail's labels and Element's tags, which some accounts lack. A bucket's
+rows are its items as a search lists them, the most recently active
+first (a room's row says, as mail's its subject and snippet, what is
+new — `3 new`, `2 mentioning you` — and its latest message, `Bob:
+Lunch?`, as last edited: `Room.preview`; found by its messages, how
+many, and the latest of them); it shows 20 at most (the client's
+`limit`), its count saying `20+` when there are more, with a link "Show all"
 to the bucket's query as a search; its heading links there too, however
 many it shows, to work through the bucket as a list. Mail opens within that search, so `j`
-and `k` go through the bucket's mail; a room opens itself, a to-do its
+and `k` go through the bucket's mail; a room opens itself (found by its messages, with that search of it), a to-do its
 message or the to-dos, an event its day. The keys act on any row: `j`/`k`
 move the cursor, which stays on its row while home is left and comes
 back (a row that goes gives it to the next one shown, or else the last), `o`/Enter open, `e` is done with it (archives mail, marks a room

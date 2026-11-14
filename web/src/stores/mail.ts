@@ -8,26 +8,23 @@
 import { batch, computed, signal } from '@preact/signals'
 import type {
   Account,
-  CalendarEvent,
   ClientRequest,
   Conversation,
   ConversationAction,
   ConversationSet,
   Entry,
   EntryId,
-  FoundMessage,
+  Item as ListedItem,
   Label,
   LabelId,
-  ListPosition,
   ListScope,
   LogEntry,
   ImageRule,
   MessageContent,
   MessageId,
-  Room,
-  Todo,
 } from '../generated/protocol'
 import type { Requester } from '../connection'
+import { compare, rowOf, type Row } from '../items'
 import type { Ops } from './ops'
 import { query } from './query'
 
@@ -65,20 +62,23 @@ export interface List {
   /** Whether the first response is in. */
   loaded: boolean
   conversations: Conversation[]
-  next: ListPosition | null
+  /** A search's items of other kinds than mail (SPEC §8.7), as listed,
+   * among its conversations. */
+  others: Other[]
+  /** What asks for the next page, if there is more. */
+  more: ClientRequest | null
   /** The entries its conversations are made of; known once loaded. */
   scope: ListScope | null
-  /** What a search found besides mail; `null` of other lists, and until
-   * loaded. */
-  found: Found | null
 }
 
-/** A search's items of other kinds than mail (SPEC §8.7). */
-export interface Found {
-  rooms: Room[]
-  messages: FoundMessage[]
-  todos: Todo[]
-  events: CalendarEvent[]
+export type Other = Exclude<ListedItem, { kind: 'mail' }>
+
+/** The list's items, as listed: its conversations, and among them, by
+ * when each was last active, its others. */
+export function rowsOf(list: List): Row[] {
+  const query = list.view.kind === 'search' ? list.view.query : ''
+  const conversations = list.conversations.map((conversation): ListedItem => ({ kind: 'mail', conversation }))
+  return [...conversations, ...list.others].sort(compare).map((item) => rowOf(item, query))
 }
 
 /** Every entry, as a message's conversation is made of. */
@@ -145,7 +145,10 @@ type Load = 'reload' | 'more'
 export class MailStore {
   readonly accounts = signal<Account[] | null>(null)
   readonly list = signal<List | null>(null)
-  /** The conversation j/k move between and single actions apply to. */
+  /** The list's items, as listed. */
+  readonly rows = computed(() => (this.list.value ? rowsOf(this.list.value) : []))
+  /** The row j/k move between; of a conversation, the one single actions
+   * apply to. */
   readonly focus = signal<string | null>(null)
   readonly selected = signal<ReadonlySet<string>>(new Set())
   /** Whether actions apply to every conversation the list's query lists,
@@ -328,22 +331,25 @@ export class MailStore {
     const conversations = update(list.conversations)
     batch(() => {
       this.list.value = { ...list, conversations }
-      this.keepFocus(list.conversations, conversations)
+      this.keepFocus(list)
     })
   }
 
-  private keepFocus(before: Conversation[], after: Conversation[]) {
-    const keys = new Set(after.map(conversationKey))
+  /** Keeps focus on the row it is on, or the next one still listed, and
+   * the selection on the conversations still listed, as the list changes
+   * from `before`. */
+  private keepFocus(before: List) {
+    const [was, rows] = [rowsOf(before), this.rows.value]
+    const shown = new Set(rows.map((row) => row.key))
     const focus = this.focus.value
     if (focus === null) {
-      this.focus.value = after[0] ? conversationKey(after[0]) : null
-    } else if (!keys.has(focus)) {
-      // The first conversation after the old focus that is still listed.
-      const index = before.findIndex((c) => conversationKey(c) === focus)
-      const next = before.slice(index + 1).find((c) => keys.has(conversationKey(c)))
-      const last = after.at(-1)
-      this.focus.value = next ? conversationKey(next) : last ? conversationKey(last) : null
+      this.focus.value = rows[0]?.key ?? null
+    } else if (!shown.has(focus)) {
+      const index = was.findIndex((row) => row.key === focus)
+      const next = was.slice(index + 1).find((row) => shown.has(row.key))
+      this.focus.value = (next ?? rows.at(-1))?.key ?? null
     }
+    const keys = new Set(this.list.value!.conversations.map(conversationKey))
     // Every match is selected, as more are loaded too.
     if (this.matching.value) {
       this.selected.value = keys
@@ -403,7 +409,7 @@ export class MailStore {
     if (this.list.value && sameView(this.list.value.view, view)) return
     this.generation++
     batch(() => {
-      this.list.value = { view, loaded: false, conversations: [], next: null, scope: null, found: null }
+      this.list.value = { view, loaded: false, conversations: [], others: [], more: null, scope: null }
       this.focus.value = null
       this.select(new Set())
     })
@@ -415,7 +421,7 @@ export class MailStore {
 
   loadMore() {
     const list = this.list.value
-    if (!list?.next || this.listLoad) return
+    if (!list?.more || this.listLoad) return
     this.loadList('more')
   }
 
@@ -443,20 +449,31 @@ export class MailStore {
       return
     }
     this.listLoad = load
-    let page:
-      | { conversations: Conversation[]; next: ListPosition | null; scope: ListScope; found?: Found }
-      | undefined
+    let page: Pick<List, 'conversations' | 'others' | 'more' | 'scope'> | undefined
     try {
-      if (request.type === 'list_message_entries') {
-        const response = await query(this.server, request, 'entries')
-        page = { conversations: response.entries.map(alone), next: null, scope: EVERY }
-      } else if (request.type === 'list_items') {
-        const { conversations, next, scope, rooms, messages, todos, events } = await query(this.server, request, 'items')
-        // A later page is of mail alone.
-        const found = request.after === null ? { rooms, messages, todos, events } : undefined
-        page = { conversations, next, scope, found }
-      } else {
-        page = await query(this.server, request, 'conversations')
+      switch (request.type) {
+        case 'list_message_entries': {
+          const response = await query(this.server, request, 'entries')
+          page = { conversations: response.entries.map(alone), others: [], more: null, scope: EVERY }
+          break
+        }
+        case 'list_items': {
+          const { items, next, scope } = await query(this.server, request, 'items')
+          page = {
+            conversations: items.flatMap((item) => (item.kind === 'mail' ? [item.conversation] : [])),
+            others: items.filter((item): item is Other => item.kind !== 'mail'),
+            more: next && { ...request, after: next, limit: PAGE },
+            scope,
+          }
+          break
+        }
+        case 'list_entries': {
+          const { conversations, next, scope } = await query(this.server, request, 'conversations')
+          page = { conversations, others: [], more: next && { ...request, after: next, limit: PAGE }, scope }
+          break
+        }
+        default:
+          throw new Error(`no list is listed by ${request.type}`)
       }
     } catch (error) {
       this.error.value = (error as Error).message
@@ -465,15 +482,17 @@ export class MailStore {
     this.listLoad = null
     if (page) {
       const current = this.list.value!
-      const conversations =
+      const [conversations, others] =
         load === 'reload'
-          ? this.keepOpen(current.conversations, page.conversations)
-          : [...current.conversations, ...page.conversations]
-      const { next, scope } = page
-      const found = page.found ?? current.found
+          ? [this.keepOpen(current.conversations, page.conversations), page.others]
+          : [
+              [...current.conversations, ...page.conversations],
+              [...current.others, ...page.others],
+            ]
+      const { more, scope } = page
       batch(() => {
-        this.list.value = { ...current, loaded: true, conversations, next, scope, found }
-        this.keepFocus(current.conversations, conversations)
+        this.list.value = { ...current, loaded: true, conversations, others, more, scope }
+        this.keepFocus(current)
       })
     }
     this.pumpList()
@@ -499,20 +518,19 @@ export class MailStore {
 
   /** `null` if the view's label does not exist. */
   private listRequest(list: List, load: Load): ClientRequest | null {
+    if (load === 'more') return list.more
     // A reload covers what is already listed, so the user's place stays.
-    const limit =
-      load === 'reload' ? Math.min(Math.max(list.conversations.length, PAGE), MAX_PAGE) : PAGE
-    const after = load === 'reload' ? null : list.next
+    const limit = Math.min(Math.max(list.conversations.length + list.others.length, PAGE), MAX_PAGE)
     const { view } = list
     switch (view.kind) {
       // Of every kind, so names of every kind's.
       case 'search':
-        return { type: 'list_items', query: view.query, after, limit }
+        return { type: 'list_items', query: view.query, after: null, limit }
       case 'message':
         return { type: 'list_message_entries', message: view.message }
       default: {
         const query = this.queryOf(view)
-        return query === null ? null : { type: 'list_entries', query, after, limit }
+        return query === null ? null : { type: 'list_entries', query, after: null, limit }
       }
     }
   }
@@ -585,19 +603,25 @@ export class MailStore {
 
   // ── focus and selection ─────────────────────────────────────────────────
 
+  /** Moves the focus `by` rows. */
   moveFocus(by: number) {
-    const conversations = this.list.value?.conversations ?? []
-    if (conversations.length === 0) return
-    const index = conversations.findIndex((c) => conversationKey(c) === this.focus.value)
-    this.focusOn(conversations[Math.min(Math.max(index + by, 0), conversations.length - 1)])
+    const rows = this.rows.value
+    if (rows.length === 0) return
+    const index = rows.findIndex((row) => row.key === this.focus.value)
+    this.focusKey(rows[Math.min(Math.max(index + by, 0), rows.length - 1)].key)
   }
 
-  /** Focuses a conversation of the list, loading more as the end nears,
-   * so that moving on, in the list or between conversations, finds more. */
+  /** Focuses a conversation of the list. */
   focusOn(conversation: Conversation) {
-    const conversations = this.list.value!.conversations
-    this.focus.value = conversationKey(conversation)
-    if (conversations.indexOf(conversation) >= conversations.length - 10) this.loadMore()
+    this.focusKey(conversationKey(conversation))
+  }
+
+  /** Focuses the row, loading more as the end nears, so that moving on,
+   * in the list or between conversations, finds more. */
+  private focusKey(key: string) {
+    const rows = this.rows.value
+    this.focus.value = key
+    if (rows.findIndex((row) => row.key === key) >= rows.length - 10) this.loadMore()
   }
 
   toggleSelected(key: string) {

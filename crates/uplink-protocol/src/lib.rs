@@ -132,18 +132,17 @@ pub enum ClientRequest {
         after: Option<ListPosition>,
         limit: u32,
     },
-    /// What `query` matches of every kind (SPEC §8.7): a page of mail's
-    /// conversations, as `ListEntries` lists them, and the rooms, to-dos
-    /// and events. A page after `after` is of mail alone, the rest being
-    /// on the first.
+    /// A page of what `query` matches of every kind (SPEC §8.7): mail's
+    /// conversations (as `ListEntries` lists them), rooms, to-dos and
+    /// events, the most recently active first, after `after`.
     ListItems {
         query: String,
-        after: Option<ListPosition>,
+        after: Option<ItemPosition>,
         limit: u32,
     },
-    /// The home view (SPEC §12.13): each configured bucket's items, as
-    /// `ListItems` lists them, of up to `limit` conversations; an item is
-    /// in the first bucket that matches it.
+    /// The home view (SPEC §12.13): each configured bucket's first page
+    /// of `limit` items, as `ListItems` lists them; an item is in the
+    /// first bucket that matches it.
     ListHome {
         limit: u32,
     },
@@ -496,17 +495,11 @@ pub enum ServerResponse {
     },
     Items {
         as_of: TxLogId,
-        conversations: Vec<mail::Conversation>,
-        next: Option<ListPosition>,
+        /// The most recently active first.
+        items: Vec<Item>,
+        next: Option<ItemPosition>,
+        /// Of its conversations.
         scope: mail::ListScope,
-        /// Most recently active first.
-        rooms: Vec<matrix::Room>,
-        /// Rooms' messages, the latest first, up to a few.
-        messages: Vec<matrix::FoundMessage>,
-        /// Open ones first, by due date.
-        todos: Vec<todos::Todo>,
-        /// Those yet to end, soonest first, then those past, latest first.
-        events: Vec<calendar::CalendarEvent>,
     },
     Message {
         message: mail::MessageContent,
@@ -666,12 +659,65 @@ pub struct HomeBucket {
     pub name: String,
     /// What it lists: its query, less what earlier buckets list.
     pub query: String,
-    pub conversations: Vec<mail::Conversation>,
-    /// Whether it lists more conversations than these.
+    /// The most recently active first.
+    pub items: Vec<Item>,
+    /// Whether it lists more than these.
     pub more: bool,
-    pub rooms: Vec<matrix::Room>,
-    pub todos: Vec<todos::Todo>,
-    pub events: Vec<calendar::CalendarEvent>,
+}
+
+/// An item of a list of every kind (SPEC §8.7).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Item {
+    Mail {
+        conversation: mail::Conversation,
+    },
+    /// A room, matched by its own terms, or by its messages (`hits`).
+    Room {
+        room: Box<matrix::Room>,
+        hits: Option<matrix::RoomHits>,
+    },
+    Todo {
+        todo: todos::Todo,
+    },
+    Event {
+        event: calendar::CalendarEvent,
+    },
+}
+
+/// The kinds of item, in the order items as recently active are listed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemKind {
+    Mail,
+    Room,
+    Todo,
+    Event,
+}
+
+/// Where an item is in a list of every kind, which runs from the most
+/// recently active: by when it was last active (ms since the epoch: when
+/// a conversation's latest entry came, a room's latest hit or event, a
+/// to-do or event last changed), then by kind, then by id, the greatest
+/// first (a conversation's being its latest entry's). Ordered as listed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ItemPosition {
+    pub at: i64,
+    pub kind: ItemKind,
+    pub id: i64,
+}
+
+impl Ord for ItemPosition {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (other.at, self.kind, other.id).cmp(&(self.at, other.kind, self.id))
+    }
+}
+
+impl PartialOrd for ItemPosition {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// How a home bucket shows on the app's icon (SPEC §12.14): by how many

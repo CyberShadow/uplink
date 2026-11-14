@@ -104,7 +104,7 @@ describe('MailStore', () => {
     expect(mail.list.value!.conversations).toHaveLength(PAGE)
     mail.loadMore()
     await vi.waitFor(() => expect(mail.list.value!.conversations).toHaveLength(PAGE + 5))
-    expect(mail.list.value!.next).toBeNull()
+    expect(mail.list.value!.more).toBeNull()
   })
 
   it('acts on the conversations of several accounts as one op', async () => {

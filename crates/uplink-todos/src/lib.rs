@@ -26,7 +26,7 @@ pub fn register(registry: &mut Registry) {
     registry.register::<EditTodo>();
 }
 
-const COLUMNS: &str = "id, title, notes, due, done_at, message, created_at";
+const COLUMNS: &str = "id, title, notes, due, done_at, message, created_at, updated_at";
 
 fn todo_row(r: &Row) -> uplink_storage::rusqlite::Result<Todo> {
     Ok(Todo {
@@ -37,6 +37,7 @@ fn todo_row(r: &Row) -> uplink_storage::rusqlite::Result<Todo> {
         done_at: r.get(4)?,
         message: r.get::<_, Option<i64>>(5)?.map(MessageId),
         created_at: r.get(6)?,
+        updated_at: r.get(7)?,
     })
 }
 
@@ -186,7 +187,7 @@ impl Op for PutTodo {
         let t = &self.todo;
         let inserted = tx.execute(
             &format!(
-                "INSERT INTO todo ({COLUMNS}, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                "INSERT INTO todo ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                  ON CONFLICT (id) DO NOTHING"
             ),
             params![
@@ -197,7 +198,7 @@ impl Op for PutTodo {
                 t.done_at,
                 t.message.map(|m| m.0),
                 t.created_at,
-                now_ms()
+                t.updated_at,
             ],
         )?;
         if inserted == 0 {

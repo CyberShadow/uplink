@@ -6,6 +6,7 @@ use crate::{
     media,
     membership::ChangeMembership,
     preview,
+    query::Rooms,
     room_tags::{self, SetRoomTags},
     rooms::{self, Filled, FullyRead, MarkFullyRead, MarkRead},
     security,
@@ -16,6 +17,7 @@ use crate::{
 };
 use matrix_sdk::ruma::events::room::MediaSource as MatrixMediaSource;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use uplink_protocol::{
     compose::BlobId,
     matrix::{
@@ -812,24 +814,31 @@ impl Matrix {
                 format!("limit must be between 1 and {MAX_LIMIT}"),
             ));
         }
-        let words: Vec<String> = query.split_whitespace().map(str::to_owned).collect();
-        if words.is_empty() {
+        if query.trim().is_empty() {
             return Err(error(ErrorCode::Invalid, "the query is empty".into()));
         }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("the clock is after 1970")
+            .as_millis() as i64;
+        let query = uplink_query::parse(&query, now).map_err(|e| error(ErrorCode::Invalid, e.0))?;
+        let accounts = self.accounts.clone();
         self.reader
             .read(move |conn| {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
                 let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
-                if rooms::room_account(&tx, room).map_err(internal)?.is_none() {
+                let rooms = Rooms::load(&tx, &accounts).map_err(internal)?;
+                let Some(listed) = rooms.room(room) else {
                     return Err(no_room(room));
-                }
+                };
                 if let Some(before) = before {
                     if !rooms::event_in_room(&tx, room, before).map_err(internal)? {
                         return Err(no_event(room, before));
                     }
                 }
-                let (events, more) =
-                    rooms::search(&tx, room, &words, before, limit).map_err(internal)?;
+                let (events, more) = rooms
+                    .search_room(&tx, listed, &query, before, limit)
+                    .map_err(internal)?;
                 Ok(ServerResponse::RoomSearch {
                     as_of,
                     room,

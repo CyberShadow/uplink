@@ -69,7 +69,7 @@ export function RoomSearch(props: { room: Room; words: string; close: () => void
                   <span class={styles.muted}>{dateTime(event.ts)}</span>
                 </span>
                 <span>
-                  <Marked text={shown(event).body ?? ''} words={found.words} />
+                  <Marked text={shown(event).body ?? ''} query={found.words} />
                 </span>
               </button>
             </li>
@@ -92,9 +92,20 @@ export function RoomSearch(props: { room: Room; words: string; close: () => void
   )
 }
 
-/** The text, the words in it marked, ignoring case. */
-export function Marked(props: { text: string; words: string }) {
-  const words = props.words.split(/\s+/).filter((w) => w !== '')
+/** The words and phrases a query looks for in text, as it is written
+ * (SPEC §8.7): not those of operators, nor those it excludes. */
+function sought(query: string): string[] {
+  const tokens = query.match(/-?"(?:[^"\\]|\\.)*"?|[^\s()"]+/g) ?? []
+  return tokens.flatMap((token) => {
+    if (token.startsWith('-') || token.includes(':') || token === 'OR') return []
+    return [token.startsWith('"') ? token.replace(/^"|"$/g, '').replace(/\\(.)/g, '$1') : token]
+  })
+}
+
+/** The text, what `query` looks for in it marked, ignoring case. */
+export function Marked(props: { text: string; query: string }) {
+  const words = sought(props.query).filter((w) => w !== '')
+  if (words.length === 0) return <>{props.text}</>
   const pattern = new RegExp(`(${words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'gi')
   return <>{props.text.split(pattern).map((part, i) => (i % 2 === 1 ? <mark key={i}>{part}</mark> : part))}</>
 }

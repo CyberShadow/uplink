@@ -1952,13 +1952,23 @@ mod query {
                 mxid: ME.into(),
             }];
             let query = uplink_query::parse(query, 0).unwrap();
-            crate::query::Rooms::load(&tx, &accounts)
-                .unwrap()
-                .messages(&tx, &query, 10)
+            // The hits of the rooms found by their messages, as each
+            // room's own search finds them.
+            let rooms = crate::query::Rooms::load(&tx, &accounts).unwrap();
+            let mut found: Vec<_> = rooms
+                .matching(&tx, &query)
                 .unwrap()
                 .into_iter()
-                .map(|m| m.event.event_id)
-                .collect()
+                .filter(|g| g.hits.is_some())
+                .flat_map(|g| {
+                    let (events, more) = rooms.search_room(&tx, &g.room, &query, None, 10).unwrap();
+                    assert!(!more);
+                    assert_eq!(g.hits.unwrap().count as usize, events.len());
+                    events
+                })
+                .collect();
+            found.sort_by_key(|e| std::cmp::Reverse(e.ts));
+            found.into_iter().map(|e| e.event_id).collect()
         };
         // The latest first; an edit's text is its message's.
         assert_eq!(matching("deploy"), ["$5", "$4", "$3", "$2", "$1"]);

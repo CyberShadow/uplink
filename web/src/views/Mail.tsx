@@ -1,6 +1,7 @@
+import type { Ref } from 'preact'
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
-import type { Conversation, Entry, EntryId, ImageRule, Label, ListPosition, MessageContent, RemoteHost } from '../generated/protocol'
+import type { ClientRequest, Conversation, Entry, EntryId, ImageRule, Label, MessageContent, RemoteHost } from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus, lines, useKeymap } from '../keymap'
 import {
@@ -16,7 +17,6 @@ import {
 } from '../stores/mail'
 import { respond, type Response } from '../compose/reply'
 import { allMailPath, inboxPath, mailPath, searchPath } from './App'
-import { Found } from './Found'
 import { HtmlBody, QuoteToggle } from './HtmlBody'
 import { MenuButton } from './Menu'
 import { forwards, splitText } from './quote'
@@ -27,7 +27,7 @@ import { messagePath } from './Todos'
 import styles from './Mail.module.css'
 import { fileSize } from './size'
 import { brief, dateTime } from '../format'
-import { senders, UnreadOf } from './ItemRow'
+import { OVERDUE, pathOf, senders, UnreadOf, useParts, type OtherItemRow } from './ItemRow'
 import { Icon, type IconName } from './Icon'
 import { inboxUnread, labelName } from './Nav'
 import { useTitle } from '../title'
@@ -198,8 +198,11 @@ export function Mail(props: Props) {
             () => mail.moveFocus(-1),
           ),
           open: () => {
-            const focused = conversations.find((c) => conversationKey(c) === mail.focus.value)
-            if (focused) open(focused)
+            const focused = mail.rows.value.find((row) => row.key === mail.focus.value)
+            if (focused) {
+              if (focused.kind === 'mail') open(focused.conversation)
+              else route(pathOf(focused))
+            }
           },
           select: () => {
             if (mail.focus.value !== null) mail.toggleSelected(mail.focus.value)
@@ -228,9 +231,8 @@ export function Mail(props: Props) {
     <>
       {openId === null ? (
         <>
-          {list?.found && <Found found={list.found} />}
           {conversations.length > 0 && <ListToolbar mail={mail} actions={common} />}
-          <MessageList mail={mail} open={open} />
+          <MessageList mail={mail} open={open} openOther={(row) => route(pathOf(row))} />
         </>
       ) : openThread ? (
         <>
@@ -245,7 +247,7 @@ export function Mail(props: Props) {
                 ? null
                 : {
                     index: conversations.indexOf(opened!),
-                    count: list!.next === null ? conversations.length : null,
+                    count: list!.more === null ? conversations.length : null,
                     newer: sibling(-1) ? () => openSibling(-1) : null,
                     older: sibling(1) ? () => openSibling(1) : null,
                   }
@@ -387,7 +389,7 @@ function ListToolbar(props: { mail: MailStore; actions: Actions }) {
   const matching = mail.matching.value
   // With all those loaded selected, and more to load, Gmail's offer to
   // select every match; and once they are, a way back.
-  const offer = !matching && chosen.length === conversations.length && list.next !== null
+  const offer = !matching && chosen.length === conversations.length && list.more !== null
   const count = useCount(mail, list.view, offer || matching)
   const all = count === null ? 'all' : `all ${count.toLocaleString()}`
   return (
@@ -497,7 +499,37 @@ function ConversationToolbar(props: {
   )
 }
 
-function MessageList(props: { mail: MailStore; open: (conversation: Conversation) => void }) {
+/** A row of a search's item other than mail, in a mail list's columns:
+ * its icon where a conversation's box and star are, its title where its
+ * senders are, what it says where its subject is. */
+function OtherRow(props: { row: OtherItemRow; focused: Ref<HTMLLIElement> | null; open: () => void }) {
+  const parts = useParts(props.row)
+  return (
+    <li
+      ref={props.focused ?? undefined}
+      class={[styles.row, props.focused && styles.focused, parts.unread && styles.unread].filter(Boolean).join(' ')}
+      aria-current={props.focused !== null || undefined}
+      onClick={props.open}
+    >
+      <span class={styles.kind}>{parts.icon}</span>
+      <span class={styles.from}>{parts.title}</span>
+      <span class={styles.summary}>
+        <span class={styles.text}>
+          <span class={styles.subject}>{parts.detail}</span>
+        </span>
+        {parts.counts}
+      </span>
+      <span class={styles.clip} />
+      <span class={parts.overdue ? `${styles.date} ${OVERDUE}` : styles.date}>{parts.when}</span>
+    </li>
+  )
+}
+
+function MessageList(props: {
+  mail: MailStore
+  open: (conversation: Conversation) => void
+  openOther: (row: OtherItemRow) => void
+}) {
   const { mail } = props
   const { todos } = useServices()
   const list = mail.list.value
@@ -506,8 +538,9 @@ function MessageList(props: { mail: MailStore; open: (conversation: Conversation
     focused.current?.scrollIntoView({ block: 'nearest' })
   }, [mail.focus.value])
 
+  const rows = mail.rows.value
   if (!list?.loaded) return <p class={styles.placeholder}>Loading…</p>
-  if (list.conversations.length === 0) return <p class={styles.placeholder}>{list.found ? 'No mail.' : 'No messages.'}</p>
+  if (rows.length === 0) return <p class={styles.placeholder}>{list.view.kind === 'search' ? 'Nothing found.' : 'No messages.'}</p>
   // With several accounts, each row says whose it is.
   const accounts = mail.accounts.value ?? []
   const address = (account: string) =>
@@ -518,7 +551,22 @@ function MessageList(props: { mail: MailStore; open: (conversation: Conversation
       class={styles.list}
       aria-label="Messages"
     >
-      {list.conversations.map((conversation) => {
+      {rows.map((row) => {
+        if (row.kind !== 'mail') {
+          const isFocused = row.key === mail.focus.value
+          return (
+            <OtherRow
+              key={row.key}
+              row={row}
+              focused={isFocused ? focused : null}
+              open={() => {
+                mail.focus.value = row.key
+                props.openOther(row)
+              }}
+            />
+          )
+        }
+        const { conversation } = row
         const key = conversationKey(conversation)
         const thread = threadOf(conversation)
         const { latest } = conversation
@@ -583,14 +631,14 @@ function MessageList(props: { mail: MailStore; open: (conversation: Conversation
           </li>
         )
       })}
-      {list.next && <More mail={mail} next={list.next} />}
+      {list.more && <More mail={mail} next={list.more} />}
     </ul>
   )
 }
 
-/** The end of the conversations loaded, with more to load: those load as
+/** The end of the rows loaded, with more to load: those load as
  * it comes into view. */
-function More(props: { mail: MailStore; next: ListPosition }) {
+function More(props: { mail: MailStore; next: ClientRequest }) {
   const element = useRef<HTMLLIElement>(null)
   useLoadInView(element, props.next, () => props.mail.loadMore())
   return (

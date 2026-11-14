@@ -22,6 +22,8 @@ pub struct Todo {
     pub message: Option<MessageId>,
     /// Ms since the Unix epoch.
     pub created_at: i64,
+    /// When it last changed, ms since the Unix epoch.
+    pub updated_at: i64,
 }
 
 /// A change to one of a to-do's fields.

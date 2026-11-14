@@ -1,7 +1,8 @@
 //! What a query matches of every kind (SPEC §8.7): mail's conversations,
-//! rooms, to-dos and events, in one read, so as of one log position. Each
-//! domain matches its own; a term a kind lacks is false of it. The home
-//! view (SPEC §12.13) is the matches of its buckets' queries.
+//! rooms, to-dos and events, in one read, so as of one log position, and
+//! in one list, the most recently active first. Each domain matches its
+//! own; a term a kind lacks is false of it. The home view (SPEC §12.13) is
+//! the matches of its buckets' queries.
 
 use arc_swap::ArcSwap;
 use std::collections::BTreeMap;
@@ -9,25 +10,20 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uplink_config::HomeBucket;
 use uplink_email::query::{self as mail, ListError, Unknown};
-use uplink_matrix::query::Rooms;
+use uplink_matrix::query::{Group, Rooms};
 use uplink_protocol::{
     calendar::CalendarEvent,
-    mail::{EntryId, ListPosition},
-    matrix::Room,
+    mail::{EntryId, ListPosition, ListScope},
     todos::Todo,
-    Activity, Badge, BadgedBucket, Badges, ErrorCode, Mark, Marks, Place, ServerError,
-    ServerResponse, BADGE_LIMIT,
+    Activity, Badge, BadgedBucket, Badges, ErrorCode, Item, ItemKind, ItemPosition, Mark, Marks,
+    Place, ServerError, ServerResponse, BADGE_LIMIT,
 };
 use uplink_query::{Query, Term};
 use uplink_storage::rusqlite::{Connection, Transaction};
 use uplink_tx_log::answer::{error, internal, Reader, Response};
 
-/// The most conversations a page may ask for, as a list of mail.
+/// The most items a page may ask for, as a list of mail.
 const MAX_LIMIT: u32 = uplink_email::service::MAX_LIMIT;
-
-/// The most rooms' messages a search lists: the latest; a room's own
-/// search finds more.
-const MESSAGES: u32 = 50;
 
 #[derive(Clone)]
 pub struct Items {
@@ -71,9 +67,9 @@ impl Places {
                 .add(badge, *n as u32);
             self.home.add(badge, *n as u32);
         }
-        for room in &others.rooms {
-            let n = room.notifying.max(1);
-            self.rooms.entry(room.id).or_default().add(badge, n);
+        for group in &others.rooms {
+            let n = group.room.notifying.max(1);
+            self.rooms.entry(group.room.id).or_default().add(badge, n);
         }
         self.home.add(badge, count(others.rooms.len()));
         self.todos.add(badge, count(others.todos.len()));
@@ -127,11 +123,16 @@ impl Seen {
             rooms: others
                 .rooms
                 .iter()
-                .filter(|room| {
-                    let places = [Place::Home, Place::Room { room: room.id }];
+                .filter(|group| {
+                    let places = [
+                        Place::Home,
+                        Place::Room {
+                            room: group.room.id,
+                        },
+                    ];
                     after(
                         self.of(&places, |w| w.room_event),
-                        room.latest.map_or(0, |e| e.0),
+                        group.room.latest.map_or(0, |e| e.0),
                     )
                 })
                 .cloned()
@@ -157,11 +158,54 @@ impl Seen {
     }
 }
 
-/// What a query matches of kinds other than mail.
+/// What a query matches of kinds other than mail: few, so all of them.
 struct Others {
-    rooms: Vec<Room>,
+    rooms: Vec<Group>,
     todos: Vec<Todo>,
     events: Vec<CalendarEvent>,
+}
+
+/// A page of a list of every kind.
+struct Page {
+    items: Vec<Item>,
+    next: Option<ItemPosition>,
+    scope: ListScope,
+}
+
+/// Where an item is listed.
+fn position(item: &Item) -> ItemPosition {
+    let (at, kind, id) = match item {
+        Item::Mail { conversation } => (
+            conversation.latest.received_at,
+            ItemKind::Mail,
+            conversation.latest.id.0,
+        ),
+        Item::Room { room, hits } => (
+            // An invitation has no activity of its own: the oldest.
+            hits.as_ref()
+                .map(|hits| hits.latest.ts)
+                .or(room.last_event_ts)
+                .unwrap_or(0),
+            ItemKind::Room,
+            room.id.0,
+        ),
+        Item::Todo { todo } => (todo.updated_at, ItemKind::Todo, todo.id.0),
+        Item::Event { event } => (event.modified, ItemKind::Event, event.id.0),
+    };
+    ItemPosition { at, kind, id }
+}
+
+/// Mail's position after which its conversations are listed after
+/// `after`: conversations are first of what is as recently active.
+fn mail_after(after: ItemPosition) -> ListPosition {
+    ListPosition {
+        received_at: after.at,
+        entry: EntryId(match after.kind {
+            ItemKind::Mail => after.id,
+            // Before every entry as recent.
+            ItemKind::Room | ItemKind::Todo | ItemKind::Event => i64::MIN,
+        }),
+    }
 }
 
 impl Items {
@@ -213,7 +257,7 @@ impl Items {
         self.home.store(Arc::new(home));
     }
 
-    pub async fn list(&self, query: String, after: Option<ListPosition>, limit: u32) -> Response {
+    pub async fn list(&self, query: String, after: Option<ItemPosition>, limit: u32) -> Response {
         let (today, now) = checked(limit)?;
         let query = uplink_query::parse(&query, now).map_err(|e| invalid(e.0))?;
         let this = self.clone();
@@ -222,32 +266,14 @@ impl Items {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
                 this.check_names(&tx, &query)?;
                 let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
-                let page = this.mail(&tx, &query, after, limit)?;
-                // A page after `after` is of mail alone.
-                let (others, messages) = match after {
-                    None => {
-                        let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
-                        let messages = rooms.messages(&tx, &query, MESSAGES).map_err(internal)?;
-                        (others(&tx, &rooms, &query, today, now)?, messages)
-                    }
-                    Some(_) => (
-                        Others {
-                            rooms: vec![],
-                            todos: vec![],
-                            events: vec![],
-                        },
-                        vec![],
-                    ),
-                };
+                let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
+                let others = others(&tx, &rooms, &query, today, now)?;
+                let page = this.page(&tx, &query, others, after, limit)?;
                 Ok(ServerResponse::Items {
                     as_of,
-                    conversations: page.conversations,
+                    items: page.items,
                     next: page.next,
                     scope: page.scope,
-                    rooms: others.rooms,
-                    messages,
-                    todos: others.todos,
-                    events: others.events,
                 })
             })
             .await
@@ -270,16 +296,13 @@ impl Items {
                 let buckets = buckets
                     .into_iter()
                     .map(|bucket| {
-                        let page = this.mail(&tx, &bucket.query, None, limit)?;
                         let others = others(&tx, &rooms, &bucket.query, today, now)?;
+                        let page = this.page(&tx, &bucket.query, others, None, limit)?;
                         Ok(uplink_protocol::HomeBucket {
                             name: bucket.name,
                             query: bucket.text,
-                            conversations: page.conversations,
+                            items: page.items,
                             more: page.next.is_some(),
-                            rooms: others.rooms,
-                            todos: others.todos,
-                            events: others.events,
                         })
                     })
                     .collect::<Result<_, ServerError>>()?;
@@ -309,7 +332,6 @@ impl Items {
                 let buckets = badged
                     .into_iter()
                     .map(|(badge, bucket)| {
-                        let page = this.mail(&tx, &bucket.query, None, BADGE_LIMIT as u32)?;
                         let others = others(&tx, &rooms, &bucket.query, today, now)?;
                         // A dot is of what is unseen (SPEC §12.15).
                         let unseen = badge == Badge::Dot;
@@ -325,24 +347,23 @@ impl Items {
                             true => marks.add(badge, &places, &seen.unseen(&others)),
                             false => marks.add(badge, &places, &others),
                         }
-                        let mail = page
-                            .conversations
-                            .iter()
-                            .map(|c| Activity::Mail { entry: c.latest.id });
-                        let rooms = others.rooms.iter().map(|r| Activity::Room {
-                            room: r.id,
-                            event: r.latest,
+                        let page =
+                            this.page(&tx, &bucket.query, others, None, BADGE_LIMIT as u32)?;
+                        let items = page.items.iter().map(|item| match item {
+                            Item::Mail { conversation } => Activity::Mail {
+                                entry: conversation.latest.id,
+                            },
+                            Item::Room { room, .. } => Activity::Room {
+                                room: room.id,
+                                event: room.latest,
+                            },
+                            Item::Todo { todo } => Activity::Todo { todo: todo.id },
+                            Item::Event { event } => Activity::Event { event: event.id },
                         });
-                        let todos = others.todos.iter().map(|t| Activity::Todo { todo: t.id });
-                        let events = others
-                            .events
-                            .iter()
-                            .map(|e| Activity::Event { event: e.id });
-                        let all = mail.chain(rooms).chain(todos).chain(events);
                         Ok(BadgedBucket {
                             name: bucket.name,
                             badge,
-                            items: all.take(BADGE_LIMIT).collect(),
+                            items: items.collect(),
                         })
                     })
                     .collect::<Result<_, ServerError>>()?;
@@ -377,15 +398,53 @@ impl Items {
         buckets
     }
 
-    fn mail(
+    /// The page of what `query` matches, mail and `others`, after `after`:
+    /// up to `limit` items, the most recently active first.
+    fn page(
         &self,
         tx: &Transaction,
         query: &Query,
-        after: Option<ListPosition>,
+        others: Others,
+        after: Option<ItemPosition>,
         limit: u32,
-    ) -> Result<mail::Page, ServerError> {
-        mail::conversations(tx, &self.mail_accounts, query, Unknown::False, after, limit)
-            .map_err(list_error)
+    ) -> Result<Page, ServerError> {
+        let mail = mail::conversations(
+            tx,
+            &self.mail_accounts,
+            query,
+            Unknown::False,
+            after.map(mail_after),
+            limit,
+        )
+        .map_err(list_error)?;
+        let conversations = mail
+            .conversations
+            .into_iter()
+            .map(|conversation| Item::Mail { conversation });
+        let rooms = others
+            .rooms
+            .into_iter()
+            .map(|Group { room, hits }| Item::Room {
+                room: Box::new(room),
+                hits,
+            });
+        let todos = others.todos.into_iter().map(|todo| Item::Todo { todo });
+        let events = others.events.into_iter().map(|event| Item::Event { event });
+        let mut items: Vec<Item> = conversations
+            .chain(rooms)
+            .chain(todos)
+            .chain(events)
+            .filter(|item| after.is_none_or(|after| position(item) > after))
+            .collect();
+        items.sort_by_key(position);
+        // More mail is after the last of its page, so after the last here.
+        let more = items.len() > limit as usize || mail.next.is_some();
+        items.truncate(limit as usize);
+        Ok(Page {
+            next: more.then(|| position(items.last().expect("more is after some"))),
+            items,
+            scope: mail.scope,
+        })
     }
 
     /// Fails on a label or account no kind has: a misspelt name lists
@@ -431,12 +490,7 @@ fn others(
     now: i64,
 ) -> Result<Others, ServerError> {
     Ok(Others {
-        rooms: rooms
-            .matching(tx, query)
-            .map_err(internal)?
-            .into_iter()
-            .map(|group| group.room)
-            .collect(),
+        rooms: rooms.matching(tx, query).map_err(internal)?,
         todos: uplink_todos::matching(tx, query, today).map_err(internal)?,
         events: uplink_calendar::matching(tx, query, now).map_err(internal)?,
     })
@@ -446,7 +500,6 @@ fn invalid(why: String) -> ServerError {
     error(ErrorCode::Invalid, why)
 }
 
-/// Today, as days since 1970-01-01, and now, in ms, for a `limit` checked.
 fn list_error(e: ListError) -> ServerError {
     match e {
         ListError::Invalid(e) => invalid(e.0),
@@ -454,6 +507,7 @@ fn list_error(e: ListError) -> ServerError {
     }
 }
 
+/// Today, as days since 1970-01-01, and now, in ms, for a `limit` checked.
 fn checked(limit: u32) -> Result<(i64, i64), ServerError> {
     if !(1..=MAX_LIMIT).contains(&limit) {
         return Err(invalid(format!("limit must be between 1 and {MAX_LIMIT}")));
@@ -549,29 +603,46 @@ mod tests {
             let query = query.to_owned();
             async move { items.list(query, None, 10).await }
         };
-        let names = |response: Response| match response.unwrap() {
-            ServerResponse::Items {
-                conversations,
-                rooms,
-                todos,
-                events,
-                ..
-            } => {
-                assert!(conversations.is_empty() && events.is_empty());
-                let rooms = rooms.into_iter().map(|r| r.name);
-                rooms
-                    .chain(todos.into_iter().map(|t| t.title))
-                    .collect::<Vec<_>>()
+        fn name(item: &Item) -> String {
+            match item {
+                Item::Room { room, .. } => room.name.clone(),
+                Item::Todo { todo } => todo.title.clone(),
+                other => panic!("unexpected {other:?}"),
             }
+        }
+        let names = |response: Response| match response.unwrap() {
+            ServerResponse::Items { items, .. } => items.iter().map(name).collect::<Vec<_>>(),
             other => panic!("unexpected {other:?}"),
         };
-        assert_eq!(names(list("rent").await), ["Rent talk", "Pay rent"]);
+        // The most recently active first: an invitation is not active.
+        assert_eq!(names(list("rent").await), ["Pay rent", "Rent talk"]);
         assert_eq!(
             names(list("is:invite OR is:overdue").await),
-            ["Rent talk", "Pay rent"]
+            ["Pay rent", "Rent talk"]
         );
         assert_eq!(names(list("tag:home").await), ["Rent talk"]);
         assert_eq!(names(list("rent -account:mx").await), ["Pay rent"]);
+        // Page by page, of every kind.
+        let ServerResponse::Items {
+            items: first,
+            next: Some(next),
+            ..
+        } = items.list("rent".into(), None, 1).await.unwrap()
+        else {
+            panic!()
+        };
+        let ServerResponse::Items {
+            items: second,
+            next: None,
+            ..
+        } = items.list("rent".into(), Some(next), 1).await.unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(
+            (name(&first[0]), name(&second[0])),
+            ("Pay rent".into(), "Rent talk".into())
+        );
         let refused = |response: Response| response.unwrap_err().message;
         assert_eq!(refused(list("tag:work").await), "no label or tag work");
         assert_eq!(refused(list("account:nobody").await), "no account nobody");
@@ -619,9 +690,10 @@ mod tests {
         let listed: Vec<_> = buckets
             .iter()
             .map(|b| {
-                let rooms = b.rooms.iter().map(|r| r.name.clone());
-                let todos = b.todos.iter().map(|t| t.title.clone());
-                (b.name.as_str(), rooms.chain(todos).collect::<Vec<_>>())
+                (
+                    b.name.as_str(),
+                    b.items.iter().map(name).collect::<Vec<_>>(),
+                )
             })
             .collect();
         assert_eq!(
@@ -639,7 +711,10 @@ mod tests {
         assert!(!buckets[0].more);
 
         // The badged ones, by their items' latest activity.
-        let room = buckets[0].rooms[0].id;
+        let Item::Room { room, .. } = &buckets[0].items[0] else {
+            panic!()
+        };
+        let room = room.id;
         assert_eq!(
             items.badges().await.unwrap(),
             Badges {

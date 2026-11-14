@@ -31,6 +31,9 @@ import type {
   LabelKind,
   LabelId,
   LabelState,
+  HomeBucket,
+  Item,
+  ItemPosition,
   ListPosition,
   ListScope,
   ListingProgress,
@@ -71,6 +74,15 @@ import type { Client } from '../stores/client'
 import { ruleKey } from '../stores/mail'
 import { apply } from '../compose/splice'
 import { sendSummary } from '../matrix'
+import { before, compare, positionOf } from '../items'
+
+/** A page of a list of every kind (SPEC §8.7): up to `limit` of `items`
+ * after `after`, as listed. */
+function page(items: Item[], after: ItemPosition | null, limit: number): { items: Item[]; next: ItemPosition | null } {
+  const listed = [...items].sort(compare).filter((item) => after === null || before(after, positionOf(item)) < 0)
+  const first = listed.slice(0, limit)
+  return { items: first, next: listed.length > limit ? positionOf(first.at(-1)!) : null }
+}
 
 /** The Matrix account's user. */
 export const ME = '@me:example.org'
@@ -744,33 +756,33 @@ export class FakeServer implements Requester, Blobs {
         return this.listItems(body.query, body.after, body.limit)
       case 'list_home': {
         // Its own buckets, not the language: rooms with unread messages
-        // and open to-dos first, then the Inboxes' mail.
-        const empty = { conversations: [], more: false, rooms: [], todos: [], events: [] }
+        // and open to-dos, then the Inboxes' mail.
         const inboxes = this.accounts.map((a) => this.labelId(a.id, 'INBOX'))
         const hiding = this.accounts.flatMap((a) => a.labels).filter((l) => HIDING.includes(l.external_id))
         const conversations = this.conversations(
           (e) => !e.labels.some((l) => hiding.some((h) => h.id === l)),
           (e) => e.labels.some((l) => inboxes.includes(l)),
         )
+        const bucket = (name: string, query: string, items: Item[]): HomeBucket => {
+          const { items: first, next } = page(items, null, body.limit)
+          return { name, query, items: first, more: next !== null }
+        }
         return {
           type: 'home',
           as_of: this.head(),
           buckets: [
-            {
-              ...empty,
-              name: 'Now',
-              query: 'is:unread is:room OR is:todo',
-              rooms: this.matrixRooms().filter((r) => !r.space && r.unread > 0),
-              todos: this.sortedTodos().filter((t) => t.done_at === null),
-            },
-            {
-              ...empty,
-              name: 'Inbox',
-              query: 'in:inbox',
-              conversations: conversations.slice(0, body.limit),
-              more: conversations.length > body.limit,
-            },
-            { ...empty, name: 'Later', query: 'is:starred' },
+            bucket('Now', 'is:unread is:room OR is:todo', [
+              ...this.matrixRooms()
+                .filter((r) => !r.space && r.unread > 0)
+                .map((room): Item => ({ kind: 'room', room, hits: null })),
+              ...this.todos.filter((t) => t.done_at === null).map((todo): Item => ({ kind: 'todo', todo })),
+            ]),
+            bucket(
+              'Inbox',
+              'in:inbox',
+              conversations.map((conversation): Item => ({ kind: 'mail', conversation })),
+            ),
+            bucket('Later', 'is:starred', []),
           ],
         }
       }
@@ -1241,6 +1253,7 @@ export class FakeServer implements Requester, Blobs {
           done_at: null,
           message: body.message,
           created_at: Date.now(),
+          updated_at: Date.now(),
         }
         return this.putTodo(todo, body.message === null ? `Added '${todo.title}'` : `Flagged '${todo.title}'`)
       }
@@ -1427,25 +1440,27 @@ export class FakeServer implements Requester, Blobs {
   }
 
   /** Mail as `listEntries` lists it; of other kinds, those whose text has
-   * the query's words, all of them. */
-  private listItems(query: string, after: ListPosition | null, limit: number): ServerResponse {
-    const mail = this.listEntries(query, after, limit)
+   * the query's words: a room by its name, else by its messages. */
+  private listItems(query: string, after: ItemPosition | null, limit: number): ServerResponse {
+    const { conversations, scope } = this.listEntries(query, null, Infinity)
     const words = query.split(/\s+/).filter((w) => w !== '' && !w.includes(':')).map((w) => w.toLowerCase())
     const has = (text: string | null) => words.length > 0 && words.every((w) => (text ?? '').toLowerCase().includes(w))
-    const first = after === null
-    const rooms = this.matrixRooms().filter((r) => !r.space)
-    return {
-      ...mail,
-      type: 'items',
-      rooms: first ? rooms.filter((r) => has(r.name)) : [],
-      messages: first
-        ? rooms
-            .flatMap((r) => this.events.get(r.id)!.filter((e) => e.kind === 'm.room.message' && has(e.body)).map((event) => ({ room: r.id, event })))
-            .sort((a, b) => b.event.ts - a.event.ts)
-        : [],
-      todos: first ? this.sortedTodos().filter((t) => t.done_at === null && has(`${t.title} ${t.notes}`)) : [],
-      events: first ? this.calendar.filter((e) => has(e.subject)) : [],
-    }
+    const rooms = this.matrixRooms()
+      .filter((r) => !r.space)
+      .flatMap((room): Item[] => {
+        if (has(room.name)) return [{ kind: 'room', room, hits: null }]
+        const hits = this.events.get(room.id)!.filter((e) => e.kind === 'm.room.message' && has(e.body))
+        if (hits.length === 0) return []
+        const latest = hits.reduce((a, b) => (b.pos > a.pos ? b : a))
+        return [{ kind: 'room', room, hits: { count: hits.length, latest } }]
+      })
+    const items: Item[] = [
+      ...conversations.map((conversation): Item => ({ kind: 'mail', conversation })),
+      ...rooms,
+      ...this.todos.filter((t) => t.done_at === null && has(`${t.title} ${t.notes}`)).map((todo): Item => ({ kind: 'todo', todo })),
+      ...this.calendar.filter((e) => has(e.subject)).map((event): Item => ({ kind: 'event', event })),
+    ]
+    return { type: 'items', as_of: this.head(), ...page(items, after, limit), scope }
   }
 
   private sortedTodos(): Todo[] {
@@ -1493,6 +1508,7 @@ export class FakeServer implements Requester, Blobs {
         todo.done_at = edit.done ? Date.now() : null
         break
     }
+    todo.updated_at = Date.now()
     const entry = this.commit({ type: 'user' }, description, [{ type: 'todos_changed', todos: [id] }])
     this.undoable.set(entry, {
       revert: () => {

@@ -132,12 +132,13 @@ pub struct RoomPreview {
     pub body: Option<String>,
 }
 
-/// A message a search found, in its room.
+/// A room's messages a query matches (SPEC §8.7).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
-pub struct FoundMessage {
-    pub room: RoomId,
-    pub event: RoomEvent,
+pub struct RoomHits {
+    pub count: u32,
+    /// The latest, by the room's timeline.
+    pub latest: Box<RoomEvent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

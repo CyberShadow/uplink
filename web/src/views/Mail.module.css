@@ -140,6 +140,13 @@
   font-weight: 600;
 }
 
+/* An item other than mail's icon, where a conversation's box and star are. */
+.kind {
+  grid-column: 1 / span 2;
+  justify-self: center;
+  display: flex;
+}
+
 .from,
 .summary .text {
   overflow: hidden;
@@ -304,7 +311,8 @@
     padding: 10px 16px 10px 8px;
   }
 
-  .row > input {
+  .row > input,
+  .row > .kind {
     grid-area: select;
     align-self: start;
   }

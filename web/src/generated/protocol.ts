@@ -240,7 +240,7 @@ export type SasEmoji = { symbol: string, description: string, };
  */
 export type VerificationAnswer = "accept" | "confirm" | "mismatch" | "cancel";
 
-export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": "list_history", before: TxLogId | null, limit: number, } | { "type": "list_accounts" } | { "type": "list_entries", query: string, after: ListPosition | null, limit: number, } | { "type": "list_items", query: string, after: ListPosition | null, limit: number, } | { "type": "list_home", limit: number, } | { "type": "list_conversation", entry: EntryId, } | { "type": "list_message_entries", message: MessageId, } | { "type": "load_message", message: MessageId, } | { "type": "always_show_images", rule: ImageRule, always: boolean, } | { "type": "modify_labels", entries: Array<EntryId>, add: Array<LabelId>, remove: Array<LabelId>, } | { "type": "act_on_conversations", conversations: ConversationSet, action: ConversationAction, 
+export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": "list_history", before: TxLogId | null, limit: number, } | { "type": "list_accounts" } | { "type": "list_entries", query: string, after: ListPosition | null, limit: number, } | { "type": "list_items", query: string, after: ItemPosition | null, limit: number, } | { "type": "list_home", limit: number, } | { "type": "list_conversation", entry: EntryId, } | { "type": "list_message_entries", message: MessageId, } | { "type": "load_message", message: MessageId, } | { "type": "always_show_images", rule: ImageRule, always: boolean, } | { "type": "modify_labels", entries: Array<EntryId>, add: Array<LabelId>, remove: Array<LabelId>, } | { "type": "act_on_conversations", conversations: ConversationSet, action: ConversationAction, 
 /**
  * Done by a view being shown (opening a conversation reads it).
  */
@@ -263,23 +263,15 @@ next: ListPosition | null,
  * The entries the list's conversations are made of, as label
  * changes move entries into and out of them.
  */
-scope: ListScope, } | { "type": "entries", as_of: TxLogId, entries: Array<Entry>, } | { "type": "conversation_count", count: number, } | { "type": "home", as_of: TxLogId, buckets: Array<HomeBucket>, } | { "type": "items", as_of: TxLogId, conversations: Array<Conversation>, next: ListPosition | null, scope: ListScope, 
+scope: ListScope, } | { "type": "entries", as_of: TxLogId, entries: Array<Entry>, } | { "type": "conversation_count", count: number, } | { "type": "home", as_of: TxLogId, buckets: Array<HomeBucket>, } | { "type": "items", as_of: TxLogId, 
 /**
- * Most recently active first.
+ * The most recently active first.
  */
-rooms: Array<Room>, 
+items: Array<Item>, next: ItemPosition | null, 
 /**
- * Rooms' messages, the latest first, up to a few.
+ * Of its conversations.
  */
-messages: Array<FoundMessage>, 
-/**
- * Open ones first, by due date.
- */
-todos: Array<Todo>, 
-/**
- * Those yet to end, soonest first, then those past, latest first.
- */
-events: Array<CalendarEvent>, } | { "type": "message", message: MessageContent, } | { "type": "drafts", as_of: TxLogId, drafts: Array<Draft>, } | { "type": "outbox", as_of: TxLogId, accounts: Array<AccountOutbox>, } | { "type": "rooms", as_of: TxLogId, accounts: Array<MatrixAccount>, rooms: Array<Room>, } | { "type": "timeline", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, 
+scope: ListScope, } | { "type": "message", message: MessageContent, } | { "type": "drafts", as_of: TxLogId, drafts: Array<Draft>, } | { "type": "outbox", as_of: TxLogId, accounts: Array<AccountOutbox>, } | { "type": "rooms", as_of: TxLogId, accounts: Array<MatrixAccount>, rooms: Array<Room>, } | { "type": "timeline", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, 
 /**
  * Whether there are earlier events than those listed.
  */
@@ -315,11 +307,15 @@ export type HomeBucket = { name: string,
 /**
  * What it lists: its query, less what earlier buckets list.
  */
-query: string, conversations: Array<Conversation>, 
+query: string, 
 /**
- * Whether it lists more conversations than these.
+ * The most recently active first.
  */
-more: boolean, rooms: Array<Room>, todos: Array<Todo>, events: Array<CalendarEvent>, };
+items: Array<Item>, 
+/**
+ * Whether it lists more than these.
+ */
+more: boolean, };
 
 /**
  * How a home bucket shows on the app's icon (SPEC §12.14): by how many
@@ -373,9 +369,32 @@ items: Array<Activity>, };
 export type Activity = { "kind": "mail", entry: EntryId, } | { "kind": "room", room: RoomId, event: RoomEventId | null, } | { "kind": "todo", todo: TodoId, } | { "kind": "event", event: EventId, };
 
 /**
- * A message a search found, in its room.
+ * An item of a list of every kind (SPEC §8.7).
  */
-export type FoundMessage = { room: RoomId, event: RoomEvent, };
+export type Item = { "kind": "mail", conversation: Conversation, } | { "kind": "room", room: Room, hits: RoomHits | null, } | { "kind": "todo", todo: Todo, } | { "kind": "event", event: CalendarEvent, };
+
+/**
+ * The kinds of item, in the order items as recently active are listed.
+ */
+export type ItemKind = "mail" | "room" | "todo" | "event";
+
+/**
+ * Where an item is in a list of every kind, which runs from the most
+ * recently active: by when it was last active (ms since the epoch: when
+ * a conversation's latest entry came, a room's latest hit or event, a
+ * to-do or event last changed), then by kind, then by id, the greatest
+ * first (a conversation's being its latest entry's). Ordered as listed.
+ */
+export type ItemPosition = { at: number, kind: ItemKind, id: number, };
+
+/**
+ * A room's messages a query matches (SPEC §8.7).
+ */
+export type RoomHits = { count: number, 
+/**
+ * The latest, by the room's timeline.
+ */
+latest: RoomEvent, };
 
 export type ErrorCode = "not_found" | "not_undoable" | "already_undone" | "conflict" | "invalid" | "internal";
 
@@ -1243,7 +1262,11 @@ message: MessageId | null,
 /**
  * Ms since the Unix epoch.
  */
-created_at: number, };
+created_at: number, 
+/**
+ * When it last changed, ms since the Unix epoch.
+ */
+updated_at: number, };
 
 /**
  * A change to one of a to-do's fields.
@@ -1381,4 +1404,4 @@ refused: string | null, };
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "26ba1b8f0ebf0b32"
+export const PROTOCOL_VERSION = "60a1cc7a047541d6"

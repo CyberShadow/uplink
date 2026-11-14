@@ -1,7 +1,7 @@
 // The home view (SPEC §12.13): everything at a glance. Today's and
 // tomorrow's events above; below, the configured buckets, each listing
-// what its query matches of every kind and earlier buckets do not: to-dos
-// first, then mail and rooms, the most recently active first. The same
+// what its query matches of every kind and earlier buckets do not, the
+// most recently active first. The same
 // keys act on any row: `e` is done with it, `s` stars it, `l` labels it.
 
 import { useEffect, useRef, useState } from 'preact/hooks'
@@ -10,20 +10,18 @@ import type { CalendarEvent, HomeBucket } from '../generated/protocol'
 import { useServices } from '../context'
 import { useTitle } from '../title'
 import { lines, useKeymap } from '../keymap'
-import type { Row } from '../stores/home'
+import type { Row } from '../items'
 import { conversationKey, threadOf } from '../stores/mail'
 import { date, time } from '../format'
 import { searchPath } from './App'
 import { calendarPath } from './Calendar'
 import { LabelPicker } from './LabelPicker'
-import { ConversationCells, EventCells, ROW, RoomCells, TodoCells } from './ItemRow'
-import { roomPath } from './Room'
+import { ItemCells, ROW, pathOf } from './ItemRow'
 import { RoomTagPicker } from './RoomTagPicker'
-import { messagePath } from './Todos'
 import { FAVOURITE } from '../roomTags'
 import styles from './Home.module.css'
 
-/** How many a bucket lists: `20+` if there may be more mail. */
+/** How many a bucket lists: `20+` if it has more. */
 function count(bucket: HomeBucket, rows: number): string {
   return `${rows}${bucket.more ? '+' : ''}`
 }
@@ -45,17 +43,9 @@ export function Home() {
   const current = home.rows.value.find((row) => row.key === focus)
 
   const open = (row: Row) => {
-    switch (row.kind) {
-      case 'todo':
-        return route(row.todo.message === null ? '/todos' : messagePath(row.todo.message))
-      case 'event':
-        return route(calendarPath('agenda', date(new Date(row.event.start)), row.event.id))
-      case 'mail':
-        mail.focus.value = conversationKey(row.conversation)
-        return route(searchPath(row.query, row.conversation.latest.id))
-      case 'room':
-        return route(roomPath(row.room.id))
-    }
+    if (row.kind !== 'mail') return route(pathOf(row))
+    mail.focus.value = conversationKey(row.conversation)
+    route(searchPath(row.query, row.conversation.latest.id))
   }
   const done = (row: Row) => {
     switch (row.kind) {
@@ -114,7 +104,7 @@ export function Home() {
         ))}
       </nav>
       <div class={styles.buckets}>
-        {buckets.map(({ bucket, rows, visible }) => (
+        {buckets.map(({ bucket, rows }) => (
           <section key={bucket.name} id={id(bucket)} class={styles.bucket} aria-label={bucket.name}>
             {/* The bucket as a list of its own, to work through. */}
             <h2>
@@ -122,11 +112,11 @@ export function Home() {
                 {bucket.name} <span class={styles.count}>{count(bucket, rows.length)}</span>
               </a>
             </h2>
-            {visible.length === 0 ? (
+            {rows.length === 0 ? (
               <p class={styles.empty}>Nothing.</p>
             ) : (
               <ul class={styles.rows}>
-                {visible.map((row) => {
+                {rows.map((row) => {
                   const isFocused = row.key === focus
                   return (
                     <li
@@ -139,13 +129,13 @@ export function Home() {
                         open(row)
                       }}
                     >
-                      <RowView row={row} />
+                      <ItemCells row={row} />
                     </li>
                   )
                 })}
               </ul>
             )}
-            {(rows.length > visible.length || bucket.more) && (
+            {bucket.more && (
               <a class={styles.all} href={searchPath(bucket.query)}>
                 Show all {count(bucket, rows.length)}
               </a>
@@ -175,20 +165,6 @@ export function Home() {
       case 'event':
         return false
     }
-  }
-}
-
-function RowView(props: { row: Row }) {
-  const { row } = props
-  switch (row.kind) {
-    case 'todo':
-      return <TodoCells todo={row.todo} />
-    case 'event':
-      return <EventCells event={row.event} />
-    case 'mail':
-      return <ConversationCells conversation={row.conversation} />
-    case 'room':
-      return <RoomCells room={row.room} />
   }
 }
 

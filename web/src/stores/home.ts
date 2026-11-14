@@ -3,13 +3,12 @@
 // a log entry may change what they list.
 
 import { batch, computed, signal } from '@preact/signals'
-import type { Badges, CalendarEvent, Conversation, HomeBucket, LogEntry, Room, ServerEvent, Todo } from '../generated/protocol'
+import type { Badges, CalendarEvent, HomeBucket, LogEntry, ServerEvent } from '../generated/protocol'
 import type { Requester } from '../connection'
-import { conversationKey } from './mail'
+import { rowOf, type Row } from '../items'
 import { Loader, query } from './query'
 
-/** Rows a bucket shows at most, and so conversations it asks for; the
- * rest are a search away. */
+/** Rows a bucket shows at most; the rest are a search away. */
 export const BUCKET_LIMIT = 20
 
 /** What may move an item into a bucket or out of it, or change the agenda. */
@@ -30,45 +29,17 @@ export interface Home {
   agenda: CalendarEvent[]
 }
 
-export type Row =
-  | { kind: 'todo'; key: string; todo: Todo }
-  | { kind: 'event'; key: string; event: CalendarEvent }
-  | { kind: 'mail'; key: string; conversation: Conversation; query: string }
-  | { kind: 'room'; key: string; room: Room }
-
-/** A bucket's rows: to-dos (as listed, by due date), events, then mail
- * and rooms, the most recently active first. */
-export function rowsOf(bucket: HomeBucket): Row[] {
-  const active = (row: Row) =>
-    row.kind === 'mail' ? row.conversation.latest.received_at : row.kind === 'room' ? (row.room.last_event_ts ?? 0) : 0
-  const mixed: Row[] = [
-    ...bucket.conversations.map((conversation): Row => ({
-      kind: 'mail',
-      key: `mail:${conversationKey(conversation)}`,
-      conversation,
-      query: bucket.query,
-    })),
-    ...bucket.rooms.map((room): Row => ({ kind: 'room', key: `room:${room.id}`, room })),
-  ].sort((a, b) => active(b) - active(a))
-  return [
-    ...bucket.todos.map((todo): Row => ({ kind: 'todo', key: `todo:${todo.id}`, todo })),
-    ...bucket.events.map((event): Row => ({ kind: 'event', key: `event:${event.id}`, event })),
-    ...mixed,
-  ]
-}
-
 export interface Bucket {
   bucket: HomeBucket
+  /** Its items, as listed, the most recently active first. */
   rows: Row[]
-  /** Those shown: up to `BUCKET_LIMIT`. */
-  visible: Row[]
 }
 
 function bucketsOf(home: Home | null): Bucket[] {
-  return (home?.buckets ?? []).map((bucket) => {
-    const rows = rowsOf(bucket)
-    return { bucket, rows, visible: rows.slice(0, BUCKET_LIMIT) }
-  })
+  return (home?.buckets ?? []).map((bucket) => ({
+    bucket,
+    rows: bucket.items.map((item) => rowOf(item, bucket.query)),
+  }))
 }
 
 export class HomeStore {
@@ -76,7 +47,7 @@ export class HomeStore {
   readonly home = signal<Home | null>(null)
   readonly buckets = computed(() => bucketsOf(this.home.value))
   /** The rows shown, of every bucket, in order. */
-  readonly rows = computed(() => this.buckets.value.flatMap((b) => b.visible))
+  readonly rows = computed(() => this.buckets.value.flatMap((b) => b.rows))
   /** The key of the row the keys act on. It stays while home is not on
    * show; a row that leaves gives it to the next one still shown. */
   readonly focus = signal<string | null>(null)

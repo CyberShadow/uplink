@@ -2763,28 +2763,34 @@ describe('home', () => {
 })
 
 describe('search', () => {
-  it('finds rooms, their messages, to-dos and events too, above the mail', async () => {
+  it('lists rooms, to-dos and events among the mail, a room found by its messages as one row', async () => {
     server.addMatrixAccount()
-    const lobby = server.addRoom('Lunch club')
-    server.receive(lobby.id, { body: 'Lunch at noon?' })
+    const club = server.addRoom('Lunch club')
+    server.receive(club.id, { body: 'Bring a friend' })
+    const kitchen = server.addRoom('Kitchen')
+    server.receive(kitchen.id, { body: 'Lunch at noon?' })
+    server.receive(kitchen.id, { body: 'Lunch is ready' })
     server.addEvent('work', 'Team lunch', '2026-11-20T12:00:00Z', '2026-11-20T13:00:00Z')
+    server.deliver('work', 'Lunch plans')
     const user = await start()
     await client.todos.create('Book lunch')
     await user.keyboard('/')
     await user.keyboard('lunch{Enter}')
-    const titles = async (name: string) =>
-      within(await screen.findByRole('region', { name })).getAllByRole('listitem').map((item) => item.querySelector('[class*=title]')!.textContent)
-    expect(await titles('Rooms found')).toEqual(['Lunch club'])
-    // A room found is as home's: its latest message, and how many unread.
-    const found = within(screen.getByRole('region', { name: 'Rooms found' })).getByRole('listitem')
-    expect(found.querySelector('[class*=text]')!.textContent).toBe('Bob: Lunch at noon?')
-    expect(found.querySelector('[title$=unread]')!.textContent).toBe('1')
-    expect(await titles('Messages found')).toEqual(['Bob in Lunch club'])
-    expect(await titles('To-dos found')).toEqual(['Book lunch'])
-    expect(await titles('Events found')).toEqual(['Team lunch'])
-    expect(screen.getByRole('searchbox', { name: 'Search' })).toBeTruthy()
-    await user.click(within(screen.getByRole('region', { name: 'Rooms found' })).getByRole('link'))
-    expect(location.pathname).toBe(`/rooms/${lobby.id}`)
+    const titles = () => rows().map((row) => row.querySelector('[class*=from]')!.textContent)
+    await waitFor(() => expect(titles()).toHaveLength(5))
+    expect(titles()).toEqual(expect.arrayContaining(['Lunch club', 'Kitchen 2', 'Book lunch', 'Team lunch']))
+    expect(subjects()).toContain('Lunch plans')
+    // A room found by its messages says how many, and the latest of them;
+    // one found by its name, as home's, its latest message.
+    const row = (title: string) => rows().find((r) => r.querySelector('[class*=from]')!.textContent === title)!
+    expect(row('Kitchen 2').querySelector('[class*=subject]')!.textContent).toBe('Bob: Lunch is ready')
+    expect(row('Lunch club').querySelector('[class*=subject]')!.textContent).toBe('Bob: Bring a friend')
+    await user.click(row('Kitchen 2'))
+    expect(location.pathname).toBe(`/rooms/${kitchen.id}/search/lunch`)
+    history.back()
+    await waitFor(() => expect(titles()).toHaveLength(5))
+    await user.click(row('Lunch club'))
+    expect(location.pathname).toBe(`/rooms/${club.id}`)
   })
 })
 

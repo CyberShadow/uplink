@@ -8,13 +8,13 @@
 
 use anyhow::Result;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use uplink_protocol::matrix::{FoundMessage, Membership, Room, RoomEvent, RoomEventId, RoomId};
+use uplink_protocol::matrix::{Membership, Room, RoomEvent, RoomEventId, RoomHits, RoomId};
 use uplink_query::{text_matches, Fields, Kind, Query, Term};
 use uplink_storage::rusqlite::{params_from_iter, types::Value, Transaction};
 
 use crate::{
     room_tags,
-    rooms::{self, after, has_text, having, message, Marker, MAIN},
+    rooms::{self, after, has_text, having, message, pos_of, Marker, MAIN},
     service::ConfiguredAccount,
 };
 
@@ -31,19 +31,12 @@ pub struct Rooms<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Group {
     pub room: Room,
-    pub hits: Option<Hits>,
-}
-
-/// The messages of a room that a query matches.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Hits {
-    pub count: u32,
-    /// The latest, by the room's timeline.
-    pub latest: RoomEvent,
+    pub hits: Option<RoomHits>,
 }
 
 impl Group {
-    /// When it was last active: its latest hit, else its latest event.
+    /// When it was last active: its latest hit, else its latest event
+    /// (none, of an invitation).
     pub fn active(&self) -> Option<i64> {
         match &self.hits {
             Some(hits) => Some(hits.latest.ts),
@@ -85,7 +78,7 @@ impl<'a> Rooms<'a> {
                 None => undecided.push(room),
             }
         }
-        if let Some(mut search) = self.search(query, &undecided) {
+        if let Some(mut search) = self.search(query, &undecided, true) {
             let sql = format!(
                 "SELECT e.room, count(*), max(e.pos), e.id {from} GROUP BY e.room",
                 from = search.from(),
@@ -107,7 +100,10 @@ impl<'a> Rooms<'a> {
                     .expect("messages are found of the rooms searched");
                 groups.push(Group {
                     room: (*room).clone(),
-                    hits: Some(Hits { count, latest }),
+                    hits: Some(RoomHits {
+                        count,
+                        latest: Box::new(latest),
+                    }),
                 });
             }
         }
@@ -115,61 +111,57 @@ impl<'a> Rooms<'a> {
         Ok(groups)
     }
 
-    /// The messages `query` matches, the latest first, up to `limit`: of
-    /// the rooms it leaves to their messages.
-    pub fn messages(
+    /// The room listed by this id, if it is.
+    pub fn room(&self, id: RoomId) -> Option<&Room> {
+        self.listed().find(|room| room.id == id)
+    }
+
+    /// The messages of `room` that `query` matches (a room's own search,
+    /// SPEC §12.11: its words of their text, not of its name), newest
+    /// first: up to `limit`, before `before` if given; and whether there
+    /// are more.
+    pub fn search_room(
         &self,
         tx: &Transaction,
+        room: &Room,
         query: &Query,
+        before: Option<RoomEventId>,
         limit: u32,
-    ) -> Result<Vec<FoundMessage>> {
-        let undecided: Vec<&Room> = self
-            .listed()
-            .filter(|room| uplink_query::decides(query, &|t| self.of_room(room, t)).is_none())
-            .collect();
-        let Some(mut search) = self.search(query, &undecided) else {
-            return Ok(vec![]);
+    ) -> Result<(Vec<RoomEvent>, bool)> {
+        let Some(mut search) = self.search(query, &[room], false) else {
+            return Ok((vec![], false));
         };
         let from = search.from();
-        search.sql.params.push(Value::Integer(limit.into()));
-        let found: Vec<(i64, i64)> = tx
+        let before = match before {
+            Some(event) => format!("e.pos < {}", pos_of(&search.sql.param(event.0))),
+            None => "1".to_owned(),
+        };
+        let one_more = search.sql.param(limit + 1);
+        let mut ids: Vec<RoomEventId> = tx
             .prepare(&format!(
-                "SELECT e.room, e.id {from} ORDER BY e.ts DESC, e.id DESC LIMIT ?{n}",
-                n = search.sql.params.len(),
+                "SELECT e.id {from} AND {before} ORDER BY e.pos DESC LIMIT {one_more}"
             ))?
             .query_map(params_from_iter(search.sql.params.iter()), |r| {
-                Ok((r.get(0)?, r.get(1)?))
+                Ok(RoomEventId(r.get(0)?))
             })?
             .collect::<Result<_, _>>()?;
-        let mut by_room: HashMap<i64, Vec<RoomEventId>> = HashMap::new();
-        for (room, event) in &found {
-            by_room.entry(*room).or_default().push(RoomEventId(*event));
-        }
-        let mut events = HashMap::new();
-        for (room, ids) in by_room {
-            for event in rooms::listed_events(tx, RoomId(room), &ids)? {
-                events.insert(event.id, (RoomId(room), event));
-            }
-        }
-        Ok(found
-            .into_iter()
-            .map(|(_, event)| {
-                let (room, event) = events
-                    .remove(&RoomEventId(event))
-                    .expect("a listed event found is listed");
-                FoundMessage { room, event }
-            })
-            .collect())
+        let more = ids.len() > limit as usize;
+        ids.truncate(limit as usize);
+        let mut events = rooms::listed_events(tx, room.id, &ids)?;
+        events.reverse();
+        Ok((events, more))
     }
 
     /// What `query` asks of the messages of `rooms`, those it leaves to
-    /// them; `None` if no message can match.
-    fn search(&self, query: &Query, rooms: &[&Room]) -> Option<Search> {
+    /// them, words of their rooms' names (`names`) or not; `None` if no
+    /// message can match.
+    fn search(&self, query: &Query, rooms: &[&Room], names: bool) -> Option<Search> {
         let condition = Cond::of(query, &|term| {
             Cond::term(term, &|term| {
+                let of_name = matches!(term, Term::Text { fields: None, .. });
                 rooms
                     .iter()
-                    .filter(|room| self.of_room(room, term) == Some(true))
+                    .filter(|room| (names || !of_name) && self.of_room(room, term) == Some(true))
                     .map(|room| room.id.0)
                     .collect()
             })
