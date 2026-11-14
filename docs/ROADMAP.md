@@ -151,11 +151,11 @@ MVP:
 - Server-arbitrated compare-and-swap edits for sync'd client state (drafts) using `(hash(old_value), edit_operation)`.
 - IndexedDB client-side write-through for draft text resilience.
 - Browser notifications of what comes from others into the badged home
-  buckets (mail, messages), as urgent as their badges (SPEC §12.16).
+  buckets (mail, messages, invitations), as urgent as their badges
+  (SPEC §12.16).
 
 Deferred:
 - Web Push: notifications with no client open (SPEC §12.16 needs one).
-- Notifying of invitations to rooms (they have no message to be news by).
 - Cross-device draft sync to non-browser clients.
 
 ## Mobile / Android

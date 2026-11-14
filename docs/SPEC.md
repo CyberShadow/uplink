@@ -2829,8 +2829,9 @@ which a verified device gives.
   counts its messages that notify only while it is in a `count`
   bucket.
 - **Browser notifications** are of the badged home buckets (§12.16): a
-  room's message is news if it notifies, by the push rules, and its room
-  is in a badged bucket.
+  room's message is news if the bucket's query matches it, as a message
+  (`is:notifying` by the push rules, `is:dm is:unread` whatever they
+  say), and an invitation if its room is in the bucket.
 - The read marker is desired state (§6.6). Showing a room, in a visible
   tab, marks it read up to the latest message from others wholly on
   screen (`MarkRoomRead`, quietly: no notice, and as shown, §12.15). The
@@ -4004,33 +4005,45 @@ Android's channels' importance tell apart what interrupts from what goes
 by: of a `count` bucket's, as what needs the user, the notification
 stays until dismissed, with the system's sound (`requireInteraction`);
 of a `dot` bucket's, as what is to be kept up with, it goes by, silently
-(`silent`). An unbadged bucket's (Backlog, Leisure) are not notified
-of. Reminders of events (§10.2) are as urgent as a `count` bucket's.
+(`silent`). An unbadged bucket's (Starred, Inbox, Other) are not
+notified of. Reminders of events (§10.2) are as urgent as a `count` bucket's.
 
-What comes is mail and messages; to-dos and events are the user's own
-(a meeting request comes as mail):
+What comes is mail, messages and invitations; to-dos and events are
+the user's own (a meeting request comes as mail):
 
 - of a conversation, its newest entry stored since the badges were last
   derived, received within the hour, that is not the user's own (in
   Sent or Drafts);
-- of a room, its newest unread message stored since, sent within the
-  hour, that notifies (§9.5), of its main timeline or its threads.
+- of a room, its newest message stored since, sent within the hour, not
+  the user's own, that the bucket's query matches as a message (§8.7: as
+  a room's search finds it, its room's terms holding of it), of its main
+  timeline or its threads: so a bridged DM's message is news to a bucket
+  of `is:dm is:unread`, though the push rules (§9.5) take a room of a
+  bridge bot, its puppet and the user for a group chat, while chatter in
+  a room with a mention is not to one of `is:mention`;
+- an invitation to a room invited to now but not then, by the room's
+  name, which the client may not have listed yet. It has no message, nor
+  time: an account's first sync tells of those pending.
 
 Within the hour, so that what is only newly stored (an account's first
 sync, a room's history) is not news. The server finds them as it
 derives the badges (§12.14), of the same read: of the items each
 badged bucket holds of those checked again (derived anew, of its 100
-most recently active items), those whose news is after the watermark (the latest ids of each kind, as `seen` has them,
-§12.15) of the previous derivation; none at first. It tells every
+most recently active items), those whose news is after the watermark
+(the latest ids of each kind, as `seen` has them, §12.15) of the
+previous derivation, and the invitations not among those then; none at
+first. It tells every
 session of each (`Notice::Arrival { bucket, badge, item }`, §5.5): live
 only, so a client not connected then, as while the computer slept, is
 not told; the badges are what remains of it.
 
-Once the browser lets uplink notify (a nav item asks it to, until it is
-answered), the web client notifies of each, unless the tab is visible
+Once the browser lets uplink notify (an item of the nav's views, under
+Calendar, asks it to, until it is answered), the web client notifies of
+each, unless the tab is visible
 and shows it (the conversation opened by any of its entries, the room):
-the sender and subject of mail, with its snippet, or the room's name
-and the message's sender and text; one per conversation or room, a
+the sender and subject of mail, with its snippet, the room's name and
+the message's sender and text, or the room's name and that it invites
+the user; one per conversation or room, a
 later replacing it (`tag`). A click opens it: the conversation in its
 account's All Mail, or the room. Only while a client is open: the
 server does not notify (the Android app, ROADMAP, would).

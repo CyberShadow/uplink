@@ -402,10 +402,10 @@ fn pins_keep_others_pinned_meanwhile() {
     assert_eq!(pins(&now, "$c", false), None, "not pinned");
 }
 
-/// What came of a room is its newest unread message stored since, and
-/// sent since, that notifies.
+/// What came of a room is its newest message stored since, and sent
+/// since, that the query matches as a message, and is not the account's.
 #[tokio::test]
-async fn what_came_notifies_and_is_recent() {
+async fn what_came_matches_and_is_recent() {
     let db = Db::new();
     let pushed = |id: &str, sender: &str, notify: bool, ts: i64| ObservedEvent {
         push: crate::rooms::Push {
@@ -430,16 +430,27 @@ async fn what_came_notifies_and_is_recent() {
     )
     .await;
     let room = db.room().await.id;
-    let arrived = |since: RoomEventId| {
+    let arrived = |query: &str| {
         let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
         let tx = conn.transaction().unwrap();
-        crate::rooms::arrived(&tx, room, ME, since, 2000).unwrap()
+        let accounts = [account()];
+        let rooms = crate::query::Rooms::load(&tx, &accounts).unwrap();
+        let query = uplink_query::parse(query, 0).unwrap();
+        let arrived = rooms.arrived(&tx, &query, &[room], since, 2000).unwrap();
+        arrived
+            .into_iter()
+            .map(|(_, event)| event)
+            .collect::<Vec<_>>()
     };
-    assert_eq!(arrived(since), Some(db.event("$2").await));
-    // Read: no longer news.
-    let read = db.event("$2").await;
+    let event = |id: &'static str| db.event(id);
+    // Of the messages that notify, Bob's; of the unread, his last.
+    assert_eq!(arrived("is:unread is:notifying"), [event("$2").await]);
+    assert_eq!(arrived("is:unread"), [event("$3").await]);
+    // Read: no longer unread, but still of a room its terms alone match.
+    let read = event("$3").await;
     db.matrix.mark_read(room, read, false, false).await.unwrap();
-    assert_eq!(arrived(since), None);
+    assert!(arrived("is:unread").is_empty());
+    assert_eq!(arrived("is:room"), [event("$3").await]);
 }
 
 #[tokio::test]

@@ -1391,6 +1391,45 @@ describe('matrix', () => {
       server.arrive('Upkeep', 'dot', { kind: 'mail', entry: other.id })
       await waitFor(() => expect(shown).toHaveLength(3))
       expect(shown[2].title).toBe('Bob: Other')
+
+      // An invitation, of a room not yet listed, by its name; a click
+      // opens it.
+      const party = server.addRoom('Party', false, 'invited')
+      server.arrive('Urgent', 'count', { kind: 'invite', room: party.id, name: 'Party' })
+      await waitFor(() => expect(shown).toHaveLength(4))
+      expect(shown[3].title).toBe('Party')
+      expect(shown[3].options).toEqual({
+        body: 'Invites you',
+        tag: `room-${party.id}`,
+        requireInteraction: true,
+        silent: false,
+      })
+      shown[3].onclick!()
+      await waitFor(() => expect(location.pathname).toBe(`/rooms/${party.id}`))
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('asks to notify from the nav, of every kind, until answered', async () => {
+    let asked = 0
+    class FakeNotification {
+      static permission: NotificationPermission = 'default'
+      static async requestPermission() {
+        asked++
+        FakeNotification.permission = 'granted'
+        return FakeNotification.permission
+      }
+    }
+    vi.stubGlobal('Notification', FakeNotification)
+    try {
+      // With mail alone: no Matrix account to be under.
+      server.addAccount('a')
+      const user = await start('/todos')
+      const nav = screen.getByRole('navigation')
+      await user.click(within(nav).getByRole('button', { name: 'Turn on notifications' }))
+      expect(asked).toBe(1)
+      await waitFor(() => expect(within(nav).queryByRole('button', { name: 'Turn on notifications' })).toBeNull())
     } finally {
       vi.unstubAllGlobals()
     }

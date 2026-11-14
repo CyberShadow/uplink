@@ -60,6 +60,10 @@ export function useNotifications(path: string, route: (path: string) => void) {
             )
             return
           }
+          case 'invite':
+            if (!document.hidden && shows(where.current, roomPath(item.room))) return
+            notify(arrival.badge, item.name, 'Invites you', `room-${item.room}`, () => route(roomPath(item.room)))
+            return
         }
       }),
     [home, mail, matrix, route],

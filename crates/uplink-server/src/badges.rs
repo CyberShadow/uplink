@@ -2,10 +2,7 @@
 //! current in the hub, which sends them to every session; and what comes
 //! into them from others, which it sends as notices (SPEC §12.16).
 
-use crate::{
-    items::{Badged, Items},
-    seen::Watermark,
-};
+use crate::items::{Badged, Items, Since};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::time::{interval_at, Instant, MissedTickBehavior};
@@ -15,11 +12,11 @@ use uplink_realtime::Hub;
 /// Time alone moves items, into `due:today` or out of `newer_than:`.
 const EVERY: Duration = Duration::from_secs(60);
 
-/// Keeps the hub's badges, `badged` derived at the watermark `since`:
+/// Keeps the hub's badges, `badged` derived as of `since`:
 /// after log entries (those that come while they are kept, at once), by
 /// checking again what they name; and derived anew when the buckets are
 /// configured anew, each minute, and after entries missed.
-pub async fn keep(items: Items, hub: Arc<Hub>, badged: Badged, mut since: Watermark) {
+pub async fn keep(items: Items, hub: Arc<Hub>, badged: Badged, mut since: Since) {
     let mut badged = Some(badged);
     let mut entries = hub.subscribe();
     let mut notices = hub.notices();
@@ -53,9 +50,9 @@ pub async fn keep(items: Items, hub: Arc<Hub>, badged: Badged, mut since: Waterm
             }
         }
         let derived = match badged.take() {
-            Some(kept) => items.rebadged(kept, changed, since).await,
+            Some(kept) => items.rebadged(kept, changed, since.clone()).await,
             // What it held was lost with a failure: anew.
-            None => items.badged(Some(since)).await,
+            None => items.badged(Some(since.clone())).await,
         };
         match derived {
             Ok((kept, derived)) => {
@@ -64,7 +61,7 @@ pub async fn keep(items: Items, hub: Arc<Hub>, badged: Badged, mut since: Waterm
                 for arrival in derived.arrivals {
                     hub.notify(Notice::Arrival(arrival));
                 }
-                since = derived.watermark;
+                since = derived.since;
             }
             Err(e) => tracing::error!("badges: reading them failed: {}", e.message),
         }

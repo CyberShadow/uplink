@@ -442,7 +442,7 @@ latest: RoomEvent, };
  */
 export type Arrival = { bucket: string, badge: Badge, item: Arrived, };
 
-export type Arrived = { "kind": "mail", entry: EntryId, } | { "kind": "message", room: RoomId, event: RoomEventId, };
+export type Arrived = { "kind": "mail", entry: EntryId, } | { "kind": "message", room: RoomId, event: RoomEventId, } | { "kind": "invite", room: RoomId, name: string, };
 
 export type ErrorCode = "not_found" | "not_undoable" | "already_undone" | "conflict" | "invalid" | "internal";
 
@@ -1587,4 +1587,4 @@ export type EventChangeKind = "create" | "update" | "delete";
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "b09803f47132b47b"
+export const PROTOCOL_VERSION = "4ba0fb08b164a7b1"

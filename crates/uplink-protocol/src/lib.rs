@@ -129,8 +129,12 @@ pub struct Arrival {
 pub enum Arrived {
     /// Of a conversation, its newest entry that came.
     Mail { entry: EntryId },
-    /// Of a room, its newest message that came and notifies.
+    /// Of a room, its newest message that came, as the bucket's query
+    /// matches it.
     Message { room: RoomId, event: RoomEventId },
+    /// An invitation to a room, by its name: the client may not have it
+    /// listed yet.
+    Invite { room: RoomId, name: String },
 }
 
 // ── requests ──────────────────────────────────────────────────────────────

@@ -154,6 +154,13 @@ impl<'a> Rooms<'a> {
         }
     }
 
+    /// Those invited to.
+    pub fn invited(&self) -> impl Iterator<Item = RoomId> + '_ {
+        self.listed()
+            .filter(|room| room.membership == Membership::Invited)
+            .map(|room| room.id)
+    }
+
     /// The room listed by this id, if it is.
     pub fn room(&self, id: RoomId) -> Option<&Room> {
         self.listed().find(|room| room.id == id)
@@ -193,6 +200,38 @@ impl<'a> Rooms<'a> {
         let mut events = rooms::listed_events(tx, room.id, &ids)?;
         events.reverse();
         Ok((events, more))
+    }
+
+    /// What came of `rooms` (SPEC §12.16): of each, its newest message that
+    /// `query` matches, as a message, stored after `since`, sent after
+    /// `sent_after` (ms since the Unix epoch), and not the accounts' own.
+    pub fn arrived(
+        &self,
+        tx: &Transaction,
+        query: &Query,
+        rooms: &[RoomId],
+        since: RoomEventId,
+        sent_after: i64,
+    ) -> Result<Vec<(RoomId, RoomEventId)>> {
+        let rooms: Vec<&Room> = self.listed().filter(|r| rooms.contains(&r.id)).collect();
+        let Some(mut search) = self.search(query, &rooms, true) else {
+            return Ok(vec![]);
+        };
+        let from = search.from();
+        let since = search.sql.param(since.0);
+        let sent_after = search.sql.param(sent_after);
+        let mine = search.sql.mine();
+        let arrived = tx
+            .prepare(&format!(
+                "SELECT e.room, max(e.id) {from}
+                   AND e.id > {since} AND e.ts > {sent_after} AND e.sender NOT IN {mine}
+                 GROUP BY e.room"
+            ))?
+            .query_map(params_from_iter(search.sql.params.iter()), |r| {
+                Ok((RoomId(r.get(0)?), RoomEventId(r.get(1)?)))
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(arrived)
     }
 
     /// What `query` asks of the messages of `rooms`, those it leaves to

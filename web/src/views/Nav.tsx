@@ -551,17 +551,19 @@ export function Nav(props: { open: boolean }) {
     '/todos': [todos.todos.value?.filter((t) => t.done_at === null).length ?? 0, 'size'],
     '/calendar': [0, 'size'],
   }
-  const viewItems = (list: readonly View[]) => (
+  const viewItems = (list: readonly View[], after?: ComponentChildren) => (
     <ul>
       {list.map((view) => {
         const [count, tone] = counts[view.href]!
         return item(view.href, view.icon, view.name, count, tone, marks.view(view.href))
       })}
+      {after}
     </ul>
   )
   return (
     <nav ref={nav} class={props.open ? `${styles.nav} ${styles.open}` : styles.nav}>
-      {viewItems(views(mail.accounts.value ?? []))}
+      {/* Notifications are of every kind (SPEC §12.16). */}
+      {viewItems(views(mail.accounts.value ?? []), <NotificationsItem />)}
       {mail.accounts.value?.map((account) => (
         <Section
           key={account.id}
@@ -599,7 +601,6 @@ export function Nav(props: { open: boolean }) {
             mark={strongest(rooms.map(marks.room))}
           >
             {securityItem(account.id)}
-            <NotificationsItem />
             <li>
               <button type="button" class={styles.action} onClick={() => setStarting(account.id)}>
                 <Icon name="plus" />

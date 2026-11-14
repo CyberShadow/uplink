@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
 };
 use uplink_config::HomeBucket;
 use uplink_email::query::{self as mail, ListError, Unknown};
@@ -18,7 +18,7 @@ use uplink_matrix::query::{Group, Rooms};
 use uplink_protocol::{
     calendar::CalendarEvent,
     mail::{EntryId, ListPosition, ListScope},
-    matrix::RoomEventId,
+    matrix::{Membership, RoomEventId, RoomId},
     todos::Todo,
     Arrival, Arrived, Badge, Badges, Changed, ErrorCode, Item, ItemKind, ItemPosition, Mark, Marks,
     Place, ServerError, ServerResponse, TxLogId, UnknownNames,
@@ -40,12 +40,21 @@ const ARRIVALS_AMONG: u32 = 100;
 /// room's history), is not (SPEC §12.16).
 const RECENT: i64 = 60 * 60 * 1000;
 
-/// The badges, what came into the badged buckets since the watermark
-/// they were derived after, and the watermark they were derived at.
+/// The badges, what came into the badged buckets since they were last
+/// derived, and as of when they were derived now.
 pub struct Derived {
     pub badges: Badges,
     pub arrivals: Vec<Arrival>,
-    pub watermark: Watermark,
+    pub since: Since,
+}
+
+/// As of when the badges were derived: what came after is news. An
+/// invitation, which has no message, is news if its room was not invited
+/// to then.
+#[derive(Debug, Clone)]
+pub struct Since {
+    watermark: Watermark,
+    invited: BTreeSet<RoomId>,
 }
 
 #[derive(Clone)]
@@ -525,10 +534,10 @@ impl Items {
 
     /// What the badged buckets hold (SPEC §12.14), as `home` lists them,
     /// item by item; and so the marks of the places their items are in.
-    /// And what came into them from others since the watermark `since`
-    /// (SPEC §12.16), of the `ARRIVALS_AMONG` most recently active items
-    /// of each: nothing, at first.
-    pub async fn badged(&self, since: Option<Watermark>) -> Result<(Badged, Derived), ServerError> {
+    /// And what came into them from others since `since` (SPEC §12.16),
+    /// of the `ARRIVALS_AMONG` most recently active items of each:
+    /// nothing, at first.
+    pub async fn badged(&self, since: Option<Since>) -> Result<(Badged, Derived), ServerError> {
         let now = now();
         let today = uplink_query::today(now);
         let buckets: Vec<_> = self
@@ -542,7 +551,10 @@ impl Items {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
                 let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
                 let seen = Seen::load(&tx).map_err(internal)?;
-                let watermark = crate::seen::latest(&tx).map_err(internal)?;
+                let now_since = Since {
+                    watermark: crate::seen::latest(&tx).map_err(internal)?,
+                    invited: rooms.invited().collect(),
+                };
                 let mut badged = Badged { buckets: vec![] };
                 let mut arrivals = vec![];
                 for (badge, bucket) in buckets {
@@ -552,7 +564,9 @@ impl Items {
                         let page = this.page(&tx, &bucket.query, others, None, ARRIVALS_AMONG)?;
                         arrivals.extend(this.arrivals(
                             &tx,
+                            &rooms,
                             &bucket.name,
+                            &bucket.query,
                             badge,
                             &page.items,
                             since,
@@ -572,7 +586,7 @@ impl Items {
                     Derived {
                         badges,
                         arrivals,
-                        watermark,
+                        since: now_since,
                     },
                 ))
             })
@@ -580,13 +594,13 @@ impl Items {
     }
 
     /// `badged` kept: what `changed` names checked again, and of it what
-    /// came since the watermark `since`. What the log does not name item
-    /// by item, everything is derived anew for.
+    /// came since `since`. What the log does not name item by item,
+    /// everything is derived anew for.
     pub async fn rebadged(
         &self,
         badged: Badged,
         changed: Changed,
-        since: Watermark,
+        since: Since,
     ) -> Result<(Badged, Derived), ServerError> {
         if changed.everything {
             return self.badged(Some(since)).await;
@@ -599,7 +613,10 @@ impl Items {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
                 let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
                 let seen = Seen::load(&tx).map_err(internal)?;
-                let watermark = crate::seen::latest(&tx).map_err(internal)?;
+                let now_since = Since {
+                    watermark: crate::seen::latest(&tx).map_err(internal)?,
+                    invited: rooms.invited().collect(),
+                };
                 let conversations = conversations(&tx, &changed)?;
                 let among = among(&changed);
                 let mut badged = badged;
@@ -639,7 +656,9 @@ impl Items {
                         let page = this.page(&tx, &query, others, None, limit)?;
                         arrivals.extend(this.arrivals(
                             &tx,
+                            &rooms,
                             &bucket.name,
+                            &bucket.query,
                             bucket.badge,
                             &page.items,
                             &since,
@@ -653,7 +672,7 @@ impl Items {
                     Derived {
                         badges,
                         arrivals,
-                        watermark,
+                        since: now_since,
                     },
                 ))
             })
@@ -696,25 +715,32 @@ impl Items {
         })
     }
 
-    /// Of `items`, a bucket's, what came from others since `since`, and
-    /// recently: what an item last active before then cannot have.
+    /// Of `items`, those of the bucket of `query`, what came from others
+    /// since `since`, and recently: what an item last active before then
+    /// cannot have, but an invitation, which has no message.
+    #[allow(clippy::too_many_arguments)]
     fn arrivals(
         &self,
         tx: &Transaction,
+        rooms: &Rooms,
         bucket: &str,
+        query: &Query,
         badge: Badge,
         items: &[Item],
-        since: &Watermark,
+        since: &Since,
         now: i64,
     ) -> Result<Vec<Arrival>, ServerError> {
         let after = now - RECENT;
         let recent: Vec<Item> = items
             .iter()
-            .filter(|item| item.position().at >= after)
+            .filter(|item| match item {
+                Item::Room { room, .. } if room.membership == Membership::Invited => true,
+                _ => item.position().at >= after,
+            })
             .cloned()
             .collect();
         Ok(self
-            .arrived(tx, &recent, since, after)?
+            .arrived(tx, rooms, query, &recent, since, after)?
             .into_iter()
             .map(|item| Arrival {
                 bucket: bucket.to_owned(),
@@ -724,42 +750,50 @@ impl Items {
             .collect())
     }
 
-    /// What came from others since `since`, sent or received after
-    /// `after`: of each conversation its newest entry, of each room its
-    /// newest message that notifies; to-dos and events are the user's own.
+    /// What came from others into the bucket of `query` since `since`,
+    /// sent or received after `after`, of its `items`: of each conversation
+    /// its newest entry, of each room its newest message the query matches,
+    /// and invitations; to-dos and events are the user's own.
     fn arrived(
         &self,
         tx: &Transaction,
+        rooms: &Rooms,
+        query: &Query,
         items: &[Item],
-        since: &Watermark,
+        since: &Since,
         after: i64,
     ) -> Result<Vec<Arrived>, ServerError> {
         let mut arrived = vec![];
+        let mut joined = vec![];
         for item in items {
             match item {
                 Item::Mail { conversation } => {
-                    let since = EntryId(since.mail);
+                    let since = EntryId(since.watermark.mail);
                     let entry = mail::arrived(tx, conversation, since, after).map_err(internal)?;
                     arrived.extend(entry.map(|entry| Arrived::Mail { entry }));
                 }
-                Item::Room { room, .. } => {
-                    let mxid = &self
-                        .matrix_accounts
-                        .iter()
-                        .find(|a| a.id == room.account)
-                        .expect("rooms are of the configured accounts")
-                        .mxid;
-                    let since = RoomEventId(since.room_event);
-                    let event = uplink_matrix::rooms::arrived(tx, room.id, mxid, since, after)
-                        .map_err(internal)?;
-                    arrived.extend(event.map(|event| Arrived::Message {
-                        room: room.id,
-                        event,
-                    }));
-                }
+                Item::Room { room, .. } => match room.membership {
+                    Membership::Invited if !since.invited.contains(&room.id) => {
+                        arrived.push(Arrived::Invite {
+                            room: room.id,
+                            name: room.name.clone(),
+                        })
+                    }
+                    Membership::Invited => {}
+                    Membership::Joined | Membership::Left => joined.push(room.id),
+                },
                 Item::Todo { .. } | Item::Event { .. } => {}
             }
         }
+        let since = RoomEventId(since.watermark.room_event);
+        let messages = rooms
+            .arrived(tx, query, &joined, since, after)
+            .map_err(internal)?;
+        arrived.extend(
+            messages
+                .into_iter()
+                .map(|(room, event)| Arrived::Message { room, event }),
+        );
         Ok(arrived)
     }
 
@@ -922,14 +956,18 @@ mod tests {
     use uplink_tx_log::{Dispatcher, Registry};
 
     /// A room for the account `mx`, joined, of these events.
-    fn room(events: Vec<uplink_matrix::rooms::ObservedEvent>) -> Synced {
+    fn room(
+        room_id: &str,
+        membership: Membership,
+        events: Vec<uplink_matrix::rooms::ObservedEvent>,
+    ) -> Synced {
         Synced {
             next_batch: "next".into(),
             rooms: vec![ObservedRoom {
-                room_id: "!r:x".into(),
-                name: "Rent talk".into(),
+                room_id: room_id.into(),
+                name: room_id.into(),
                 encrypted: false,
-                membership: Membership::Joined,
+                membership,
                 space: false,
                 direct: false,
                 avatar: None,
@@ -1027,12 +1065,6 @@ mod tests {
                 .unwrap()
             }
         };
-        let in_room = |id: &str, events| {
-            let mut synced = room(events);
-            synced.rooms[0].room_id = id.to_owned();
-            synced.rooms[0].name = id.to_owned();
-            synced
-        };
         let todos = uplink_todos::service::Todos::new(
             dispatcher.clone(),
             uplink_storage::open_reader(dir.path()).unwrap(),
@@ -1058,7 +1090,11 @@ mod tests {
             badge: Some(badge),
         };
         items.configure_home(vec![
-            bucket("Urgent", "is:starred OR is:mention", Badge::Count),
+            bucket(
+                "Urgent",
+                "is:starred OR is:mention OR is:invite",
+                Badge::Count,
+            ),
             bucket("Unread", "is:unread", Badge::Dot),
             bucket("Later", "is:todo OR label:Label_1", Badge::Count),
         ]);
@@ -1086,9 +1122,10 @@ mod tests {
         }
         let mut left = 0;
         let (mut badged, first) = items.badged(None).await.unwrap();
-        let mut since = first.watermark;
+        let mut since = first.since;
         let mut todo_ids = vec![];
         let mut came = 0;
+        let mut invited = 0;
         // Of the labels, by step: as many sets as there are steps of a kind.
         let sets: [&[&str]; 5] = [
             &["INBOX", "UNREAD"],
@@ -1131,14 +1168,22 @@ mod tests {
                 // A message, into one of a few rooms; or one read by the
                 // account, which leaves it.
                 2 => {
-                    let room = format!("!r{}:x", step / 6 % 3);
+                    let id = format!("!r{}:x", step / 6 % 3);
                     let event = format!("$e{step}");
-                    let mut synced =
-                        in_room(&room, vec![message(&event, step % 4 == 2, step % 8 == 2)]);
+                    let mut synced = room(
+                        &id,
+                        Membership::Joined,
+                        vec![message(&event, step % 4 == 2, step % 8 == 2)],
+                    );
                     if step % 5 == 2 {
                         synced.rooms[0].own_receipts = vec![event];
                     }
                     dispatcher.observe("mx".into(), synced).await.unwrap();
+                    // And now and then an invitation.
+                    if step % 4 == 2 {
+                        let invite = room(&format!("!i{step}:x"), Membership::Invited, vec![]);
+                        dispatcher.observe("mx".into(), invite).await.unwrap();
+                    }
                 }
                 4 => {
                     let created = todos
@@ -1194,8 +1239,11 @@ mod tests {
                     .count();
                 *listing = kept;
             }
-            let (kept, derived) = items.rebadged(badged, changed, since).await.unwrap();
-            let (anew, derived_anew) = items.badged(Some(since)).await.unwrap();
+            let (kept, derived) = items
+                .rebadged(badged, changed, since.clone())
+                .await
+                .unwrap();
+            let (anew, derived_anew) = items.badged(Some(since.clone())).await.unwrap();
             let held = |b: &Badged| {
                 b.buckets
                     .iter()
@@ -1206,12 +1254,18 @@ mod tests {
             assert_eq!(derived.badges, derived_anew.badges, "step {step}");
             assert_eq!(derived.arrivals, derived_anew.arrivals, "step {step}");
             came += derived.arrivals.len();
+            invited += derived
+                .arrivals
+                .iter()
+                .filter(|a| matches!(a.item, Arrived::Invite { .. }))
+                .count();
             badged = kept;
-            since = derived.watermark;
+            since = derived.since;
         }
         // Something was counted, and something came.
         assert!(badged.badges().marks.home.count > 0);
         assert!(came > 0);
+        assert!(invited > 0, "invitations came");
         assert!(left > 0, "items left windows");
         // An empty window, and more come at once than it holds.
         let listing = window("label:SPAM", 2, anew(), Changed::everything())
@@ -1238,8 +1292,9 @@ mod tests {
         assert!(kept.more);
     }
 
-    /// What came into a badged bucket since the watermark is told of, by
-    /// the bucket; of an unbadged one, nothing.
+    /// What came into a badged bucket since it was last derived is told
+    /// of, by the bucket: a message the bucket's query matches, an
+    /// invitation; of an unbadged one, nothing.
     #[tokio::test]
     async fn arrivals_are_of_badged_buckets() {
         let dir = tempfile::tempdir().unwrap();
@@ -1250,7 +1305,7 @@ mod tests {
             registry,
             Arc::new(Hub::new(64)),
         );
-        let message = |id: &str| {
+        let message = |id: &str, notify| {
             let raw = serde_json::json!({
                 "type": "m.room.message",
                 "event_id": id,
@@ -1261,7 +1316,7 @@ mod tests {
             let parse = uplink_matrix::rooms::ObservedEvent::parse;
             uplink_matrix::rooms::ObservedEvent {
                 push: uplink_matrix::rooms::Push {
-                    notify: true,
+                    notify,
                     highlight: false,
                 },
                 ..parse(
@@ -1272,8 +1327,10 @@ mod tests {
                 .unwrap()
             }
         };
-        let observe = |events| dispatcher.observe("mx".into(), room(events));
-        observe(vec![message("$1")]).await.unwrap();
+        let observe = |room| dispatcher.observe("mx".into(), room);
+        observe(room("!r:x", Membership::Joined, vec![message("$1", true)]))
+            .await
+            .unwrap();
         let items = Items::new(
             vec![uplink_storage::open_reader(dir.path()).unwrap()],
             vec![],
@@ -1291,33 +1348,62 @@ mod tests {
         };
         let (_, first) = items.badged(None).await.unwrap();
         assert!(first.arrivals.is_empty(), "nothing came before the first");
-        observe(vec![message("$2")]).await.unwrap();
-        let arrivals = |buckets| {
+        // A message that does not notify, and an invitation.
+        observe(room("!r:x", Membership::Joined, vec![message("$2", false)]))
+            .await
+            .unwrap();
+        observe(room("!i:x", Membership::Invited, vec![]))
+            .await
+            .unwrap();
+        let arrivals = |buckets, since: &Since| {
             items.configure_home(buckets);
             let items = items.clone();
+            let since = since.clone();
             async move {
-                items
-                    .badged(Some(first.watermark))
-                    .await
-                    .unwrap()
-                    .1
+                let (_, derived) = items.badged(Some(since)).await.unwrap();
+                let arrived: Vec<_> = derived
                     .arrivals
+                    .into_iter()
+                    .map(|a| {
+                        let item = match a.item {
+                            Arrived::Message { .. } => "message",
+                            Arrived::Invite { .. } => "invite",
+                            Arrived::Mail { .. } => "mail",
+                        };
+                        (a.bucket, a.badge, item)
+                    })
+                    .collect();
+                (arrived, derived.since)
             }
         };
-        let arrived = arrivals(vec![bucket("is:notifying", Some(Badge::Dot))]).await;
-        let [Arrival {
-            bucket: name,
-            badge: Badge::Dot,
-            item: Arrived::Message { event, .. },
-        }] = &arrived[..]
-        else {
-            panic!("{arrived:?}")
-        };
-        assert_eq!(name, "is:notifying");
-        assert!(event.0 > first.watermark.room_event);
-        assert!(arrivals(vec![bucket("is:notifying", None)])
-            .await
-            .is_empty());
+        let (arrived, _) = arrivals(
+            vec![
+                bucket("is:invite", Some(Badge::Count)),
+                bucket("is:unread", Some(Badge::Dot)),
+            ],
+            &first.since,
+        )
+        .await;
+        assert_eq!(
+            arrived,
+            [
+                ("is:invite".into(), Badge::Count, "invite"),
+                ("is:unread".into(), Badge::Dot, "message"),
+            ]
+        );
+        // The message is no news to a bucket of what notifies; nothing is
+        // to an unbadged one.
+        let (arrived, _) = arrivals(
+            vec![bucket("is:unread is:notifying", Some(Badge::Dot))],
+            &first.since,
+        )
+        .await;
+        assert!(arrived.is_empty(), "{arrived:?}");
+        let (arrived, now) = arrivals(vec![bucket("is:invite", None)], &first.since).await;
+        assert!(arrived.is_empty(), "{arrived:?}");
+        // Once told of, the invitation is not news again.
+        let (arrived, _) = arrivals(vec![bucket("is:invite", Some(Badge::Count))], &now).await;
+        assert!(arrived.is_empty(), "{arrived:?}");
     }
 
     #[tokio::test]
