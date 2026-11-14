@@ -305,21 +305,16 @@ pub struct M365AccountConfig {
     #[serde(default)]
     pub identities: Vec<Identity>,
     pub oauth: M365OAuthConfig,
-    /// Exchange's IMAP server, by which the Inbox is watched (SPEC §8.3):
-    /// Exchange Online's, unless set.
-    #[serde(default = "M365AccountConfig::exchange_online")]
-    pub imap: MailServer,
+    /// Exchange's IMAP server (Exchange Online's: `outlook.office365.com`),
+    /// if the Inbox is to be watched there by IDLE (SPEC §8.3); else the
+    /// account is only polled, by Graph. A second protocol, signed in to
+    /// and retried, is the user's to opt in to: an organization may not
+    /// expect it.
+    #[serde(default)]
+    pub imap: Option<MailServer>,
 }
 
 impl M365AccountConfig {
-    fn exchange_online() -> MailServer {
-        MailServer {
-            host: "outlook.office365.com".into(),
-            port: None,
-            security: Security::Tls,
-        }
-    }
-
     pub fn identities(&self) -> Vec<Identity> {
         identities(&self.address, &self.name, &self.identities)
     }
@@ -1117,11 +1112,8 @@ accounts:
                 token_file: PathBuf::from("/var/lib/uplink/accounts/alice-m365.token"),
             }
         );
-        // Its Inbox watched by Exchange Online's IMAP.
-        assert_eq!(
-            (m.imap.host.as_str(), m.imap.imap_port()),
-            ("outlook.office365.com", 993)
-        );
+        // Only polled, by Graph, unless IMAP is opted in to.
+        assert_eq!(m.imap, None);
 
         let AccountConfig::Imap(ref i) = cfg.accounts[2] else {
             panic!("expected imap account");

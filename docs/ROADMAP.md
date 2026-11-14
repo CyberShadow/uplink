@@ -73,8 +73,8 @@ MVP:
   of changes, pulled from Cloud Pub/Sub over REST, and polled every 60 s
   besides (see SPEC §8.1).
 - M365 via Graph (mail), its delta links polled every 30 s, and taken
-  as IDLE at Exchange's IMAP tells of the Inbox changing (SPEC §8.3,
-  §15.11).
+  as IDLE at Exchange's IMAP, if opted in to, tells of the Inbox
+  changing (SPEC §8.3, §15.11).
 - Any IMAP server, polled every 30 s; with NOTIFY, every folder watched,
   else its Inbox and the folders the account names, by IDLE (SPEC
   §8.10).

@@ -5,7 +5,7 @@
 use serde_json::{json, Value};
 use std::{collections::HashMap, path::Path, process::Stdio, sync::Arc, time::Duration};
 use uplink_calendar::{service::Calendar, sync::CalendarSync};
-use uplink_config::{M365AccountConfig, M365OAuthConfig, MailServer, Security};
+use uplink_config::{M365AccountConfig, M365OAuthConfig};
 use uplink_email::{
     m365::{api::Graph, oauth},
     oauth::Credentials,
@@ -55,12 +55,7 @@ impl Setup {
                 imap_resource: base.clone(),
                 token_file: dir.path().join("accounts/test.token"),
             },
-            // The calendar is not watched by it.
-            imap: MailServer {
-                host: "localhost".into(),
-                port: None,
-                security: Security::Tls,
-            },
+            imap: None,
         };
         let http = reqwest::Client::new();
         authorize(&http, &account, &key).await;

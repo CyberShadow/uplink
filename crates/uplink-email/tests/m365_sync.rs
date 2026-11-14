@@ -18,7 +18,7 @@ use uplink_email::{
     m365::{
         api::Graph,
         oauth,
-        sync::{self, M365Sync},
+        sync::{self, ExchangeImap, M365Sync},
     },
     mail_server::sign_in::SignIn,
     oauth::Credentials,
@@ -30,11 +30,11 @@ const ALICE: &str = "alice@example.com";
 const BOB: &str = "bob@example.com";
 
 /// emulate's Microsoft 365, with Alice's account authorized for uplink;
-/// a Dovecot of hers is its Exchange's IMAP, signing her in by a token
-/// Graph takes.
+/// if the account opts in to IMAP, a Dovecot of hers is its Exchange's,
+/// signing her in by a token Graph takes.
 struct Microsoft {
     account: M365AccountConfig,
-    exchange: Dovecot,
+    exchange: Option<Dovecot>,
     base: String,
     http: reqwest::Client,
     alice: Credentials,
@@ -42,7 +42,17 @@ struct Microsoft {
 }
 
 impl Microsoft {
+    /// The account only polled, by Graph.
     async fn start(dir: &Path) -> Self {
+        Self::start_with(dir, false).await
+    }
+
+    /// The account opted in to IMAP, its Inbox watched there.
+    async fn start_with_imap(dir: &Path) -> Self {
+        Self::start_with(dir, true).await
+    }
+
+    async fn start_with(dir: &Path, imap: bool) -> Self {
         let (base, emulate) = common::start_emulate(
             dir,
             "microsoft",
@@ -54,7 +64,10 @@ impl Microsoft {
         .await;
         let key_path = dir.join("master.key");
         let key = Arc::new(MasterKey::open(&key_path).unwrap());
-        let exchange = Dovecot::start_with_tokens(dir, &format!("{base}/v1.0/me")).await;
+        let exchange = match imap {
+            true => Some(Dovecot::start_with_tokens(dir, &format!("{base}/v1.0/me")).await),
+            false => None,
+        };
         let account = M365AccountConfig {
             id: "test".into(),
             address: ALICE.into(),
@@ -67,7 +80,7 @@ impl Microsoft {
                 imap_resource: base.clone(),
                 token_file: dir.join("accounts/test.token"),
             },
-            imap: exchange.server(),
+            imap: exchange.as_ref().map(Dovecot::server),
         };
         let http = reqwest::Client::new();
         authorize(&http, &account, &key).await;
@@ -84,7 +97,9 @@ impl Microsoft {
     /// Another mail client of Alice's, at Exchange's IMAP.
     async fn exchange_client(&self) -> Connection {
         let sign_in = SignIn::OAuth(self.alice.redeemed_as(oauth::imap_grant(&self.account)));
-        session::connect(&self.account.imap, ALICE, &sign_in, &self.exchange.tls)
+        let server = self.account.imap.as_ref().expect("opted in to IMAP");
+        let tls = &self.exchange.as_ref().expect("opted in to IMAP").tls;
+        session::connect(server, ALICE, &sign_in, tls)
             .await
             .unwrap()
     }
@@ -94,12 +109,14 @@ impl Microsoft {
         // Of Alice's refresh token, as the test's own calls are, which
         // emulate revokes as it rotates it.
         let credentials = self.alice.redeemed_as(oauth::grant(&self.account));
-        let exchange = credentials.redeemed_as(oauth::imap_grant(&self.account));
+        let exchange = self.exchange.as_ref().map(|dovecot| ExchangeImap {
+            watched: sync::watched(&self.account).expect("opted in to IMAP"),
+            sign_in: SignIn::OAuth(credentials.redeemed_as(oauth::imap_grant(&self.account))),
+            tls: dovecot.tls.clone(),
+        });
         M365Sync::new(
             Graph::new(self.http.clone(), &self.account.oauth.resource, credentials),
-            sync::watched(&self.account),
-            SignIn::OAuth(exchange),
-            self.exchange.tls.clone(),
+            exchange,
         )
     }
 
@@ -286,13 +303,13 @@ fn dispatched(response: ServerResponse) -> uplink_protocol::TxLogId {
     tx_log_id
 }
 
-/// The Inbox is watched by IDLE at Exchange's IMAP, signed in by a token
-/// for it (SPEC §8.3): what it tells of wakes the sync, which takes
-/// Graph's deltas, though the poll is an hour away.
+/// Opted in to IMAP, the Inbox is watched by IDLE at Exchange's, signed
+/// in by a token for it (SPEC §8.3): what it tells of wakes the sync,
+/// which takes Graph's deltas, though the poll is an hour away.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_inbox_is_watched_by_idle_at_exchange() {
     let uplink = Uplink::new(MailProvider::M365);
-    let microsoft = Microsoft::start(uplink.dir.path()).await;
+    let microsoft = Microsoft::start_with_imap(uplink.dir.path()).await;
     let sync = uplink.start_polling(microsoft.provider(), ALICE, Duration::from_secs(3600));
     eventually("the first sync", || async { uplink.synced().then_some(()) }).await;
     // The watch begun, its beginning's sync taken.

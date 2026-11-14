@@ -91,6 +91,8 @@ accounts: []
   #   address: alice@example.com
   #   oauth:
   #     client_id: "11111111-2222-3333-4444-555555555555"
+  #   # New mail told as it comes, by IMAP (README): opt in.
+  #   # imap: { host: outlook.office365.com }
 
   # — Any other mail account — IMAP and SMTP over TLS, on ports 993 and
   # 465 unless `port` says otherwise; `security: starttls` for STARTTLS

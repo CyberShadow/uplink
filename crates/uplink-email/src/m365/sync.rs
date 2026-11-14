@@ -69,24 +69,28 @@ struct SyncState {
 }
 
 /// The sync task of `config`'s account, reaching it through `graph`,
-/// watching it by IMAP with a token of the same refresh token, and
-/// storing mail under `data_root`.
+/// watching it by IMAP, if the account opts in to that, with a token of
+/// the same refresh token, and storing mail under `data_root`.
 pub fn task(
     config: &M365AccountConfig,
     graph: Graph,
     dispatcher: Dispatcher,
     data_root: &Path,
 ) -> Result<SyncTask<M365Sync>> {
-    let exchange = graph
-        .credentials()
-        .redeemed_as(super::oauth::imap_grant(config));
+    let exchange = match watched(config) {
+        Some(watched) => Some(ExchangeImap {
+            watched,
+            sign_in: SignIn::OAuth(
+                graph
+                    .credentials()
+                    .redeemed_as(super::oauth::imap_grant(config)),
+            ),
+            tls: sign_in::tls(vec![])?,
+        }),
+        None => None,
+    };
     Ok(SyncTask::new(
-        M365Sync::new(
-            graph,
-            watched(config),
-            SignIn::OAuth(exchange),
-            sign_in::tls(vec![])?,
-        ),
+        M365Sync::new(graph, exchange),
         config.id.clone(),
         config.identities(),
         dispatcher,
@@ -96,34 +100,38 @@ pub fn task(
     ))
 }
 
-/// What of the account is watched: its Inbox, at Exchange's IMAP server,
-/// signed in as its address.
-pub fn watched(config: &M365AccountConfig) -> Watched {
-    Watched {
+/// What of the account is watched, if the account opts in to IMAP: its
+/// Inbox, at Exchange's IMAP server, signed in as its address.
+pub fn watched(config: &M365AccountConfig) -> Option<Watched> {
+    Some(Watched {
         account: config.id.clone(),
-        server: config.imap.clone(),
+        server: config.imap.clone()?,
         user: config.address.clone(),
         folders: vec![],
-    }
+    })
+}
+
+/// Where the Inbox is watched, by IDLE, and how it is reached (SPEC §8.3).
+pub struct ExchangeImap {
+    pub watched: Watched,
+    /// By a token for Exchange.
+    pub sign_in: SignIn,
+    pub tls: TlsConnector,
 }
 
 pub struct M365Sync {
     graph: Graph,
-    watched: Watched,
-    /// Into Exchange's IMAP, by a token for it (SPEC §8.3).
-    sign_in: SignIn,
-    tls: TlsConnector,
+    /// If the account opts in to IMAP; else it is only polled.
+    exchange: Option<ExchangeImap>,
     /// Begun as the task first waits.
     watcher: OnceLock<Watcher>,
 }
 
 impl M365Sync {
-    pub fn new(graph: Graph, watched: Watched, sign_in: SignIn, tls: TlsConnector) -> Self {
+    pub fn new(graph: Graph, exchange: Option<ExchangeImap>) -> Self {
         Self {
             graph,
-            watched,
-            sign_in,
-            tls,
+            exchange,
             watcher: OnceLock::new(),
         }
     }
@@ -357,11 +365,18 @@ impl Provider for M365Sync {
 
     /// What IDLE on Exchange's IMAP tells of the Inbox, watched from the
     /// first wait on: Graph's delta of each folder is then taken, as for
-    /// a poll.
+    /// a poll. Never, for an account not opted in to IMAP.
     async fn told(&self) -> Told {
+        let Some(exchange) = &self.exchange else {
+            return std::future::pending().await;
+        };
         self.watcher
             .get_or_init(|| {
-                Watcher::start(self.watched.clone(), self.sign_in.clone(), self.tls.clone())
+                Watcher::start(
+                    exchange.watched.clone(),
+                    exchange.sign_in.clone(),
+                    exchange.tls.clone(),
+                )
             })
             .told()
             .await

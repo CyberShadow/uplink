@@ -1718,9 +1718,9 @@ IMAP's per-folder copies, and a REST fake is practical to test against
 - **Polling**: the delta link of every folder, every 30 s. Cheap under
   Graph throttling for a single user. The user must never see UI for
   "manual refresh"; polling is silent.
-- **Push**: IDLE (RFC 2177) on the Inbox at Exchange's IMAP
-  (`imap`, default `outlook.office365.com`, TLS), by the IMAP watch of
-  §8.10, wakes the sync, which takes every folder's delta as for a
+- **Push**, opted in to: IDLE (RFC 2177) on the Inbox at Exchange's
+  IMAP (`imap`, Exchange Online's being `{ host: outlook.office365.com
+  }`), by the IMAP watch of §8.10, wakes the sync, which takes every folder's delta as for a
   poll; IMAP carries no mail, only the wake. It signs in by XOAUTH2 as
   the account's address, with an access token for Exchange
   (`oauth.imap_resource`, default `https://outlook.office.com`) of the
@@ -1731,8 +1731,13 @@ IMAP's per-folder copies, and a REST fake is practical to test against
   second; mail sent to the account was in uplink 2.6–5 s after. Exchange
   has IDLE but not NOTIFY, so other folders wait for the poll. A tenant
   that has IMAP off, or a registration without the permission, has the
-  watch fail, which is shown (§8.14), and the account polled. Why not
-  else: EWS (whose streaming notifications were the plan) is being
+  watch fail, which is shown (§8.14), and the account polled. Without
+  `imap`, an account is only polled, by Graph: an organization may not
+  expect its client to sign in by a second protocol (whose access may be
+  off for the mailbox, or not granted the registration, while Graph's
+  is, or refused by a Conditional Access policy of Exchange's), and a
+  sign-in refused and tried again every 30 s, without end, may raise an
+  alert. Why not else: EWS (whose streaming notifications were the plan) is being
   switched off in Exchange Online, from 2026-10-01 to 2027-04-01, and
   Graph's change notifications need a public HTTPS endpoint (or an Azure
   Event Hub) (§15.11).
@@ -4069,8 +4074,9 @@ own. The flow is Gmail's (§13.2: PKCE, a loopback redirect, the URL
 pasted from a browser on another machine), but at the v1 (classic)
 endpoint with a `resource=` parameter rather than v2 OIDC with
 `scope=`, so the permissions are those configured on the registration
-(Graph `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite`,
-`IMAP.AccessAsUser.All`) rather than requested per sign-in:
+(Graph `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite`, and
+`IMAP.AccessAsUser.All` for an account opted in to IMAP, §8.3) rather
+than requested per sign-in:
 
 - `oauth.client_id`: the registration's application id. Required.
 - `oauth.authority`: default `https://login.microsoftonline.com/common`;

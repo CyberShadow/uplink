@@ -262,11 +262,9 @@ ID that you (or your organization's administrator) create.
 2. Under Authentication, add the platform *Mobile and desktop
    applications* with the custom redirect URI `http://127.0.0.1`.
 3. Under API permissions, add the Microsoft Graph delegated permissions
-   `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite` (to answer
-   meeting requests, and to create and edit events) and
-   `IMAP.AccessAsUser.All` (by which uplink is told of new mail as it
-   comes, waiting on the Inbox by IMAP; without it, mail is checked for
-   every 30 s, and the account shows "(not watched)"). If your
+   `Mail.ReadWrite`, `Mail.Send` and `Calendars.ReadWrite` (to answer
+   meeting requests, and to create and edit events); and, to have new
+   mail show as it comes (below), `IMAP.AccessAsUser.All`. If your
    organization does not let users consent to applications, an
    administrator grants them.
 4. In `uplink.yaml`, uncomment the Microsoft 365 account, set `id` and
@@ -285,7 +283,20 @@ browser's redirect itself. If the browser is on another machine (uplink
 on a server), the redirect to `http://127.0.0.1:…` fails to load there:
 paste that page's address into `uplink oauth init`. A running uplink picks
 the account up once restarted; changes made in Outlook arrive within
-30 s. Folders are labels of which a message has one; categories are
+30 s.
+
+To have new mail show as it comes, uplink can wait on the Inbox by IMAP
+as well (IDLE), if your organization allows IMAP; it is off unless you
+turn it on, as an organization may not expect a client to sign in by a
+second protocol, nor to keep trying if it may not. With the permission
+above granted, add to the account:
+
+```yaml
+    imap: { host: outlook.office365.com }
+```
+
+If the sign-in fails, the account shows "(not watched)" and is checked
+every 30 s, as without it. Folders are labels of which a message has one; categories are
 labels too. The account's calendar, from a month ago to a year ahead,
 is under Calendar (`g c`), within 5 minutes of a change.
 
