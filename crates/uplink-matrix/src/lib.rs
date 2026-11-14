@@ -4,6 +4,7 @@
 
 pub mod backfill;
 pub mod client;
+pub mod crawl;
 pub mod html;
 pub mod media;
 pub mod membership;

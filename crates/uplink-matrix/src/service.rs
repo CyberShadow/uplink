@@ -8,7 +8,7 @@ use crate::{
     preview,
     query::Rooms,
     room_tags::{self, SetRoomTags},
-    rooms::{self, Filled, FullyRead, MarkFullyRead, MarkRead},
+    rooms::{self, FullyRead, MarkFullyRead, MarkRead},
     security,
     send::{self, CancelMessage, KeepSent, SendMessage},
     space_order::{self, OrderSpaces},
@@ -518,20 +518,7 @@ impl Matrix {
         let (account, sdk_room) = self.sdk_room(room).await?;
         let dispatcher = self.dispatcher.clone();
         Ok(Answer::later(async move {
-            let page = backfill::page(&sdk_room, &before).await.map_err(internal)?;
-            dispatcher
-                .observe(
-                    account,
-                    Filled {
-                        room,
-                        gap,
-                        version: page.version,
-                        events: page.events,
-                        start: page.start,
-                        own_receipts: page.own_receipts,
-                        fully_read: page.fully_read,
-                    },
-                )
+            backfill::fill(&dispatcher, account, &sdk_room, room, gap, &before)
                 .await
                 .map_err(internal)?;
             Ok(ServerResponse::Done)

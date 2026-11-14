@@ -321,6 +321,9 @@ accounts:
     kind: matrix
     homeserver: "https://matrix.example.org"
     mxid: "@alice:example.org"
+    # Rooms of at most this many joined members have their whole history
+    # fetched in the background, to be searched (§9.2); 0: of none.
+    history_members: 100             # default
 ```
 
 An empty or missing file is refused with a pointer to `uplink init`;
@@ -2338,6 +2341,24 @@ client keeps them, move the markers as a sync's do (§9.5): the events a
 sync named them for may not have been stored then, and those fetched
 before them are read. It logs `TimelineFilled` (the listed events added, and the
 gap left), and `TimelineChanged` of the events they relate to.
+
+**History fetched by itself.** Search finds only what is stored, so
+rooms small enough (joined members up to the account's
+`history_members`, §3.2: direct chats and groups) have their gaps filled
+by a task by the sync task's side, page by page (1.5 seconds apart,
+sparing the homeserver, as Element's crawler pauses), until the room's
+start or as far back as its history visibility lets the account see:
+the latest history first, of whichever room (the gap whose event after
+it is the latest), as mail's first listing goes newest first. Spaces
+are not, and neither are rooms not joined. Larger rooms, of mostly
+others' history and large (public ones: millions of events), keep what
+is synced and scrolled to. A gap whose filling fails is left for ten
+minutes, while the others are filled. Filled history is not news: a
+room's activity is its latest event (§12.15), and fetched events neither
+notify nor highlight (§9.5). (Planned: for large rooms, the history
+around the account's own messages, `/messages` filtered by sender,
+which needs gaps bounded on both sides; and a room's own choice of how
+much.)
 Events that arrive undecryptable are decrypted once their keys come
 (the observation `matrix.decrypted`, which updates the stored event in
 place, logging a `TimelineChanged` of it and of what it relates to, as

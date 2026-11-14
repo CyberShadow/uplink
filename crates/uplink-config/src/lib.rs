@@ -500,9 +500,20 @@ pub struct MatrixAccountConfig {
     pub id: String,
     pub homeserver: String,
     pub mxid: String,
+    /// Rooms of at most this many joined members have their whole history
+    /// fetched, in the background, to be searched (SPEC §9.2); of larger
+    /// ones, only what is synced and scrolled to. 0: of none.
+    #[serde(default = "default_history_members")]
+    pub history_members: u64,
     /// `<data_dir>/matrix/<id>`: matrix-rust-sdk's stores and the session.
     #[serde(skip)]
     pub state_dir: PathBuf,
+}
+
+/// Direct chats and groups, rather than public rooms, whose history is
+/// mostly others' and large.
+fn default_history_members() -> u64 {
+    100
 }
 
 impl Config {
@@ -981,6 +992,7 @@ accounts:
             panic!("expected matrix account");
         };
         assert_eq!(mx.mxid, "@alice:example.org");
+        assert_eq!(mx.history_members, 100);
         assert_eq!(
             mx.state_dir,
             PathBuf::from("/var/lib/uplink/matrix/alice-matrix")
@@ -1386,6 +1398,7 @@ data_dir: /tmp/uplink
                 id: "mx".into(),
                 homeserver: "https://matrix.org".into(),
                 mxid: "@u:matrix.org".into(),
+                history_members: 100,
                 state_dir: PathBuf::from("/tmp/mx"),
             }));
         assert_eq!(

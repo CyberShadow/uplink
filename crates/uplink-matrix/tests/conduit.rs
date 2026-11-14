@@ -114,7 +114,13 @@ struct Uplink {
 }
 
 impl Uplink {
+    /// Fetching no room's history by itself, which most tests would race.
     fn new(homeserver: &Homeserver) -> Self {
+        Self::fetching_history(homeserver, 0)
+    }
+
+    /// Fetching the whole history of rooms of at most `members` members.
+    fn fetching_history(homeserver: &Homeserver, members: u64) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let key_path = dir.path().join("master.key");
         let key = Arc::new(MasterKey::open(&key_path).unwrap());
@@ -129,6 +135,7 @@ impl Uplink {
             id: "mx".into(),
             homeserver: homeserver.url.clone(),
             mxid: "@alice:localhost".into(),
+            history_members: members,
             state_dir: dir.path().join("matrix/mx"),
         };
         let matrix = Matrix::new(
@@ -1728,6 +1735,70 @@ async fn gaps_are_filled_from_the_homeserver() {
     .await;
     assert_eq!(earlier.len(), middle);
     assert_eq!(earlier.last().unwrap().id, events[middle - 1].id);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn small_rooms_history_is_fetched_by_itself() {
+    use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+    let dir = tempfile::tempdir().unwrap();
+    let homeserver = Homeserver::start(dir.path()).await;
+    let bob = homeserver.register(dir.path(), "bob").await;
+    let carol = homeserver.register(dir.path(), "carol").await;
+    let alice_phone = homeserver.register(dir.path(), "alice").await;
+    // A room of two, and one of three.
+    let small = bob.create_room(Default::default()).await.unwrap();
+    let large = bob.create_room(Default::default()).await.unwrap();
+    for room in [&small, &large] {
+        room.invite_user_by_id(alice_phone.user_id().unwrap())
+            .await
+            .unwrap();
+    }
+    large
+        .invite_user_by_id(carol.user_id().unwrap())
+        .await
+        .unwrap();
+    alice_phone
+        .sync_once(SyncSettings::default())
+        .await
+        .unwrap();
+    carol.sync_once(SyncSettings::default()).await.unwrap();
+    for room in [&small, &large] {
+        alice_phone.join_room_by_id(room.room_id()).await.unwrap();
+    }
+    carol.join_room_by_id(large.room_id()).await.unwrap();
+    for i in 0..120 {
+        for room in [&small, &large] {
+            room.send(RoomMessageEventContent::text_plain(format!("message {i}")))
+                .await
+                .unwrap();
+        }
+    }
+
+    let uplink = Uplink::fetching_history(&homeserver, 2);
+    let _sync = uplink.pair_and_sync().await;
+    let small_room = eventually("uplink to see the small room", || async {
+        uplink.room(small.room_id()).await
+    })
+    .await;
+    let large_room = eventually("uplink to see the large room", || async {
+        uplink.room(large.room_id()).await
+    })
+    .await;
+    assert_eq!(large_room.joined_members, 3);
+
+    let events = eventually("the small room's history to be fetched", || async {
+        let (events, _, gaps) = page(&uplink, &small_room, TimelinePage::Latest).await;
+        gaps.is_empty().then_some(events)
+    })
+    .await;
+    let bodies: Vec<&str> = events.iter().filter_map(|e| e.body.as_deref()).collect();
+    let expected: Vec<String> = (0..120).map(|i| format!("message {i}")).collect();
+    assert_eq!(bodies, expected, "every message, in order, once");
+    assert_eq!(events[0].kind, "m.room.create", "back to the room's start");
+    // Not the larger room's, though its gap is the latest history.
+    let (events, _, gaps) = page(&uplink, &large_room, TimelinePage::Latest).await;
+    assert!(events.len() < 120);
+    assert_eq!(gaps.len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]

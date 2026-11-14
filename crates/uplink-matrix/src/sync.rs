@@ -5,10 +5,12 @@
 //! Two loops share the account's client: one long-polls `/sync` (v2,
 //! which every homeserver has) and records what it delivers; the other
 //! sends and pushes when the user changes something, so that sending does
-//! not wait for a long poll to return.
+//! not wait for a long poll to return. Others by their side decrypt late
+//! and fetch rooms' history (`crawl`).
 
 use crate::{
     client,
+    crawl::Crawler,
     membership::{self, MembershipChanged},
     room_tags::{self, RoomTagSet},
     rooms::{self, Decrypted, ObservedEvent, ObservedRoom, Push, ReceiptSent, SpaceChild, Synced},
@@ -166,6 +168,14 @@ impl Sync {
             reader: reader("redecryptor"),
             undecryptable: received,
         };
+        let crawler = Crawler {
+            account: id.clone(),
+            client: client.clone(),
+            dispatcher: self.dispatcher.clone(),
+            reader: reader("crawler"),
+            members: self.account.history_members,
+            wake: self.dispatcher.hub().subscribe(),
+        };
         let syncer = Syncer {
             account: id,
             client,
@@ -174,12 +184,18 @@ impl Sync {
             undecryptable,
         };
         let security = watch_security(id_for_security, client_for_security, dispatcher);
-        tokio::join!(sender.run(), syncer.run(), redecryptor.run(), security);
+        tokio::join!(
+            sender.run(),
+            syncer.run(),
+            redecryptor.run(),
+            security,
+            crawler.run()
+        );
     }
 }
 
 /// Runs `f` until it succeeds, with backoff.
-async fn retry<T, F: std::future::Future<Output = Result<T>>>(
+pub(crate) async fn retry<T, F: std::future::Future<Output = Result<T>>>(
     account: &str,
     what: &str,
     mut f: impl FnMut() -> F,
@@ -197,7 +213,7 @@ async fn retry<T, F: std::future::Future<Output = Result<T>>>(
     }
 }
 
-async fn read<R: Send + 'static>(
+pub(crate) async fn read<R: Send + 'static>(
     reader: &Arc<Mutex<Connection>>,
     f: impl FnOnce(&Connection) -> Result<R> + Send + 'static,
 ) -> Result<R> {

@@ -1520,6 +1520,49 @@ pub fn gaps(tx: &Transaction, room: RoomId) -> Result<Vec<TimelineGap>> {
         .collect::<Result<_, _>>()?)
 }
 
+/// A gap whose events the account fetches by itself (SPEC §9.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GapToFill {
+    pub room: RoomId,
+    /// The room's Matrix id.
+    pub room_id: String,
+    pub gap: GapId,
+    /// The Matrix id of the event just after it.
+    pub before: String,
+}
+
+/// Of the account's joined rooms of at most `members` joined members,
+/// but spaces, the gap of the latest history, but those of `skip`.
+pub fn gap_to_fill(
+    conn: &Connection,
+    account: &str,
+    members: u64,
+    skip: &[GapId],
+) -> Result<Option<GapToFill>> {
+    let skip = serde_json::to_string(&skip.iter().map(|g| g.0).collect::<Vec<_>>())?;
+    Ok(conn
+        .query_row(
+            "SELECT g.room, r.room_id, g.id, e.event_id
+             FROM matrix_gap g
+             JOIN matrix_room r ON r.id = g.room
+             JOIN matrix_event e ON e.id = g.before_event
+             WHERE r.account_id = ?1 AND r.membership = 'joined' AND NOT r.space
+               AND r.joined_members <= ?2
+               AND g.id NOT IN (SELECT value FROM json_each(?3))
+             ORDER BY e.ts DESC, g.id DESC LIMIT 1",
+            params![account, members, skip],
+            |r| {
+                Ok(GapToFill {
+                    room: RoomId(r.get(0)?),
+                    room_id: r.get(1)?,
+                    gap: GapId(r.get(2)?),
+                    before: r.get(3)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
 /// Of an event `e`, whether it is a message, as rooms count them and
 /// queries find them: undecryptable events are, which nearly always are
 /// messages; edits, redacted messages and other events are not.

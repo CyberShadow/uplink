@@ -1,7 +1,7 @@
 //! Fetching events missing from a room's timeline (SPEC §9.2): the
 //! homeserver's page of them before a stored event.
 
-use crate::{rooms::ObservedEvent, sync::timeline_event};
+use crate::{rooms::Filled, sync::timeline_event};
 use anyhow::{Context, Result};
 use matrix_sdk::{
     room::MessagesOptions,
@@ -13,28 +13,31 @@ use matrix_sdk::{
     Room,
 };
 use std::collections::HashMap;
+use uplink_protocol::matrix::{GapId, RoomId};
+use uplink_tx_log::Dispatcher;
 
 /// Events fetched at once, as Element does.
 const PAGE: u32 = 50;
 
-/// A page of events before a stored one.
-pub struct Page {
-    /// The room version, whose rules redact them.
-    pub version: String,
-    /// Newest first.
-    pub events: Vec<ObservedEvent>,
-    /// Whether there are no earlier events.
-    pub start: bool,
-    /// The events the account's own read receipts are for, and its
-    /// fully-read marker's: those a sync named may not have been stored
-    /// then, and may be among these.
-    pub own_receipts: Vec<String>,
-    pub fully_read: Option<String>,
+/// Fetches the page of events just before the gap `gap` of the room
+/// (`sdk_room`, the account's client's), whose event after it is
+/// `before`, and stores them.
+pub async fn fill(
+    dispatcher: &Dispatcher,
+    account: String,
+    sdk_room: &Room,
+    room: RoomId,
+    gap: GapId,
+    before: &str,
+) -> Result<()> {
+    let filled = page(sdk_room, room, gap, before).await?;
+    dispatcher.observe(account, filled).await?;
+    Ok(())
 }
 
 /// The page of events just before the room's event `before`. Pagination
 /// tokens are not kept: the event's context gives one.
-pub async fn page(room: &Room, before: &str) -> Result<Page> {
+async fn page(room: &Room, id: RoomId, gap: GapId, before: &str) -> Result<Filled> {
     let before = <&EventId>::try_from(before)?;
     let context = room
         .event_with_context(before, true, UInt::from(0u32), None)
@@ -68,7 +71,9 @@ pub async fn page(room: &Room, before: &str) -> Result<Page> {
     for event in messages.chunk {
         events.push(timeline_event(room, event, &mut names).await?);
     }
-    Ok(Page {
+    Ok(Filled {
+        room: id,
+        gap,
         version: room
             .version()
             .unwrap_or(matrix_sdk::ROOM_VERSION_FALLBACK)
