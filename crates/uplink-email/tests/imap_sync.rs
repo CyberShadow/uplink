@@ -11,9 +11,14 @@ use common::{
     uplink::{label_set, Uplink},
 };
 use futures_util::TryStreamExt;
-use std::time::Duration;
+use std::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 use uplink_config::{ImapAccountConfig, OAuthConfig};
 use uplink_email::{
+    account::{Account, Outgoing, Pending, Provider, PushEnded, SendError},
+    compose::SentCopy,
     imap::{session, sync::ImapSync},
     mail_server::{
         sign_in::{self, SignIn},
@@ -22,7 +27,7 @@ use uplink_email::{
 };
 use uplink_protocol::{
     compose::SendState,
-    mail::{Identity, MailProvider},
+    mail::{EntryId, Identity, MailProvider},
     ServerResponse,
 };
 
@@ -201,6 +206,96 @@ async fn mirrors_the_folders_and_pushes_changes() {
     assert_eq!(uplink.log_len(), settled, "the restarted sync re-synced");
     append(&mut other, "INBOX", &message("third", "after restart")).await;
     uplink.arrived("third").await;
+    sync.abort();
+}
+
+/// IMAP's sync, but only until the first listing is done: then uplink
+/// learns of the server only by pushing and reading back.
+struct UnsyncedAfterListing(ImapSync, AtomicBool);
+
+impl Provider for UnsyncedAfterListing {
+    const KIND: &'static str = ImapSync::KIND;
+    const FILES_SENT: bool = ImapSync::FILES_SENT;
+
+    async fn sync(&self, account: &Account) -> anyhow::Result<bool> {
+        if self.1.load(Ordering::SeqCst) {
+            return Ok(false);
+        }
+        let more = self.0.sync(account).await?;
+        self.1.store(!more, Ordering::SeqCst);
+        Ok(more)
+    }
+
+    async fn push(&self, account: &Account, claimed: Vec<Pending>) -> Vec<PushEnded> {
+        self.0.push(account, claimed).await
+    }
+
+    async fn read(&self, account: &Account, entries: Vec<(EntryId, String)>) -> anyhow::Result<()> {
+        self.0.read(account, entries).await
+    }
+
+    async fn send(&self, account: &Account, mail: Outgoing<'_>) -> Result<SentCopy, SendError> {
+        self.0.send(account, mail).await
+    }
+}
+
+/// A message uplink moves gets a new UID there, which the move's COPYUID
+/// tells (SPEC §6.6.5): what is pushed next goes to it, before any sync
+/// finds the message again, rather than to the UID gone.
+#[tokio::test(flavor = "multi_thread")]
+async fn pushes_after_a_move_go_where_it_went() {
+    let uplink = Uplink::new(MailProvider::Imap);
+    let stalwart = Stalwart::start(uplink.dir.path()).await;
+    let mut other = stalwart.client("alice").await;
+    append(&mut other, "INBOX", &message("first", "hello world")).await;
+    let sync = uplink.start(
+        UnsyncedAfterListing(provider(&stalwart), AtomicBool::new(false)),
+        ALICE,
+    );
+    let first = uplink.arrived("first").await;
+    eventually("the listing to end", || async {
+        uplink.synced().then_some(())
+    })
+    .await;
+
+    let in_inbox = uplink.external_id(first);
+    uplink
+        .mail
+        .modify_labels(vec![first], vec![], vec![uplink.label("INBOX")])
+        .await
+        .unwrap();
+    eventually("the archive to be read back", || async {
+        (uplink.labels(first)
+            == [
+                ("ARCHIVE".into(), true, true),
+                ("UNREAD".into(), true, true),
+            ])
+        .then_some(())
+    })
+    .await;
+    let (uid, _) = find(&mut other, "Archive", "first").await.unwrap();
+    assert!(
+        uplink.external_id(first).contains(&format!(":{uid}:")),
+        "{} re-keyed to {uid} in Archive, from {in_inbox}",
+        uplink.external_id(first)
+    );
+
+    uplink
+        .mail
+        .modify_labels(vec![first], vec![uplink.label("STARRED")], vec![])
+        .await
+        .unwrap();
+    eventually("the star to reach the server", || async {
+        let (_, flags) = find(&mut stalwart.client("alice").await, "Archive", "first").await?;
+        flags.contains(&"Flagged".into()).then_some(())
+    })
+    .await;
+    eventually("the star to be read back", || async {
+        (label_set(&uplink.labels(first)) == ["ARCHIVE", "STARRED", "UNREAD"]
+            && uplink.labels(first).iter().all(|(_, d, o)| d == o))
+        .then_some(())
+    })
+    .await;
     sync.abort();
 }
 

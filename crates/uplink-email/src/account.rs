@@ -17,8 +17,8 @@ use crate::{
         SendOutcome, SendStarted, SendSucceeded, SentCopy,
     },
     mailbox::{
-        self, kind_at, LabelChange, LabelsClaimed, LabelsPushed, LabelsSettled, ObservedLabel,
-        Reconciling,
+        self, kind_at, LabelChange, LabelsClaimed, LabelsPushed, LabelsSettled, NewKey,
+        ObservedLabel, Reconciling,
     },
     parse::{parse, Parsed},
 };
@@ -163,6 +163,8 @@ pub struct PushEnded {
     pub changes: Vec<LabelChange>,
     pub ended: Ended,
     pub error: Option<anyhow::Error>,
+    /// The entry's key, if the request changed it.
+    pub rekeyed: Option<NewKey>,
 }
 
 impl PushEnded {
@@ -172,6 +174,19 @@ impl PushEnded {
             changes: pending.iter().map(Pending::change).collect(),
             ended,
             error,
+            rekeyed: None,
+        }
+    }
+
+    /// All of `pending`'s changes, of one entry, applied by a request that
+    /// gave it the key `external_id` (`None`: one not told).
+    pub fn rekeyed(pending: &[Pending], external_id: Option<String>) -> Self {
+        Self {
+            rekeyed: Some(NewKey {
+                entry: pending[0].entry,
+                external_id,
+            }),
+            ..Self::of(pending, Ended::Applied, None)
         }
     }
 
@@ -509,7 +524,7 @@ impl<P: Provider> SyncTask<P> {
             }
             let wanted: Vec<(EntryId, LabelId)> = fields
                 .iter()
-                .filter(|f| !later.contains(&f.entry) && f.field.wanted().is_some())
+                .filter(|f| f.key_known && !later.contains(&f.entry) && f.field.wanted().is_some())
                 .map(|f| (f.entry, f.label))
                 .collect();
             if !wanted.is_empty() {
@@ -550,6 +565,7 @@ impl<P: Provider> SyncTask<P> {
                         .observe(LabelsPushed {
                             changes: pushed.changes,
                             ended: pushed.ended,
+                            rekeyed: pushed.rekeyed,
                         })
                         .await?;
                 }
@@ -560,7 +576,7 @@ impl<P: Provider> SyncTask<P> {
             }
             let mut read: Vec<(EntryId, String)> = fields
                 .iter()
-                .filter(|f| !later.contains(&f.entry) && f.field.read_back())
+                .filter(|f| f.key_known && !later.contains(&f.entry) && f.field.read_back())
                 .map(|f| (f.entry, f.external_id.clone()))
                 .collect();
             read.dedup();

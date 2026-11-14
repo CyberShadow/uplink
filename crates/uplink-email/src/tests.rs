@@ -108,7 +108,14 @@ impl Db {
             .await
             .unwrap();
         self.dispatcher
-            .observe(account.to_owned(), LabelsPushed { changes, ended })
+            .observe(
+                account.to_owned(),
+                LabelsPushed {
+                    changes,
+                    ended,
+                    rekeyed: None,
+                },
+            )
             .await
             .unwrap();
     }
@@ -892,6 +899,7 @@ async fn pushed_changes_become_observed_as_read_back() {
             LabelsPushed {
                 changes: claimed,
                 ended: Ended::Applied,
+                rekeyed: None,
             },
         )
         .await
@@ -1143,6 +1151,7 @@ async fn a_failing_push_keeps_the_outcomes_of_those_before() {
                 LabelsPushed {
                     changes: vec![change(entry, false)],
                     ended,
+                    rekeyed: None,
                 },
             )
             .await
@@ -1151,6 +1160,98 @@ async fn a_failing_push_keeps_the_outcomes_of_those_before() {
     assert_eq!(wanted(&db), [(m2, inbox, false)], "m1 awaits its read-back");
     db.dispatcher.undo(TxLogId(archive)).await.unwrap();
     assert_eq!(wanted(&db), [(m1, inbox, true)], "m2 never left the Inbox");
+}
+
+/// A push that moved an entry without telling its new key leaves the key
+/// unknown: nothing is pushed or read back to the key gone until a sync
+/// finds the entry again (SPEC §6.6.5).
+#[tokio::test]
+async fn an_entry_moved_to_an_unknown_key_waits_for_a_sync() {
+    let db = Db::new();
+    archived(&db).await;
+    let (m1, inbox, starred) = (
+        db.entry("m1"),
+        db.label("a", "INBOX"),
+        db.label("a", "STARRED"),
+    );
+    let key = |external_id: Option<&str>| mailbox::NewKey {
+        entry: m1,
+        external_id: external_id.map(str::to_owned),
+    };
+    let change = |desired| LabelChange {
+        entry: m1,
+        label: inbox,
+        desired,
+    };
+    let reconciling = || mailbox::reconciling(&db.reader(), "a").unwrap();
+    let push_moved = |desired, to: Option<&'static str>| {
+        let dispatcher = db.dispatcher.clone();
+        async move {
+            dispatcher
+                .observe(
+                    "a".into(),
+                    LabelsClaimed {
+                        changes: vec![(m1, inbox)],
+                    },
+                )
+                .await
+                .unwrap();
+            dispatcher
+                .observe(
+                    "a".into(),
+                    LabelsPushed {
+                        changes: vec![change(desired)],
+                        ended: Ended::Applied,
+                        rekeyed: Some(key(to)),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+    };
+
+    push_moved(false, None).await;
+    db.dispatcher
+        .dispatch(SetLabels {
+            changes: vec![LabelChange {
+                entry: m1,
+                label: starred,
+                desired: true,
+            }],
+            shown: false,
+        })
+        .await
+        .unwrap();
+    assert!(reconciling().iter().all(|r| !r.key_known));
+    // Found again by a sync: known, and the star is wanted.
+    db.observe(
+        "a",
+        MailboxObserved {
+            rekeyed: vec![mailbox::Rekeyed {
+                from: "m1".into(),
+                to: "m1'".into(),
+            }],
+            ..observed(None, vec![], vec![("m1'", &[])], &[])
+        },
+    )
+    .await;
+    assert!(reconciling().iter().all(|r| r.key_known));
+    assert_eq!(wanted(&db), [(m1, starred, true)]);
+
+    // A move that tells the key re-keys the entry at once.
+    db.dispatcher
+        .dispatch(SetLabels {
+            changes: vec![change(true)],
+            shown: false,
+        })
+        .await
+        .unwrap();
+    push_moved(true, Some("m1''")).await;
+    assert_eq!(
+        db.query::<String>("SELECT external_id FROM mail_entry"),
+        ["m1''"]
+    );
+    assert!(reconciling().iter().all(|r| r.key_known));
 }
 
 /// An account's failing pushes are recorded from when they start, and

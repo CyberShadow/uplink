@@ -550,6 +550,9 @@ CREATE TABLE mail_entry (
   variant      TEXT NOT NULL REFERENCES message_variant(sha256),
   thread_id    TEXT,               -- Gmail threadId / Graph conversationId
   received_at  INTEGER NOT NULL,   -- unix ms (Gmail internalDate)
+  key_unknown  INTEGER NOT NULL    -- (V0074) a push moved it without telling
+               DEFAULT 0,          -- its new key: left out of pushes and
+                                   -- read-backs until a sync re-keys it (§6.6.5)
   UNIQUE (account_id, external_id)
 );
 CREATE INDEX mail_entry_by_message ON mail_entry(message);
@@ -1678,9 +1681,8 @@ the providers, as last observed, match what the user has done.
 its own way: the model is implemented, and simulated, as
 `uplink_tx_log::reconcile`, and Matrix room tags, space orders (§9.5)
 and memberships (§9.7), calendar answers (§10.3) and mail labels (§8)
-use it; nothing uses limbo yet. Known to fail meanwhile: IMAP (a push
-after a move goes to the old UID); Matrix pins (built from the SDK's
-store).
+use it, and an IMAP move re-keys its entry (§6.6.5); nothing uses limbo
+yet. Known to fail meanwhile: Matrix pins (built from the SDK's store).
 
 ### 6.7 Sends: desired state fulfilled once
 
@@ -2618,10 +2620,14 @@ fit uplink better (§8.1, §8.3).
   `-FLAGS.SILENT`), then, if its folder is to change, it is moved (`UID
   MOVE`, RFC 6851; without it, `UID COPY`, `\Deleted` and `UID EXPUNGE`,
   RFC 4315; a server with neither refuses moves, as the plain `EXPUNGE`
-  would remove others' deleted mail too). The moved message's new key is
-  found by the next step, before any further push (§6.6's task order).
-  A `NO` is a refusal; an entry whose folder or UIDVALIDITY is gone is
-  left for the next step to re-key or remove.
+  would remove others' deleted mail too). The flags added, those
+  removed and the move are each a request with an outcome of its own;
+  once one fails, the rest are not sent. The move's `COPYUID` (RFC 4315;
+  of `MOVE`, RFC 6851 §4.3) is the message's new key, recorded with the
+  move's outcome; a server not telling it leaves the key unknown, until
+  the next step re-keys the entry by Message-ID (§6.6.5). A `NO` is a
+  refusal; an entry whose folder or UIDVALIDITY is gone is left for the
+  next step to re-key or remove.
 - **Connection**: one per account, kept between steps and made anew
   after a failure.
 

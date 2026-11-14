@@ -635,20 +635,9 @@ impl ImapSync {
                 ));
                 continue;
             }
-            ended.push(
-                match self.push_entry(c, account, &folders, entry, &pending).await {
-                    Ok(Pushed::Done) => PushEnded::of(&pending, Ended::Applied, None),
-                    Ok(Pushed::Refused(reason)) => PushEnded::refused(&pending, reason),
-                    // Pushed again once the next sync re-keyed or removed it.
-                    Ok(Pushed::Stale) => {
-                        PushEnded::of(&pending, Ended::NotApplied { refused: None }, None)
-                    }
-                    Err(e) => {
-                        failed = true;
-                        PushEnded::unknown(&pending, e)
-                    }
-                },
-            );
+            let pushed = self.push_entry(c, account, &folders, entry, &pending).await;
+            failed = pushed.iter().any(|p| p.error.is_some());
+            ended.extend(pushed);
         }
         ended
     }
@@ -720,9 +709,11 @@ impl ImapSync {
             .await
     }
 
-    /// Makes the entry's pending changes at the server: its flags stored,
-    /// then the message moved, if its folder is to change. A message gone
-    /// meanwhile is recorded as removed by the next sync.
+    /// Makes the entry's changes claimed at the server: its flags stored,
+    /// then the message moved, if its folder is to change; how each
+    /// ended. Once one fails, the other is not sent. A message whose key no
+    /// longer names it (its folder gone, or its UIDs no longer valid) is
+    /// not changed: the next sync re-keys or removes it.
     async fn push_entry(
         &self,
         c: &mut Connection,
@@ -730,92 +721,216 @@ impl ImapSync {
         folders: &[Folder],
         entry: EntryId,
         pending: &[Pending],
-    ) -> Result<Pushed> {
-        let key = Key::parse(&pending[0].external_id)?;
-        let mut add = vec![];
-        let mut remove = vec![];
-        let mut into = None;
-        for p in pending {
-            let id = p.label_external_id.as_str();
-            let (flag, set) = match id {
-                _ if p.kind == LabelKind::Folder => {
-                    if p.desired {
-                        into = Some(id);
-                    }
-                    continue;
-                }
-                UNREAD => ("\\Seen".to_owned(), !p.desired),
-                STARRED => ("\\Flagged".to_owned(), p.desired),
-                IMPORTANT => ("$Important".to_owned(), p.desired),
-                _ => match id.strip_prefix(KEYWORD) {
-                    Some(keyword) => (keyword.to_owned(), p.desired),
-                    None => {
-                        return Ok(Pushed::Refused(format!(
-                            "label {id} is not one an IMAP server has"
-                        )))
-                    }
-                },
-            };
-            if set {
-                add.push(flag);
-            } else {
-                remove.push(flag);
-            }
-        }
-        let mailbox = select(c, &key.folder).await;
-        match mailbox {
+    ) -> Vec<PushEnded> {
+        let (moving, storing): (Vec<Pending>, Vec<Pending>) = pending
+            .iter()
+            .cloned()
+            .partition(|p| p.kind == LabelKind::Folder);
+        let key = match Key::parse(&pending[0].external_id) {
+            Ok(key) => key,
+            Err(e) => return vec![PushEnded::not_sent(pending, e)],
+        };
+        match select(c, &key.folder).await {
             Ok(uidvalidity) if uidvalidity == key.uidvalidity => {}
-            // Its folder is gone, or its UIDs are no longer valid.
-            Ok(_) | Err(ImapError::No(_)) => return Ok(Pushed::Stale),
-            Err(e) => return Err(e.into()),
+            Ok(_) | Err(ImapError::No(_)) => {
+                return vec![PushEnded::of(
+                    pending,
+                    Ended::NotApplied { refused: None },
+                    None,
+                )]
+            }
+            Err(e) => return vec![PushEnded::not_sent(pending, e.into())],
         }
         let uid = key.uid.to_string();
-        for (sign, flags) in [("+", add), ("-", remove)] {
-            if flags.is_empty() {
-                continue;
-            }
-            let query = format!("{sign}FLAGS.SILENT ({})", flags.join(" "));
-            match c.session.uid_store(&uid, &query).await {
-                Ok(stream) => drop(stream.try_collect::<Vec<_>>().await?),
-                Err(ImapError::No(reason)) => return Ok(Pushed::Refused(reason)),
-                Err(e) => return Err(e.into()),
+        let mut ended = vec![];
+        if !storing.is_empty() {
+            let stored = store(c, &uid, &storing).await;
+            let failed = stored.iter().any(|p| p.error.is_some());
+            ended.extend(stored);
+            if failed {
+                ended.push(PushEnded::of(
+                    &moving,
+                    Ended::NotApplied { refused: None },
+                    None,
+                ));
+                return ended;
             }
         }
-        let Some(into) = into else {
-            return Ok(Pushed::Done);
+        let Some(into) = moving.iter().find(|p| p.desired) else {
+            if !moving.is_empty() {
+                // Out of a folder, but into none: SetLabels puts it somewhere.
+                ended.push(PushEnded::refused(
+                    &moving,
+                    "a message is in one folder at a time".to_owned(),
+                ));
+            }
+            return ended;
         };
-        let target = ensure_exists(c, folder(folders, into)?).await?.to_owned();
+        let target = match folder(folders, &into.label_external_id) {
+            Ok(target) => target,
+            Err(e) => {
+                ended.push(PushEnded::refused(&moving, format!("{e:#}")));
+                return ended;
+            }
+        };
+        let name = match ensure_exists(c, target).await {
+            Ok(name) => name.to_owned(),
+            Err(e) => {
+                ended.push(PushEnded::not_sent(&moving, e));
+                return ended;
+            }
+        };
         let moved = if c.moves {
-            c.session.uid_mv(&uid, &target).await
+            copy_uid(c, &format!("UID MOVE {uid} {}", quoted(&name))).await
         } else if c.uidplus {
-            move_by_copy(c, &uid, &target).await
+            move_by_copy(c, &uid, &name).await
         } else {
-            return Ok(Pushed::Refused(
+            ended.push(PushEnded::refused(
+                &moving,
                 "the server can move messages only by expunging all deleted mail".into(),
             ));
+            return ended;
         };
-        match moved {
-            Ok(()) => {
-                tracing::debug!(account = account.id, ?entry, "moved {key} to {target}");
-                Ok(Pushed::Done)
+        ended.push(match moved {
+            Ok(copied) => {
+                let to = copied.map(|(uidvalidity, uid)| {
+                    Key {
+                        uidvalidity,
+                        uid,
+                        folder: name.clone(),
+                    }
+                    .to_string()
+                });
+                tracing::debug!(account = account.id, ?entry, "moved {key} to {to:?}");
+                PushEnded::rekeyed(&moving, to)
             }
-            Err(ImapError::No(reason)) => Ok(Pushed::Refused(reason)),
-            Err(e) => Err(e.into()),
+            Err(ImapError::No(reason)) => PushEnded::refused(&moving, reason),
+            Err(e) => PushEnded::unknown(&moving, e.into()),
+        });
+        ended
+    }
+}
+
+/// Stores the flags of the changes claimed of the message selected, by
+/// UID: those added, then those removed, each a request of its own; how
+/// each ended. Once one fails, the other is not sent.
+async fn store(c: &mut Connection, uid: &str, storing: &[Pending]) -> Vec<PushEnded> {
+    let mut add: (Vec<Pending>, Vec<String>) = (vec![], vec![]);
+    let mut remove: (Vec<Pending>, Vec<String>) = (vec![], vec![]);
+    for p in storing {
+        let id = p.label_external_id.as_str();
+        let (flag, set) = match id {
+            UNREAD => ("\\Seen".to_owned(), !p.desired),
+            STARRED => ("\\Flagged".to_owned(), p.desired),
+            IMPORTANT => ("$Important".to_owned(), p.desired),
+            _ => match id.strip_prefix(KEYWORD) {
+                Some(keyword) => (keyword.to_owned(), p.desired),
+                None => {
+                    return vec![PushEnded::refused(
+                        storing,
+                        format!("label {id} is not one an IMAP server has"),
+                    )]
+                }
+            },
+        };
+        let (pending, flags) = if set { &mut add } else { &mut remove };
+        pending.push(p.clone());
+        flags.push(flag);
+    }
+    let mut ended = vec![];
+    let mut failed = false;
+    for (sign, (pending, flags)) in [("+", add), ("-", remove)] {
+        if pending.is_empty() {
+            continue;
+        }
+        if failed {
+            ended.push(PushEnded::of(
+                &pending,
+                Ended::NotApplied { refused: None },
+                None,
+            ));
+            continue;
+        }
+        let query = format!("{sign}FLAGS.SILENT ({})", flags.join(" "));
+        let stored = match c.session.uid_store(uid, &query).await {
+            Ok(stream) => stream.try_collect::<Vec<_>>().await.map(drop),
+            Err(e) => Err(e),
+        };
+        ended.push(match stored {
+            Ok(()) => PushEnded::of(&pending, Ended::Applied, None),
+            Err(ImapError::No(reason)) => PushEnded::refused(&pending, reason),
+            Err(e) => {
+                failed = true;
+                PushEnded::unknown(&pending, e.into())
+            }
+        });
+    }
+    ended
+}
+
+/// Runs `command`, a COPY or MOVE of one message, and returns where it
+/// went by the COPYUID it answers with (RFC 4315; MOVE's, RFC 6851 §4.3):
+/// the target's UIDVALIDITY and the copy's UID. `None` if it does not
+/// say.
+async fn copy_uid(c: &mut Connection, command: &str) -> Result<Option<(u32, u32)>, ImapError> {
+    use async_imap::imap_proto::{rfc4315::UidSetMember, Outcome, Response, ResponseCode, Status};
+    let of = |outcome: &Outcome| match &outcome.code {
+        Some(ResponseCode::CopyUid(uidvalidity, _, to)) => match &to[..] {
+            [UidSetMember::Uid(uid)] => Some((*uidvalidity, *uid)),
+            [UidSetMember::UidRange(uids)] if uids.start() == uids.end() => {
+                Some((*uidvalidity, *uids.start()))
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    let tag = c.session.run_command(command).await?;
+    let mut copied = None;
+    loop {
+        let response = c
+            .session
+            .read_response()
+            .await?
+            .ok_or(ImapError::ConnectionLost)?;
+        match response.parsed() {
+            Response::Data {
+                status: Status::Ok,
+                outcome,
+            } => copied = copied.or(of(outcome)),
+            Response::Done {
+                tag: done,
+                status,
+                outcome,
+            } if *done == tag => {
+                let information = outcome
+                    .information
+                    .as_deref()
+                    .unwrap_or_default()
+                    .to_owned();
+                return match status {
+                    Status::Ok => Ok(copied.or(of(outcome))),
+                    Status::No => Err(ImapError::No(information)),
+                    _ => Err(ImapError::Bad(information)),
+                };
+            }
+            _ => {}
         }
     }
 }
 
-/// What came of pushing an entry's changes.
-enum Pushed {
-    Done,
-    Refused(String),
-    /// Its key no longer names it: the next sync re-keys or removes it.
-    Stale,
+/// A mailbox name as an IMAP string.
+fn quoted(name: &str) -> String {
+    format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-/// MOVE, without the extension: a copy, and the message expunged.
-async fn move_by_copy(c: &mut Connection, uid: &str, target: &str) -> Result<(), ImapError> {
-    c.session.uid_copy(uid, target).await?;
+/// MOVE, without the extension: a copy, and the message expunged; where
+/// it went, as [`copy_uid`] tells.
+async fn move_by_copy(
+    c: &mut Connection,
+    uid: &str,
+    target: &str,
+) -> Result<Option<(u32, u32)>, ImapError> {
+    let copied = copy_uid(c, &format!("UID COPY {uid} {}", quoted(target))).await?;
     c.session
         .uid_store(uid, "+FLAGS.SILENT (\\Deleted)")
         .await?
@@ -826,7 +941,7 @@ async fn move_by_copy(c: &mut Connection, uid: &str, target: &str) -> Result<(),
         .await?
         .try_collect::<Vec<_>>()
         .await?;
-    Ok(())
+    Ok(copied)
 }
 
 fn forget_if_failed<T>(slot: &mut Option<Connection>, result: &Result<T>) {

@@ -231,7 +231,8 @@ impl Observation for MailboxObserved {
 
         for rekeyed in &self.rekeyed {
             let changed = tx.execute(
-                "UPDATE mail_entry SET external_id = ?1 WHERE account_id = ?2 AND external_id = ?3",
+                "UPDATE mail_entry SET external_id = ?1, key_unknown = 0
+                 WHERE account_id = ?2 AND external_id = ?3",
                 [&rekeyed.to, account, &rekeyed.from],
             )?;
             ensure!(
@@ -366,12 +367,35 @@ impl Observation for LabelsClaimed {
 pub struct LabelsPushed {
     pub changes: Vec<LabelChange>,
     pub ended: Ended,
+    /// The entry's key, if the push, applied, changed it (SPEC §6.6.5).
+    pub rekeyed: Option<NewKey>,
+}
+
+/// An entry's key after a push changed it: `None` if unknown, the
+/// provider not telling, until a sync finds it again.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NewKey {
+    pub entry: EntryId,
+    pub external_id: Option<String>,
 }
 
 impl Observation for LabelsPushed {
     const KIND: &'static str = "mail.pushed";
 
     fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
+        ensure!(
+            self.rekeyed.is_none() || self.ended == Ended::Applied,
+            "re-keyed by a push not applied"
+        );
+        if let Some(key) = &self.rekeyed {
+            // Unless removed meanwhile.
+            tx.execute(
+                "UPDATE mail_entry SET external_id = coalesce(?2, external_id),
+                                       key_unknown = ?2 IS NULL
+                 WHERE id = ?1 AND account_id = ?3",
+                params![key.entry.0, key.external_id, account],
+            )?;
+        }
         let mut labels = Labels::of(tx, account)?;
         let at = labels.at;
         let mut entries = BTreeSet::new();
@@ -466,6 +490,9 @@ pub struct Reconciling {
     pub label: LabelId,
     pub label_external_id: String,
     pub kind: LabelKind,
+    /// Whether `external_id` is the entry's key still: a push that moved
+    /// it without telling the new one leaves it unknown (SPEC §6.6.5).
+    pub key_known: bool,
     pub field: Label,
 }
 
@@ -474,7 +501,7 @@ pub fn reconciling(conn: &rusqlite::Connection, account: &str) -> Result<Vec<Rec
     let known_at = labels_known_at(conn, account)?;
     conn.prepare(
         "SELECT e.id, e.external_id, l.id, l.external_id, l.kind,
-                el.desired, el.observed, el.desired_by, el.decision, el.push
+                el.desired, el.observed, el.desired_by, el.decision, el.push, e.key_unknown
          FROM entry_label el
          JOIN mail_entry e ON e.id = el.entry
          JOIN label l ON l.id = el.label
@@ -489,6 +516,7 @@ pub fn reconciling(conn: &rusqlite::Connection, account: &str) -> Result<Vec<Rec
                 label: LabelId(r.get(2)?),
                 label_external_id: r.get(3)?,
                 kind: kind_at(r, 4)?,
+                key_known: !r.get::<_, bool>(10)?,
                 field: Field::new(false, known_at),
             },
             Columns {
