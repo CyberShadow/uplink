@@ -2,7 +2,7 @@
 
 A self-hosted, single-user, web-based personal communication and productivity
 tool. This document specifies the MVP cut targeted by `docs/ROADMAP.md`: one
-Gmail account, one Microsoft 365 account (mail + read-only calendar), one
+Gmail account, one Microsoft 365 account (mail + calendar), one
 Matrix homeserver (plain text only), a local TODO list, a unified
 transaction-log-backed undo system, and a Preact SPA frontend over a single-
 process Rust backend.
@@ -127,7 +127,8 @@ Quick references so the reader doesn't have to flip:
   Graph, JMAP by `EmailSubmission`; SMTP serves IMAP and POP3 accounts
   only (§8.11).
 - Drafts on the wire (only local drafts in MVP).
-- Calendar write (M365 read-only). Google Calendar, CalDAV, ICS feeds: out.
+- Calendar writes other than answering meeting requests (§10.3), such
+  as creating and editing events. Google Calendar, CalDAV, ICS feeds: out.
 - TODO backends other than local SQLite.
 - ACME / Let's Encrypt automation — BYO cert + key, with hot-reload.
 
@@ -147,7 +148,7 @@ uplink/
 │   ├── uplink-query/                # the query language, of every kind
 │   ├── uplink-email/                # Gmail API, M365 Graph mail; send
 │   ├── uplink-matrix/               # matrix-rust-sdk wrapper
-│   ├── uplink-calendar/             # M365 Graph calendar (read-only)
+│   ├── uplink-calendar/             # M365 Graph calendar; answering meetings
 │   ├── uplink-todos/                # local to-dos and their ops
 │   ├── uplink-server/               # axum, TLS, basic auth, routes
 │   └── uplink-cli/                  # `uplink matrix pair`, `uplink migrate`
@@ -1144,12 +1145,14 @@ provider made of a push):
 - a mail entry's labels: its labels, folder, read and starred state;
 - whether a mail or a Matrix message is sent (§6.7);
 - a Matrix room's membership (§9.7) and read receipt, and a space's
-  order (§9.5).
+  order (§9.5);
+- the user's answer to a meeting request (§10.3).
 
 Each account runs a reconciler (its sync task) that, after every commit
 touching its state, pushes the differences — Gmail `messages.batchModify`
 and draft `send`; Graph `PATCH`, `move` and draft `send`; Matrix sends,
-joins, leaves, receipts and space orders. The UI shows desired state
+joins, leaves, receipts and space orders; Graph `accept`,
+`tentativelyAccept` and `decline` (the calendar's sync task). The UI shows desired state
 immediately, so actions feel instant and survive a provider outage.
 
 A difference is *pending* until the provider is observed to match. Each
@@ -2608,7 +2611,7 @@ cannot be previewed shows none.
 
 ## 10. Calendar pipeline
 
-### 10.1 M365 only, read-only
+### 10.1 M365 only
 
 - **Transport**: Graph `GET /me/calendarView/delta` of the default
   calendar, with the M365 mail sync's `Graph` (one per account, §8.3) and
@@ -2621,9 +2624,10 @@ cannot be previewed shows none.
   nothing, keeping the old delta link (good until it changes).
 - **Recorded as** a `calendar.observed` log entry (an observation, §6;
   not undoable): the first listing (or a new window's) replaces the
-  account's events, later rounds upsert changed instances and delete
-  `@removed` ones, and the `calendar_sync` state is written in the same
-  transaction. Its `calendar_changed` event tells clients to query again.
+  account's events (those listed again are kept, under their ids, with
+  any answer pending, §10.3), later rounds upsert changed instances and
+  delete `@removed` ones, and the `calendar_sync` state is written in
+  the same transaction. Its `calendar_changed` event tells clients to query again.
 - **Recurring events**: a calendar view expands series itself — each
   occurrence is an instance with its own id and `seriesMasterId`, an
   exception (`type: exception`) carries its changes, and cancelled
@@ -2692,10 +2696,37 @@ are the same days wherever one is; timed events are shown in the
 browser's time zone. `j`/`k` move by day, week or fortnight, `t` goes
 to today, `d`, `w` and `a` switch views, `g c` goes to the calendar.
 
-### 10.3 No write in MVP
+### 10.3 Answering meeting requests
 
-Out of scope. Adding event creation is a v1.x story (ROADMAP). The `Op`
-trait already accommodates write ops; we just don't implement them.
+An event opened that is a meeting request (the user is not its
+organizer, and it is not an appointment) has Outlook's three answers,
+Accept, Tentative and Decline, the one given shown pressed. Answering
+is `respond_to_event {event, response}`, the op `calendar.respond`:
+desired state (§6.6), as labels are. `calendar_event.response` stays as
+Graph has it; `desired_response` is the answer asked for while it
+differs, with the op that asked (`response_by`), and the event shows it
+at once (V0049). Its inverse asks for the answer shown before.
+
+The calendar's sync task is the reconciler: woken by the user's ops
+that change a calendar, as well as polling, it posts each answer pending
+to Graph (`POST /me/events/{id}/accept`, `tentativelyAccept` or
+`decline`, with `sendResponse: true`, so the organizer is told) and
+records what Graph made of it (`calendar.response_given`): given, the
+answer is no longer pending; refused (a 4xx; 404 for an event gone),
+it waits for a decision. A sync that finds the answer as asked settles
+it too; one finding another keeps the answer asked for, which is still
+pushed. Exchange moves a declined meeting to Deleted Items, so the next
+sync takes it off the calendar, with nothing left to undo.
+
+Graph has no way to take an answer back, only to change it: undoing an
+answer already given asks for "not responded", which is refused at once
+("an answer given can be changed, not taken back") and resolved by
+undoing the undo, or by answering again. Answers pending are listed in
+the outbox, apart from the account's mail.
+
+Answering needs the registration's `Calendars.ReadWrite` permission
+(§13.3). Not yet: a comment with the answer, answering without telling
+the organizer, proposing a new time, and creating or editing events.
 
 ---
 
@@ -3495,7 +3526,7 @@ makes (README): as with Gmail (§15.2), uplink ships no client of its
 own. The flow is **not** the same shape as Gmail's: it uses the v1
 (classic) endpoint with a `resource=` parameter rather than v2 OIDC
 with `scope=`, so the permissions are those configured on the
-registration (Graph `Mail.ReadWrite`, `Mail.Send`, `Calendars.Read`)
+registration (Graph `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite`)
 rather than requested per sign-in:
 
 - `oauth.client_id`: the registration's application id. Required.
@@ -4027,7 +4058,9 @@ request).
   attendees, HTML body, `showAs` and online meeting (`isOnlineMeeting`
   gives it a `joinUrl`), and takes what Graph sets itself of someone
   else's meeting (`organizer`, `responseStatus`, `isCancelled`), so that
-  tests and screenshots can seed one; `0009`, events' reminders.
+  tests and screenshots can seed one; `0009`, events' reminders;
+  `0010`, answers to meeting requests (`accept`, `tentativelyAccept`,
+  `decline`, which takes the event off the calendar).
 - **IMAP, POP3, SMTP and JMAP:** Stalwart (single-binary Rust mail
   server, from nixpkgs; IMAP, POP3, SMTP and JMAP), a real server rather
   than a fake. The Rust tests (`tests/imap_sync.rs`, `tests/pop3_sync.rs`,

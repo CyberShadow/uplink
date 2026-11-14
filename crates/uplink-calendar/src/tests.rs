@@ -1,7 +1,8 @@
 use crate::{service::Calendar, CalendarObserved, ObservedEvent};
 use std::sync::Arc;
 use uplink_protocol::{
-    calendar::{EventResponse, ShowAs},
+    calendar::{CalendarEvent, EventResponse, ShowAs},
+    compose::{OutboxChanged, Pending},
     ErrorCode, ServerEvent, ServerResponse,
 };
 use uplink_realtime::Hub;
@@ -18,12 +19,18 @@ struct Db {
 impl Db {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
+        let mut registry = Registry::new();
+        crate::register(&mut registry);
         let dispatcher = Dispatcher::new(
             uplink_storage::open(dir.path()).unwrap(),
-            Registry::new(),
+            registry,
             Arc::new(Hub::new(64)),
         );
-        let calendar = Calendar::new(uplink_storage::open_reader(dir.path()).unwrap(), vec![]);
+        let calendar = Calendar::new(
+            dispatcher.clone(),
+            uplink_storage::open_reader(dir.path()).unwrap(),
+            vec![],
+        );
         Self {
             _dir: dir,
             dispatcher,
@@ -32,6 +39,25 @@ impl Db {
     }
 
     async fn observe(&self, replace: bool, events: Vec<ObservedEvent>, removed: &[&str]) -> String {
+        let (description, events) = self.observing(replace, events, removed).await;
+        assert_eq!(
+            events,
+            [ServerEvent::CalendarChanged(
+                uplink_protocol::calendar::CalendarChanged {
+                    account: "work".into()
+                }
+            )]
+        );
+        description
+    }
+
+    /// Observes, returning the entry's description and events.
+    async fn observing(
+        &self,
+        replace: bool,
+        events: Vec<ObservedEvent>,
+        removed: &[&str],
+    ) -> (String, Vec<ServerEvent>) {
         let mut live = self.dispatcher.hub().subscribe();
         self.dispatcher
             .observe(
@@ -47,15 +73,29 @@ impl Db {
             .await
             .unwrap();
         let entry = live.recv().await.unwrap();
-        assert_eq!(
-            entry.events,
-            [ServerEvent::CalendarChanged(
-                uplink_protocol::calendar::CalendarChanged {
-                    account: "work".into()
-                }
-            )]
-        );
-        entry.description.clone()
+        (entry.description.clone(), entry.events.clone())
+    }
+
+    async fn events(&self) -> Vec<CalendarEvent> {
+        let ServerResponse::Events { events, .. } = self.calendar.list(0, 24 * HOUR).await.unwrap()
+        else {
+            panic!()
+        };
+        events
+    }
+
+    fn pending(&self) -> Vec<(String, EventResponse)> {
+        let mut conn = uplink_storage::open_reader(self._dir.path()).unwrap();
+        let tx = conn.transaction().unwrap();
+        crate::respond::outbox(&tx)
+            .unwrap()
+            .into_iter()
+            .flat_map(|a| match a.pending {
+                Pending::Calendar { responses } => responses,
+                other => panic!("{other:?}"),
+            })
+            .map(|r| (r.subject, r.response))
+            .collect()
     }
 
     async fn subjects(&self, from: i64, to: i64) -> Vec<String> {
@@ -182,4 +222,70 @@ async fn queries_match_events_coming_first() {
         ["Lunch 101"]
     );
     assert!(matching("is:todo OR is:unread").is_empty());
+}
+
+#[tokio::test]
+async fn an_answer_asked_for_prevails_until_synced_and_survives_listings() {
+    let db = Db::new();
+    let request = |subject: &str, response| ObservedEvent {
+        response,
+        ..event(subject, subject, 9 * HOUR, 10 * HOUR)
+    };
+    db.observe(
+        true,
+        vec![request("Planning", EventResponse::NotResponded)],
+        &[],
+    )
+    .await;
+    let id = db.events().await[0].id;
+    let ServerResponse::Dispatched { .. } = db
+        .calendar
+        .respond(id, EventResponse::Accepted)
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(db.events().await[0].response, EventResponse::Accepted);
+
+    // Listed anew, not yet as answered: kept, with its id and the answer.
+    let outbox_changed = ServerEvent::OutboxChanged(OutboxChanged {
+        accounts: vec!["work".into()],
+    });
+    let (_, events) = db
+        .observing(
+            true,
+            vec![request("Planning", EventResponse::NotResponded)],
+            &[],
+        )
+        .await;
+    assert!(!events.contains(&outbox_changed));
+    let shown = &db.events().await[0];
+    assert_eq!((shown.id, shown.response), (id, EventResponse::Accepted));
+    assert_eq!(db.pending(), [("Planning".into(), EventResponse::Accepted)]);
+
+    // Synced as answered: no longer pending.
+    let (_, events) = db
+        .observing(
+            false,
+            vec![request("Planning", EventResponse::Accepted)],
+            &[],
+        )
+        .await;
+    assert!(events.contains(&outbox_changed));
+    assert_eq!(db.pending(), []);
+    assert_eq!(db.events().await[0].response, EventResponse::Accepted);
+
+    // Nothing of one's own to answer.
+    db.observe(true, vec![event("mine", "Mine", HOUR, 2 * HOUR)], &[])
+        .await;
+    let mine = db.events().await[0].id;
+    assert_eq!(
+        db.calendar
+            .respond(mine, EventResponse::Declined)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Invalid
+    );
 }

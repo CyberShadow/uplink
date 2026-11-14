@@ -166,7 +166,8 @@ describe('calendar', () => {
     expect(within(pane).getByRole('link', { name: 'https://example.org/notes' })).toBeTruthy()
     expect(within(pane).getByRole('link', { name: 'Open in Outlook' })).toBeTruthy()
     const facts = [...pane.querySelectorAll('dt, dd')].map((e) => e.textContent)
-    expect(facts).toEqual(['Where', 'Room 4', 'Organizer', 'Bob', 'You', 'Not responded', 'Shown as', 'Tentative'])
+    expect(facts).toEqual(['Where', 'Room 4', 'Organizer', 'Bob', 'Shown as', 'Tentative'])
+    expect(within(pane).getByRole('group', { name: 'Your answer' })).toBeTruthy()
     expect(
       within(within(pane).getByRole('region', { name: 'Attendees' }))
         .getAllByRole('listitem')
@@ -336,5 +337,43 @@ describe('calendar', () => {
     await user.click(board)
     const pane = await screen.findByRole('complementary', { name: 'Event' })
     await within(pane).findByText('board@example.com')
+  })
+
+  it('answers a meeting request, at once and undoably, through the outbox', async () => {
+    const planning = server.addEvent('work', 'Planning', '2026-11-11T15:00:00Z', '2026-11-11T16:00:00Z', {
+      response: 'notResponded',
+    })
+    const user = await start(`/calendar/week/2026-11-11/${planning.id}`)
+    const pane = await screen.findByRole('complementary', { name: 'Event' })
+    const answer = await within(pane).findByRole('group', { name: 'Your answer' })
+    const pressed = () =>
+      within(answer)
+        .getAllByRole('button')
+        .filter((b) => b.getAttribute('aria-pressed') === 'true')
+        .map((b) => b.textContent)
+    expect(pressed()).toEqual([])
+    await user.click(within(answer).getByRole('button', { name: 'Tentative' }))
+    await waitFor(() => expect(pressed()).toEqual(['Tentative']))
+    expect(within(screen.getByRole('status')).getByText("Tentatively accepted 'Planning'")).toBeTruthy()
+    expect(server.responses.map((r) => r.response)).toEqual(['tentativelyAccepted'])
+    await user.click(within(answer).getByRole('button', { name: 'Accept' }))
+    await waitFor(() => expect(pressed()).toEqual(['Accept']))
+    expect(server.responses.map((r) => r.response)).toEqual(['accepted'])
+
+    // In the outbox until given, with its Undo.
+    await user.click(screen.getByRole('link', { name: /Outbox/ }))
+    const outbox = await screen.findByRole('list', { name: 'Outbox of work: calendar' })
+    expect(within(outbox).getByText("Accepted 'Planning'")).toBeTruthy()
+    await user.click(within(outbox).getByRole('button', { name: 'Undo' }))
+    await waitFor(() => expect(within(outbox).getByText("Tentatively accepted 'Planning'")).toBeTruthy())
+    expect(planning.response).toBe('tentativelyAccepted')
+  })
+
+  it('offers no answer to a meeting of ones own', async () => {
+    const mine = server.addEvent('work', 'Mine', '2026-11-11T15:00:00Z', '2026-11-11T16:00:00Z')
+    await start(`/calendar/week/2026-11-11/${mine.id}`)
+    const pane = await screen.findByRole('complementary', { name: 'Event' })
+    await within(pane).findByText('You organize it')
+    expect(within(pane).queryByRole('group', { name: 'Your answer' })).toBeNull()
   })
 })

@@ -12,6 +12,7 @@ use uplink_email::{
 };
 use uplink_protocol::{
     calendar::{AttendeeKind, CalendarEvent, EventResponse, Person, ShowAs},
+    compose::Pending,
     ServerResponse,
 };
 use uplink_realtime::Hub;
@@ -30,6 +31,7 @@ struct Setup {
     alice: Credentials,
     sync: CalendarSync,
     calendar: Calendar,
+    dispatcher: Dispatcher,
 }
 
 impl Setup {
@@ -52,21 +54,28 @@ impl Setup {
         let http = reqwest::Client::new();
         let code = oauth::pasted_code(&sign_in(&account).await).unwrap();
         oauth::redeem(&http, &account, &key, &code).await.unwrap();
+        let mut registry = Registry::new();
+        uplink_calendar::register(&mut registry);
         let dispatcher = Dispatcher::new(
             uplink_storage::open(dir.path()).unwrap(),
-            Registry::new(),
+            registry,
             Arc::new(Hub::new(64)),
         );
         let sync = CalendarSync::new(
             Graph::of(&account, key.clone(), http.clone()),
             account.id.clone(),
-            dispatcher,
+            dispatcher.clone(),
             uplink_storage::open_reader(dir.path()).unwrap(),
             Duration::from_millis(100),
         );
         Self {
             alice: Credentials::new(http.clone(), oauth::grant(&account), key),
-            calendar: Calendar::new(uplink_storage::open_reader(dir.path()).unwrap(), vec![]),
+            calendar: Calendar::new(
+                dispatcher.clone(),
+                uplink_storage::open_reader(dir.path()).unwrap(),
+                vec![],
+            ),
+            dispatcher,
             sync,
             http,
             base,
@@ -424,6 +433,129 @@ async fn shows_a_meeting_s_status_and_details() {
         missing.unwrap_err().code,
         uplink_protocol::ErrorCode::NotFound
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn answers_meeting_requests() {
+    let setup = Setup::new().await;
+    let organizer = json!({ "emailAddress": { "name": "Bob", "address": "bob@example.com" } });
+    for (subject, hour) in [("Planning", 9), ("Retro", 10), ("Offsite", 11)] {
+        setup
+            .create(json!({
+                "subject": subject,
+                "start": utc(&format!("2026-11-10T{hour:02}:00:00")),
+                "end": utc(&format!("2026-11-10T{hour:02}:30:00")),
+                "organizer": organizer,
+            }))
+            .await;
+    }
+    setup
+        .create(json!({
+            "subject": "Mine",
+            "start": utc("2026-11-10T12:00:00"),
+            "end": utc("2026-11-10T13:00:00"),
+        }))
+        .await;
+    setup.sync.sync(NOW).await.unwrap();
+    let events = setup.events(NOW, NOW + DAY * 2).await;
+    let id = |subject: &str| events.iter().find(|e| e.subject == subject).unwrap().id;
+    let answers = || async {
+        setup
+            .events(NOW, NOW + DAY * 2)
+            .await
+            .into_iter()
+            .map(|e| (e.subject, e.response))
+            .collect::<Vec<_>>()
+    };
+    let setup = &setup;
+    let respond = |subject: &str, response| {
+        let event = id(subject);
+        async move {
+            match setup.calendar.respond(event, response).await {
+                Ok(ServerResponse::Dispatched { tx_log_id }) => tx_log_id,
+                other => panic!("{other:?}"),
+            }
+        }
+    };
+    let outbox = || {
+        let mut conn = uplink_storage::open_reader(setup.dir.path()).unwrap();
+        let tx = conn.transaction().unwrap();
+        uplink_calendar::respond::outbox(&tx)
+            .unwrap()
+            .into_iter()
+            .flat_map(|a| match a.pending {
+                Pending::Calendar { responses } => responses,
+                other => panic!("{other:?}"),
+            })
+            .map(|r| (r.subject, r.response, r.refused))
+            .collect::<Vec<_>>()
+    };
+
+    // Shown at once; given as the sync task pushes.
+    let accepted = respond("Planning", EventResponse::Accepted).await;
+    respond("Retro", EventResponse::TentativelyAccepted).await;
+    respond("Offsite", EventResponse::Declined).await;
+    assert_eq!(
+        answers().await,
+        [
+            ("Planning".into(), EventResponse::Accepted),
+            ("Retro".into(), EventResponse::TentativelyAccepted),
+            ("Offsite".into(), EventResponse::Declined),
+            ("Mine".into(), EventResponse::Organizer),
+        ]
+    );
+    assert_eq!(outbox().len(), 3);
+    setup.sync.push().await.unwrap();
+    assert_eq!(outbox(), []);
+    let log = setup.log();
+    assert_eq!(
+        log[log.len() - 3..],
+        [
+            "Accepted 'Planning' at the provider",
+            "Tentatively accepted 'Retro' at the provider",
+            "Declined 'Offsite' at the provider",
+        ]
+    );
+    // Declined, it leaves the calendar, as Exchange moves it to Deleted
+    // Items; the others are as answered.
+    setup.sync.sync(NOW + 60_000).await.unwrap();
+    assert_eq!(
+        answers().await,
+        [
+            ("Planning".into(), EventResponse::Accepted),
+            ("Retro".into(), EventResponse::TentativelyAccepted),
+            ("Mine".into(), EventResponse::Organizer),
+        ]
+    );
+
+    // An answer given cannot be taken back: undone, it needs a decision,
+    // which undoing the undo makes.
+    let undo = setup.dispatcher.undo(accepted).await.unwrap();
+    assert_eq!(answers().await[0].1, EventResponse::NotResponded);
+    setup.sync.push().await.unwrap();
+    assert_eq!(
+        outbox(),
+        [(
+            "Planning".into(),
+            EventResponse::NotResponded,
+            Some(uplink_calendar::respond::CANNOT_TAKE_BACK.into())
+        )]
+    );
+    setup.dispatcher.undo(undo).await.unwrap();
+    assert_eq!(outbox(), []);
+    assert_eq!(answers().await[0].1, EventResponse::Accepted);
+
+    // Nothing to answer of one's own, nor answers but these.
+    for (subject, response) in [
+        ("Mine", EventResponse::Accepted),
+        ("Planning", EventResponse::NotResponded),
+    ] {
+        let refused = setup.calendar.respond(id(subject), response).await;
+        assert_eq!(
+            refused.unwrap_err().code,
+            uplink_protocol::ErrorCode::Invalid
+        );
+    }
 }
 
 async fn start_emulate(dir: &Path) -> (String, tokio::process::Child) {

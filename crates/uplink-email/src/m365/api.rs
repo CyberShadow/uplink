@@ -328,6 +328,11 @@ impl Graph {
         unreachable!("the second attempt returns")
     }
 
+    /// POSTs `body` to `path` below `/me`, an action on what is there.
+    pub async fn act<B: Serialize>(&self, path: &str, body: &B) -> Result<Changed> {
+        changed(self.send(Method::POST, &self.url(path), Some(body)).await?).await
+    }
+
     /// The URL of `path` below `/me`.
     pub fn url(&self, path: &str) -> String {
         format!("{}{path}", self.base)
@@ -397,11 +402,11 @@ async fn decode<T: DeserializeOwned>(url: &str, response: reqwest::Response) -> 
         .with_context(|| format!("decoding {url}: {}", String::from_utf8_lossy(&body)))
 }
 
-/// What Graph made of a change to a message.
+/// What Graph made of a change to a message, or of an action.
 #[derive(Debug, PartialEq)]
 pub enum Changed {
     Done,
-    /// The message no longer exists.
+    /// What it was of no longer exists.
     Gone,
     /// Refused, for this reason: a 4xx other than for authorization or
     /// rate, which pass.

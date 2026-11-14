@@ -183,6 +183,7 @@ fn declarations() -> String {
         Attendee,
         AttendeeKind,
         TimeZone,
+        PendingResponse,
         CalendarChanged,
     );
     out

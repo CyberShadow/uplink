@@ -245,7 +245,8 @@ ID that you (or your organization's administrator) create.
    applications* with the redirect URI
    `https://login.microsoftonline.com/common/oauth2/nativeclient`.
 3. Under API permissions, add the Microsoft Graph delegated permissions
-   `Mail.ReadWrite`, `Mail.Send` and `Calendars.Read`. If your
+   `Mail.ReadWrite`, `Mail.Send` and `Calendars.ReadWrite` (to answer
+   meeting requests). If your
    organization does not let users consent to applications, an
    administrator grants them.
 4. In `uplink.yaml`, uncomment the Microsoft 365 account, set `id` and

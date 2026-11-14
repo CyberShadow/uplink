@@ -569,6 +569,41 @@ const ANSWER_CLASSES: Partial<Record<EventResponse, string>> = {
   declined: styles.refused,
 }
 
+/** Whether the event is a meeting request, to answer. */
+function answerable(event: CalendarEvent): boolean {
+  return event.response !== 'organizer' && event.response !== 'none'
+}
+
+/** The answers to give a meeting request, as Outlook's are. */
+const GIVEN: { response: EventResponse; label: string }[] = [
+  { response: 'accepted', label: 'Accept' },
+  { response: 'tentativelyAccepted', label: 'Tentative' },
+  { response: 'declined', label: 'Decline' },
+]
+
+/** The user's answer to the meeting request, to give or change. */
+function Answer(props: { event: CalendarEvent }) {
+  const { ops } = useServices()
+  const { event } = props
+  return (
+    <div class={styles.answer} role="group" aria-label="Your answer">
+      {GIVEN.map(({ response, label }) => (
+        <button
+          key={response}
+          type="button"
+          aria-pressed={event.response === response}
+          onMouseDown={keepFocus}
+          onClick={() => {
+            if (event.response !== response) void ops.dispatch({ type: 'respond_to_event', event: event.id, response })
+          }}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function AttendeeItem(props: { attendee: Attendee }) {
   const { person, kind, response } = props.attendee
   return (
@@ -623,6 +658,7 @@ function Details(props: { details: EventDetails }) {
           Join online meeting
         </a>
       )}
+      {answerable(event) && <Answer event={event} />}
       <dl class={styles.facts}>
         {calendars.has(event.account) && (
           <>
@@ -642,7 +678,7 @@ function Details(props: { details: EventDetails }) {
             <dd title={organizer.address ?? undefined}>{organizer.name}</dd>
           </>
         )}
-        {RESPONSES[event.response] && (
+        {RESPONSES[event.response] && !answerable(event) && (
           <>
             <dt>You</dt>
             <dd>{RESPONSES[event.response]}</dd>

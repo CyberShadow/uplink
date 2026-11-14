@@ -1,27 +1,33 @@
 //! Answers the calendar requests of the WebSocket protocol (SPEC §5.4).
 
+use crate::respond::{answerable, Respond};
 use arc_swap::ArcSwap;
 use std::sync::Arc;
 use uplink_protocol::{
-    calendar::{EventId, TimeZone},
+    calendar::{EventId, EventResponse, TimeZone},
     ErrorCode, ServerResponse,
 };
 use uplink_storage::rusqlite::Connection;
-use uplink_tx_log::answer::{error, internal, Reader, Response};
+use uplink_tx_log::{
+    answer::{error, internal, Reader, Response},
+    Dispatcher,
+};
 
 /// The longest stretch one request may list.
 const MAX_RANGE_MS: i64 = 400 * 86_400_000;
 
 #[derive(Clone)]
 pub struct Calendar {
+    dispatcher: Dispatcher,
     reader: Reader,
     time_zones: Arc<ArcSwap<Vec<TimeZone>>>,
 }
 
 impl Calendar {
     /// `reader` is a read-only connection to the database.
-    pub fn new(reader: Connection, time_zones: Vec<TimeZone>) -> Self {
+    pub fn new(dispatcher: Dispatcher, reader: Connection, time_zones: Vec<TimeZone>) -> Self {
         Self {
+            dispatcher,
             reader: Reader::new(reader),
             time_zones: Arc::new(ArcSwap::from_pointee(time_zones)),
         }
@@ -68,5 +74,32 @@ impl Calendar {
                 })
             })
             .await
+    }
+
+    /// Answers the meeting request `event` as `response`.
+    pub async fn respond(&self, event: EventId, response: EventResponse) -> Response {
+        if crate::respond::action(response).is_none() {
+            return Err(error(
+                ErrorCode::Invalid,
+                format!("{response:?} is not an answer to give"),
+            ));
+        }
+        self.reader
+            .read(move |conn| {
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                let (found, _) = crate::event(&tx, event)
+                    .map_err(internal)?
+                    .ok_or_else(|| error(ErrorCode::NotFound, format!("no event {}", event.0)))?;
+                // As shown: an answer asked for is not of the organizer.
+                if !answerable(found.response) {
+                    return Err(error(
+                        ErrorCode::Invalid,
+                        format!("'{}' is not a meeting request to answer", found.subject),
+                    ));
+                }
+                Ok(())
+            })
+            .await?;
+        self.dispatcher.answer(Respond { event, response }).await
     }
 }

@@ -1,4 +1,4 @@
-//! The calendar, read-only (SPEC §10).
+//! The calendar (SPEC §10).
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -64,6 +64,20 @@ pub enum EventResponse {
     Accepted,
     Declined,
     NotResponded,
+}
+
+/// A meeting request being answered (SPEC §10.3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PendingResponse {
+    pub event: EventId,
+    pub subject: String,
+    pub response: EventResponse,
+    /// The op that answered: undoing it takes the answer back.
+    pub op: crate::compose::PendingOp,
+    /// Why the provider refused, if it did: it needs a decision, which
+    /// undoing the op makes.
+    pub refused: Option<String>,
 }
 
 /// What a calendar shows of an event opened: all it has, as the provider

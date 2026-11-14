@@ -232,6 +232,7 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
     uplink_email::image_rules::register(&mut registry);
     uplink_matrix::register(&mut registry);
     uplink_todos::register(&mut registry);
+    uplink_calendar::register(&mut registry);
     seen::register(&mut registry);
     let root = &config.data_dir;
     let mut writer = uplink_storage::open(root)?;
@@ -297,6 +298,7 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
         ),
         todos: Todos::new(dispatcher.clone(), uplink_storage::open_reader(root)?),
         calendar: Calendar::new(
+            dispatcher.clone(),
             uplink_storage::open_reader(root)?,
             config.calendar.time_zones.clone(),
         ),
@@ -1229,6 +1231,9 @@ impl Backend for Services {
             ClientRequest::ListTodos => self.todos.list().await,
             ClientRequest::ListEvents { from, to } => self.calendar.list(from, to).await,
             ClientRequest::GetEvent { event } => self.calendar.get(event).await,
+            ClientRequest::RespondToEvent { event, response } => {
+                self.calendar.respond(event, response).await
+            }
             ClientRequest::CreateTodo {
                 title,
                 notes,
@@ -1388,7 +1393,7 @@ mod tests {
                 outbox: Outbox::new(reader()),
                 items: items::Items::new(reader(), vec![], vec![], vec![]),
                 todos: Todos::new(dispatcher.clone(), reader()),
-                calendar: Calendar::new(reader(), vec![]),
+                calendar: Calendar::new(dispatcher.clone(), reader(), vec![]),
                 reader: Arc::new(LogReader::new(reader(), 16)),
                 dispatcher,
             };

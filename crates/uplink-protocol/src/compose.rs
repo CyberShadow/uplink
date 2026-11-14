@@ -173,6 +173,10 @@ pub enum Pending {
         /// Rooms read past their latest read receipt.
         receipts: Vec<crate::matrix::RoomId>,
     },
+    Calendar {
+        /// Meeting requests being answered, newest first.
+        responses: Vec<crate::calendar::PendingResponse>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

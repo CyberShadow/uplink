@@ -225,7 +225,8 @@ export class DraftStore {
 }
 
 /** How many things the outbox lists: each op's changes, each send and
- * membership change, and the read receipts together. */
+ * membership change, the read receipts together, and each answer to a
+ * meeting request. */
 export function outboxCount(outbox: readonly AccountOutbox[]): number {
   return outbox.reduce((n, { pending }) => {
     switch (pending.kind) {
@@ -233,6 +234,8 @@ export function outboxCount(outbox: readonly AccountOutbox[]): number {
         return n + pending.changes.length + pending.sends.length
       case 'matrix':
         return n + pending.sends.length + pending.memberships.length + (pending.receipts.length > 0 ? 1 : 0)
+      case 'calendar':
+        return n + pending.responses.length
     }
   }, 0)
 }
@@ -251,6 +254,8 @@ export function outboxNeedsAttention(outbox: readonly AccountOutbox[]): boolean 
           pending.sends.some((s) => decision(s) && (!s.retractable || s.error !== null || s.state === 'refused')) ||
           pending.memberships.some((m) => m.refused !== null)
         )
+      case 'calendar':
+        return pending.responses.some((r) => r.refused !== null)
     }
   })
 }

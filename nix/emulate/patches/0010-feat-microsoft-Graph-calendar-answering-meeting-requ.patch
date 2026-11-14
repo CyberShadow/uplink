@@ -1,0 +1,95 @@
+From 172ca16d7ce59c47b0280b3a2991f52ee5ae6c2b Mon Sep 17 00:00:00 2001
+From: Vladimir Panteleev <git@cy.md>
+Date: Sat, 14 Nov 2026 00:34:52 +0000
+Subject: [PATCH] feat(microsoft): Graph calendar: answering meeting requests
+
+POST /me/events/{id}/accept, tentativelyAccept and decline answer a
+meeting request (202): accepting sets the user's response; declining
+takes the event off the calendar, as Exchange moves a declined meeting
+to Deleted Items. The organizer has nothing to answer (400).
+---
+ .../microsoft/src/__tests__/calendar.test.ts  | 23 ++++++++++++
+ .../microsoft/src/routes/calendar.ts          | 35 +++++++++++++++++++
+ 2 files changed, 58 insertions(+)
+
+diff --git a/packages/@emulators/microsoft/src/__tests__/calendar.test.ts b/packages/@emulators/microsoft/src/__tests__/calendar.test.ts
+index b8ebcc2..685d8eb 100644
+--- a/packages/@emulators/microsoft/src/__tests__/calendar.test.ts
++++ b/packages/@emulators/microsoft/src/__tests__/calendar.test.ts
+@@ -240,4 +240,27 @@ describe("Microsoft Graph calendar", () => {
+     const listed = (await json(`/v1.0/me/calendarView?${WINDOW}`)).value.find((e: any) => e.id === early.id);
+     expect(listed.isReminderOn).toBe(false);
+   });
++
++  it("answers meeting requests: a declined one leaves the calendar", async () => {
++    const organizer = { emailAddress: { name: "Ada", address: "ada@example.com" } };
++    const ask = async (subject: string, hour: string) =>
++      create({ subject, start: utc(`2026-11-10T${hour}:00:00`), end: utc(`2026-11-10T${hour}:30:00`), organizer });
++    const accepted = await ask("Accepted", "09");
++    const tentative = await ask("Tentative", "10");
++    const declined = await ask("Declined", "11");
++    const mine = await create({ subject: "Mine", start: utc("2026-11-10T12:00:00"), end: utc("2026-11-10T13:00:00") });
++    const answer = (id: string, action: string) =>
++      request(`/v1.0/me/events/${id}/${action}`, { method: "POST", body: JSON.stringify({ sendResponse: true }) });
++    expect((await answer(accepted.id, "accept")).status).toBe(202);
++    expect((await answer(tentative.id, "tentativelyAccept")).status).toBe(202);
++    expect((await answer(declined.id, "decline")).status).toBe(202);
++    expect((await answer(mine.id, "accept")).status).toBe(400);
++    expect((await answer("nope", "accept")).status).toBe(404);
++    const listed = (await json(`/v1.0/me/calendarView?${WINDOW}`)).value.map((e: any) => [e.subject, e.responseStatus.response]);
++    expect(listed).toEqual([
++      ["Accepted", "accepted"],
++      ["Tentative", "tentativelyAccepted"],
++      ["Mine", "organizer"],
++    ]);
++  });
+ });
+diff --git a/packages/@emulators/microsoft/src/routes/calendar.ts b/packages/@emulators/microsoft/src/routes/calendar.ts
+index dee7051..5955918 100644
+--- a/packages/@emulators/microsoft/src/routes/calendar.ts
++++ b/packages/@emulators/microsoft/src/routes/calendar.ts
+@@ -189,6 +189,41 @@ export function calendarRoutes({ app, store, baseUrl }: RouteContext): void {
+     return c.body(null, 204);
+   });
+ 
++  /** Answers a meeting request: accepting or tentatively accepting sets
++   * the user's response; declining takes the event off the calendar, as
++   * Exchange moves a declined meeting to Deleted Items. The organizer
++   * has nothing to answer. */
++  const ACTIONS = { accept: "accepted", tentativelyAccept: "tentativelyAccepted", decline: "declined" } as const;
++  for (const [action, response] of Object.entries(ACTIONS)) {
++    app.post(`/v1.0/me/events/:event/${action}`, async (c) => {
++      const email = user(c);
++      if (email instanceof Response) return email;
++      const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
++      if (!body) return invalid(c, "The request body is not JSON.");
++      if ("sendResponse" in body && typeof body.sendResponse !== "boolean") {
++        return invalid(c, "sendResponse is a boolean.");
++      }
++      const id = c.req.param("event");
++      const event = eventOf(email, id);
++      const instance = event ? undefined : instanceOf(email, id);
++      const master = event ?? (instance && eventOf(email, instance.event_id));
++      if (!master) return notFound(c);
++      const current = instance ? (JSON.parse(instance.json) as { responseStatus: { response: string } }).responseStatus.response : master.response;
++      if (current === "organizer") return invalid(c, "Your request can't be completed. You are the organizer of this meeting.");
++      if (event) {
++        if (response === "declined") {
++          ms.events.delete(event.id);
++          syncInstances(store, email, event.event_id, []);
++        } else {
++          resync(ms.events.update(event.id, { response })!);
++        }
++      } else {
++        changeOccurrence(master, instance!.json, response === "declined" ? null : { response });
++      }
++      return c.body(null, 202);
++    });
++  }
++
+   // ---------- Calendar views ----------
+ 
+   app.get("/v1.0/me/calendarView", (c) => {
+-- 
+2.55.0
+

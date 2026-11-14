@@ -1,8 +1,9 @@
-//! The calendars of Microsoft 365 accounts, read-only (SPEC §10): each
-//! account's synced from a Graph calendar view by its sync task, and
-//! served to clients.
+//! The calendars of Microsoft 365 accounts (SPEC §10): each account's
+//! synced from a Graph calendar view by its sync task, and served to
+//! clients; meeting requests answered (§10.3).
 
 pub mod details;
+pub mod respond;
 pub mod service;
 pub mod sync;
 #[cfg(test)]
@@ -16,11 +17,16 @@ use uplink_protocol::{
 };
 use uplink_query::{text_matches, Kind, Query, Term};
 use uplink_storage::rusqlite::{params, Transaction};
-use uplink_tx_log::{Observation, Observed};
+use uplink_tx_log::{Observation, Observed, Registry};
+
+pub fn register(registry: &mut Registry) {
+    registry.register::<respond::Respond>();
+}
 
 /// The state of an account's calendar, or of what changed in it, as just
 /// fetched. Recorded by the account's calendar sync, the only writer of
-/// its events.
+/// its events but for the answers asked for (§6.6): an answer pending
+/// prevails until the provider has it, and goes with its event.
 #[derive(Debug, Serialize)]
 pub struct CalendarObserved {
     /// `account.kind`, for an account observed for the first time.
@@ -77,10 +83,50 @@ impl Observation for CalendarObserved {
             "account {account} is recorded as {kind}, not {}",
             self.account_kind
         );
+        let mut events = vec![ServerEvent::CalendarChanged(CalendarChanged {
+            account: account.to_owned(),
+        })];
+        let removed =
+            respond::telling_outbox(tx, account, &mut events, || self.record(account, tx))?;
+        let description = if self.replace {
+            format!("Calendar listed: {}", count(self.events.len()))
+        } else {
+            let mut parts = vec![];
+            if !self.events.is_empty() {
+                parts.push(format!("{} changed", count(self.events.len())));
+            }
+            if removed > 0 {
+                parts.push(format!("{} removed", count(removed)));
+            }
+            if parts.is_empty() {
+                "Calendar synced".to_owned()
+            } else {
+                format!("Calendar: {}", parts.join(", "))
+            }
+        };
+        Ok(Observed {
+            description,
+            events,
+        })
+    }
+}
+
+impl CalendarObserved {
+    /// Records the events; returns how many of those removed were stored.
+    fn record(&self, account: &str, tx: &Transaction) -> Result<usize> {
         if self.replace {
+            // Those listed again stay, so that they keep their ids.
+            let listed = serde_json::to_string(
+                &self
+                    .events
+                    .iter()
+                    .map(|e| &e.external_id)
+                    .collect::<Vec<_>>(),
+            )?;
             tx.execute(
-                "DELETE FROM calendar_event WHERE account_id = ?1",
-                [account],
+                "DELETE FROM calendar_event WHERE account_id = ?1
+                   AND external_id NOT IN (SELECT value FROM json_each(?2))",
+                params![account, listed],
             )?;
         }
         for event in &self.events {
@@ -96,7 +142,14 @@ impl Observation for CalendarObserved {
                    end_ts = excluded.end_ts, all_day = excluded.all_day,
                    cancelled = excluded.cancelled, show_as = excluded.show_as,
                    response = excluded.response, join_url = excluded.join_url,
-                   reminder = excluded.reminder, raw = excluded.raw",
+                   reminder = excluded.reminder, raw = excluded.raw,
+                   -- An answer asked for, the provider has it now.
+                   response_by = CASE WHEN desired_response = excluded.response
+                                 THEN NULL ELSE response_by END,
+                   response_refused = CASE WHEN desired_response = excluded.response
+                                      THEN NULL ELSE response_refused END,
+                   desired_response = CASE WHEN desired_response = excluded.response
+                                      THEN NULL ELSE desired_response END",
                 params![
                     account,
                     event.external_id,
@@ -131,32 +184,11 @@ impl Observation for CalendarObserved {
              ON CONFLICT (account_id) DO UPDATE SET state = excluded.state",
             params![account, self.sync_state.to_string()],
         )?;
-        let description = if self.replace {
-            format!("Calendar listed: {}", events(self.events.len()))
-        } else {
-            let mut parts = vec![];
-            if !self.events.is_empty() {
-                parts.push(format!("{} changed", events(self.events.len())));
-            }
-            if removed > 0 {
-                parts.push(format!("{} removed", events(removed)));
-            }
-            if parts.is_empty() {
-                "Calendar synced".to_owned()
-            } else {
-                format!("Calendar: {}", parts.join(", "))
-            }
-        };
-        Ok(Observed {
-            description,
-            events: vec![ServerEvent::CalendarChanged(CalendarChanged {
-                account: account.to_owned(),
-            })],
-        })
+        Ok(removed)
     }
 }
 
-fn events(count: usize) -> String {
+fn count(count: usize) -> String {
     match count {
         1 => "1 event".to_owned(),
         n => format!("{n} events"),
@@ -230,7 +262,8 @@ fn named<T: serde::de::DeserializeOwned>(name: String) -> Result<T> {
 }
 
 const EVENT_COLUMNS: &str = "id, account_id, subject, location, preview, start_ts, end_ts, all_day,
-     series IS NOT NULL, exception, cancelled, show_as, response, join_url, reminder";
+     series IS NOT NULL, exception, cancelled, show_as,
+     coalesce(desired_response, response), join_url, reminder";
 
 fn event_of(r: &uplink_storage::rusqlite::Row) -> Result<CalendarEvent> {
     Ok(CalendarEvent {

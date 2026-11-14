@@ -13,6 +13,8 @@ import type {
   CalendarEvent,
   TimeZone,
   EventDetails,
+  EventResponse,
+  PendingResponse,
   ClientRequest,
   Conversation,
   Draft,
@@ -126,6 +128,10 @@ export class FakeServer implements Requester, Blobs {
   readonly calendar: CalendarEvent[] = []
   /** The calendar's time zones, as configured. */
   timeZones: TimeZone[] = []
+  /** Answers to meeting requests not yet given, newest last. */
+  readonly responses: PendingResponse[] = []
+  /** Of events answered, the answer the provider has. */
+  private readonly given = new Map<number, EventResponse>()
   /** Of events, what else they have. */
   private readonly eventDetails = new Map<number, Partial<Omit<EventDetails, 'event' | 'raw'>>>()
   readonly todos: Todo[] = []
@@ -263,6 +269,32 @@ export class FakeServer implements Requester, Blobs {
   /** Says that `account`'s calendar changed. */
   calendarSynced(account: string) {
     this.observe(account, [{ type: 'calendar_changed', account }])
+  }
+
+  /** Answers the meeting request as the server applies `Respond`: shown
+   * at once, pending until given; undone, back to the answer before. */
+  private respond(id: number, response: EventResponse): number {
+    const event = this.calendar.find((e) => e.id === id)!
+    const before = event.response
+    if (!this.given.has(id)) this.given.set(id, before)
+    event.response = response
+    const at = this.responses.findIndex((r) => r.event === id)
+    if (at >= 0) this.responses.splice(at, 1)
+    const verbs: Partial<Record<EventResponse, string>> = {
+      accepted: 'Accepted',
+      tentativelyAccepted: 'Tentatively accepted',
+      declined: 'Declined',
+    }
+    const description = `${verbs[response] ?? 'Took back the answer to'} '${event.subject}'`
+    const tx = this.commit({ type: 'user' }, description, [
+      { type: 'calendar_changed', account: event.account },
+      { type: 'outbox_changed', accounts: [event.account] },
+    ])
+    if (response !== this.given.get(id)) {
+      this.responses.push({ event: id, subject: event.subject, response, op: { id: tx, description, ts: Date.now() }, refused: null })
+    }
+    this.undoable.set(tx, { revert: () => this.respond(id, before), undone: false })
+    return tx
   }
 
   /** Changes labels as the provider would, then observes it. */
@@ -907,6 +939,16 @@ export class FakeServer implements Requester, Blobs {
             },
           })
         }
+        for (const account of new Set(this.responses.map((r) => this.calendar.find((e) => e.id === r.event)!.account))) {
+          accounts.push({
+            account,
+            failing: null,
+            pending: {
+              kind: 'calendar',
+              responses: this.responses.filter((r) => this.calendar.find((e) => e.id === r.event)!.account === account).reverse(),
+            },
+          })
+        }
         accounts.sort((a, b) => a.account.localeCompare(b.account))
         return { type: 'outbox', as_of: this.head(), accounts }
       }
@@ -1174,6 +1216,8 @@ export class FakeServer implements Requester, Blobs {
           },
         }
       }
+      case 'respond_to_event':
+        return { type: 'dispatched', tx_log_id: this.respond(body.event, body.response) }
       case 'list_events':
         return {
           type: 'events',

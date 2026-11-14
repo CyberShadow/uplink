@@ -97,7 +97,11 @@ export function Outbox() {
   return (
     <div class={outgoing.outbox}>
       {accounts.map((account) => (
-        <AccountSection key={account.account} account={account} provider={provider(account.account)} />
+        <AccountSection
+          key={`${account.account}:${account.pending.kind}`}
+          account={account}
+          provider={provider(account.account)}
+        />
       ))}
     </div>
   )
@@ -106,19 +110,23 @@ export function Outbox() {
 function AccountSection(props: { account: AccountOutbox; provider: MailProvider | undefined }) {
   const { account, failing, pending } = props.account
   const name = pending.kind === 'matrix' ? 'the homeserver' : providerName(props.provider)
+  // An account's calendar is listed apart from its mail.
+  const title = pending.kind === 'calendar' ? `${account}: calendar` : account
   return (
-    <section aria-label={account}>
-      <h2 class={outgoing.account}>{account}</h2>
+    <section aria-label={title}>
+      <h2 class={outgoing.account}>{title}</h2>
       {failing && (
         <p class={outgoing.failing} role="alert">
           Not reaching {name} since {dateTime(failing.since)}: {failing.error}
         </p>
       )}
-      <ul class={styles.list} aria-label={`Outbox of ${account}`}>
+      <ul class={styles.list} aria-label={`Outbox of ${title}`}>
         {pending.kind === 'mail' ? (
           <MailRows account={account} pending={pending} failing={failing !== null} provider={name} />
-        ) : (
+        ) : pending.kind === 'matrix' ? (
           <MatrixRows pending={pending} failing={failing !== null} />
+        ) : (
+          <CalendarRows pending={pending} provider={name} />
         )}
       </ul>
     </section>
@@ -214,6 +222,30 @@ function MatrixRows(props: { pending: Extract<Pending, { kind: 'matrix' }>; fail
           <span />
           <span class={outgoing.actions}>
             <MatrixSendActions item={item} />
+          </span>
+        </li>
+      ))}
+    </>
+  )
+}
+
+function CalendarRows(props: { pending: Extract<Pending, { kind: 'calendar' }>; provider: string }) {
+  const { ops } = useServices()
+  return (
+    <>
+      {props.pending.responses.map(({ event, op, refused }) => (
+        <li key={`response:${event}`} class={styles.row}>
+          <Unused />
+          <span class={styles.from}>{dateTime(op.ts)}</span>
+          <span class={styles.summary}>
+            <span class={styles.subject}>{op.description}</span>
+            <span class={styles.snippet}>{refused !== null ? `${props.provider} refused: ${refused}` : 'to go'}</span>
+          </span>
+          <span />
+          <span class={outgoing.actions}>
+            <button type="button" onMouseDown={keepFocus} onClick={() => ops.undo(op.id)}>
+              Undo
+            </button>
           </span>
         </li>
       ))}

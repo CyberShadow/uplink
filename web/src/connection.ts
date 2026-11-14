@@ -134,6 +134,7 @@ function isResendable(body: ClientRequest): boolean {
     case 'create_todo':
     case 'edit_todo':
     case 'delete_todo':
+    case 'respond_to_event':
       return false
   }
 }

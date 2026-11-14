@@ -421,6 +421,31 @@ h2.cancelled {
   text-decoration: none;
 }
 
+.answer {
+  display: flex;
+  gap: 6px;
+}
+
+.answer button {
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: inherit;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+.answer button:hover {
+  background: var(--selected);
+}
+
+.answer button[aria-pressed='true'] {
+  border-color: var(--accent);
+  color: var(--bg);
+  background: var(--accent);
+}
+
 .external {
   align-self: flex-start;
   color: var(--accent);

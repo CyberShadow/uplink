@@ -419,6 +419,12 @@ pub enum ClientRequest {
     GetEvent {
         event: calendar::EventId,
     },
+    /// Answers a meeting request: `accepted`, `tentativelyAccepted` or
+    /// `declined`, the organizer told.
+    RespondToEvent {
+        event: calendar::EventId,
+        response: calendar::EventResponse,
+    },
     /// All to-dos.
     ListTodos,
     /// Flagging a message for follow-up is creating a to-do of it.

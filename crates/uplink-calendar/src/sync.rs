@@ -4,8 +4,15 @@
 //! Graph expands series in a calendar view: it lists each occurrence, as
 //! changed if it was, and leaves out those cancelled. A delta link holds
 //! its window, so as days pass the window is moved by listing it anew.
+//!
+//! It is also the calendar's reconciler (§6.6): after each sync, and as
+//! the user answers meeting requests, it gives Graph the answers asked
+//! for (§10.3).
 
-use crate::{CalendarObserved, ObservedEvent};
+use crate::{
+    respond::{self, ResponseGiven, CANNOT_TAKE_BACK},
+    CalendarObserved, ObservedEvent,
+};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -13,9 +20,13 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, SystemTime},
 };
+use tokio::sync::broadcast::{self, error::RecvError};
 use uplink_config::M365AccountConfig;
-use uplink_email::m365::api::Graph;
-use uplink_protocol::calendar::{EventResponse, ShowAs};
+use uplink_email::m365::api::{Changed, Graph};
+use uplink_protocol::{
+    calendar::{EventResponse, ShowAs},
+    LogEntry, ServerEvent, Source,
+};
 use uplink_storage::rusqlite::{Connection, OptionalExtension};
 use uplink_tx_log::Dispatcher;
 
@@ -146,14 +157,20 @@ impl CalendarSync {
         }
     }
 
-    /// Runs until the process exits, retrying failures with backoff.
+    /// Runs until the process exits, retrying failures with backoff; at
+    /// once when the user changes the calendar.
     pub async fn run(self) {
+        let mut wake = self.dispatcher.hub().subscribe();
         let mut backoff = Duration::from_secs(1);
         loop {
-            match self.sync(now_ms()).await {
+            let step = async {
+                self.sync(now_ms()).await?;
+                self.push().await
+            };
+            match step.await {
                 Ok(()) => {
                     backoff = Duration::from_secs(1);
-                    tokio::time::sleep(self.poll_interval).await;
+                    self.wait(&mut wake).await;
                 }
                 Err(e) => {
                     tracing::warn!(account = self.account, "calendar sync failed: {e:#}");
@@ -162,6 +179,60 @@ impl CalendarSync {
                 }
             }
         }
+    }
+
+    /// Waits out the poll interval, or until the user changes the
+    /// calendar.
+    async fn wait(&self, wake: &mut broadcast::Receiver<Arc<LogEntry>>) {
+        let deadline = tokio::time::sleep(self.poll_interval);
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                () = &mut deadline => return,
+                entry = wake.recv() => match entry {
+                    Ok(entry) if entry.source == Source::User && changes_calendar(&entry) => return,
+                    Ok(_) => {}
+                    Err(RecvError::Lagged(_)) => return,
+                    Err(RecvError::Closed) => panic!("the hub outlives sync tasks"),
+                },
+            }
+        }
+    }
+
+    /// Gives Graph the answers to meeting requests asked for, recording
+    /// what it made of each.
+    pub async fn push(&self) -> Result<()> {
+        let reader = self.reader.clone();
+        let account = self.account.clone();
+        let wanted = tokio::task::spawn_blocking(move || {
+            respond::wanted(&reader.lock().expect("reader poisoned"), &account)
+        })
+        .await??;
+        for wanted in wanted {
+            let refused = match respond::action(wanted.response) {
+                None => Some(CANNOT_TAKE_BACK.to_owned()),
+                Some(action) => {
+                    let path = format!("/events/{}/{action}", wanted.external_id);
+                    let body = serde_json::json!({ "sendResponse": true });
+                    match self.graph.act(&path, &body).await? {
+                        Changed::Done => None,
+                        Changed::Gone => Some("the event is no longer on the calendar".to_owned()),
+                        Changed::Refused(reason) => Some(reason),
+                    }
+                }
+            };
+            self.dispatcher
+                .observe(
+                    self.account.clone(),
+                    ResponseGiven {
+                        event: wanted.event,
+                        response: wanted.response,
+                        refused,
+                    },
+                )
+                .await?;
+        }
+        Ok(())
     }
 
     /// Records the calendar's changes since the last sync, as of `now`
@@ -266,6 +337,14 @@ impl CalendarSync {
             .map(|s| serde_json::from_str(&s).with_context(|| format!("calendar sync state {s}")))
             .transpose()
     }
+}
+
+/// Whether the entry changed a calendar.
+fn changes_calendar(entry: &LogEntry) -> bool {
+    entry
+        .events
+        .iter()
+        .any(|e| matches!(e, ServerEvent::CalendarChanged(_)))
 }
 
 /// An event of a delta page, as recorded.

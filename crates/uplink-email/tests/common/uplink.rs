@@ -169,7 +169,9 @@ impl Uplink {
             .into_iter()
             .flat_map(|a| match a.pending {
                 Pending::Mail { sends, .. } => sends,
-                Pending::Matrix { .. } => unreachable!("a mail account"),
+                Pending::Matrix { .. } | Pending::Calendar { .. } => {
+                    unreachable!("a mail account's mail")
+                }
             })
             .map(|i| (i.id.0, i.state))
             .collect()
