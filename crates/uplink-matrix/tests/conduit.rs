@@ -223,6 +223,13 @@ async fn eventually<T, F: std::future::Future<Output = Option<T>>>(
     panic!("timed out waiting for {what}");
 }
 
+/// Settings to sync by what is new, and no more: not waiting for more, as
+/// a sync does by default (30 seconds), which polling by it, as
+/// `eventually` does, would wait for each time.
+fn caught_up() -> SyncSettings {
+    SyncSettings::default().timeout(Duration::ZERO)
+}
+
 /// Syncs `client` in the background, passing on the bodies of the
 /// messages it receives.
 fn sync_messages(client: &Client) -> mpsc::UnboundedReceiver<String> {
@@ -839,10 +846,7 @@ async fn spaces_are_ordered_as_other_clients_order_them() {
         other => panic!("unexpected {other:?}"),
     };
     eventually("the phone to see uplink's order", || async {
-        alice_phone
-            .sync_once(SyncSettings::default())
-            .await
-            .unwrap();
+        alice_phone.sync_once(caught_up()).await.unwrap();
         let raw = space.account_data(TYPE.into()).await.unwrap()?;
         let event: serde_json::Value = serde_json::from_str(raw.json().get()).unwrap();
         (event["content"] == json!({ "order": "c" })).then_some(())
@@ -901,10 +905,7 @@ async fn rooms_are_tagged_as_other_clients_tag_them() {
         other => panic!("unexpected {other:?}"),
     };
     let phone_tags = || async {
-        alice_phone
-            .sync_once(SyncSettings::default())
-            .await
-            .unwrap();
+        alice_phone.sync_once(caught_up()).await.unwrap();
         let tags = room.tags().await.unwrap().unwrap_or_default();
         tags.keys().map(|t| t.to_string()).collect::<Vec<_>>()
     };
