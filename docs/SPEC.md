@@ -1770,9 +1770,13 @@ conversation's latest entry's receipt, a room's latest message matched
 `lastModifiedDateTime`); ties by kind (mail, rooms, to-dos, events),
 then id, newest first. `after` is the position of the last item of the
 previous page, `next` that of this one's if there are more. A room its
-messages decide is one item, with its hits (`RoomHits { count, latest
-}`: how many of its messages match, and the latest of them), and opens
-that search of it (§12.11); one its own terms decide has none. The
+messages decide is one item. If the query seeks particular messages (by
+their words, sender or recipient, or time, outside a negation), it has
+its hits (`RoomHits { count, latest }`: how many of its messages match,
+and the latest of them), and opens that search of it (§12.11). Else
+(`is:unread`, `is:new`, `is:mention`, `is:notifying` alone, as home's
+buckets have them), as one its own terms decide, it has none: the room
+is what was found, and opens itself, at what is new. The
 search box at the top searches everything this way, but in a room,
 where it searches the room's messages (§12.11): the search page lists
 every kind in mail's list, each row a link to its item; it lists again
@@ -3442,11 +3446,11 @@ rows are its items as a search lists them, the most recently active
 first (a room's row says, as mail's its subject and snippet, what is
 new — `3 new`, `2 mentioning you` — and its latest message, `Bob:
 Lunch?`, as last edited: `Room.preview`; found by its messages, how
-many, and the latest of them); it shows 20 at most (the client's
+many, and the latest of them, as a search of particular messages has them); it shows 20 at most (the client's
 `limit`), its count saying `20+` when there are more, with a link "Show all"
 to the bucket's query as a search; its heading links there too, however
 many it shows, to work through the bucket as a list. Mail opens within that search, so `j`
-and `k` go through the bucket's mail; a room opens itself (found by its messages, with that search of it), a to-do its
+and `k` go through the bucket's mail; a room opens itself (found by particular messages, with that search of it), a to-do its
 message or the to-dos, an event its day. The keys act on any row: `j`/`k`
 move the cursor, which stays on its row while home is left and comes
 back (a row that goes gives it to the next one shown, or else the last), `o`/Enter open, `e` is done with it (archives mail, marks a room

@@ -18,6 +18,19 @@ use crate::{
     service::ConfiguredAccount,
 };
 
+/// Whether `query` seeks particular messages: by their words, sender or
+/// recipient, or time, outside a negation. A query that names only what
+/// state a room's messages are in (`is:unread`, `is:new`, `is:mention`,
+/// `is:notifying`) finds the room, which opens at them anyway.
+fn seeks(query: &Query) -> bool {
+    uplink_query::names(query, &|term| {
+        matches!(
+            term,
+            Term::Text { .. } | Term::Me(_) | Term::After(_) | Term::Before(_)
+        )
+    })
+}
+
 /// The rooms of some accounts, as listed, to match queries against: read
 /// once for as many queries, as the home view's buckets are.
 pub struct Rooms<'a> {
@@ -27,7 +40,8 @@ pub struct Rooms<'a> {
 }
 
 /// A room a query matches: by its own terms, or by its messages, which
-/// are then its `hits`.
+/// are then its `hits` if the query seeks particular messages (`seeks`);
+/// else, as of its own terms, the room is what was found.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Group {
     pub room: Room,
@@ -90,20 +104,26 @@ impl<'a> Rooms<'a> {
                     Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
                 })?
                 .collect::<Result<_, _>>()?;
-            for (room, count, _, latest) in found {
-                let latest = rooms::listed_events(tx, RoomId(room), &[RoomEventId(latest)])?
-                    .pop()
-                    .expect("a message found is listed");
+            let seeks = seeks(query);
+            for (id, count, _, latest) in found {
                 let room = undecided
                     .iter()
-                    .find(|r| r.id.0 == room)
+                    .find(|r| r.id.0 == id)
                     .expect("messages are found of the rooms searched");
-                groups.push(Group {
-                    room: (*room).clone(),
-                    hits: Some(RoomHits {
+                let hits = if seeks {
+                    let latest = rooms::listed_events(tx, RoomId(id), &[RoomEventId(latest)])?
+                        .pop()
+                        .expect("a message found is listed");
+                    Some(RoomHits {
                         count,
                         latest: Box::new(latest),
-                    }),
+                    })
+                } else {
+                    None
+                };
+                groups.push(Group {
+                    room: (*room).clone(),
+                    hits,
                 });
             }
         }

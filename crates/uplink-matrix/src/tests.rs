@@ -2015,7 +2015,6 @@ mod query {
         assert_eq!(matching("deploy is:unread"), ["$5", "$4", "$3", "$2"]);
         assert_eq!(matching("deploy from:me"), ["$1"]);
         assert_eq!(matching("from:bob"), ["$4", "$3", "$2"]);
-        assert_eq!(matching("is:mention"), ["$8", "$3"]);
         assert_eq!(matching("deploy is:dm"), ["$4"]);
         assert_eq!(matching("deploy -space:work"), ["$4"]);
         assert_eq!(matching("tag:projects green"), ["$2"]);
@@ -2030,8 +2029,6 @@ mod query {
         assert_eq!(matching("ship is:new"), ["$9", "$8"]);
         assert_eq!(matching("ship (is:new OR is:unread)"), ["$9", "$8"]);
         assert_eq!(matching("ship -is:unread"), ["$8", "$7"]);
-        assert_eq!(matching("is:mention is:new"), ["$8", "$3"]);
-        assert_eq!(matching("is:mention is:new is:unread"), ["$3"]);
         // A room its name matches is found as a room, not by its messages.
         assert_eq!(matching("ops"), Vec::<String>::new());
 
@@ -2062,11 +2059,21 @@ mod query {
             groups("deploy"),
             [hits("Team chat", 4, "$5"), hits("Bob", 1, "$4")]
         );
+        // Of what state its messages are in, alone, the room is what is
+        // found, as of its own terms: nothing in particular is sought.
+        let room = |name: &str| (name.to_owned(), None);
+        assert_eq!(groups("is:mention"), [room("Ops"), room("Team chat")]);
         assert_eq!(
             groups("is:mention is:new"),
+            [room("Ops"), room("Team chat")]
+        );
+        assert_eq!(groups("is:mention is:new is:unread"), [room("Team chat")]);
+        // Of a time, they are sought.
+        assert_eq!(
+            groups("is:mention is:new after:1970-01-01"),
             [hits("Ops", 1, "$8"), hits("Team chat", 1, "$3")]
         );
-        assert_eq!(groups("ops"), [("Ops".to_owned(), None)]);
+        assert_eq!(groups("ops"), [room("Ops")]);
         assert_eq!(
             groups("is:dm OR from:dave"),
             [hits("Ops", 3, "$9"), ("Bob".to_owned(), None)]
