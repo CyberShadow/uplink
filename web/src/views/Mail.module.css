@@ -157,14 +157,10 @@
 }
 
 /* An item other than mail's icon, where a conversation's star is; its
-   box (a room's) or none (`.box`) where a conversation's is. */
+   box where a conversation's is. */
 .kind {
   justify-self: center;
   display: flex;
-}
-
-.box {
-  display: block;
 }
 
 .from,
@@ -331,8 +327,7 @@
     padding: 10px 16px 10px 8px;
   }
 
-  .row > input,
-  .row > .box {
+  .row > input {
     grid-area: select;
     align-self: start;
   }

@@ -2963,12 +2963,17 @@ describe('search', () => {
     await user.keyboard('/')
     await user.keyboard('lunch{Enter}')
     await waitFor(() => expect(rows()).toHaveLength(3))
-    // Mail and rooms have boxes; to-dos and events do not.
-    expect(rows().map((r) => r.querySelector('input[type=checkbox]') !== null).sort()).toEqual([false, true, true])
+    // Every row has a box.
+    expect(rows().every((r) => r.querySelector('input[type=checkbox]') !== null)).toBe(true)
     const toolbar = screen.getByRole('toolbar', { name: 'Selection' })
+    // With a to-do, nothing applies to all three.
     await user.click(within(toolbar).getByRole('checkbox', { name: 'Select all' }))
+    expect(within(toolbar).getByText('3 selected')).toBeTruthy()
+    expect(within(toolbar).getAllByRole('button').map((b) => b.getAttribute('aria-label'))).toEqual(['Select'])
+    await user.click(within(rows().find((r) => r.textContent!.includes('Book lunch'))!).getByRole('checkbox'))
     expect(within(toolbar).getByText('2 selected')).toBeTruthy()
     expect(within(toolbar).queryByRole('button', { name: 'Archive' })).toBeNull()
+    expect(within(toolbar).queryByRole('button', { name: 'Delete' })).toBeNull()
 
     await user.click(within(toolbar).getByRole('button', { name: 'Mark as read' }))
     await waitFor(() => expect(server.requests.some((r) => r.type === 'mark_room_read' && r.room === kitchen.id)).toBe(true))
@@ -2983,6 +2988,40 @@ describe('search', () => {
     // Of mail alone, every action again.
     await user.click(within(rows().find((r) => r.textContent!.includes('Kitchen'))!).getByRole('checkbox'))
     expect(within(toolbar).getByRole('button', { name: 'Archive' })).toBeTruthy()
+  })
+
+  it('deletes mail, to-dos and events selected together, the events once asked', async () => {
+    const own = server.addEvent('work', 'Lunch review', '2026-11-20T12:00:00Z', '2026-11-20T13:00:00Z')
+    server.addEvent('work', 'Lunch with Bob', '2026-11-21T12:00:00Z', '2026-11-21T13:00:00Z', { response: 'accepted' })
+    server.deliver('work', 'Lunch plans')
+    const user = await start()
+    await client.todos.create('Book lunch')
+    await user.keyboard('/')
+    await user.keyboard('lunch{Enter}')
+    await waitFor(() => expect(rows()).toHaveLength(4))
+    const toolbar = screen.getByRole('toolbar', { name: 'Selection' })
+    const box = (text: string) => within(rows().find((r) => r.textContent!.includes(text))!).getByRole('checkbox')
+    // Another's event is not the user's to delete.
+    await user.click(box('Lunch with Bob'))
+    expect(within(toolbar).queryByRole('button', { name: 'Delete' })).toBeNull()
+    await user.click(box('Lunch with Bob'))
+
+    // A to-do and mail are deleted at once.
+    await user.click(box('Book lunch'))
+    await user.click(box('Lunch plans'))
+    await user.click(box('Lunch review'))
+    await user.click(within(toolbar).getByRole('button', { name: 'Delete' }))
+    const dialog = screen.getByRole('alertdialog', { name: 'Delete the event' })
+    expect(dialog.textContent).toContain('Lunch review')
+    expect(server.requests.some((r) => r.type === 'delete_todo')).toBe(false)
+    await user.click(within(dialog).getByRole('button', { name: 'Keep' }))
+    expect(server.requests.some((r) => r.type === 'delete_event' || r.type === 'delete_todo')).toBe(false)
+
+    await user.keyboard('#')
+    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(server.requests.find((r) => r.type === 'delete_event')).toMatchObject({ event: own.id, series: false }))
+    expect(server.requests.some((r) => r.type === 'delete_todo')).toBe(true)
+    expect(server.requests.some((r) => r.type === 'act_on_conversations' && r.action.type === 'trash')).toBe(true)
   })
 })
 

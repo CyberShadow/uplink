@@ -16,6 +16,12 @@ export interface Range {
  * reminder but for weeks' (an all-day event's is 18 hours before). */
 export const UPCOMING = 2 * 86_400_000
 
+/** Whether the event is the user's own, to edit or delete, as the server
+ * has it: organized by the user, or no meeting, and not cancelled. */
+export function isOwnEvent(event: CalendarEvent): boolean {
+  return (event.response === 'organizer' || event.response === 'none') && !event.cancelled
+}
+
 export class CalendarStore {
   /** The range on show; `null` before one is. */
   readonly range = signal<Range | null>(null)
