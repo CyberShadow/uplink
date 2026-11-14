@@ -13,7 +13,8 @@ use crate::{
     crawl::Crawler,
     image_packs, markdown,
     membership::{self, MembershipChanged},
-    room_tags::{self, RoomTagPushesSettled, RoomTagSet, RoomTagsClaimed, RoomTagsRead},
+    reconciler::{self, Claimed, Kind, Pushed, Settled},
+    room_tags::{self, Tags},
     rooms::{
         self, Decrypted, ObservedEvent, ObservedInvitation, ObservedRoom, Push, ReceiptSent,
         SpaceChild, Synced,
@@ -42,12 +43,10 @@ use matrix_sdk::{
             filter::{FilterDefinition, RoomEventFilter},
             receipt::create_receipt::v3::ReceiptType,
             sync::sync_events::v3::Filter,
-            tag::get_tags,
         },
         events::{
             receipt::ReceiptThread,
             room::message::{AddMentions, FormattedBody},
-            tag::{TagInfo, TagName},
             AnyRoomAccountDataEvent, AnyRoomAccountDataEventContent, GlobalAccountDataEventType,
             RoomAccountDataEventType, StateEventType,
         },
@@ -1015,17 +1014,14 @@ impl Sender {
             })
             .await?;
         }
-        self.observe(RoomTagPushesSettled {
-            now_ms: send::now_ms(),
-            interrupted: true,
-        })
-        .await
+        self.observe(Settled::<Tags>::new(send::now_ms(), true))
+            .await
     }
 
     async fn step(&self) -> Result<()> {
         self.change_memberships().await?;
         self.order_spaces().await?;
-        self.tag_rooms().await?;
+        self.reconcile::<Tags>().await?;
         self.send_due().await?;
         self.take_back_due().await?;
         self.push_receipts().await
@@ -1108,94 +1104,77 @@ impl Sender {
         Ok(())
     }
 
-    /// Tags and untags the rooms the user asked to, and reads back what
+    /// Pushes the fields of kind `K` the user changed, and reads back what
     /// that is to be confirmed by (SPEC §6.6): until nothing is left to
     /// push or read. Every push claimed is pushed and its outcome recorded,
     /// though one fails; then the first failure, that may pass, is
     /// returned, for the step to be retried with backoff.
-    async fn tag_rooms(&self) -> Result<()> {
+    async fn reconcile<K: Kind>(&self) -> Result<()> {
         // Each round pushes or confirms; few are needed.
         const ROUNDS: usize = 8;
         for _ in 0..ROUNDS {
             let account = self.account.clone();
-            let tags = read(&self.reader, move |conn| {
-                room_tags::reconciling(conn, &account)
-            })
-            .await?;
+            let fields = read(&self.reader, move |conn| K::reconciling(conn, &account)).await?;
             let now = send::now_ms();
-            if tags.iter().any(|t| t.field.expiring(now)) {
-                self.observe(RoomTagPushesSettled {
-                    now_ms: now,
-                    interrupted: false,
-                })
-                .await?;
+            if fields.iter().any(|f| f.field.expiring(now)) {
+                self.observe(Settled::<K>::new(now, false)).await?;
                 continue;
             }
-            let wanted: Vec<_> = tags
+            let wanted: Vec<_> = fields
                 .iter()
-                .filter(|t| t.field.wanted().is_some())
-                .map(|t| (t.room, t.tag.clone()))
+                .filter(|f| f.field.wanted().is_some())
+                .map(|f| (f.room, f.key.clone()))
                 .collect();
             if !wanted.is_empty() {
-                self.observe(RoomTagsClaimed { tags: wanted }).await?;
-                self.push_tags().await?;
+                self.observe(Claimed::<K>::new(wanted)).await?;
+                self.push::<K>().await?;
                 continue;
             }
-            let mut read_back: Vec<_> = tags
+            let mut read_back: Vec<_> = fields
                 .iter()
-                .filter(|t| t.field.read_back())
-                .map(|t| (t.room, t.room_id.clone()))
+                .filter(|f| f.field.read_back())
+                .map(|f| (f.room, f.room_id.clone()))
                 .collect();
             read_back.dedup();
             if read_back.is_empty() {
                 return Ok(());
             }
             for (room, room_id) in read_back {
-                self.read_tags(room, &room_id).await?;
+                let as_of = read(&self.reader, uplink_tx_log::as_of).await?;
+                let read = K::read(&self.room(&room_id)?).await?;
+                self.observe(reconciler::Read::<K> { room, read, as_of })
+                    .await?;
             }
         }
-        anyhow::bail!("room tags still to push or read after {ROUNDS} rounds")
+        anyhow::bail!("{} still to push or read after {ROUNDS} rounds", K::WHAT)
     }
 
-    /// Pushes the tags claimed, recording each outcome as it ends.
-    async fn push_tags(&self) -> Result<()> {
+    /// Pushes the fields of kind `K` claimed, recording each outcome as it
+    /// ends.
+    async fn push<K: Kind>(&self) -> Result<()> {
         let account = self.account.clone();
-        let tags = read(&self.reader, move |conn| {
-            room_tags::reconciling(conn, &account)
-        })
-        .await?;
+        let fields = read(&self.reader, move |conn| K::reconciling(conn, &account)).await?;
         let mut failed = None;
-        for stored in tags {
+        for stored in fields {
             let Some(attempt) = stored
                 .field
                 .attempt
-                .as_ref()
                 .filter(|a| a.outcome == Outcome::InFlight)
             else {
                 continue;
             };
-            let tagged = attempt.value;
-            let room_id = <&RoomId>::try_from(stored.room_id.as_str())?;
-            let room = self
-                .client
-                .get_room(room_id)
-                .with_context(|| format!("room {room_id} is not in the client"))?;
-            let tag = TagName::from(stored.tag.as_str());
-            let done = if tagged {
-                room.set_tag(tag, TagInfo::new()).await.map(drop)
-            } else {
-                room.remove_tag(tag).await.map(drop)
-            };
+            let done = K::push(&self.room(&stored.room_id)?, &stored.key, &attempt.value).await;
             let ended = ended(&done);
             if let (Err(e), Ended::NotApplied { refused: None } | Ended::Unknown { .. }) =
                 (done, &ended)
             {
-                failed.get_or_insert(anyhow::Error::from(e).context("tagging a room"));
+                let e = anyhow::Error::from(e).context(format!("setting {}", K::WHAT));
+                failed.get_or_insert(e);
             }
-            self.observe(RoomTagSet {
+            self.observe(Pushed::<K> {
                 room: stored.room,
-                tag: stored.tag,
-                tagged,
+                key: stored.key,
+                value: attempt.value,
                 ended,
             })
             .await?;
@@ -1203,21 +1182,11 @@ impl Sender {
         failed.map_or(Ok(()), Err)
     }
 
-    /// Reads the room's tags back from the homeserver.
-    async fn read_tags(&self, room: uplink_protocol::matrix::RoomId, room_id: &str) -> Result<()> {
-        let user = self.client.user_id().context("the client has no user")?;
+    fn room(&self, room_id: &str) -> Result<Room> {
         let room_id = <&RoomId>::try_from(room_id)?;
-        let as_of = read(&self.reader, uplink_tx_log::as_of).await?;
-        let response = self
-            .client
-            .send(get_tags::v3::Request::new(
-                user.to_owned(),
-                room_id.to_owned(),
-            ))
-            .await
-            .context("reading a room's tags")?;
-        let tags = response.tags.keys().map(ToString::to_string).collect();
-        self.observe(RoomTagsRead { room, tags, as_of }).await
+        self.client
+            .get_room(room_id)
+            .with_context(|| format!("room {room_id} is not in the client"))
     }
 
     /// Until the user changes something, or the interval passes.

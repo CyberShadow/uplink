@@ -7,6 +7,10 @@
 //! Element has it: tagging it one untags it the other.
 
 use anyhow::{Context, Result};
+use matrix_sdk::ruma::{
+    api::client::tag::get_tags,
+    events::tag::{TagInfo, TagName},
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
 use uplink_protocol::{
@@ -16,10 +20,13 @@ use uplink_protocol::{
 use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Transaction};
 use uplink_tx_log::{
     reconcile::{Ended, Field},
-    this_entry, Applied, Conflict, Inverse, Observation, Observed, Op,
+    this_entry, Applied, Conflict, Inverse, Op,
 };
 
-use crate::outbox;
+use crate::{
+    outbox,
+    reconciler::{Kind, Stored},
+};
 
 pub const FAVOURITE: &str = "m.favourite";
 pub const LOW_PRIORITY: &str = "m.lowpriority";
@@ -254,208 +261,98 @@ impl Op for SetRoomTags {
     }
 }
 
-/// A room's tag, as stored, of an account.
-#[derive(Debug, Clone)]
-pub struct Stored {
-    pub room: RoomId,
-    pub room_id: String,
-    pub tag: String,
-    pub field: Tag,
-}
+/// A room's tags, of which each is a field, keyed by the tag.
+pub struct Tags;
 
-/// The account's tags uplink has an opinion of, or is to read back.
-pub fn reconciling(conn: &Connection, account: &str) -> Result<Vec<Stored>> {
-    conn.prepare(
-        "SELECT r.id, r.room_id, t.tag, t.field
-         FROM matrix_room_tag t JOIN matrix_room r ON r.id = t.room
-         WHERE r.account_id = ?1
-           AND (t.desired_by IS NOT NULL OR json_extract(t.field, '$.check') IS NOT NULL)
-         ORDER BY r.id, t.tag",
-    )?
-    .query_map([account], |r| {
-        Ok((
-            RoomId(r.get(0)?),
-            r.get(1)?,
-            r.get(2)?,
-            r.get::<_, String>(3)?,
-        ))
-    })?
-    .map(|row| {
-        let (room, room_id, tag, json) = row?;
-        let field = parse_field(&json)?;
-        Ok(Stored {
-            room,
-            room_id,
-            tag,
-            field,
+impl Kind for Tags {
+    type Value = bool;
+    /// The room's tags.
+    type Read = Vec<String>;
+
+    const CLAIMED: &'static str = "matrix.room_tags_claimed";
+    const PUSHED: &'static str = "matrix.room_tag_set";
+    const READ: &'static str = "matrix.room_tags_read";
+    const SETTLED: &'static str = "matrix.room_tag_pushes_settled";
+    const WHAT: &'static str = "room tags";
+
+    fn load(conn: &Connection, room: RoomId, tag: &str) -> Result<Tag> {
+        Ok(load(conn, room, tag)?.0)
+    }
+
+    fn store(tx: &Transaction, room: RoomId, tag: &str, field: &Tag) -> Result<()> {
+        store(tx, room, tag, field)
+    }
+
+    fn reconciling(conn: &Connection, account: &str) -> Result<Vec<Stored<bool>>> {
+        conn.prepare(
+            "SELECT r.id, r.room_id, t.tag, t.field
+             FROM matrix_room_tag t JOIN matrix_room r ON r.id = t.room
+             WHERE r.account_id = ?1
+               AND (t.desired_by IS NOT NULL OR json_extract(t.field, '$.check') IS NOT NULL)
+             ORDER BY r.id, t.tag",
+        )?
+        .query_map([account], |r| {
+            Ok((
+                RoomId(r.get(0)?),
+                r.get(1)?,
+                r.get(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?
+        .map(|row| {
+            let (room, room_id, key, json) = row?;
+            let field = parse_field(&json)?;
+            Ok(Stored {
+                room,
+                room_id,
+                key,
+                field,
+            })
         })
-    })
-    .collect()
-}
+        .collect()
+    }
 
-/// The tags the reconciler pushes, in one entry (SPEC §6.6.3): those
-/// still wanted of `tags`.
-#[derive(Debug, Serialize)]
-pub struct RoomTagsClaimed {
-    pub tags: Vec<(RoomId, String)>,
-}
+    fn observe(tx: &Transaction, room: RoomId, tags: &Vec<String>, as_of: TxLogId) -> Result<bool> {
+        observe(tx, room, tags, as_of)
+    }
 
-impl Observation for RoomTagsClaimed {
-    const KIND: &'static str = "matrix.room_tags_claimed";
-
-    fn apply(self, _account: &str, tx: &Transaction) -> Result<Observed> {
-        let mut claimed = 0;
-        for (room, tag) in &self.tags {
-            let (mut field, _) = load(tx, *room, tag)?;
-            // Unless an op settled it meanwhile.
-            if field.wanted().is_some() {
-                field.claim()?;
-                store(tx, *room, tag, &field)?;
-                claimed += 1;
+    fn pushed(room: &str, tag: &str, tagged: &bool, ended: &Ended) -> String {
+        let tag = name(tag);
+        let verb = if *tagged { "tag" } else { "untag" };
+        match ended {
+            Ended::Applied if *tagged => format!("Tagged '{room}' {tag} on the homeserver"),
+            Ended::Applied => format!("Untagged '{room}' {tag} on the homeserver"),
+            Ended::NotApplied {
+                refused: Some(error),
+            } => format!("The homeserver refused to {verb} '{room}' {tag}: {error}"),
+            Ended::NotApplied { refused: None } => {
+                format!("Could not {verb} '{room}' {tag} on the homeserver")
+            }
+            Ended::Unknown { .. } => {
+                format!("Whether the homeserver did {verb} '{room}' {tag} is unknown")
             }
         }
-        Ok(Observed {
-            description: format!("Setting {claimed} room tags on the homeserver"),
-            events: vec![],
-        })
     }
-}
 
-/// How a push of the room's tag ended: of `tagged`, the value pushed.
-#[derive(Debug, Serialize)]
-pub struct RoomTagSet {
-    pub room: RoomId,
-    pub tag: String,
-    pub tagged: bool,
-    pub ended: Ended,
-}
-
-impl Observation for RoomTagSet {
-    const KIND: &'static str = "matrix.room_tag_set";
-
-    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
-        let before = outbox::pending_rooms(tx, account)?;
-        let room_name = room_name(tx, self.room)?;
-        let (mut field, _) = load(tx, self.room, &self.tag)?;
-        let shown = field.desired;
-        field.ended(self.ended.clone(), this_entry(tx)?)?;
-        store(tx, self.room, &self.tag, &field)?;
-        let events = events(tx, account, self.room, before, field.desired != shown)?;
-        let tag = name(&self.tag);
-        let verb = if self.tagged { "tag" } else { "untag" };
-        Ok(Observed {
-            description: match &self.ended {
-                Ended::Applied if self.tagged => {
-                    format!("Tagged '{room_name}' {tag} on the homeserver")
-                }
-                Ended::Applied => format!("Untagged '{room_name}' {tag} on the homeserver"),
-                Ended::NotApplied {
-                    refused: Some(error),
-                } => {
-                    format!("The homeserver refused to {verb} '{room_name}' {tag}: {error}")
-                }
-                Ended::NotApplied { refused: None } => {
-                    format!("Could not {verb} '{room_name}' {tag} on the homeserver")
-                }
-                Ended::Unknown { .. } => {
-                    format!("Whether the homeserver did {verb} '{room_name}' {tag} is unknown")
-                }
-            },
-            events,
-        })
-    }
-}
-
-/// The room's tags, read back from the homeserver by a request sent after
-/// `as_of` (SPEC §6.6.2).
-#[derive(Debug, Serialize)]
-pub struct RoomTagsRead {
-    pub room: RoomId,
-    pub tags: Vec<String>,
-    pub as_of: TxLogId,
-}
-
-impl Observation for RoomTagsRead {
-    const KIND: &'static str = "matrix.room_tags_read";
-
-    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
-        let before = outbox::pending_rooms(tx, account)?;
-        let room_name = room_name(tx, self.room)?;
-        let changed = observe(tx, self.room, &self.tags, self.as_of)?;
-        Ok(Observed {
-            description: format!("Read the tags of '{room_name}' from the homeserver"),
-            events: events(tx, account, self.room, before, changed)?,
-        })
-    }
-}
-
-/// Pushes of tags whose outcome became unknown, as of `now_ms`: those in
-/// flight, as the process stopped (`interrupted`), else those so long
-/// enough to expire (SPEC §6.6.3).
-#[derive(Debug, Serialize)]
-pub struct RoomTagPushesSettled {
-    pub now_ms: i64,
-    pub interrupted: bool,
-}
-
-impl Observation for RoomTagPushesSettled {
-    const KIND: &'static str = "matrix.room_tag_pushes_settled";
-
-    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
-        let at = this_entry(tx)?;
-        let mut settled = 0;
-        for mut stored in reconciling(tx, account)? {
-            let field = &mut stored.field;
-            let before = field.clone();
-            if self.interrupted {
-                field.interrupted(self.now_ms);
-            } else if field.expiring(self.now_ms) {
-                field.expire(self.now_ms, at)?;
-            }
-            if *field != before {
-                store(tx, stored.room, &stored.tag, field)?;
-                settled += 1;
-            }
+    async fn push(room: &matrix_sdk::Room, tag: &str, tagged: &bool) -> matrix_sdk::Result<()> {
+        let tag = TagName::from(tag);
+        if *tagged {
+            room.set_tag(tag, TagInfo::new()).await.map(drop)
+        } else {
+            room.remove_tag(tag).await.map(drop)
         }
-        Ok(Observed {
-            description: if self.interrupted {
-                format!("Whether {settled} room tags were set on the homeserver is unknown")
-            } else {
-                format!("Took {settled} room tags set or not on the homeserver for good")
-            },
-            events: vec![],
-        })
     }
-}
 
-fn room_name(tx: &Transaction, room: RoomId) -> Result<String> {
-    tx.query_row(
-        "SELECT name FROM matrix_room WHERE id = ?1",
-        [room.0],
-        |r| r.get(0),
-    )
-    .with_context(|| format!("no room {}", room.0))
-}
-
-/// What changed for clients: the room's tags shown, if `shown`; the
-/// outbox, if not as `before`.
-fn events(
-    tx: &Transaction,
-    account: &str,
-    room: RoomId,
-    before: outbox::PendingRooms,
-    shown: bool,
-) -> Result<Vec<ServerEvent>> {
-    let mut events = vec![];
-    if shown {
-        events.push(ServerEvent::RoomsChanged(RoomsChanged {
-            rooms: vec![room],
-        }));
+    async fn read(room: &matrix_sdk::Room) -> Result<Vec<String>> {
+        let user = room.own_user_id().to_owned();
+        let request = get_tags::v3::Request::new(user, room.room_id().to_owned());
+        let response = room
+            .client()
+            .send(request)
+            .await
+            .context("reading a room's tags")?;
+        Ok(response.tags.keys().map(ToString::to_string).collect())
     }
-    if outbox::pending_rooms(tx, account)? != before {
-        events.push(outbox::outbox_changed(account));
-    }
-    Ok(events)
 }
 
 /// A change of a room's tag pending, for the outbox.

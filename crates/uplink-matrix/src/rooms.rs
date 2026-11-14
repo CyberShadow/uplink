@@ -291,6 +291,16 @@ fn encryption_str(encryption: Encryption) -> &'static str {
     }
 }
 
+/// The room's name, as stored.
+pub(crate) fn name(conn: &Connection, room: RoomId) -> Result<String> {
+    conn.query_row(
+        "SELECT name FROM matrix_room WHERE id = ?1",
+        [room.0],
+        |r| r.get(0),
+    )
+    .with_context(|| format!("no room {}", room.0))
+}
+
 impl Observation for Synced {
     const KIND: &'static str = "matrix.synced";
 

@@ -969,7 +969,10 @@ mod membership {
 
 mod room_tags {
     use super::*;
-    use crate::room_tags::{RoomTagSet, RoomTagsClaimed, RoomTagsRead};
+    use crate::{
+        reconciler::{Claimed, Kind, Pushed, Read, Stored},
+        room_tags::Tags,
+    };
     use uplink_protocol::{
         matrix::{PendingRoomTags, RoomTagChange},
         ErrorCode, ServerError,
@@ -1038,26 +1041,24 @@ mod room_tags {
         /// The reconciler pushes the room's `tag`, which ends so.
         async fn push(&self, tag: &str, ended: Ended) {
             let room = self.room().await.id;
-            self.observe(RoomTagsClaimed {
-                tags: vec![(room, tag.into())],
-            })
-            .await
-            .unwrap();
-            let tagged = self.stored(tag).field.attempt.unwrap().value;
-            self.observe(RoomTagSet {
+            self.observe(Claimed::<Tags>::new(vec![(room, tag.into())]))
+                .await
+                .unwrap();
+            let value = self.stored(tag).field.attempt.unwrap().value;
+            self.observe(Pushed::<Tags> {
                 room,
-                tag: tag.into(),
-                tagged,
+                key: tag.into(),
+                value,
                 ended,
             })
             .await
             .unwrap();
         }
 
-        fn stored(&self, tag: &str) -> crate::room_tags::Stored {
+        fn stored(&self, tag: &str) -> Stored<bool> {
             let conn = uplink_storage::open_reader(self._dir.path()).unwrap();
-            let all = crate::room_tags::reconciling(&conn, "mx").unwrap();
-            all.into_iter().find(|t| t.tag == tag).unwrap()
+            let all = Tags::reconciling(&conn, "mx").unwrap();
+            all.into_iter().find(|t| t.key == tag).unwrap()
         }
 
         async fn tags(&self) -> Vec<String> {
@@ -1067,12 +1068,12 @@ mod room_tags {
         /// The tags still to set, `+tag` or `-tag`.
         fn wanted_tags(&self) -> Vec<String> {
             let conn = uplink_storage::open_reader(self._dir.path()).unwrap();
-            crate::room_tags::reconciling(&conn, "mx")
+            Tags::reconciling(&conn, "mx")
                 .unwrap()
                 .into_iter()
                 .filter_map(|t| {
                     let sign = if *t.field.wanted()? { '+' } else { '-' };
-                    Some(format!("{sign}{}", t.tag))
+                    Some(format!("{sign}{}", t.key))
                 })
                 .collect()
         }
@@ -1149,9 +1150,9 @@ mod room_tags {
         // Read back, they are the homeserver's: another client's, and the
         // favourite not, so pushed again.
         let as_of = db.as_of();
-        db.observe(RoomTagsRead {
+        db.observe(Read::<Tags> {
             room,
-            tags: vec!["u.other".into()],
+            read: vec!["u.other".into()],
             as_of,
         })
         .await
@@ -1181,9 +1182,9 @@ mod room_tags {
         assert!(db.stored(FAV).field.read_back());
         let room = db.room().await.id;
         let as_of = db.as_of();
-        db.observe(RoomTagsRead {
+        db.observe(Read::<Tags> {
             room,
-            tags: vec![FAV.into()],
+            read: vec![FAV.into()],
             as_of,
         })
         .await
@@ -1200,19 +1201,17 @@ mod room_tags {
         db.sync_tags(&[]).await;
         let tagged = db.tag(&["u.a"], &[]).await.unwrap();
         let room = db.room().await.id;
-        db.observe(RoomTagsClaimed {
-            tags: vec![(room, "u.a".into())],
-        })
-        .await
-        .unwrap();
+        db.observe(Claimed::<Tags>::new(vec![(room, "u.a".into())]))
+            .await
+            .unwrap();
         db.dispatcher.undo(tagged).await.unwrap();
         assert!(db.tags().await.is_empty());
         assert!(!db.pending_tags().is_empty(), "the push may land");
         assert!(db.wanted_tags().is_empty(), "one push at a time");
-        db.observe(RoomTagSet {
+        db.observe(Pushed::<Tags> {
             room,
-            tag: "u.a".into(),
-            tagged: true,
+            key: "u.a".into(),
+            value: true,
             ended: Ended::Applied,
         })
         .await

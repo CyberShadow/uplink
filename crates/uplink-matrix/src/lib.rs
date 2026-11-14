@@ -14,6 +14,7 @@ pub mod membership;
 pub mod outbox;
 pub mod preview;
 pub mod query;
+pub mod reconciler;
 pub mod room_tags;
 pub mod room_view;
 pub mod rooms;
