@@ -361,10 +361,17 @@ impl Observation for LabelsClaimed {
     }
 }
 
-/// How a push of label changes ended: each the value pushed (`desired`).
-/// A change of an entry or label gone meanwhile went with it.
+/// How a round of pushes of label changes ended: each request's, as its
+/// provider sent them.
 #[derive(Debug, Serialize)]
 pub struct LabelsPushed {
+    pub pushes: Vec<Pushed>,
+}
+
+/// How a request pushing label changes ended: each the value pushed
+/// (`desired`). A change of an entry or label gone meanwhile went with it.
+#[derive(Debug, Serialize)]
+pub struct Pushed {
     pub changes: Vec<LabelChange>,
     pub ended: Ended,
     /// The entry's key, if the push, applied, changed it (SPEC §6.6.5).
@@ -383,50 +390,60 @@ impl Observation for LabelsPushed {
     const KIND: &'static str = "mail.pushed";
 
     fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
-        ensure!(
-            self.rekeyed.is_none() || self.ended == Ended::Applied,
-            "re-keyed by a push not applied"
-        );
-        if let Some(key) = &self.rekeyed {
-            // Unless removed meanwhile.
-            tx.execute(
-                "UPDATE mail_entry SET external_id = coalesce(?2, external_id),
-                                       key_unknown = ?2 IS NULL
-                 WHERE id = ?1 AND account_id = ?3",
-                params![key.entry.0, key.external_id, account],
-            )?;
-        }
         let mut labels = Labels::of(tx, account)?;
         let at = labels.at;
-        let mut entries = BTreeSet::new();
         let mut outbox = false;
-        for change in &self.changes {
-            if !labels.exists(change.entry, change.label)? {
-                continue;
+        let mut applied = false;
+        // The entries pushed, by how: in the order first ended so.
+        let mut by_outcome: Vec<(Outcome, BTreeSet<EntryId>)> = vec![];
+        for push in self.pushes {
+            ensure!(
+                push.rekeyed.is_none() || push.ended == Ended::Applied,
+                "re-keyed by a push not applied"
+            );
+            if let Some(key) = &push.rekeyed {
+                // Unless removed meanwhile.
+                tx.execute(
+                    "UPDATE mail_entry SET external_id = coalesce(?2, external_id),
+                                           key_unknown = ?2 IS NULL
+                     WHERE id = ?1 AND account_id = ?3",
+                    params![key.entry.0, key.external_id, account],
+                )?;
             }
-            let mut field = labels.load(change.entry, change.label)?;
-            let before = pending_of(&field);
-            field.ended(self.ended.clone(), at)?;
-            outbox |= pending_of(&field) != before;
-            labels.store(change.entry, change.label, &field)?;
-            entries.insert(change.entry);
+            let outcome = Outcome::of(&push.ended);
+            let i = match by_outcome.iter().position(|(o, _)| *o == outcome) {
+                Some(i) => i,
+                None => {
+                    by_outcome.push((outcome, BTreeSet::new()));
+                    by_outcome.len() - 1
+                }
+            };
+            for change in &push.changes {
+                if !labels.exists(change.entry, change.label)? {
+                    continue;
+                }
+                let mut field = labels.load(change.entry, change.label)?;
+                let before = pending_of(&field);
+                field.ended(push.ended.clone(), at)?;
+                outbox |= pending_of(&field) != before;
+                labels.store(change.entry, change.label, &field)?;
+                by_outcome[i].1.insert(change.entry);
+            }
+            applied |= push.ended == Ended::Applied;
         }
-        if self.ended == Ended::Applied {
+        if applied {
             labels.known(at)?;
         }
-        let n = messages(entries.len());
+        let description = by_outcome
+            .iter()
+            .filter(|(_, entries)| !entries.is_empty())
+            .map(|(outcome, entries)| outcome.describe(entries.len()))
+            .collect::<Vec<_>>();
         Ok(Observed {
-            description: match &self.ended {
-                Ended::Applied => format!("Pushed label changes on {n}"),
-                Ended::NotApplied {
-                    refused: Some(reason),
-                } => format!("Refused label changes on {n}: {reason}"),
-                Ended::NotApplied { refused: None } => {
-                    format!("Could not push label changes on {n}")
-                }
-                Ended::Unknown { .. } => {
-                    format!("Whether label changes on {n} were pushed is unknown")
-                }
+            description: if description.is_empty() {
+                "Pushed no label changes".to_owned()
+            } else {
+                capitalize(&description.join("; "))
             },
             events: if outbox {
                 vec![outbox_changed(account)]
@@ -434,6 +451,38 @@ impl Observation for LabelsPushed {
                 vec![]
             },
         })
+    }
+}
+
+/// How pushes ended, as their description tells.
+#[derive(PartialEq)]
+enum Outcome {
+    Applied,
+    Refused(String),
+    NotApplied,
+    Unknown,
+}
+
+impl Outcome {
+    fn of(ended: &Ended) -> Self {
+        match ended {
+            Ended::Applied => Self::Applied,
+            Ended::NotApplied {
+                refused: Some(reason),
+            } => Self::Refused(reason.clone()),
+            Ended::NotApplied { refused: None } => Self::NotApplied,
+            Ended::Unknown { .. } => Self::Unknown,
+        }
+    }
+
+    fn describe(&self, entries: usize) -> String {
+        let n = messages(entries);
+        match self {
+            Self::Applied => format!("pushed label changes on {n}"),
+            Self::Refused(reason) => format!("refused label changes on {n}: {reason}"),
+            Self::NotApplied => format!("could not push label changes on {n}"),
+            Self::Unknown => format!("whether label changes on {n} were pushed is unknown"),
+        }
     }
 }
 

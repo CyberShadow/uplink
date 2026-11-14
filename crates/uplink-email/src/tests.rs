@@ -1,7 +1,7 @@
 use crate::{
     mailbox::{
         self, EntryLabels, LabelChange, LabelsClaimed, LabelsPushed, MailboxObserved, NewEntry,
-        ObservedLabel, SetLabels,
+        ObservedLabel, Pushed, SetLabels,
     },
     parse::parse,
 };
@@ -111,9 +111,11 @@ impl Db {
             .observe(
                 account.to_owned(),
                 LabelsPushed {
-                    changes,
-                    ended,
-                    rekeyed: None,
+                    pushes: vec![Pushed {
+                        changes,
+                        ended,
+                        rekeyed: None,
+                    }],
                 },
             )
             .await
@@ -897,9 +899,11 @@ async fn pushed_changes_become_observed_as_read_back() {
         .observe(
             "a".into(),
             LabelsPushed {
-                changes: claimed,
-                ended: Ended::Applied,
-                rekeyed: None,
+                pushes: vec![Pushed {
+                    changes: claimed,
+                    ended: Ended::Applied,
+                    rekeyed: None,
+                }],
             },
         )
         .await
@@ -1149,9 +1153,11 @@ async fn a_failing_push_keeps_the_outcomes_of_those_before() {
             .observe(
                 "a".into(),
                 LabelsPushed {
-                    changes: vec![change(entry, false)],
-                    ended,
-                    rekeyed: None,
+                    pushes: vec![Pushed {
+                        changes: vec![change(entry, false)],
+                        ended,
+                        rekeyed: None,
+                    }],
                 },
             )
             .await
@@ -1200,9 +1206,11 @@ async fn an_entry_moved_to_an_unknown_key_waits_for_a_sync() {
                 .observe(
                     "a".into(),
                     LabelsPushed {
-                        changes: vec![change(desired)],
-                        ended: Ended::Applied,
-                        rekeyed: Some(key(to)),
+                        pushes: vec![Pushed {
+                            changes: vec![change(desired)],
+                            ended: Ended::Applied,
+                            rekeyed: Some(key(to)),
+                        }],
                     },
                 )
                 .await

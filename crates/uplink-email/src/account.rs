@@ -18,7 +18,7 @@ use crate::{
     },
     mailbox::{
         self, kind_at, LabelChange, LabelsClaimed, LabelsPushed, LabelsSettled, NewKey,
-        ObservedLabel, Reconciling,
+        ObservedLabel, Pushed, Reconciling,
     },
     parse::{parse, Parsed},
 };
@@ -549,6 +549,7 @@ impl<P: Provider> SyncTask<P> {
                     })
                     .collect();
                 let mut failed = None;
+                let mut pushes = vec![];
                 for pushed in self.provider.push(&self.account, claimed).await {
                     // Not applied, or maybe: pushed again after the next
                     // sync, rather than at once.
@@ -561,14 +562,14 @@ impl<P: Provider> SyncTask<P> {
                     if let Some(e) = pushed.error {
                         failed.get_or_insert(e.context("pushing label changes"));
                     }
-                    self.account
-                        .observe(LabelsPushed {
-                            changes: pushed.changes,
-                            ended: pushed.ended,
-                            rekeyed: pushed.rekeyed,
-                        })
-                        .await?;
+                    pushes.push(Pushed {
+                        changes: pushed.changes,
+                        ended: pushed.ended,
+                        rekeyed: pushed.rekeyed,
+                    });
                 }
+                // All ended by now: recorded as one.
+                self.account.observe(LabelsPushed { pushes }).await?;
                 if let Some(e) = failed {
                     return Err(e);
                 }

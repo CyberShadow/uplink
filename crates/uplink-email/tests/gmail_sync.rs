@@ -206,7 +206,7 @@ async fn refused_changes_hold_up_no_others() {
             .reader()
             .query_row(
                 "SELECT description FROM tx_log
-                 WHERE op_type = 'mail.pushed' AND description LIKE 'Refused %'",
+                 WHERE op_type = 'mail.pushed' AND description LIKE '%refused label changes%'",
                 [],
                 |r| r.get::<_, String>(0),
             )
