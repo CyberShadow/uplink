@@ -1818,7 +1818,8 @@ impl Observation for Filled {
 }
 
 /// Those of `events` that the room's timeline lists, as it lists them, in
-/// its order.
+/// its order. Found by their ids: the room's condition is `+`, so that
+/// SQLite does not walk the whole room by position, for its order.
 pub fn listed_events(
     tx: &Transaction,
     room: RoomId,
@@ -1830,7 +1831,7 @@ pub fn listed_events(
         room,
         &format!(
             "SELECT {COLUMNS} FROM matrix_event e
-             WHERE e.room = ?1 AND e.id IN (SELECT value FROM json_each(?2)) AND {LISTED}
+             WHERE +e.room = ?1 AND e.id IN (SELECT value FROM json_each(?2)) AND {LISTED}
              ORDER BY e.pos"
         ),
         params![room.0, ids],
