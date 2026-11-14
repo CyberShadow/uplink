@@ -67,12 +67,26 @@ pub struct Label {
     pub name: String,
     /// Defined by the provider rather than the user.
     pub system: bool,
-    /// One of the account's folders, of which an entry is in exactly one.
-    pub folder: bool,
+    pub kind: LabelKind,
     /// Conversations with an entry carrying the label (as desired).
     pub total: u32,
     /// Of those, the ones with an entry carrying it and `UNREAD` too.
     pub unread: u32,
+}
+
+/// What a label says of the entries with it (SPEC §6.6): where they are,
+/// or something else of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum LabelKind {
+    /// Under no rule of where an entry is: Gmail's labels (an entry in
+    /// none is in All Mail), read and starred, keywords, categories.
+    Tag,
+    /// Where an entry is, in any number of them: JMAP's mailboxes.
+    Mailbox,
+    /// Where an entry is, alone: IMAP's and Microsoft 365's folders,
+    /// JMAP's Trash, Junk and Archive.
+    Folder,
 }
 
 /// An entry as shown in a message list.

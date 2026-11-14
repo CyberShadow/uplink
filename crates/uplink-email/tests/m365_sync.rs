@@ -254,7 +254,7 @@ async fn mirrors_the_mailbox_and_pushes_changes() {
     let name: String = uplink
         .reader()
         .query_row(
-            "SELECT name FROM label WHERE external_id = ?1 AND folder",
+            "SELECT name FROM label WHERE external_id = ?1 AND kind = 'folder'",
             [&projects],
             |r| r.get(0),
         )

@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use std::{path::Path, sync::Arc, time::Duration};
 use tokio_rustls::TlsConnector;
 use uplink_config::Pop3AccountConfig;
+use uplink_protocol::mail::LabelKind;
 use uplink_storage::seal::MasterKey;
 use uplink_tx_log::Dispatcher;
 
@@ -229,7 +230,7 @@ fn labels() -> Vec<ObservedLabel> {
             external_id: external_id.into(),
             name: name.into(),
             system: true,
-            folder: false,
+            kind: LabelKind::Tag,
         })
         .collect()
 }

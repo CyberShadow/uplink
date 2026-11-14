@@ -135,49 +135,61 @@ async fn mirrors_the_mailboxes_as_labels_and_pushes_changes() {
         uplink.labels(first),
         [("INBOX".into(), true, true), ("UNREAD".into(), true, true)]
     );
-    let labels: Vec<(String, String, bool)> = uplink
+    let labels: Vec<(String, String, String)> = uplink
         .reader()
-        .prepare("SELECT external_id, name, folder FROM label ORDER BY 1")
+        .prepare("SELECT external_id, name, kind FROM label ORDER BY 1")
         .unwrap()
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
-    // Stalwart's mailboxes of a role, Projects, and the state labels; none
-    // a folder, and no Archive, which is made as needed.
-    let mut expected: Vec<(String, String, bool)> = [
-        "DRAFT", "INBOX", "SENT", "SPAM", "STARRED", "TRASH", "UNREAD",
+    // Stalwart's mailboxes of a role, an Archive to be made, Projects, and
+    // the state labels; Trash, Junk and the Archive are folders.
+    let mut expected: Vec<(String, String, String)> = [
+        ("ARCHIVE", "folder"),
+        ("DRAFT", "mailbox"),
+        ("INBOX", "mailbox"),
+        ("SENT", "mailbox"),
+        ("SPAM", "folder"),
+        ("STARRED", "tag"),
+        ("TRASH", "folder"),
+        ("UNREAD", "tag"),
     ]
-    .map(|l| (l.to_owned(), l.to_owned(), false))
+    .map(|(l, kind)| (l.to_owned(), l.to_owned(), kind.to_owned()))
     .into();
-    expected.push((projects_label.clone(), "Projects".into(), false));
+    expected.push((projects_label.clone(), "Projects".into(), "mailbox".into()));
     expected.sort();
     assert_eq!(labels, expected);
     import(&other, "inbox", &message("second", "a quixotic body")).await;
     let second = uplink.arrived("second").await;
 
     // Archiving takes the email out of the Inbox, and, as it is then in
-    // no mailbox, into an Archive, made for it; which uplink does not
-    // show. It is the same entry. Undo takes it back, out of the Archive.
+    // no mailbox, into the Archive, made for it. It is the same entry.
+    // Undo takes it back, out of the Archive.
     let id = uplink.external_id(first);
-    let archived = uplink
-        .mail
-        .modify_labels(vec![first], vec![], vec![uplink.label("INBOX")])
-        .await
-        .unwrap();
-    let uplink_protocol::ServerResponse::Dispatched {
-        tx_log_id: archived,
-    } = archived
-    else {
-        panic!("{archived:?}")
+    let dispatched = |response| match response {
+        uplink_protocol::ServerResponse::Dispatched { tx_log_id } => tx_log_id,
+        response => panic!("{response:?}"),
     };
+    let archived = dispatched(
+        uplink
+            .mail
+            .modify_labels(vec![first], vec![], vec![uplink.label("INBOX")])
+            .await
+            .unwrap(),
+    );
     eventually("the archive to reach the server", || async {
         let (_, mailboxes, _) = find(&other, "first").await?;
         (mailboxes == set(&["archive"])).then_some(())
     })
     .await;
     eventually("the archive to be observed", || async {
-        (uplink.labels(first) == [("UNREAD".into(), true, true)]).then_some(())
+        (uplink.labels(first)
+            == [
+                ("ARCHIVE".into(), true, true),
+                ("UNREAD".into(), true, true),
+            ])
+        .then_some(())
     })
     .await;
     assert_eq!(uplink.external_id(first), id);
@@ -185,6 +197,43 @@ async fn mirrors_the_mailboxes_as_labels_and_pushes_changes() {
     eventually("the undo to reach the server", || async {
         let (_, mailboxes, _) = find(&other, "first").await?;
         (mailboxes == set(&["inbox"])).then_some(())
+    })
+    .await;
+
+    // Trashing, as RFC 8621 does, leaves the email in Trash alone, so that
+    // other clients do not show it in the Inbox; undo puts it back.
+    let projects_id = uplink.label(&projects_label);
+    uplink
+        .mail
+        .modify_labels(vec![first], vec![projects_id], vec![])
+        .await
+        .unwrap();
+    eventually("the label to reach the server", || async {
+        let (_, mailboxes, _) = find(&other, "first").await?;
+        (mailboxes == set(&["Projects", "inbox"])).then_some(())
+    })
+    .await;
+    let trashed = dispatched(
+        uplink
+            .mail
+            .modify_labels(vec![first], vec![uplink.label("TRASH")], vec![])
+            .await
+            .unwrap(),
+    );
+    eventually("the trashing to reach the server", || async {
+        let (_, mailboxes, _) = find(&other, "first").await?;
+        (mailboxes == set(&["trash"])).then_some(())
+    })
+    .await;
+    eventually("the trashing to be observed", || async {
+        (uplink.labels(first) == [("TRASH".into(), true, true), ("UNREAD".into(), true, true)])
+            .then_some(())
+    })
+    .await;
+    uplink.dispatcher.undo(trashed).await.unwrap();
+    eventually("the restoring to reach the server", || async {
+        let (_, mailboxes, _) = find(&other, "first").await?;
+        (mailboxes == set(&["Projects", "inbox"])).then_some(())
     })
     .await;
 

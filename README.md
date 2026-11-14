@@ -311,12 +311,13 @@ jmap`), with its `session_url`: for most servers
 account (`uplink password --account alice-jmap`), or give it an `oauth`
 block and run `uplink oauth init`.
 
-Mailboxes are labels, as in Gmail: a message can be in several. The
-server's Sent, Drafts, Trash and Junk are uplink's, and its Archive is
-All Mail: archiving takes a message out of the Inbox, and a message left
-in no mailbox goes into the Archive (made if there is none). Read and
-starred are the `$seen` and `$flagged` keywords, and other keywords are
-labels. Changes arrive as they happen, as the server tells of them.
+Mailboxes are labels, as in Gmail: a message can be in several. But
+Trash, Junk and the Archive are folders, as JMAP has them: trashing a
+message leaves it in Trash alone, so other clients don't show it in the
+Inbox, and undo puts it back where it was. Archiving takes a message
+out of the Inbox, and one left in no mailbox goes into the Archive
+(made if there is none). Read and starred are the `$seen` and
+`$flagged` keywords, and other keywords are labels. Changes arrive as they happen, as the server tells of them.
 Sent mail goes by the server's own submission, which files the copy in
 Sent.
 

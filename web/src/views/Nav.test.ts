@@ -31,7 +31,7 @@ describe('labelTree', () => {
     external_id: `Label_${id}`,
     name,
     system: false,
-    folder: false,
+    kind: 'tag',
     total: 0,
     unread: 0,
   })

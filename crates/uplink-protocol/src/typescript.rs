@@ -105,6 +105,7 @@ fn declarations() -> String {
         Account,
         MailProvider,
         Label,
+        LabelKind,
         Entry,
         Conversation,
         ListingProgress,

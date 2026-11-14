@@ -18,12 +18,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use uplink_protocol::{
     compose::OutboxChanged,
     mail::{
-        EntriesAdded, EntriesRemoved, EntryId, LabelId, LabelListChanged, LabelState,
+        EntriesAdded, EntriesRemoved, EntryId, LabelId, LabelKind, LabelListChanged, LabelState,
         LabelsChanged, MessageId,
     },
     ServerEvent, TxLogId,
 };
-use uplink_storage::rusqlite::{params, OptionalExtension, Transaction};
+use uplink_storage::rusqlite::{self, params, OptionalExtension, Row, Transaction};
 use uplink_storage::store::{Store, VariantHash};
 use uplink_tx_log::{this_entry, Applied, Conflict, Inverse, Observation, Observed, Op, Registry};
 
@@ -111,9 +111,31 @@ pub struct ObservedLabel {
     pub external_id: String,
     pub name: String,
     pub system: bool,
-    /// One of the account's folders, of which an entry is in exactly one
-    /// (SPEC §8.3).
-    pub folder: bool,
+    pub kind: LabelKind,
+}
+
+/// `label.kind`'s value of `kind`.
+pub(crate) fn kind_sql(kind: LabelKind) -> &'static str {
+    match kind {
+        LabelKind::Tag => "tag",
+        LabelKind::Mailbox => "mailbox",
+        LabelKind::Folder => "folder",
+    }
+}
+
+/// The label kind in column `i` of `row`, of `label.kind`.
+pub(crate) fn kind_at(row: &Row, i: usize) -> rusqlite::Result<LabelKind> {
+    let kind: String = row.get(i)?;
+    match kind.as_str() {
+        "tag" => Ok(LabelKind::Tag),
+        "mailbox" => Ok(LabelKind::Mailbox),
+        "folder" => Ok(LabelKind::Folder),
+        _ => Err(rusqlite::Error::FromSqlConversionFailure(
+            i,
+            rusqlite::types::Type::Text,
+            format!("no label kind {kind}").into(),
+        )),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -387,13 +409,13 @@ pub(crate) fn outbox_changed(account: &str) -> ServerEvent {
 /// Makes the account's labels `labels`; returns whether anything changed.
 fn replace_labels(tx: &Transaction, account: &str, labels: Vec<ObservedLabel>) -> Result<bool> {
     let mut known: HashMap<String, ObservedLabel> = tx
-        .prepare("SELECT external_id, name, system, folder FROM label WHERE account_id = ?1")?
+        .prepare("SELECT external_id, name, system, kind FROM label WHERE account_id = ?1")?
         .query_map([account], |r| {
             Ok(ObservedLabel {
                 external_id: r.get(0)?,
                 name: r.get(1)?,
                 system: r.get(2)?,
-                folder: r.get(3)?,
+                kind: kind_at(r, 3)?,
             })
         })?
         .map(|l| l.map(|l| (l.external_id.clone(), l)))
@@ -404,17 +426,17 @@ fn replace_labels(tx: &Transaction, account: &str, labels: Vec<ObservedLabel>) -
             continue;
         }
         tx.execute(
-            "INSERT INTO label (account_id, external_id, name, system, folder)
+            "INSERT INTO label (account_id, external_id, name, system, kind)
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT (account_id, external_id)
              DO UPDATE SET name = excluded.name, system = excluded.system,
-                           folder = excluded.folder",
+                           kind = excluded.kind",
             params![
                 account,
                 label.external_id,
                 label.name,
                 label.system,
-                label.folder
+                kind_sql(label.kind)
             ],
         )?;
         changed = true;
@@ -672,10 +694,12 @@ fn set_label_row(
 /// already in effect are skipped, so the inverse reverts exactly what this
 /// op changed (SPEC §6.2).
 ///
-/// An entry is in exactly one of its account's folders, if the account has
-/// them (SPEC §8.3): adding a folder takes the entry out of the others, and
-/// removing its last one puts it in the Archive. Those implied changes are
-/// part of the op, and of its inverse, but not of its description.
+/// Where an entry is, its account's folders and mailboxes say, if it has
+/// them (SPEC §6.6): it is in one folder, or in any number of mailboxes.
+/// Adding a folder takes the entry out of every other place, adding a
+/// mailbox takes it out of the folders, and leaving its last place puts it
+/// in the Archive. Those implied changes are part of the op, and of its
+/// inverse, but not of its description.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SetLabels {
@@ -721,24 +745,26 @@ impl Op for SetLabels {
         }
         let mut changes = vec![];
         for (entry, requested) in by_entry {
-            let implied = implied_by_folders(tx, entry, &requested)?;
-            // Moving into a folder is leaving the other: described as one.
-            let mut moved = false;
-            let mut left = vec![];
-            for c in &requested {
-                if is_folder(tx, c.label)? {
-                    if c.desired {
-                        moved = true;
-                    } else {
-                        left.push(c.label);
-                    }
-                }
+            let implied = implied_by_places(tx, entry, &requested)?;
+            // Moving is leaving what the place moved to implies leaving:
+            // described as one.
+            let kinds = requested
+                .iter()
+                .map(|c| label_kind(tx, c.label))
+                .collect::<Result<Vec<_>>>()?;
+            let added: Vec<LabelKind> = requested
+                .iter()
+                .zip(&kinds)
+                .filter(|(c, _)| c.desired)
+                .filter_map(|(_, &kind)| kind.filter(|&k| k != LabelKind::Tag))
+                .collect();
+            for (c, kind) in requested.into_iter().zip(kinds) {
+                let left = !c.desired
+                    && kind.is_some_and(|k| {
+                        k != LabelKind::Tag && added.iter().any(|&a| leaves(a, k))
+                    });
+                changes.push((c, left));
             }
-            changes.extend(
-                requested
-                    .into_iter()
-                    .map(|c| (c, moved && left.contains(&c.label))),
-            );
             changes.extend(implied.into_iter().map(|c| (c, true)));
         }
         for (change, undescribed) in changes {
@@ -792,15 +818,15 @@ impl Op for SetLabels {
         }
         let mut description = vec![];
         for ((label, desired), (count, conversations)) in groups {
-            let (external_id, name, folder): (String, String, bool) = tx.query_row(
-                "SELECT external_id, name, folder FROM label WHERE id = ?1",
+            let (external_id, name, kind): (String, String, LabelKind) = tx.query_row(
+                "SELECT external_id, name, kind FROM label WHERE id = ?1",
                 [label.0],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, kind_at(r, 2)?)),
             )?;
             description.push(describe_label_change(
                 &external_id,
                 &name,
-                folder,
+                kind == LabelKind::Folder,
                 desired,
                 count,
                 conversations.len(),
@@ -826,9 +852,10 @@ impl Op for SetLabels {
     }
 }
 
-/// The changes that keep `entry` in exactly one folder, given the
-/// `requested` ones; none if its account has no folders.
-fn implied_by_folders(
+/// The changes that keep `entry` in one folder or in mailboxes (see
+/// [`SetLabels`]), given the `requested` ones; none if its account has
+/// neither.
+fn implied_by_places(
     tx: &Transaction,
     entry: EntryId,
     requested: &[LabelChange],
@@ -841,22 +868,26 @@ fn implied_by_folders(
     let Some(account) = account else {
         return Ok(vec![]);
     };
-    let folders: BTreeMap<LabelId, String> = tx
-        .prepare_cached("SELECT id, external_id FROM label WHERE account_id = ?1 AND folder")?
-        .query_map([&account], |r| Ok((LabelId(r.get(0)?), r.get(1)?)))?
+    let places: BTreeMap<LabelId, (String, LabelKind)> = tx
+        .prepare_cached(
+            "SELECT id, external_id, kind FROM label WHERE account_id = ?1 AND kind != 'tag'",
+        )?
+        .query_map([&account], |r| {
+            Ok((LabelId(r.get(0)?), (r.get(1)?, kind_at(r, 2)?)))
+        })?
         .collect::<Result<_, _>>()?;
-    if folders.is_empty() {
+    if places.is_empty() {
         return Ok(vec![]);
     }
     let mut desired: BTreeSet<LabelId> = tx
         .prepare_cached(
             "SELECT el.label FROM entry_label el JOIN label l ON l.id = el.label
-             WHERE el.entry = ?1 AND el.desired AND l.folder",
+             WHERE el.entry = ?1 AND el.desired AND l.kind != 'tag'",
         )?
         .query_map([entry.0], |r| Ok(LabelId(r.get(0)?)))?
         .collect::<Result<_, _>>()?;
     let mut added = vec![];
-    for change in requested.iter().filter(|c| folders.contains_key(&c.label)) {
+    for change in requested.iter().filter(|c| places.contains_key(&c.label)) {
         if change.desired {
             desired.insert(change.label);
             added.push(change.label);
@@ -864,37 +895,50 @@ fn implied_by_folders(
             desired.remove(&change.label);
         }
     }
-    let implied = |label, desired| LabelChange {
-        entry,
-        label,
-        desired,
-    };
+    let kind = |label: &LabelId| places[label].1;
     match &added[..] {
         [] if desired.is_empty() => {
-            let archive = folders
+            let archive = places
                 .iter()
-                .find(|(_, external_id)| *external_id == "ARCHIVE")
+                .find(|(_, (external_id, kind))| {
+                    external_id == "ARCHIVE" && *kind == LabelKind::Folder
+                })
                 .map(|(&id, _)| id)
-                .with_context(|| format!("account {account} has folders, but no Archive"))?;
-            Ok(vec![implied(archive, true)])
+                .with_context(|| format!("account {account} has places, but no Archive"))?;
+            Ok(vec![LabelChange {
+                entry,
+                label: archive,
+                desired: true,
+            }])
         }
-        [] => Ok(vec![]),
-        &[into] => Ok(desired
-            .into_iter()
-            .filter(|&f| f != into)
-            .map(|f| implied(f, false))
+        [_, _, ..] if added.iter().any(|a| kind(a) == LabelKind::Folder) => {
+            bail!(Conflict("a message is in one folder at a time".into()))
+        }
+        added => Ok(desired
+            .iter()
+            .filter(|&l| !added.contains(l) && added.iter().any(|a| leaves(kind(a), kind(l))))
+            .map(|&label| LabelChange {
+                entry,
+                label,
+                desired: false,
+            })
             .collect()),
-        _ => bail!(Conflict("a message is in one folder at a time".into())),
     }
 }
 
-/// Whether the label is a folder; a label gone is refused later.
-fn is_folder(tx: &Transaction, label: LabelId) -> Result<bool> {
+/// Whether an entry put in a place of kind `into` leaves one of kind
+/// `other` (see [`SetLabels`]): a folder leaves every other place, a
+/// mailbox the folders.
+fn leaves(into: LabelKind, other: LabelKind) -> bool {
+    into == LabelKind::Folder || other == LabelKind::Folder
+}
+
+/// The label's kind; none for a label gone, which is refused later.
+fn label_kind(tx: &Transaction, label: LabelId) -> Result<Option<LabelKind>> {
     Ok(tx
-        .prepare_cached("SELECT folder FROM label WHERE id = ?1")?
-        .query_row([label.0], |r| r.get(0))
-        .optional()?
-        .unwrap_or(false))
+        .prepare_cached("SELECT kind FROM label WHERE id = ?1")?
+        .query_row([label.0], |r| kind_at(r, 0))
+        .optional()?)
 }
 
 fn describe_label_change(

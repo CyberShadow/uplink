@@ -51,7 +51,7 @@ pub fn accounts(
         // Kept as entries change (SPEC §4).
         let labels = tx
             .prepare(
-                "SELECT id, external_id, name, system, folder,
+                "SELECT id, external_id, name, system, kind,
                         conversations, unread_conversations
                  FROM label
                  WHERE account_id = ?1
@@ -63,7 +63,7 @@ pub fn accounts(
                     external_id: r.get(1)?,
                     name: r.get(2)?,
                     system: r.get(3)?,
-                    folder: r.get(4)?,
+                    kind: crate::mailbox::kind_at(r, 4)?,
                     total: r.get(5)?,
                     unread: r.get(6)?,
                 })

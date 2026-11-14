@@ -52,7 +52,7 @@ async fn mirrors_the_folders_and_pushes_changes() {
     );
     let folders: Vec<(String, String)> = uplink
         .reader()
-        .prepare("SELECT external_id, name FROM label WHERE folder ORDER BY 1")
+        .prepare("SELECT external_id, name FROM label WHERE kind = 'folder' ORDER BY 1")
         .unwrap()
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
         .unwrap()

@@ -28,6 +28,7 @@ import type {
   MessageContent,
   EntryId,
   Label,
+  LabelKind,
   LabelId,
   LabelState,
   ListPosition,
@@ -181,16 +182,16 @@ export class FakeServer implements Requester, Blobs {
    * categories. */
   addM365Account(id: string, folders: string[], categories: string[] = []) {
     const labels = [
-      ...M365_FOLDERS.map((external) => this.label(external, external, true, true)),
+      ...M365_FOLDERS.map((external) => this.label(external, external, true, 'folder')),
       ...['UNREAD', 'STARRED', 'IMPORTANT'].map((external) => this.label(external, external, true)),
-      ...folders.map((name, i) => this.label(`Folder_${i + 1}`, name, false, true)),
+      ...folders.map((name, i) => this.label(`Folder_${i + 1}`, name, false, 'folder')),
       ...categories.map((name) => this.label(`cat:${name}`, name, false)),
     ]
     this.accounts.push({ id, address: `${id}@example.com`, provider: 'm365', labels })
   }
 
-  private label(external_id: string, name: string, system: boolean, folder = false): Label {
-    return { id: this.nextLabel++, external_id, name, system, folder, total: 0, unread: 0 }
+  private label(external_id: string, name: string, system: boolean, kind: LabelKind = 'tag'): Label {
+    return { id: this.nextLabel++, external_id, name, system, kind, total: 0, unread: 0 }
   }
 
   labelId(account: string, externalOrName: string): LabelId {

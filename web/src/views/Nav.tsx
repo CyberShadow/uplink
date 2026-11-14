@@ -60,11 +60,11 @@ export function labelName(account: Account, label: Label): string {
   return SYSTEM[label.external_id]?.name ?? label.name
 }
 
-/** Gmail's icons for its system labels; one for user labels, and one for
- * Microsoft 365's own folders. */
+/** Gmail's icons for its system labels; one for user labels and
+ * mailboxes, and one for folders. */
 export function labelIcon(label: Label): IconName {
   if (label.system) return SYSTEM[label.external_id]!.icon
-  return label.folder ? 'folder' : 'tag'
+  return label.kind === 'folder' ? 'folder' : 'tag'
 }
 
 /** A view above the accounts. */
@@ -392,7 +392,7 @@ export function Nav(props: { open: boolean }) {
           )
         ) : (
           <span class={styles.parent} style={{ '--depth': depth }}>
-            <Icon name={node.children.some((c) => c.label?.folder) ? 'folder' : 'tag'} />
+            <Icon name={node.children.some((c) => c.label?.kind === 'folder') ? 'folder' : 'tag'} />
             <span class={styles.name}>{node.name}</span>
             {folded && <PlaceMark mark={strongest(labelsIn(node).map(marks.label))} />}
           </span>

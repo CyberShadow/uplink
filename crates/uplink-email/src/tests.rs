@@ -8,7 +8,7 @@ use crate::{
 use std::sync::Arc;
 use tempfile::TempDir;
 use uplink_protocol::{
-    mail::{EntryId, LabelId, LabelState},
+    mail::{EntryId, LabelId, LabelKind, LabelState},
     ServerEvent, TxLogId,
 };
 use uplink_realtime::Hub;
@@ -141,7 +141,7 @@ pub(crate) fn labels(ids: &[&str]) -> Option<Vec<ObservedLabel>> {
                 external_id: id.to_string(),
                 name: id.to_string(),
                 system: !id.starts_with("Label_"),
-                folder: false,
+                kind: LabelKind::Tag,
             })
             .collect(),
     )
@@ -545,7 +545,7 @@ async fn an_entry_is_in_one_folder() {
             external_id: id.into(),
             name: id.into(),
             system: !id.starts_with("Folder_"),
-            folder: true,
+            kind: LabelKind::Folder,
         })
         .chain(labels(&["UNREAD"]).unwrap())
         .collect();
@@ -628,6 +628,108 @@ async fn an_entry_is_in_one_folder() {
             changes: vec![change("Folder_1", true), change("Folder_2", true)],
             shown: false,
         })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        e.downcast::<Conflict>().unwrap().0,
+        "a message is in one folder at a time"
+    );
+}
+
+#[tokio::test]
+async fn an_entry_is_in_mailboxes_or_in_one_folder() {
+    let db = Db::new();
+    let store = db.store();
+    let label = |id: &str, kind| ObservedLabel {
+        external_id: id.into(),
+        name: id.into(),
+        system: !id.starts_with("mailbox:"),
+        kind,
+    };
+    let places = ["INBOX", "mailbox:x", "mailbox:y"]
+        .map(|id| label(id, LabelKind::Mailbox))
+        .into_iter()
+        .chain(["TRASH", "ARCHIVE"].map(|id| label(id, LabelKind::Folder)))
+        .chain(labels(&["UNREAD"]).unwrap())
+        .collect();
+    db.observe(
+        "a",
+        observed(
+            Some(places),
+            vec![new_entry(
+                &store,
+                "m1",
+                &["INBOX", "UNREAD", "mailbox:x"],
+                &raw("1@x", "s@x", DATE, "1", ""),
+            )],
+            vec![],
+            &[],
+        ),
+    )
+    .await;
+    let m1 = db.entry("m1");
+    let change = |label: &str, desired| LabelChange {
+        entry: m1,
+        label: db.label("a", label),
+        desired,
+    };
+    let desired = |db: &Db| -> Vec<String> {
+        db.label_rows()
+            .into_iter()
+            .filter(|r| r.2)
+            .map(|r| r.1)
+            .collect()
+    };
+    let set = |changes| SetLabels {
+        changes,
+        shown: false,
+    };
+    let mut live = db.hub.subscribe();
+
+    // Trashing takes it out of every mailbox, as one move; undo puts it
+    // back in them.
+    let trashed = db
+        .dispatcher
+        .dispatch(set(vec![change("TRASH", true)]))
+        .await
+        .unwrap();
+    assert_eq!(
+        live.recv().await.unwrap().description,
+        "Moved 1 message to Trash"
+    );
+    assert_eq!(desired(&db), ["TRASH", "UNREAD"]);
+    db.dispatcher.undo(trashed).await.unwrap();
+    live.recv().await.unwrap();
+    assert_eq!(desired(&db), ["INBOX", "UNREAD", "mailbox:x"]);
+
+    // Archived, it is still in its other mailbox; out of its last one, it
+    // is in the Archive, which another mailbox takes it out of.
+    db.dispatcher
+        .dispatch(set(vec![change("INBOX", false)]))
+        .await
+        .unwrap();
+    assert_eq!(live.recv().await.unwrap().description, "Archived 1 message");
+    assert_eq!(desired(&db), ["UNREAD", "mailbox:x"]);
+    db.dispatcher
+        .dispatch(set(vec![change("mailbox:x", false)]))
+        .await
+        .unwrap();
+    live.recv().await.unwrap();
+    assert_eq!(desired(&db), ["ARCHIVE", "UNREAD"]);
+    db.dispatcher
+        .dispatch(set(vec![change("mailbox:y", true)]))
+        .await
+        .unwrap();
+    assert_eq!(
+        live.recv().await.unwrap().description,
+        "Labelled 1 message 'mailbox:y'"
+    );
+    assert_eq!(desired(&db), ["UNREAD", "mailbox:y"]);
+
+    // Into a folder and a mailbox at once: refused.
+    let e = db
+        .dispatcher
+        .dispatch(set(vec![change("TRASH", true), change("mailbox:x", true)]))
         .await
         .unwrap_err();
     assert_eq!(
@@ -951,7 +1053,7 @@ async fn labels_are_replaced_by_a_listing() {
         external_id: "Label_2".into(),
         name: "New".into(),
         system: false,
-        folder: false,
+        kind: LabelKind::Tag,
     });
     db.observe("a", observed(Some(renamed), vec![], vec![], &[]))
         .await;
@@ -971,7 +1073,7 @@ async fn labels_are_replaced_by_a_listing() {
                     external_id: "Label_2".into(),
                     name: "New".into(),
                     system: false,
-                    folder: false,
+                    kind: LabelKind::Tag,
                 });
                 l
             }),

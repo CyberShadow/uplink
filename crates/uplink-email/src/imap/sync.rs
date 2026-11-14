@@ -52,7 +52,7 @@ use std::{
 use tokio::sync::Mutex;
 use tokio_rustls::TlsConnector;
 use uplink_config::ImapAccountConfig;
-use uplink_protocol::mail::EntryId;
+use uplink_protocol::mail::{EntryId, LabelKind};
 use uplink_storage::seal::MasterKey;
 use uplink_tx_log::Dispatcher;
 
@@ -631,7 +631,7 @@ impl ImapSync {
         for p in pending {
             let id = p.label_external_id.as_str();
             let (flag, set) = match id {
-                _ if p.folder => {
+                _ if p.kind == LabelKind::Folder => {
                     if p.desired {
                         into = Some(id);
                     }
@@ -986,19 +986,19 @@ async fn labels(
             external_id: f.external_id.clone(),
             name: f.display.clone(),
             system: f.system,
-            folder: true,
+            kind: LabelKind::Folder,
         })
         .chain([UNREAD, STARRED].map(|l| ObservedLabel {
             external_id: l.to_owned(),
             name: l.to_owned(),
             system: true,
-            folder: false,
+            kind: LabelKind::Tag,
         }))
         .chain(keywords.into_iter().map(|k| ObservedLabel {
             name: k[KEYWORD.len()..].to_owned(),
             external_id: k,
             system: false,
-            folder: false,
+            kind: LabelKind::Tag,
         }))
         .collect();
     labels.sort_by(|a, b| a.external_id.cmp(&b.external_id));

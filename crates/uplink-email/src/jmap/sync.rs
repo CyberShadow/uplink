@@ -1,13 +1,12 @@
 //! The sync of a JMAP account (SPEC §8.13): changes by state, pushes by
 //! `Email/set`, and sending by `EmailSubmission`.
 //!
-//! Mailboxes are labels, as Gmail's are: an email may be in several. The
-//! ones of a role take the ids of the Gmail system labels that mean the
-//! same, so the rest of uplink treats all providers alike; the Archive is
-//! Gmail's All Mail, not a label: an email in it alone is in none, and as
-//! JMAP keeps every email in some mailbox, one that would be left in none
-//! goes there, and one given another leaves it. `$seen` unset is UNREAD,
-//! `$flagged` is STARRED, and other keywords are labels `kw:<keyword>`.
+//! Mailboxes are labels, of which an email may have several; but Trash,
+//! Junk and the Archive are folders, an email in one of them in nothing
+//! else, as RFC 8621 trashes (§4.6). The ones of a role take the ids of the
+//! Gmail system labels that mean the same, so the rest of uplink treats
+//! all providers alike. `$seen` unset is UNREAD, `$flagged` is STARRED, and
+//! other keywords are labels `kw:<keyword>`.
 //!
 //! Entries are emails, by their ids, which JMAP keeps as they move.
 
@@ -38,7 +37,7 @@ use std::{
     time::Duration,
 };
 use uplink_config::JmapAccountConfig;
-use uplink_protocol::mail::EntryId;
+use uplink_protocol::mail::{EntryId, LabelKind};
 use uplink_storage::seal::MasterKey;
 use uplink_tx_log::Dispatcher;
 
@@ -60,16 +59,57 @@ const KEYWORD: &str = "kw:";
 /// The prefix of the external ids of mailboxes of no role uplink knows.
 const MAILBOX: &str = "mailbox:";
 
-/// The roles (RFC 8621 §2, from the IMAP special-use registry) that are
-/// labels, by the external id they take.
-const ROLES: [(&str, &str); 5] = [
-    ("inbox", INBOX),
-    ("sent", "SENT"),
-    ("drafts", "DRAFT"),
-    ("trash", "TRASH"),
-    ("junk", "SPAM"),
+/// A role (RFC 8621 §2, from the IMAP special-use registry) uplink knows.
+struct Role {
+    role: &'static str,
+    /// The external id of its label.
+    label: &'static str,
+    kind: LabelKind,
+    /// The name of the mailbox made for it, if the server has none.
+    name: &'static str,
+}
+
+/// The roles uplink knows; each but the Inbox's is listed as a label
+/// whether or not the server has its mailbox, which is made as an email is
+/// first filed in it.
+const ROLES: [Role; 6] = [
+    Role {
+        role: "inbox",
+        label: INBOX,
+        kind: LabelKind::Mailbox,
+        name: "Inbox",
+    },
+    Role {
+        role: "sent",
+        label: "SENT",
+        kind: LabelKind::Mailbox,
+        name: "Sent",
+    },
+    Role {
+        role: "drafts",
+        label: "DRAFT",
+        kind: LabelKind::Mailbox,
+        name: "Drafts",
+    },
+    Role {
+        role: "trash",
+        label: "TRASH",
+        kind: LabelKind::Folder,
+        name: "Trash",
+    },
+    Role {
+        role: "junk",
+        label: "SPAM",
+        kind: LabelKind::Folder,
+        name: "Junk",
+    },
+    Role {
+        role: "archive",
+        label: "ARCHIVE",
+        kind: LabelKind::Folder,
+        name: "Archive",
+    },
 ];
-const ARCHIVE: &str = "archive";
 /// Roles of virtual mailboxes, which show what others hold.
 const VIRTUAL: [&str; 2] = ["all", "flagged"];
 
@@ -148,25 +188,16 @@ enum Next {
     Done,
 }
 
-/// What a mailbox is to uplink.
-#[derive(Debug, Clone, PartialEq)]
-enum Shown {
-    Label(String),
-    /// The Archive: an email in it alone is in no label.
-    Archive,
-    /// Shows what others hold.
-    Virtual,
-}
-
 /// The account's mailboxes, as uplink shows them.
 #[derive(Debug)]
 struct Mailboxes {
-    by_id: HashMap<String, Shown>,
-    /// The labels they are.
+    /// The label each is; none for a virtual one.
+    by_id: HashMap<String, Option<String>>,
+    /// The labels they are, and those of the roles the server has no
+    /// mailbox of.
     labels: Vec<ObservedLabel>,
     /// By label external id.
     by_label: HashMap<String, String>,
-    archive: Option<String>,
 }
 
 impl Mailboxes {
@@ -186,66 +217,58 @@ impl Mailboxes {
             by_id: HashMap::new(),
             labels: vec![],
             by_label: HashMap::new(),
-            archive: roles.get(ARCHIVE).map(|id| (*id).to_owned()),
         };
         for m in &list {
             let role = m.role.as_deref().filter(|r| roles[r] == m.id);
-            let system = ROLES.iter().find(|(r, _)| Some(*r) == role);
-            let shown = match (role, system) {
-                (_, Some((_, label))) => {
-                    mailboxes.labels.push(ObservedLabel {
-                        external_id: (*label).to_owned(),
-                        name: (*label).to_owned(),
-                        system: true,
-                        folder: false,
-                    });
-                    Shown::Label((*label).to_owned())
-                }
-                (Some(ARCHIVE), None) => Shown::Archive,
-                (Some(role), None) if VIRTUAL.contains(&role) => Shown::Virtual,
+            let label = match (role, ROLES.iter().find(|r| Some(r.role) == role)) {
+                (_, Some(_)) => continue,
+                (Some(role), None) if VIRTUAL.contains(&role) => None,
                 _ => {
                     let label = format!("{MAILBOX}{}", m.id);
                     mailboxes.labels.push(ObservedLabel {
                         external_id: label.clone(),
                         name: path(&names, &m.id)?,
                         system: false,
-                        folder: false,
+                        kind: LabelKind::Mailbox,
                     });
-                    Shown::Label(label)
+                    Some(label)
                 }
             };
-            if let Shown::Label(label) = &shown {
+            if let Some(label) = &label {
                 mailboxes.by_label.insert(label.clone(), m.id.clone());
             }
-            mailboxes.by_id.insert(m.id.clone(), shown);
+            mailboxes.by_id.insert(m.id.clone(), label);
         }
-        ensure!(
-            mailboxes.by_label.contains_key(INBOX),
-            "the server has no Inbox"
-        );
+        ensure!(roles.contains_key("inbox"), "the server has no Inbox");
+        for role in &ROLES {
+            mailboxes.labels.push(ObservedLabel {
+                external_id: role.label.to_owned(),
+                name: role.label.to_owned(),
+                system: true,
+                kind: role.kind,
+            });
+            if let Some(&id) = roles.get(role.role) {
+                mailboxes.add(role.label, id.to_owned());
+            }
+        }
         Ok(mailboxes)
     }
 
-    /// The mailbox of a role's label.
-    fn of_label(&self, label: &str) -> Result<&str, SendError> {
-        self.by_label
-            .get(label)
-            .map(String::as_str)
-            .ok_or_else(|| SendError::Rejected(format!("the server has no {label} mailbox")))
+    /// Records that mailbox `id` is `label`'s.
+    fn add(&mut self, label: &str, id: String) {
+        self.by_label.insert(label.to_owned(), id.clone());
+        self.by_id.insert(id, Some(label.to_owned()));
     }
 
     /// The labels of `email`.
     fn labels_of(&self, email: &Email) -> Result<Vec<String>> {
         let mut labels = vec![];
         for (id, _) in email.mailbox_ids.iter().filter(|(_, &is)| is) {
-            match self
+            let label = self
                 .by_id
                 .get(id)
-                .with_context(|| format!("email {} is in unknown mailbox {id}", email.id))?
-            {
-                Shown::Label(label) => labels.push(label.clone()),
-                Shown::Archive | Shown::Virtual => {}
-            }
+                .with_context(|| format!("email {} is in unknown mailbox {id}", email.id))?;
+            labels.extend(label.iter().cloned());
         }
         let has = |keyword: &str| email.keywords.get(keyword).copied().unwrap_or(false);
         if !has("$seen") {
@@ -647,16 +670,14 @@ impl JmapSync {
     }
 
     /// Pushes label changes not yet in effect at the server: each email's
-    /// keywords and mailboxes patched, an email left in no mailbox put in
-    /// the Archive (made if there is none), and one given a mailbox taken
-    /// out of it.
+    /// keywords and mailboxes patched, a role's mailbox made if the server
+    /// has none.
     async fn push_labels(&self, account: &Account, pending: Vec<Pending>) -> Result<()> {
         let mut per_entry: BTreeMap<EntryId, Vec<Pending>> = BTreeMap::new();
         for p in pending {
             per_entry.entry(p.entry).or_default().push(p);
         }
-        let session = self.jmap.session().await?;
-        let chunk = session.max_objects_in_get.min(session.max_objects_in_set);
+        let chunk = self.jmap.session().await?.max_objects_in_set;
         let entries: Vec<(EntryId, Vec<Pending>)> = per_entry.into_iter().collect();
         let mut pushed = vec![];
         let mut refused: BTreeMap<String, Vec<LabelChange>> = BTreeMap::new();
@@ -687,55 +708,28 @@ impl JmapSync {
 
     /// Pushes the changes of `entries`; what came of each, in order.
     async fn push_chunk(&self, entries: &[(EntryId, Vec<Pending>)]) -> Result<Vec<Pushed>> {
-        let ids: Vec<&str> = entries
-            .iter()
-            .map(|(_, pending)| pending[0].external_id.as_str())
-            .collect();
         let mut request = Request::default();
         let mailboxes = get_mailboxes(&mut request);
-        let got = request.call(
-            "Email/get",
-            json!({ "ids": ids, "properties": ["mailboxIds"] }),
-        );
         let mut responses = self.jmap.call(request).await?;
         let mut mailboxes = Mailboxes::of(responses.take::<Got<Mailbox>>(mailboxes)?.list)?;
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct In {
-            id: String,
-            mailbox_ids: HashMap<String, bool>,
-        }
-        let current: HashMap<String, HashSet<String>> = responses
-            .take::<Got<In>>(got)?
-            .list
-            .into_iter()
-            .map(|e| {
-                let ids = e.mailbox_ids.into_iter().filter(|(_, is)| *is);
-                (e.id, ids.map(|(id, _)| id).collect())
-            })
-            .collect();
-        let mut patches: Vec<Result<Patch, Pushed>> = entries
+        let filed: BTreeSet<&str> = entries
             .iter()
-            .map(|(_, pending)| match current.get(&pending[0].external_id) {
-                Some(current) => patch(&mailboxes, current, pending),
-                None => Err(Pushed::Gone),
-            })
+            .flat_map(|(_, pending)| pending)
+            .filter(|p| p.desired && p.kind != LabelKind::Tag)
+            .map(|p| p.label_external_id.as_str())
             .collect();
-        if mailboxes.archive.is_none()
-            && patches
-                .iter()
-                .any(|p| matches!(p, Ok(p) if p.archive == Some(true)))
-        {
-            mailboxes.archive = Some(self.create_archive().await?);
-        }
-        let mut update = Map::new();
-        for p in patches.iter_mut().flatten() {
-            if let Some(archive) = p.archive {
-                let id = mailboxes.archive.as_ref().expect("made above, if needed");
-                p.set
-                    .insert(format!("mailboxIds/{id}"), archive.then_some(true).into());
+        for label in filed {
+            if ROLES.iter().any(|r| r.label == label) {
+                self.mailbox(&mut mailboxes, label).await?;
             }
-            update.insert(p.id.clone(), std::mem::take(&mut p.set).into());
+        }
+        let patches: Vec<Result<Patch, Pushed>> = entries
+            .iter()
+            .map(|(_, pending)| patch(&mailboxes, pending))
+            .collect();
+        let mut update = Map::new();
+        for p in patches.iter().flatten() {
+            update.insert(p.id.clone(), p.set.clone().into());
         }
         let mut set: Option<Set> = None;
         if !update.is_empty() {
@@ -759,25 +753,34 @@ impl JmapSync {
             .collect())
     }
 
-    /// Makes the Archive; returns its id.
-    async fn create_archive(&self) -> Result<String> {
+    /// The mailbox of a role's `label`, made if the server has none.
+    async fn mailbox(&self, mailboxes: &mut Mailboxes, label: &str) -> Result<String> {
+        if let Some(id) = mailboxes.by_label.get(label) {
+            return Ok(id.clone());
+        }
+        let role = ROLES
+            .iter()
+            .find(|r| r.label == label)
+            .with_context(|| format!("{label} is of no role"))?;
         let mut request = Request::default();
         let call = request.call(
             "Mailbox/set",
-            json!({ "create": { "archive": { "name": "Archive", "role": ARCHIVE, "parentId": null } } }),
+            json!({ "create": { "made": { "name": role.name, "role": role.role, "parentId": null } } }),
         );
         let mut set: Set = self.jmap.call(request).await?.take(call)?;
-        if let Some(e) = set.not_created.get("archive") {
-            bail!("making the Archive: {e}");
+        if let Some(e) = set.not_created.get("made") {
+            bail!("making the {} mailbox: {e}", role.name);
         }
         let created = set
             .created
-            .remove("archive")
-            .context("the server did not make the Archive")?;
-        Ok(created["id"]
+            .remove("made")
+            .with_context(|| format!("the server did not make the {} mailbox", role.name))?;
+        let id = created["id"]
             .as_str()
-            .context("the Archive made has no id")?
-            .to_owned())
+            .with_context(|| format!("the {} mailbox made has no id", role.name))?
+            .to_owned();
+        mailboxes.add(label, id.clone());
+        Ok(id)
     }
 
     /// Imports `raw` into Drafts, as a draft: its id.
@@ -786,15 +789,17 @@ impl JmapSync {
         let mut request = Request::default();
         let mailboxes = get_mailboxes(&mut request);
         let mut responses = self.jmap.call(request).await.map_err(not_sent)?;
-        let mailboxes = Mailboxes::of(
+        let mut mailboxes = Mailboxes::of(
             responses
                 .take::<Got<Mailbox>>(mailboxes)
                 .map_err(not_sent)?
                 .list,
         )
         .map_err(not_sent)?;
-        let drafts = mailboxes.of_label("DRAFT")?;
-        mailboxes.of_label("SENT")?;
+        let drafts = self
+            .mailbox(&mut mailboxes, "DRAFT")
+            .await
+            .map_err(not_sent)?;
         let blob = self
             .jmap
             .upload(raw, "message/rfc822")
@@ -841,7 +846,7 @@ impl JmapSync {
         );
         let email = request.call("Email/get", json!({ "ids": [draft], "properties": ["id"] }));
         let mut responses = self.jmap.call(request).await.map_err(not_sent)?;
-        let mailboxes = Mailboxes::of(
+        let mut mailboxes = Mailboxes::of(
             responses
                 .take::<Got<Mailbox>>(mailboxes)
                 .map_err(not_sent)?
@@ -870,7 +875,14 @@ impl JmapSync {
         let identity = identity_of(&identities.list, address).ok_or_else(|| {
             SendError::Rejected(format!("the server has no identity of {address}"))
         })?;
-        let (drafts, sent) = (mailboxes.of_label("DRAFT")?, mailboxes.of_label("SENT")?);
+        let drafts = self
+            .mailbox(&mut mailboxes, "DRAFT")
+            .await
+            .map_err(not_sent)?;
+        let sent = self
+            .mailbox(&mut mailboxes, "SENT")
+            .await
+            .map_err(not_sent)?;
         let mut request = Request::default();
         let call = request.call(
             "EmailSubmission/set",
@@ -915,19 +927,12 @@ enum Pushed {
 struct Patch {
     id: String,
     set: Map<String, Value>,
-    /// Whether it goes in the Archive (`true`) or out of it (`false`).
-    archive: Option<bool>,
 }
 
-/// The patch making `pending` of an email now in mailboxes `current`.
-fn patch(
-    mailboxes: &Mailboxes,
-    current: &HashSet<String>,
-    pending: &[Pending],
-) -> Result<Patch, Pushed> {
+/// The patch making an email's `pending` changes, by `mailboxes`, which
+/// have every mailbox it is filed in.
+fn patch(mailboxes: &Mailboxes, pending: &[Pending]) -> Result<Patch, Pushed> {
     let mut set = Map::new();
-    let mut now = current.clone();
-    let mut moved = false;
     for p in pending {
         let label = p.label_external_id.as_str();
         let (path, on) = match label {
@@ -935,15 +940,7 @@ fn patch(
             STARRED => ("keywords/$flagged".to_owned(), p.desired),
             _ => match (label.strip_prefix(KEYWORD), mailboxes.by_label.get(label)) {
                 (Some(keyword), _) => (format!("keywords/{keyword}"), p.desired),
-                (None, Some(mailbox)) => {
-                    moved = true;
-                    if p.desired {
-                        now.insert(mailbox.clone());
-                    } else {
-                        now.remove(mailbox);
-                    }
-                    (format!("mailboxIds/{mailbox}"), p.desired)
-                }
+                (None, Some(mailbox)) => (format!("mailboxIds/{mailbox}"), p.desired),
                 (None, None) => {
                     return Err(Pushed::Refused(format!(
                         "label {label} is not one the server has"
@@ -953,20 +950,9 @@ fn patch(
         };
         set.insert(path, on.then_some(true).into());
     }
-    let shown = now
-        .iter()
-        .filter(|m| matches!(mailboxes.by_id.get(*m), Some(Shown::Label(_))))
-        .count();
-    let in_archive = mailboxes.archive.as_ref().is_some_and(|a| now.contains(a));
-    let archive = match (moved, shown, in_archive) {
-        (true, 0, false) => Some(true),
-        (true, 1.., true) => Some(false),
-        _ => None,
-    };
     Ok(Patch {
         id: pending[0].external_id.clone(),
         set,
-        archive,
     })
 }
 
@@ -1013,13 +999,13 @@ async fn labels(
             external_id: l.to_owned(),
             name: l.to_owned(),
             system: true,
-            folder: false,
+            kind: LabelKind::Tag,
         }))
         .chain(keywords.into_iter().map(|k| ObservedLabel {
             name: k[KEYWORD.len()..].to_owned(),
             external_id: k,
             system: false,
-            folder: false,
+            kind: LabelKind::Tag,
         }))
         .collect();
     labels.sort_by(|a, b| a.external_id.cmp(&b.external_id));
@@ -1075,22 +1061,30 @@ mod tests {
     }
 
     #[test]
-    fn mailboxes_are_labels_but_the_archive() {
+    fn mailboxes_are_labels_and_trash_junk_and_archive_folders() {
         let m = mailboxes();
-        let labels: Vec<(&str, &str, bool)> = m
+        let labels: Vec<(&str, &str, bool, LabelKind)> = m
             .labels
             .iter()
-            .map(|l| (l.external_id.as_str(), l.name.as_str(), l.system))
+            .map(|l| (l.external_id.as_str(), l.name.as_str(), l.system, l.kind))
             .collect();
+        use LabelKind::{Folder, Mailbox};
         assert_eq!(
             labels,
             [
-                ("INBOX", "INBOX", true),
-                ("mailbox:c", "Lists", false),
-                ("mailbox:d", "Lists/Rust", false),
-                ("SENT", "SENT", true),
+                ("mailbox:c", "Lists", false, Mailbox),
+                ("mailbox:d", "Lists/Rust", false, Mailbox),
+                ("INBOX", "INBOX", true, Mailbox),
+                ("SENT", "SENT", true, Mailbox),
+                ("DRAFT", "DRAFT", true, Mailbox),
+                ("TRASH", "TRASH", true, Folder),
+                ("SPAM", "SPAM", true, Folder),
+                ("ARCHIVE", "ARCHIVE", true, Folder),
             ]
         );
+        // Those the server has not are made as filed in.
+        assert_eq!(m.by_label.get("TRASH"), None);
+        assert_eq!(m.by_label["ARCHIVE"], "b");
         let email = Email {
             id: "m".into(),
             thread_id: "t".into(),
@@ -1105,51 +1099,47 @@ mod tests {
         };
         assert_eq!(
             m.labels_of(&email).unwrap(),
-            ["STARRED", "UNREAD", "kw:todo", "mailbox:d"]
+            ["ARCHIVE", "STARRED", "UNREAD", "kw:todo", "mailbox:d"]
         );
     }
 
     #[test]
-    fn an_email_is_in_the_archive_when_in_no_label() {
+    fn changes_patch_mailboxes_and_keywords() {
         let m = mailboxes();
         let pending = |label: &str, desired| Pending {
             entry: EntryId(1),
             external_id: "m".into(),
             label: LabelId(1),
             label_external_id: label.into(),
-            folder: false,
+            kind: LabelKind::Tag,
             desired,
         };
-        let set = |ids: &[&str]| -> HashSet<String> { ids.iter().map(|s| (*s).into()).collect() };
-        // Archived: out of the Inbox, into the Archive.
-        let p = patch(&m, &set(&["a"]), &[pending("INBOX", false)]).unwrap();
-        assert_eq!(
-            p.set,
-            json!({ "mailboxIds/a": null }).as_object().unwrap().clone()
-        );
-        assert_eq!(p.archive, Some(true));
-        // Back in the Inbox: out of the Archive.
-        let p = patch(&m, &set(&["b"]), &[pending("INBOX", true)]).unwrap();
-        assert_eq!(p.archive, Some(false));
-        // Still in another label; keywords touch no mailbox.
-        let p = patch(&m, &set(&["a", "d"]), &[pending("INBOX", false)]).unwrap();
-        assert_eq!(p.archive, None);
         let p = patch(
             &m,
-            &set(&["b"]),
-            &[pending("UNREAD", false), pending("kw:x", true)],
+            &[
+                pending("INBOX", false),
+                pending("ARCHIVE", true),
+                pending("UNREAD", false),
+                pending("STARRED", true),
+                pending("kw:x", true),
+            ],
         )
         .unwrap();
         assert_eq!(
             p.set,
-            json!({ "keywords/$seen": true, "keywords/x": true })
-                .as_object()
-                .unwrap()
-                .clone()
+            json!({
+                "mailboxIds/a": null,
+                "mailboxIds/b": true,
+                "keywords/$seen": true,
+                "keywords/$flagged": true,
+                "keywords/x": true,
+            })
+            .as_object()
+            .unwrap()
+            .clone()
         );
-        assert_eq!(p.archive, None);
         assert!(matches!(
-            patch(&m, &set(&["a"]), &[pending("IMPORTANT", true)]),
+            patch(&m, &[pending("IMPORTANT", true)]),
             Err(Pushed::Refused(_))
         ));
     }

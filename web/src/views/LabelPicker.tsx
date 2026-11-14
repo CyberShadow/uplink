@@ -68,7 +68,7 @@ export function LabelPicker(props: { targets: Thread[]; acting: Targets; close: 
       account={account}
       name="Label"
       placeholder="Label as…"
-      labels={navLabels(account).user.filter((l) => !l.folder)}
+      labels={navLabels(account).user.filter((l) => l.kind !== 'folder')}
       check={check}
       choose={(label) => {
         mail.setLabel(props.acting, label, check(label) !== 'all')
@@ -80,9 +80,9 @@ export function LabelPicker(props: { targets: Thread[]; acting: Targets; close: 
 }
 
 /** Moves `acting` out of the label on show, or else the Inbox, into a
- * user label or the Inbox (`v`); or, if the account has folders, into
- * another folder. `targets`, those shown, name the account; `done`
- * follows the choice. */
+ * user label or the Inbox (`v`); or, if the account's labels say where an
+ * entry is (folders, mailboxes), into another such place. `targets`, those
+ * shown, name the account; `done` follows the choice. */
 export function MovePicker(props: {
   targets: Thread[]
   acting: Targets
@@ -95,8 +95,9 @@ export function MovePicker(props: {
   if (!account) return <MixedAccounts name="Move to" close={props.close} />
   const inbox = mail.systemLabel(account.id, 'INBOX')
   const { system, user } = navLabels(account)
-  const folders = account.labels.some((l) => l.folder)
-  const targets = folders ? [...system, ...user].filter((l) => l.folder) : [inbox, ...user]
+  const isPlace = (l: Label) => l.kind !== 'tag'
+  const places = account.labels.some(isPlace)
+  const targets = places ? [...system, ...user].filter(isPlace) : [inbox, ...user]
   const from = targets.find((l) => l.external_id === props.from) ?? inbox
   return (
     <LabelsPicker

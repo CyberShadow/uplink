@@ -25,7 +25,7 @@ use std::{
     time::Duration,
 };
 use uplink_config::M365AccountConfig;
-use uplink_protocol::mail::EntryId;
+use uplink_protocol::mail::{EntryId, LabelKind};
 use uplink_tx_log::Dispatcher;
 
 pub const KIND: &str = "m365";
@@ -422,19 +422,19 @@ impl M365Sync {
                 external_id: f.external_id.clone(),
                 name: f.name.clone(),
                 system: f.well_known,
-                folder: true,
+                kind: LabelKind::Folder,
             })
             .chain([UNREAD, STARRED, IMPORTANT].map(|l| ObservedLabel {
                 external_id: l.to_owned(),
                 name: l.to_owned(),
                 system: true,
-                folder: false,
+                kind: LabelKind::Tag,
             }))
             .chain(categories.into_iter().map(|c| ObservedLabel {
                 name: c[CATEGORY.len()..].to_owned(),
                 external_id: c,
                 system: false,
-                folder: false,
+                kind: LabelKind::Tag,
             }))
             .collect();
         labels.sort_by(|a, b| a.external_id.cmp(&b.external_id));
@@ -486,7 +486,7 @@ impl M365Sync {
         let mut into = None;
         for p in pending {
             match p.label_external_id.as_str() {
-                _ if p.folder => {
+                _ if p.kind == LabelKind::Folder => {
                     if p.desired {
                         into = Some(&p.label_external_id);
                     }
@@ -571,7 +571,7 @@ async fn known_folders(account: &Account) -> Result<HashMap<String, Option<Strin
                 .prepare(
                     "SELECT e.external_id,
                        (SELECT l.external_id FROM entry_label el JOIN label l ON l.id = el.label
-                        WHERE el.entry = e.id AND el.observed AND l.folder)
+                        WHERE el.entry = e.id AND el.observed AND l.kind = 'folder')
                      FROM mail_entry e WHERE e.account_id = ?1",
                 )?
                 .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?

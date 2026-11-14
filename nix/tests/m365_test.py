@@ -174,7 +174,7 @@ with subtest("the first sync mirrors the mailbox"):
     eventually("the first sync", lambda: account()["synced"])
     assert account()["provider"] == "m365"
     assert "Quarterly report" in in_folder("INBOX")
-    assert labels()["ARCHIVE"]["folder"]
+    assert labels()["ARCHIVE"]["kind"] == "folder"
 
 with subtest("the first sync mirrors the calendar, with its series expanded"):
     listed = eventually("the calendar", lambda: len(events()) == 4 and events())

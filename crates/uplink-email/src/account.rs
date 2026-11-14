@@ -13,7 +13,7 @@ use crate::{
         self, build_message, now_ms, Due, File, ReplyContext, SendFailed, SendNotFound,
         SendOutcome, SendStarted, SendSucceeded, SentCopy,
     },
-    mailbox::ObservedLabel,
+    mailbox::{kind_at, ObservedLabel},
     parse::{parse, Parsed},
 };
 use anyhow::{Context, Result};
@@ -28,7 +28,7 @@ use std::{
 use tokio::sync::broadcast::{self, error::RecvError};
 use uplink_protocol::{
     compose::OutboxId,
-    mail::{EntryId, LabelId},
+    mail::{EntryId, LabelId, LabelKind},
     LogEntry, Source,
 };
 use uplink_storage::rusqlite::{params, Connection, OptionalExtension};
@@ -138,8 +138,7 @@ pub struct Pending {
     pub external_id: String,
     pub label: LabelId,
     pub label_external_id: String,
-    /// Whether the label is one of the account's folders.
-    pub folder: bool,
+    pub kind: LabelKind,
     pub desired: bool,
 }
 
@@ -218,7 +217,7 @@ impl Account {
         self.read(move |conn| {
             Ok(conn
                 .prepare(
-                    "SELECT e.id, e.external_id, l.id, l.external_id, l.folder, el.desired
+                    "SELECT e.id, e.external_id, l.id, l.external_id, l.kind, el.desired
                      FROM entry_label el
                      JOIN mail_entry e ON e.id = el.entry
                      JOIN label l ON l.id = el.label
@@ -232,7 +231,7 @@ impl Account {
                         external_id: r.get(1)?,
                         label: LabelId(r.get(2)?),
                         label_external_id: r.get(3)?,
-                        folder: r.get(4)?,
+                        kind: kind_at(r, 4)?,
                         desired: r.get(5)?,
                     })
                 })?
@@ -261,7 +260,7 @@ impl Account {
         self.read(move |conn| {
             Ok(conn
                 .prepare(
-                    "SELECT external_id, name, system, folder FROM label
+                    "SELECT external_id, name, system, kind FROM label
                      WHERE account_id = ?1 ORDER BY external_id",
                 )?
                 .query_map([id], |r| {
@@ -269,7 +268,7 @@ impl Account {
                         external_id: r.get(0)?,
                         name: r.get(1)?,
                         system: r.get(2)?,
-                        folder: r.get(3)?,
+                        kind: kind_at(r, 3)?,
                     })
                 })?
                 .collect::<Result<_, _>>()?)

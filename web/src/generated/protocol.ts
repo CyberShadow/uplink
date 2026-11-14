@@ -466,11 +466,7 @@ external_id: string, name: string,
 /**
  * Defined by the provider rather than the user.
  */
-system: boolean, 
-/**
- * One of the account's folders, of which an entry is in exactly one.
- */
-folder: boolean, 
+system: boolean, kind: LabelKind, 
 /**
  * Conversations with an entry carrying the label (as desired).
  */
@@ -479,6 +475,12 @@ total: number,
  * Of those, the ones with an entry carrying it and `UNREAD` too.
  */
 unread: number, };
+
+/**
+ * What a label says of the entries with it (SPEC §6.6): where they are,
+ * or something else of them.
+ */
+export type LabelKind = "tag" | "mailbox" | "folder";
 
 /**
  * An entry as shown in a message list.
@@ -1375,4 +1377,4 @@ refused: string | null, };
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "1973655989a94058"
+export const PROTOCOL_VERSION = "961bcd60e1b8c6f5"

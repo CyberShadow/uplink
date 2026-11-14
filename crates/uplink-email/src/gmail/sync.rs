@@ -24,7 +24,7 @@ use std::{
     time::Duration,
 };
 use uplink_config::GmailAccountConfig;
-use uplink_protocol::mail::EntryId;
+use uplink_protocol::mail::{EntryId, LabelKind};
 use uplink_storage::seal::MasterKey;
 use uplink_tx_log::Dispatcher;
 
@@ -475,7 +475,7 @@ impl GmailSync {
             .into_iter()
             .map(|l| ObservedLabel {
                 system: l.kind.as_deref() == Some("system"),
-                folder: false,
+                kind: LabelKind::Tag,
                 external_id: l.id,
                 name: l.name,
             })

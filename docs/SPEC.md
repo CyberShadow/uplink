@@ -474,6 +474,8 @@ CREATE TABLE label (
   external_id  TEXT NOT NULL,      -- Gmail label id ('INBOX', 'Label_1')
   name         TEXT NOT NULL,
   system       INTEGER NOT NULL,   -- provider-defined (0/1)
+  -- (V0050) 'tag', 'mailbox' or 'folder': where an entry is (§6.6).
+  kind         TEXT NOT NULL DEFAULT 'tag',
   -- (V0017) Kept by triggers (below): the conversations with the label,
   -- and those of them unread, as §4 counts them.
   conversations        INTEGER NOT NULL DEFAULT 0,
@@ -1147,6 +1149,21 @@ provider made of a push):
 - a Matrix room's membership (§9.7) and read receipt, and a space's
   order (§9.5);
 - the user's answer to a meeting request (§10.3).
+
+**Where an entry is.** A label is of one of three kinds (`label.kind`):
+a *tag*, under no rule of where an entry is (Gmail's labels, read and
+starred, keywords, categories); a *mailbox*, where an entry is, in any
+number of them (JMAP's, §8.13); or a *folder*, where it is alone
+(Microsoft 365's and IMAP's, §8.3, §8.10; JMAP's Trash, Junk and
+Archive). Of an account with folders or mailboxes, an entry is in one
+folder or in mailboxes, and `SetLabels` keeps it so: adding a folder
+takes it out of every other place (a move), adding a mailbox takes it
+out of the folders, and leaving its last place puts it in the Archive;
+adding a folder with any other place at once is refused. Those implied
+changes are part of the op, and of its inverse, so its undo puts the
+entry back where it was; a move is described as one ("Moved 1 message
+to Trash"). Gmail's labels are tags, as Gmail keeps an entry in no
+label (All Mail) and Trash and Spam apart by itself (§8.1).
 
 Each account runs a reconciler (its sync task) that, after every commit
 touching its state, pushes the differences — Gmail `messages.batchModify`
@@ -2031,27 +2048,33 @@ credentials it was built with, which an OAuth token outlives.
   `oauth`, an access token, by `Bearer` (§13.7). What signs in is kept
   until a 401, after which the next request reads the password anew, or
   refreshes the token.
-- **Mailboxes are labels**, as Gmail's are (§8.1): an email may be in
-  several, and adding one leaves the others. Those of a role take the
-  ids of the Gmail labels that mean the same: `inbox` → `INBOX`, `sent`
-  → `SENT`, `drafts` → `DRAFT`, `trash` → `TRASH`, `junk` → `SPAM`; the
-  rest are `mailbox:<id>` (by the server's id, which a rename keeps),
-  named by their path (`Parent/Child`). Virtual mailboxes (`all`,
-  `flagged`) are left out. Trash and Spam are as Gmail's: trashing adds
-  `TRASH` and leaves the Inbox, where other clients then show it too.
-- **The Archive is All Mail**, not a label: JMAP keeps every email in
-  some mailbox, so one in the Archive (role `archive`) alone is in no
-  label, as an archived Gmail message is. A push that would leave an
-  email in no mailbox puts it in the Archive (made, by `Mailbox/set`, if
-  the server has none); one that gives an email in the Archive another
-  mailbox takes it out. Archiving (removing `INBOX`) therefore files the
-  email in the Archive, and its undo takes it out again.
+- **Mailboxes are labels** (kind `mailbox`, §6.6): an email may be in
+  several, and adding one leaves the others. But Trash, Junk and the
+  Archive are folders (kind `folder`): trashing an email, as RFC 8621
+  has it (§4.6), leaves it in Trash alone, so that other clients do not
+  show it in the Inbox too; reporting spam the same. JMAP keeps every
+  email in some mailbox, and uplink keeps it so (§6.6): archiving
+  (removing `INBOX`) an email in no other mailbox files it in the
+  Archive, and giving an email in the Archive a mailbox takes it out.
+  Undo restores the mailboxes; restoring from Trash otherwise (removing
+  `TRASH`) files the email in the Archive, as the server no longer has
+  where it was. Those of a role take the ids of the Gmail labels that
+  mean the same: `inbox` → `INBOX`, `sent` → `SENT`, `drafts` →
+  `DRAFT`, `trash` → `TRASH`, `junk` → `SPAM`, `archive` → `ARCHIVE`;
+  each but the Inbox is a label whether or not the server has its
+  mailbox, which is made (`Mailbox/set`, of the role) as an email is
+  first filed or sent into it. The rest are `mailbox:<id>` (by the
+  server's id, which a rename keeps), named by their path
+  (`Parent/Child`). Virtual mailboxes (`all`, `flagged`) are left out.
+  An email another client left in Trash and elsewhere shows in Trash
+  only, as Gmail's does.
 - **State labels**: `$seen` unset is `UNREAD`, `$flagged` is `STARRED`;
   other keywords are labels `kw:<keyword>`, but for those of clients'
   conventions (`$answered`, `$forwarded`, …).
 - **Entries** are emails, keyed by their ids, which JMAP keeps as an
-  email moves; threads are the server's (`threadId`; Stalwart's, as
-  Gmail's, join a reply only of its subject).
+  email moves; threads are the server's (`threadId`), however it
+  groups them (RFC 8621 §3 leaves that to it, suggesting a message id
+  shared and the same subject, as Stalwart and Gmail do).
 - **A step** is one request: the mailboxes (all of them, each step, as
   they are few; the labels are recorded where they differ), and the
   emails' changes since the recorded state (`Email/changes`, at most 50),
@@ -2075,9 +2098,9 @@ credentials it was built with, which an OAuth token outlives.
   whose anchor is gone (`anchorNotFound`).
 - **Push**: each email's keywords and mailboxes are patched (`Email/set`,
   `keywords/<k>` and `mailboxIds/<id>`, so that what other clients
-  changed meanwhile stays), its mailboxes read just before for the
-  Archive's rule; a `notFound` is left for the next step to remove, any
-  other error is a refusal.
+  changed meanwhile stays); a `notFound` is left for the next step to
+  remove, any other error is a refusal (as is a patch that, by another
+  client's change meanwhile, would leave an email in no mailbox).
 - **Event source** (RFC 8620 §7.3): a connection of its own tells of
   changes to emails and mailboxes as they happen, waking the sync task
   (`Provider::changed`), which takes a step as for a poll; so does the
@@ -3129,7 +3152,7 @@ their own; read ones recede, their text dimmer (in the dark theme,
 onto the page's near-black). The font is Gmail's (`Google Sans`, else
 Roboto, Helvetica, Arial), narrower than most systems' own. No Important markers: Gmail's guesses, which `+` and `-`
 still set. In the nav, system labels have Gmail's icons, the user's own
-labels a tag, and Microsoft 365's folders a folder. Going anywhere, by any
+labels and mailboxes a tag, and folders a folder. Going anywhere, by any
 means (a link, a shortcut, the switcher), brings the view's link in the
 nav into view: the folds over it (its account's section, the labels or
 spaces it is nested in) unfold, unless it is in view somewhere already
