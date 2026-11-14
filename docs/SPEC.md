@@ -695,7 +695,10 @@ CREATE TABLE calendar_event (
   all_day         INTEGER NOT NULL,         -- then start/end are UTC midnights
   cancelled       INTEGER NOT NULL,         -- isCancelled (V0046)
   show_as         TEXT NOT NULL,            -- showAs: free, tentative, busy, …
-  response        TEXT NOT NULL,            -- responseStatus.response
+  response_field  TEXT NOT NULL,            -- Field<EventResponse> as JSON (§10.3; V0072)
+  -- generated from it: response (responseStatus.response, as Graph has it),
+  -- desired_response (shown), response_by (the op asking, while pending),
+  -- response_decision (a refusal waiting for the user)
   join_url        TEXT,                     -- its online meeting's (V0047)
   reminder        INTEGER,                  -- minutes before; NULL: none (V0048)
   modified_ts     INTEGER NOT NULL,         -- lastModifiedDateTime, ms (V0051)
@@ -1663,8 +1666,8 @@ the providers, as last observed, match what the user has done.
 **Not yet so.** The crates predate this model, and each reconciles in
 its own way: the model is implemented, and simulated, as
 `uplink_tx_log::reconcile`, and Matrix room tags, space orders (§9.5)
-and memberships (§9.7) use it; nothing uses limbo yet. Known to fail
-meanwhile: calendar answers (an undo during the push lost); mail (a step's failure
+and memberships (§9.7) and calendar answers (§10.3) use it; nothing
+uses limbo yet. Known to fail meanwhile: mail (a step's failure
 loses the outcomes of its earlier pushes, so an undo then is lost); IMAP
 (a push after a move goes to the old UID); Matrix pins (built from the
 SDK's store).
@@ -3545,22 +3548,30 @@ An event opened that is a meeting request (the user is not its
 organizer, and it is not an appointment) has Outlook's three answers,
 Accept, Tentative and Decline, the one given shown pressed. Answering
 is `respond_to_event {event, response}`, the op `calendar.respond`:
-desired state (§6.6), as labels are. `calendar_event.response` stays as
-Graph has it; `desired_response` is the answer asked for while it
-differs, with the op that asked (`response_by`), and the event shows it
-at once (V0049). Its inverse asks for the answer shown before.
+desired state (§6.6), a field of each event
+(`calendar_event.response_field`, V0072), reconciled by the model; the
+event shows the answer asked for at once. Its inverse asks for the
+answer shown before.
 
 The calendar's sync task is the reconciler: woken by the user's ops
-that change a calendar, as well as polling, it posts each answer pending
-to Graph (`POST /me/events/{id}/accept`, `tentativelyAccept` or
-`decline`, with `sendResponse: true`, so the organizer is told) and
-records what Graph made of it (`calendar.response_given`): given, the
-answer is no longer pending; refused (a 4xx; 404 for an event gone),
-it waits for a decision. A sync that finds the answer as asked settles
-it too; one finding another keeps the answer asked for, which is still
-pushed. A meeting declined leaves the calendar on show at once (§10.2);
-Exchange moves it to Deleted Items, so the next sync takes it off the
-calendar, with nothing left to undo.
+that change a calendar, as well as polling, it claims the answers
+wanted (`calendar.answers_claimed`), posts each to Graph (`POST
+/me/events/{id}/accept`, `tentativelyAccept` or `decline`, with
+`sendResponse: true`, so the organizer is told) and records how it
+ended (`calendar.response_given`): given; refused (a 4xx; 404 for an
+event gone), when it waits for a decision; not given (never sent, 401
+or 429), when it is asked again; or of unknown outcome (a server error,
+a connection lost), as Graph's requests that change something tell
+(`Failed`). An answer given is read back (`GET
+/me/events/{id}?$select=responseStatus`, `calendar.response_read`)
+before it is settled; a 404 then is the event gone, and its answer with
+it. Each listing observes the answers it has as of its first request
+(§6.6.2), so one sent before an answer was given does not undo it. As
+the task starts, answers it was giving as the process stopped are of
+unknown outcome (`calendar.answers_settled`). A meeting declined leaves
+the calendar on show at once (§10.2); Exchange moves it to Deleted
+Items, so its read-back takes it off the calendar, with nothing left
+to undo.
 
 Graph has no way to take an answer back, only to change it: undoing an
 answer already given asks for "not responded", which is refused at once

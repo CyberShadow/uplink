@@ -741,6 +741,58 @@ mod tests {
         );
     }
 
+    /// Answers to meeting requests become reconciled fields (V0072):
+    /// shown as asked for, else as given; pending and refused as they were.
+    #[test]
+    fn answers_become_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = migrated_to(dir.path(), 71);
+        conn.execute_batch(
+            r#"INSERT INTO account (id, kind) VALUES ('work', 'm365');
+               INSERT INTO tx_log (id, ts, description, op_type, op_json, inverse_type,
+                                   inverse_json, events_json)
+               VALUES (1, 0, '', 'calendar.respond', '{}', 'calendar.respond', '{}', '[]');
+               INSERT INTO calendar_event (id, account_id, external_id, exception, subject,
+                                           location, preview, start_ts, end_ts, all_day,
+                                           cancelled, show_as, modified_ts, raw, response,
+                                           desired_response, response_by, response_refused)
+               VALUES (1, 'work', 'a', 0, 'A', '', '', 0, 1, 0, 0, 'busy', 0, '{}', 'accepted',
+                       NULL, NULL, NULL),
+                      (2, 'work', 'b', 0, 'B', '', '', 0, 1, 0, 0, 'busy', 0, '{}',
+                       'notResponded', 'declined', 1, NULL),
+                      (3, 'work', 'c', 0, 'C', '', '', 0, 1, 0, 0, 'busy', 0, '{}', 'accepted',
+                       'notResponded', 1, 'cannot');"#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open(dir.path()).unwrap();
+        type Answer = (String, String, Option<i64>, Option<String>);
+        let events: Vec<Answer> = conn
+            .prepare(
+                "SELECT response, desired_response, response_by, response_decision
+                 FROM calendar_event ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            events,
+            [
+                ("accepted".into(), "accepted".into(), None, None),
+                ("notResponded".into(), "declined".into(), Some(1), None),
+                (
+                    "accepted".into(),
+                    "notResponded".into(),
+                    Some(1),
+                    Some(r#"{"refused":"cannot"}"#.into())
+                ),
+            ]
+        );
+    }
+
     /// Memberships become reconciled fields (V0071): pending while they
     /// differ from what was had, refused as they were.
     #[test]

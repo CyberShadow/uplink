@@ -1,12 +1,16 @@
-use crate::{service::Calendar, CalendarObserved, ObservedEvent};
+use crate::{
+    respond::{AnswersClaimed, ResponseGiven},
+    service::Calendar,
+    CalendarObserved, ObservedEvent,
+};
 use std::sync::Arc;
 use uplink_protocol::{
-    calendar::{CalendarEvent, EventResponse, ShowAs},
+    calendar::{CalendarEvent, EventId, EventResponse, ShowAs},
     compose::{OutboxChanged, Pending},
-    ErrorCode, ServerEvent, ServerResponse,
+    ErrorCode, ServerEvent, ServerResponse, TxLogId,
 };
 use uplink_realtime::Hub;
-use uplink_tx_log::{Dispatcher, Registry};
+use uplink_tx_log::{reconcile::Ended, Dispatcher, Registry};
 
 const HOUR: i64 = 3_600_000;
 
@@ -58,6 +62,18 @@ impl Db {
         events: Vec<ObservedEvent>,
         removed: &[&str],
     ) -> (String, Vec<ServerEvent>) {
+        self.observing_as_of(replace, events, removed, self.as_of())
+            .await
+    }
+
+    /// Observes as listed by requests sent after `as_of`.
+    async fn observing_as_of(
+        &self,
+        replace: bool,
+        events: Vec<ObservedEvent>,
+        removed: &[&str],
+        as_of: TxLogId,
+    ) -> (String, Vec<ServerEvent>) {
         let mut live = self.dispatcher.hub().subscribe();
         self.dispatcher
             .observe(
@@ -69,12 +85,53 @@ impl Db {
                     removed: removed.iter().map(|r| (*r).to_owned()).collect(),
                     series: vec![],
                     sync_state: serde_json::json!({}),
+                    as_of,
                 },
             )
             .await
             .unwrap();
         let entry = live.recv().await.unwrap();
         (entry.description.clone(), entry.events.clone())
+    }
+
+    /// The log's last entry.
+    fn as_of(&self) -> TxLogId {
+        let conn = uplink_storage::open_reader(self._dir.path()).unwrap();
+        uplink_tx_log::as_of(&conn).unwrap()
+    }
+
+    /// The sync claims the push of the event's answer.
+    async fn claim(&self, event: EventId) {
+        self.dispatcher
+            .observe(
+                "work".to_owned(),
+                AnswersClaimed {
+                    events: vec![event],
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    /// The push of the event's answer, `response`, ended so.
+    async fn given(&self, event: EventId, response: EventResponse, ended: Ended) {
+        self.dispatcher
+            .observe(
+                "work".to_owned(),
+                ResponseGiven {
+                    event,
+                    response,
+                    ended,
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    /// The account's answers, as stored.
+    fn answers(&self) -> Vec<crate::respond::Stored> {
+        let conn = uplink_storage::open_reader(self._dir.path()).unwrap();
+        crate::respond::reconciling(&conn, "work").unwrap()
     }
 
     async fn events(&self) -> Vec<CalendarEvent> {
@@ -378,4 +435,75 @@ async fn an_event_being_created_survives_listings_and_goes_with_its_undo() {
         .await
         .unwrap_err();
     assert_eq!(refused.code, ErrorCode::Invalid);
+}
+
+/// A meeting request, "Planning", not yet answered; and its id.
+async fn planning(db: &Db) -> EventId {
+    db.observe(
+        true,
+        vec![ObservedEvent {
+            response: EventResponse::NotResponded,
+            ..event("p", "Planning", 9 * HOUR, 10 * HOUR)
+        }],
+        &[],
+    )
+    .await;
+    db.events().await[0].id
+}
+
+async fn respond(db: &Db, event: EventId, response: EventResponse) -> TxLogId {
+    match db.calendar.respond(event, response).await.unwrap() {
+        ServerResponse::Dispatched { tx_log_id } => tx_log_id,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A listing sent before an answer was given, which it does not show,
+/// does not undo it: the answer is read back instead.
+#[tokio::test]
+async fn a_listing_older_than_an_answer_does_not_undo_it() {
+    let db = Db::new();
+    let id = planning(&db).await;
+    respond(&db, id, EventResponse::Accepted).await;
+    let before = db.as_of();
+    db.claim(id).await;
+    db.given(id, EventResponse::Accepted, Ended::Applied).await;
+    db.observing_as_of(
+        false,
+        vec![ObservedEvent {
+            response: EventResponse::NotResponded,
+            ..event("p", "Planning", 9 * HOUR, 10 * HOUR)
+        }],
+        &[],
+        before,
+    )
+    .await;
+    assert_eq!(db.events().await[0].response, EventResponse::Accepted);
+    let [answer] = &db.answers()[..] else {
+        panic!()
+    };
+    assert!(answer.field.read_back());
+    assert_eq!(answer.field.wanted(), None, "not given again");
+}
+
+/// Undoing an answer while it is given: it may be given, so the answer
+/// before it is asked for after it; as that cannot be given, the user
+/// decides.
+#[tokio::test]
+async fn an_undo_while_answering_is_asked_for_after_it() {
+    let db = Db::new();
+    let id = planning(&db).await;
+    let accept = respond(&db, id, EventResponse::Accepted).await;
+    db.claim(id).await;
+    db.dispatcher.undo(accept).await.unwrap();
+    assert_eq!(db.events().await[0].response, EventResponse::NotResponded);
+    db.given(id, EventResponse::Accepted, Ended::Applied).await;
+    let [answer] = &db.answers()[..] else {
+        panic!()
+    };
+    assert_eq!(answer.field.wanted(), Some(&EventResponse::NotResponded));
+    assert_eq!(
+        db.pending(),
+        [("Planning".into(), EventResponse::NotResponded)]
+    );
 }

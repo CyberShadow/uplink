@@ -17,7 +17,7 @@ use serde::Serialize;
 use uplink_protocol::{
     calendar::{CalendarChanged, CalendarEvent, EventId, EventResponse, ShowAs},
     compose::{AccountOutbox, OutboxChanged, Pending},
-    ServerEvent,
+    ServerEvent, TxLogId,
 };
 use uplink_query::{text_matches, Kind, Query, Term};
 use uplink_storage::rusqlite::{params, OptionalExtension, Transaction};
@@ -94,8 +94,8 @@ pub fn outbox(tx: &Transaction) -> Result<Vec<AccountOutbox>> {
 
 /// The state of an account's calendar, or of what changed in it, as just
 /// fetched. Recorded by the account's calendar sync, the only writer of
-/// its events but for the answers asked for (§6.6): an answer pending
-/// prevails until the provider has it, and goes with its event.
+/// its events but for the answers asked for (§6.6): each event's answer
+/// is observed as of the listing, and goes with its event.
 #[derive(Debug, Serialize)]
 pub struct CalendarObserved {
     /// `account.kind`, for an account observed for the first time.
@@ -112,6 +112,9 @@ pub struct CalendarObserved {
     pub series: Vec<ObservedSeries>,
     /// Replaces the calendar's sync state.
     pub sync_state: serde_json::Value,
+    /// The log's last entry as the listing's first request was sent (SPEC
+    /// §6.6.2).
+    pub as_of: TxLogId,
 }
 
 /// A series' master, as Graph has it.
@@ -257,10 +260,10 @@ impl CalendarObserved {
                     )
                 })
                 .transpose()?;
-            tx.execute(
+            let id = tx.query_row(
                 "INSERT INTO calendar_event
                    (account_id, external_id, series_id, exception, subject, location, preview,
-                    start_ts, end_ts, all_day, cancelled, show_as, response, join_url, reminder,
+                    start_ts, end_ts, all_day, cancelled, show_as, response_field, join_url, reminder,
                     modified_ts, raw)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
                  ON CONFLICT (account_id, external_id) DO UPDATE SET
@@ -269,16 +272,9 @@ impl CalendarObserved {
                    preview = excluded.preview, start_ts = excluded.start_ts,
                    end_ts = excluded.end_ts, all_day = excluded.all_day,
                    cancelled = excluded.cancelled, show_as = excluded.show_as,
-                   response = excluded.response, join_url = excluded.join_url,
-                   reminder = excluded.reminder, modified_ts = excluded.modified_ts,
-                   raw = excluded.raw,
-                   -- An answer asked for, the provider has it now.
-                   response_by = CASE WHEN desired_response = excluded.response
-                                 THEN NULL ELSE response_by END,
-                   response_refused = CASE WHEN desired_response = excluded.response
-                                      THEN NULL ELSE response_refused END,
-                   desired_response = CASE WHEN desired_response = excluded.response
-                                      THEN NULL ELSE desired_response END",
+                   join_url = excluded.join_url, reminder = excluded.reminder,
+                   modified_ts = excluded.modified_ts, raw = excluded.raw
+                 RETURNING id",
                 params![
                     account,
                     event.external_id,
@@ -292,13 +288,15 @@ impl CalendarObserved {
                     event.all_day,
                     event.cancelled,
                     name(event.show_as),
-                    name(event.response),
+                    respond::new_field(event.response, self.as_of),
                     event.join_url,
                     event.reminder,
                     event.modified,
                     event.raw,
                 ],
+                |r| r.get(0),
             )?;
+            respond::observe(tx, EventId(id), event.response, self.as_of)?;
         }
         // Those deleted take what is asked of them along (§6.6).
         let mut removed = 0;
@@ -462,7 +460,7 @@ fn named<T: serde::de::DeserializeOwned>(name: String) -> Result<T> {
 
 const EVENT_COLUMNS: &str = "id, account_id, subject, location, preview, start_ts, end_ts, all_day,
      series_id IS NOT NULL, exception, cancelled, show_as,
-     coalesce(desired_response, response), join_url, reminder, modified_ts";
+     desired_response, join_url, reminder, modified_ts";
 
 /// Of an event: it is being deleted, or its series is (SPEC §10.4).
 const DELETING: &str = "'delete' IN (coalesce(json_extract(desired, '$.kind'), ''),
@@ -497,7 +495,7 @@ pub fn events_between(tx: &Transaction, from: i64, to: i64) -> Result<Vec<Calend
         "SELECT {EVENT_COLUMNS}
          FROM calendar_event
          WHERE start_ts < ?2 AND (end_ts > ?1 OR (end_ts = start_ts AND start_ts >= ?1))
-           AND coalesce(desired_response, response) != 'declined' AND NOT {DELETING}
+           AND desired_response != 'declined' AND NOT {DELETING}
          ORDER BY start_ts, id"
     ))?;
     let mut rows = statement.query([from, to])?;

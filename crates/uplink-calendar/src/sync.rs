@@ -7,12 +7,14 @@
 //!
 //! It is also the calendar's reconciler (§6.6): after each sync, and as
 //! the user answers meeting requests and writes events, it gives Graph
-//! the answers asked for (§10.3), and the events created, changed and
-//! deleted (§10.4).
+//! the answers asked for, and reads them back (§10.3), and the events
+//! created, changed and deleted (§10.4).
 
 use crate::{
-    respond::{self, ResponseGiven, CANNOT_TAKE_BACK},
-    write::{self, EventWritten, Outcome, Request},
+    respond::{
+        self, AnswersClaimed, AnswersSettled, ResponseGiven, ResponseRead, CANNOT_TAKE_BACK,
+    },
+    write::{self, EventWritten, Request},
     CalendarObserved, ObservedEvent, ObservedSeries,
 };
 use anyhow::{bail, Context, Result};
@@ -25,13 +27,16 @@ use std::{
 };
 use tokio::sync::broadcast::{self, error::RecvError};
 use uplink_config::M365AccountConfig;
-use uplink_email::m365::api::{Changed, Graph, Written};
+use uplink_email::m365::api::{Changed, Failed, Graph, Written};
 use uplink_protocol::{
     calendar::{EventResponse, ShowAs},
     LogEntry, ServerEvent, Source,
 };
 use uplink_storage::rusqlite::{Connection, OptionalExtension};
-use uplink_tx_log::Dispatcher;
+use uplink_tx_log::{
+    reconcile::{Ended, Outcome},
+    Dispatcher, Observation,
+};
 
 /// How often to poll for changes (SPEC §10.1).
 pub const POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -114,6 +119,13 @@ struct OnlineMeeting {
     join_url: Option<String>,
 }
 
+/// An event's answer, as read back.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Answered {
+    response_status: ResponseStatus,
+}
+
 #[derive(Deserialize)]
 struct ResponseStatus {
     response: EventResponse,
@@ -162,12 +174,25 @@ impl CalendarSync {
     }
 
     /// Runs until the process exits, retrying failures with backoff; at
-    /// once when the user changes the calendar.
+    /// once when the user changes the calendar. First, answers being
+    /// given as the process last stopped are of unknown outcome.
     pub async fn run(self) {
         let mut wake = self.dispatcher.hub().subscribe();
         let mut backoff = Duration::from_secs(1);
+        let mut recovered = false;
         loop {
-            match self.step(now_ms()).await {
+            let step = async {
+                if !recovered {
+                    self.observe(AnswersSettled {
+                        now_ms: now_ms(),
+                        interrupted: true,
+                    })
+                    .await?;
+                    recovered = true;
+                }
+                self.step(now_ms()).await
+            };
+            match step.await {
                 Ok(()) => {
                     backoff = Duration::from_secs(1);
                     self.wait(&mut wake).await;
@@ -210,40 +235,123 @@ impl CalendarSync {
         }
     }
 
-    /// Gives Graph the answers to meeting requests asked for, and the
-    /// events written, recording what it made of each; whether it wrote
-    /// any event.
+    /// Gives Graph the answers to meeting requests asked for (SPEC §6.6),
+    /// then the events written, recording what it made of each; whether it
+    /// wrote any event.
     pub async fn push(&self) -> Result<bool> {
-        let reader = self.reader.clone();
+        self.reconcile().await?;
+        self.write().await
+    }
+
+    /// Gives Graph the answers to meeting requests the user asked for,
+    /// and reads back what that is to be confirmed by (SPEC §6.6): until
+    /// nothing is left to give or read. Every answer claimed is given and
+    /// its outcome recorded, though one fails; then the first failure,
+    /// that may pass, is returned, for the step to be retried with
+    /// backoff.
+    pub async fn reconcile(&self) -> Result<()> {
+        // Each round gives or confirms; few are needed.
+        const ROUNDS: usize = 8;
+        for _ in 0..ROUNDS {
+            let account = self.account.clone();
+            let answers = self
+                .query(move |conn| respond::reconciling(conn, &account))
+                .await?;
+            let now = now_ms();
+            if answers.iter().any(|a| a.field.expiring(now)) {
+                self.observe(AnswersSettled {
+                    now_ms: now,
+                    interrupted: false,
+                })
+                .await?;
+                continue;
+            }
+            let wanted: Vec<_> = answers
+                .iter()
+                .filter(|a| a.field.wanted().is_some())
+                .map(|a| a.event)
+                .collect();
+            if !wanted.is_empty() {
+                self.observe(AnswersClaimed { events: wanted }).await?;
+                self.give().await?;
+                continue;
+            }
+            let read_back: Vec<_> = answers
+                .into_iter()
+                .filter(|a| a.field.read_back())
+                .collect();
+            if read_back.is_empty() {
+                return Ok(());
+            }
+            for stored in read_back {
+                let as_of = self.query(uplink_tx_log::as_of).await?;
+                let path = format!("/events/{}?$select=responseStatus", stored.external_id);
+                let read: Option<Answered> = self.graph.get(&self.graph.url(&path)).await?;
+                self.observe(ResponseRead {
+                    event: stored.event,
+                    response: read.map(|a| a.response_status.response),
+                    as_of,
+                })
+                .await?;
+            }
+        }
+        bail!("answers still to give or read after {ROUNDS} rounds")
+    }
+
+    /// Gives the answers claimed, recording each outcome as it ends.
+    async fn give(&self) -> Result<()> {
         let account = self.account.clone();
-        let wanted = tokio::task::spawn_blocking(move || {
-            respond::wanted(&reader.lock().expect("reader poisoned"), &account)
-        })
-        .await??;
-        for wanted in wanted {
-            let refused = match respond::action(wanted.response) {
-                None => Some(CANNOT_TAKE_BACK.to_owned()),
+        let answers = self
+            .query(move |conn| respond::reconciling(conn, &account))
+            .await?;
+        let mut failed = None;
+        for stored in answers {
+            let Some(attempt) = stored
+                .field
+                .attempt
+                .filter(|a| a.outcome == Outcome::InFlight)
+            else {
+                continue;
+            };
+            let response = attempt.value;
+            let refused = |reason: &str| Ended::NotApplied {
+                refused: Some(reason.to_owned()),
+            };
+            let ended = match respond::action(response) {
+                None => refused(CANNOT_TAKE_BACK),
                 Some(action) => {
-                    let path = format!("/events/{}/{action}", wanted.external_id);
+                    let path = format!("/events/{}/{action}", stored.external_id);
                     let body = serde_json::json!({ "sendResponse": true });
-                    match self.graph.act(&path, &body).await? {
-                        Changed::Done => None,
-                        Changed::Gone => Some("the event is no longer on the calendar".to_owned()),
-                        Changed::Refused(reason) => Some(reason),
+                    match self.graph.act(&path, &body).await {
+                        Ok(Changed::Done) => Ended::Applied,
+                        Ok(Changed::Gone) => refused("the event is no longer on the calendar"),
+                        Ok(Changed::Refused(reason)) => refused(&reason),
+                        Err(e) => {
+                            let ended = match e {
+                                Failed::NotDone(_) => Ended::NotApplied { refused: None },
+                                Failed::Unknown(_) => Ended::Unknown { at_ms: now_ms() },
+                            };
+                            failed.get_or_insert(
+                                anyhow::Error::from(e).context("answering a meeting request"),
+                            );
+                            ended
+                        }
                     }
                 }
             };
-            self.dispatcher
-                .observe(
-                    self.account.clone(),
-                    ResponseGiven {
-                        event: wanted.event,
-                        response: wanted.response,
-                        refused,
-                    },
-                )
-                .await?;
+            self.observe(ResponseGiven {
+                event: stored.event,
+                response,
+                ended,
+            })
+            .await?;
         }
+        failed.map_or(Ok(()), Err)
+    }
+
+    /// Gives Graph the events written, recording what it made of each;
+    /// whether it wrote any.
+    async fn write(&self) -> Result<bool> {
         let reader = self.reader.clone();
         let account = self.account.clone();
         let writes = tokio::task::spawn_blocking(move || {
@@ -270,13 +378,13 @@ impl CalendarSync {
                 }
             };
             let outcome = match outcome {
-                Written::Done(json) => Outcome::Written(json.to_string()),
+                Written::Done(json) => write::Outcome::Written(json.to_string()),
                 // One to change gone is gone; one to create is not.
                 Written::Gone => match write.request {
                     Request::Create(_) => bail!("Graph answered 404 to creating an event"),
-                    _ => Outcome::Gone,
+                    _ => write::Outcome::Gone,
                 },
-                Written::Refused(reason) => Outcome::Refused(reason),
+                Written::Refused(reason) => write::Outcome::Refused(reason),
             };
             self.dispatcher
                 .observe(
@@ -292,10 +400,27 @@ impl CalendarSync {
         Ok(wrote)
     }
 
+    async fn observe(&self, observation: impl Observation) -> Result<()> {
+        self.dispatcher
+            .observe(self.account.clone(), observation)
+            .await
+            .map(drop)
+    }
+
+    /// Runs `f` on the reader.
+    async fn query<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&Connection) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let reader = self.reader.clone();
+        tokio::task::spawn_blocking(move || f(&reader.lock().expect("reader poisoned"))).await?
+    }
+
     /// Records the calendar's changes since the last sync, as of `now`
     /// (ms); all of its window, the first time or once the window moves.
     pub async fn sync(&self, now: i64) -> Result<()> {
         let state = self.state().await?;
+        let as_of = self.query(uplink_tx_log::as_of).await?;
         let fresh = || {
             let (start, end) = (now - PAST_MS, now + FUTURE_MS);
             (self.start_link(start, end), start, end, true)
@@ -395,6 +520,7 @@ impl CalendarSync {
                     removed,
                     series,
                     sync_state: serde_json::to_value(sync_state).expect("serializes"),
+                    as_of,
                 },
             )
             .await

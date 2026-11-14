@@ -577,19 +577,24 @@ async fn answers_meeting_requests() {
     ];
     assert_eq!(answers().await, answered);
     assert_eq!(outbox().len(), 3);
-    setup.sync.push().await.unwrap();
+    setup.sync.reconcile().await.unwrap();
     assert_eq!(outbox(), []);
     let log = setup.log();
+    // Each given, then read back: declined, it leaves the calendar, as
+    // Exchange moves it to Deleted Items.
     assert_eq!(
-        log[log.len() - 3..],
+        log[log.len() - 7..],
         [
+            "Giving 3 answers to the provider",
             "Accepted 'Planning' at the provider",
             "Tentatively accepted 'Retro' at the provider",
             "Declined 'Offsite' at the provider",
+            "Read the answer to 'Planning' from the provider",
+            "Read the answer to 'Retro' from the provider",
+            "'Offsite' is no longer on the calendar",
         ]
     );
-    // Declined, it leaves the calendar, as Exchange moves it to Deleted
-    // Items; the others are as answered.
+    // A sync agrees.
     setup.sync.sync(NOW + 60_000).await.unwrap();
     assert_eq!(answers().await, answered);
     assert_eq!(
@@ -601,7 +606,7 @@ async fn answers_meeting_requests() {
     // which undoing the undo makes.
     let undo = setup.dispatcher.undo(accepted).await.unwrap();
     assert_eq!(answers().await[0].1, EventResponse::NotResponded);
-    setup.sync.push().await.unwrap();
+    setup.sync.reconcile().await.unwrap();
     assert_eq!(
         outbox(),
         [(

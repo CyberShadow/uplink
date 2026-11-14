@@ -610,7 +610,8 @@ fn showing(tx: &Transaction, target: Target) -> Result<Vec<EventId>> {
 }
 
 /// Sets the event's columns as shown: what the provider has, under what
-/// is asked of it and of its series.
+/// is asked of it and of its series. Its answer is its own field
+/// (`respond`), which writing does not change.
 pub(crate) fn refresh(tx: &Transaction, id: EventId) -> Result<()> {
     let (raw, own, series): (Option<String>, Option<String>, Option<String>) = tx.query_row(
         "SELECT e.raw, e.desired, s.desired FROM calendar_event e
@@ -643,7 +644,7 @@ pub(crate) fn refresh(tx: &Transaction, id: EventId) -> Result<()> {
     tx.execute(
         "UPDATE calendar_event SET exception = ?2, subject = ?3, location = ?4, preview = ?5,
            start_ts = ?6, end_ts = ?7, all_day = ?8, cancelled = ?9, show_as = ?10,
-           response = ?11, join_url = ?12, reminder = ?13, modified_ts = coalesce(?14, modified_ts)
+           join_url = ?11, reminder = ?12, modified_ts = coalesce(?13, modified_ts)
          WHERE id = ?1",
         params![
             id.0,
@@ -656,7 +657,6 @@ pub(crate) fn refresh(tx: &Transaction, id: EventId) -> Result<()> {
             shown.all_day,
             shown.cancelled,
             name(shown.show_as),
-            name(shown.response),
             shown.join_url,
             shown.reminder,
             shown.modified,
@@ -676,7 +676,6 @@ struct Shown {
     all_day: bool,
     cancelled: bool,
     show_as: ShowAs,
-    response: EventResponse,
     join_url: Option<String>,
     reminder: Option<i64>,
     /// When the provider says it last changed; of one being created, when
@@ -703,7 +702,6 @@ impl Shown {
             all_day: event.all_day,
             cancelled: event.cancelled,
             show_as: event.show_as,
-            response: event.response,
             join_url: event.join_url,
             reminder: event.reminder,
             modified: Some(event.modified),
@@ -722,7 +720,6 @@ impl Shown {
             all_day: fields.all_day,
             cancelled: false,
             show_as: fields.show_as,
-            response: EventResponse::Organizer,
             join_url: None,
             reminder: fields.reminder,
             modified: None,
@@ -877,6 +874,8 @@ fn create(
         time_zone: time_zone.to_owned(),
     })?;
     let by = this_entry(tx)?.0;
+    // The user's own: no answer to give, as the provider will have it.
+    let organizer = crate::respond::new_field(EventResponse::Organizer, TxLogId(by));
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("after the epoch")
@@ -885,10 +884,10 @@ fn create(
         None => {
             tx.execute(
                 "INSERT INTO calendar_event (account_id, transaction_id, exception, subject,
-                   location, preview, start_ts, end_ts, all_day, cancelled, show_as, response,
-                   modified_ts, desired, desired_by)
-                 VALUES (?1, ?2, 0, '', '', '', 0, 0, 0, 0, '', 'organizer', ?3, ?4, ?5)",
-                params![account, transaction_id(), now, desired, by],
+                   location, preview, start_ts, end_ts, all_day, cancelled, show_as,
+                   response_field, modified_ts, desired, desired_by)
+                 VALUES (?1, ?2, 0, '', '', '', 0, 0, 0, 0, '', ?3, ?4, ?5, ?6)",
+                params![account, transaction_id(), organizer, now, desired, by],
             )?;
             None
         }
@@ -903,10 +902,10 @@ fn create(
             // it.
             tx.execute(
                 "INSERT INTO calendar_event (account_id, series_id, exception, subject,
-                   location, preview, start_ts, end_ts, all_day, cancelled, show_as, response,
-                   modified_ts)
-                 VALUES (?1, ?2, 0, '', '', '', 0, 0, 0, 0, '', 'organizer', ?3)",
-                params![account, series, now],
+                   location, preview, start_ts, end_ts, all_day, cancelled, show_as,
+                   response_field, modified_ts)
+                 VALUES (?1, ?2, 0, '', '', '', 0, 0, 0, 0, '', ?3, ?4)",
+                params![account, series, organizer, now],
             )?;
             Some(series)
         }
