@@ -400,7 +400,11 @@ async fn shows_a_meeting_s_status_and_details() {
     assert!(html.contains("/api/remote-image/img.example.org"), "{html}");
     assert_eq!(details.remote_images.len(), 1);
     assert_eq!(details.body_text, None);
-    assert!(details.join_url.unwrap().ends_with(&format!("/meet/{id}")));
+    assert!(details
+        .event
+        .join_url
+        .unwrap()
+        .ends_with(&format!("/meet/{id}")));
     assert!(details.web_link.unwrap().contains("itemid="));
     assert!(
         details.raw.contains("\"isOnlineMeeting\": true"),

@@ -112,6 +112,7 @@ export function Calendar(props: { view?: string; date?: string; event?: string }
     return () => calendar.open(null)
   }, [calendar, opened])
 
+  const events = calendar.events.value
   const go = (target: Date, inView = view) => route(calendarPath(inView, dateString(target)))
   const closed = calendarPath(view, date)
   useKeymap({
@@ -121,10 +122,30 @@ export function Calendar(props: { view?: string; date?: string; event?: string }
     dayView: () => route(calendarPath('day', date, opened ?? undefined)),
     weekView: () => route(calendarPath('week', date, opened ?? undefined)),
     agendaView: () => route(calendarPath('agenda', date, opened ?? undefined)),
+    nextEvent: () => openEvent(1),
+    previousEvent: () => openEvent(-1),
+    join: () => {
+      const url = joinable(events ?? [], opened, Date.now())?.join_url
+      if (url) open(url, '_blank', 'noopener,noreferrer')
+    },
     ...(opened !== null && { up: () => route(closed) }),
   })
+  /** Opens the event after the one opened (`by` 1) or before it (-1), of
+   * those on show; with none opened, the first yet to end, or the last
+   * begun. */
+  const openEvent = (by: 1 | -1) => {
+    const shown = shownEvents(events ?? [], from, to)
+    const at = shown.findIndex((e) => e.id === opened)
+    const now = Date.now()
+    const next =
+      at !== -1
+        ? shown[at + by]
+        : by === 1
+          ? (shown.find((e) => e.end > now) ?? shown[0])
+          : (shown.findLast((e) => e.start <= now) ?? shown[shown.length - 1])
+    if (next) route(calendarPath(view, date, next.id))
+  }
 
-  const events = calendar.events.value
   const title = { day: dayName(first), week: `Week of ${dateString(first)}`, agenda: `From ${dateString(first)}` }[view]
   useTitle(title, 'Calendar')
   const link = (event: CalendarEvent) => calendarPath(view, date, event.id)
@@ -165,6 +186,25 @@ export function Calendar(props: { view?: string; date?: string; event?: string }
       </div>
     </section>
   )
+}
+
+/** The events on show (`from`–`to`), each once, in order. */
+function shownEvents(events: readonly CalendarEvent[], from: number, to: number): CalendarEvent[] {
+  return events.filter((e) => e.start < to && e.end > from)
+}
+
+/** How soon before its start a meeting is joined. */
+const JOIN_BEFORE = 10 * 60_000
+
+/** The meeting to join: the one opened; or, with none, of those not
+ * cancelled or declined, going on or starting within {@link
+ * JOIN_BEFORE}, the one begun (or beginning) last. */
+function joinable(events: readonly CalendarEvent[], opened: number | null, now: number): CalendarEvent | undefined {
+  if (opened !== null) return events.find((e) => e.id === opened)
+  return events
+    .filter((e) => e.join_url && !e.cancelled && e.response !== 'declined' && !e.all_day)
+    .filter((e) => e.start - JOIN_BEFORE <= now && now < e.end)
+    .sort((a, b) => b.start - a.start)[0]
 }
 
 function Marks(props: { event: CalendarEvent }) {
@@ -497,7 +537,8 @@ function EventPane(props: { details: EventDetails | 'gone' | null; close: string
 }
 
 function Details(props: { details: EventDetails }) {
-  const { event, organizer, attendees, join_url, web_link } = props.details
+  const { event, organizer, attendees, web_link } = props.details
+  const { join_url } = event
   return (
     <>
       <p>
@@ -510,7 +551,7 @@ function Details(props: { details: EventDetails }) {
         </p>
       )}
       {join_url && (
-        <a class={styles.join} href={join_url} target="_blank" rel="noopener noreferrer">
+        <a class={styles.join} href={join_url} target="_blank" rel="noopener noreferrer" title="Join (Shift+J)">
           Join online meeting
         </a>
       )}

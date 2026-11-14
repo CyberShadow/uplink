@@ -69,6 +69,9 @@ export type Action =
   | 'goCalendar'
   | 'today'
   | 'dayView'
+  | 'nextEvent'
+  | 'previousEvent'
+  | 'join'
   | 'weekView'
   | 'agendaView'
   | 'search'
@@ -187,6 +190,9 @@ export const KEYMAP: Binding[] = [
   { action: 'goHistory', ...go('z'), help: 'Go to History (undo anything)' },
   { action: 'goCalendar', ...go('c'), help: 'Go to the calendar' },
   { action: 'today', keys: ['t'], label: 't', help: 'Today (in the calendar)' },
+  { action: 'nextEvent', keys: ['n'], label: 'n', help: 'Open the next event (in the calendar; with none open, the first yet to end)', repeats: true },
+  { action: 'previousEvent', keys: ['p'], label: 'p', help: 'Open the previous event (in the calendar)', repeats: true },
+  { action: 'join', keys: ['Shift+j'], label: 'Shift+j', help: 'Join the online meeting (in the calendar: the one open, or else the one on or starting in 10 minutes)' },
   { action: 'dayView', keys: ['d'], label: 'd', help: 'Day view (in the calendar)' },
   { action: 'weekView', keys: ['w'], label: 'w', help: 'Week view (in the calendar)' },
   { action: 'agendaView', keys: ['a'], label: 'a', help: 'Agenda view (in the calendar)' },

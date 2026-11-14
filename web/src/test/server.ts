@@ -245,6 +245,7 @@ export class FakeServer implements Requester, Blobs {
       cancelled: false,
       show_as: 'busy',
       response: 'organizer',
+      join_url: null,
       ...more,
     }
     this.calendar.push(event)
@@ -1166,7 +1167,6 @@ export class FakeServer implements Requester, Blobs {
             body_html: null,
             body_text: null,
             remote_images: [],
-            join_url: null,
             web_link: null,
             raw: JSON.stringify({ subject: event.subject }, null, 2),
             ...this.eventDetails.get(event.id),

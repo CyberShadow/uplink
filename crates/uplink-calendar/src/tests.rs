@@ -81,6 +81,7 @@ fn event(id: &str, subject: &str, start: i64, end: i64) -> ObservedEvent {
         cancelled: false,
         show_as: ShowAs::Busy,
         response: EventResponse::Organizer,
+        join_url: None,
         raw: "{}".into(),
     }
 }

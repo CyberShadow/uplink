@@ -581,6 +581,7 @@ CREATE TABLE calendar_event (
   cancelled       INTEGER NOT NULL,         -- isCancelled (V0046)
   show_as         TEXT NOT NULL,            -- showAs: free, tentative, busy, …
   response        TEXT NOT NULL,            -- responseStatus.response
+  join_url        TEXT,                     -- its online meeting's (V0047)
   raw             TEXT NOT NULL,            -- the event's Graph JSON
   UNIQUE (account_id, external_id)
 );
@@ -2562,7 +2563,10 @@ none of them. An event is a link:
 `/calendar/<view>/<date>/<event>` opens it beside the view (over it,
 on a phone), with what `get_event` has, and a button to join its
 online meeting; `Esc` closes it. Home's agenda and search's events
-link to it so. All-day events are on their (UTC) dates, which
+link to it so. `n` and `p` open the next and previous event on show
+(with none open, the first yet to end, or the last begun); `J` joins
+the meeting open, or else, of those not cancelled or declined, the one
+on or starting within 10 minutes (the one begun last). All-day events are on their (UTC) dates, which
 are the same days wherever one is; timed events are shown in the
 browser's time zone. `j`/`k` move by day, week or fortnight, `t` goes
 to today, `d`, `w` and `a` switch views, `g c` goes to the calendar.

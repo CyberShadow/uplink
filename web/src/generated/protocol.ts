@@ -1280,7 +1280,11 @@ cancelled: boolean, show_as: ShowAs,
 /**
  * The user's answer to it.
  */
-response: EventResponse, };
+response: EventResponse, 
+/**
+ * Where to join its online meeting.
+ */
+join_url: string | null, };
 
 /**
  * How an event has the user's time shown to others (Graph `showAs`).
@@ -1306,10 +1310,6 @@ body_html: string | null,
  * The body, if it is text.
  */
 body_text: string | null, remote_images: Array<RemoteHost>, 
-/**
- * Where to join its online meeting.
- */
-join_url: string | null, 
 /**
  * Where the provider's web app shows it.
  */
@@ -1352,4 +1352,4 @@ zone: string, };
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "854ad2a9e7f2bdc1"
+export const PROTOCOL_VERSION = "6986e979321d8751"

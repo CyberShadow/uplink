@@ -84,6 +84,15 @@ struct Event {
     is_cancelled: bool,
     show_as: ShowAs,
     response_status: ResponseStatus,
+    online_meeting: Option<OnlineMeeting>,
+    /// Of online meetings of providers other than Teams.
+    online_meeting_url: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OnlineMeeting {
+    join_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -276,6 +285,10 @@ fn observed(item: serde_json::Value) -> Result<ObservedEvent> {
         cancelled: event.is_cancelled,
         show_as: event.show_as,
         response: event.response_status.response,
+        join_url: event
+            .online_meeting
+            .and_then(|m| m.join_url)
+            .or(event.online_meeting_url),
         external_id: event.id,
         raw,
     })

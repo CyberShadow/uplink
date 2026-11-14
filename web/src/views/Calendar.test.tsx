@@ -142,7 +142,7 @@ describe('calendar', () => {
       'Planning',
       '2026-11-11T19:00:00Z',
       '2026-11-11T20:00:00Z',
-      { response: 'notResponded', show_as: 'tentative', location: 'Room 4' },
+      { response: 'notResponded', show_as: 'tentative', location: 'Room 4', join_url: 'https://meet.example.org/123' },
       {
         organizer: { name: 'Bob', address: 'bob@example.com' },
         attendees: [
@@ -150,7 +150,6 @@ describe('calendar', () => {
           { person: { name: 'Room 4', address: 'room4@example.com' }, kind: 'resource', response: 'accepted' },
         ],
         body_text: 'Notes: https://example.org/notes',
-        join_url: 'https://meet.example.org/123',
         web_link: 'https://outlook.example.org/item',
       },
     )
@@ -237,5 +236,29 @@ describe('calendar', () => {
     await waitFor(() => expect(timed('Tuesday 2026-11-10')).toHaveLength(3))
     expect(screen.queryByRole('region', { name: 'Monday 2026-11-09' })).toBeNull()
     expect(screen.getByRole('link', { name: 'Day' }).getAttribute('aria-current')).toBe('page')
+  })
+
+  it('opens the next and previous events with n and p, and joins a meeting with J', async () => {
+    // Tuesday 10:05 here: Standup and Review are on, Lunch is to come.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-11-10T15:05:00Z'))
+    server.calendar[1].join_url = 'https://meet.example.org/review'
+    const opened = vi.spyOn(window, 'open').mockReturnValue(null)
+    const user = await start('/calendar/week/2026-11-11')
+    await waitFor(() => expect(timed('Tuesday 2026-11-10')).toHaveLength(3))
+    // None open: the meeting on.
+    await user.keyboard('{Shift>}j{/Shift}')
+    expect(opened).toHaveBeenLastCalledWith('https://meet.example.org/review', '_blank', 'noopener,noreferrer')
+    await user.keyboard('n')
+    expect(location.pathname).toBe('/calendar/week/2026-11-11/1')
+    await user.keyboard('nn')
+    expect(location.pathname).toBe('/calendar/week/2026-11-11/3')
+    await screen.findByRole('heading', { name: 'Lunch' })
+    await user.keyboard('p')
+    expect(location.pathname).toBe('/calendar/week/2026-11-11/2')
+    await user.keyboard('{Escape}p')
+    // None open: the last begun.
+    expect(location.pathname).toBe('/calendar/week/2026-11-11/2')
+    opened.mockRestore()
   })
 })

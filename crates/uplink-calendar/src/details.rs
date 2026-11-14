@@ -17,9 +17,6 @@ struct Event {
     #[serde(default)]
     attendees: Vec<GraphAttendee>,
     body: Option<Body>,
-    online_meeting: Option<OnlineMeeting>,
-    /// Of online meetings of providers other than Teams.
-    online_meeting_url: Option<String>,
     web_link: Option<String>,
 }
 
@@ -61,12 +58,6 @@ struct Body {
 enum ContentType {
     Text,
     Html,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct OnlineMeeting {
-    join_url: Option<String>,
 }
 
 fn person(address: EmailAddress) -> Result<Person> {
@@ -123,10 +114,6 @@ pub fn details(event: CalendarEvent, raw: &str) -> Result<EventDetails> {
             .into_iter()
             .map(|(host, images)| RemoteHost { host, images })
             .collect(),
-        join_url: graph
-            .online_meeting
-            .and_then(|m| m.join_url)
-            .or(graph.online_meeting_url),
         web_link: graph.web_link,
         raw: serde_json::to_string_pretty(&json).expect("serializes"),
     })

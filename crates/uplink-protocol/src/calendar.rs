@@ -32,6 +32,8 @@ pub struct CalendarEvent {
     pub show_as: ShowAs,
     /// The user's answer to it.
     pub response: EventResponse,
+    /// Where to join its online meeting.
+    pub join_url: Option<String>,
 }
 
 /// How an event has the user's time shown to others (Graph `showAs`).
@@ -75,8 +77,6 @@ pub struct EventDetails {
     /// The body, if it is text.
     pub body_text: Option<String>,
     pub remote_images: Vec<crate::mail::RemoteHost>,
-    /// Where to join its online meeting.
-    pub join_url: Option<String>,
     /// Where the provider's web app shows it.
     pub web_link: Option<String>,
     /// The provider's JSON of it, indented.
