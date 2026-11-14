@@ -246,7 +246,7 @@ send_delay_secs: 10
 # icon (§12.14), by `count` or by a `dot`. Without `home`, these.
 home:
   - name: Immediate
-    query: is:mention OR is:invite OR (is:dm is:unread) OR is:overdue
+    query: (is:mention is:new) OR is:invite OR (is:dm is:unread) OR is:overdue
       OR due:today OR (in:inbox is:unread is:important)
     badge: count
   - name: Upkeep
@@ -1707,35 +1707,51 @@ its negation true (`from:alice` lists only mail; `-category:promotions`
 leaves every room in). `is:mail`, `is:room`, `is:todo` and `is:event`
 name a kind. Words match, as in mail (by words, ignoring case, the last
 a prefix unless quoted), a room's name, a to-do's title and notes, and
-an event's subject, location and preview. Of rooms: `is:unread` (messages
-unread), `is:mention` (one that highlights is after the fully-read
-marker, §12.15: `Room.mentions`), `is:notifying` (one
-notifies, by the push rules: a muted room has none), `is:dm` (a direct
-chat, by `m.direct`, as the room was last synced: V0036
-`matrix_room.direct`), `is:invite`, `label:`/`tag:` (its tags, §9.5, by
-name or as they are, ignoring case, spaces, `_` and `-`:
+an event's subject, location and preview. Of rooms, by their own terms:
+`is:dm` (a direct chat, by `m.direct`, as the room was last synced:
+V0036 `matrix_room.direct`), `is:invite`, `label:`/`tag:` (its tags,
+§9.5, by name or as they are, ignoring case, spaces, `_` and `-`:
 `tag:lowpriority`, `tag:"Low priority"`, `tag:m.lowpriority`; a user
 tag `u.work` is `tag:work`), `space:` (a space it is in, however deeply,
-by name), `account:` (id or Matrix id), and dates, of its latest event.
-Spaces are not listed. Of to-dos: `due:` (`today`, `tomorrow` or a
+by name), `account:` (id or Matrix id), and words, of its name. Spaces
+are not listed. A room has the other terms of its messages (messages and
+undecryptable events, which nearly always are: `rooms::message`), as a
+conversation has its entries': it matches if one of them does, with its
+own terms of it. A message's words match its text or an edit's (as a
+substring, as a room's search does, §12.11), `from:` its sender's id or
+name, `from:me` the accounts' own; `is:unread` is of one after the
+room's read marker, of the main timeline and not the account's (as the
+room counts it unread, §9.5), `is:new` of one after its fully-read
+marker and not the account's (not yet caught up on, §12.15; so
+`is:mention is:new` is of `Room.mentions`), `is:mention` and
+`is:notifying` of one that highlights or notifies, by the push rules,
+read or not; dates are of the message. So a state is said, not implied:
+`is:mention` finds every room the account was ever mentioned in, and
+the home view's buckets say `is:mention is:new` or `is:unread
+is:notifying`. A room's own terms decide what they can
+(`uplink_query::decides`: `tag:work` holds or not of the room, whatever
+its messages; words its name has hold), and its messages decide the
+rest: a room the query matches by its own terms is found as a room;
+one it leaves to its messages, by those it matches (its hits, of which
+it shows the latest: `uplink_matrix::query::Group`). Messages are many,
+so the rest is compiled to SQL of them, the rooms' terms as the rooms
+they hold of; if each of its alternatives is only of messages after a
+marker (`is:unread`, `is:new`), they are found by the index of
+positions after the room's marker, room by room, so that what is
+caught up on is not read however many messages a room has (the home
+view's buckets, and their badges on every change, cost what is unread,
+not the history). Of to-dos: `due:` (`today`, `tomorrow` or a
 date), `is:overdue` (open, and due before today), `has:due`, `is:done`,
 and dates, of its creation; done ones are left out unless the query
 names `is:done` outside a negation, as Trash is. Of events: `account:`
-and dates, of their start. Rooms' messages are of their rooms
-(`is:room`): words match their text or an edit's (as a substring, as a
-room's search does, §12.11), `from:` the sender's id or name, `from:me`
-the accounts' own; `is:unread` those after the room's read marker and
-not the account's, `is:mention` and `is:notifying` those that highlight
-or notify; dates are of the message, and the room's terms (`tag:`,
-`space:`, `is:dm`, `is:invite`, `account:`) are of its room. A label or
+and dates, of their start. A label or
 account no kind has is an error. `ListItems { query, after, limit }`
 lists them all in one read: a page of conversations (as
 `ListEntries`, a later page of them alone), and every room (most
 recently active first), to-do (as listed) and event (those yet to end,
 soonest first, then those past, latest first) matched, and the latest
-50 messages of rooms (`FoundMessage { room, event }`), compiled to SQL
-(`uplink_matrix::query::messages`), a room's terms as the rooms they
-hold of. The search box at the top searches everything this way, but in
+50 messages of rooms its messages decide (`FoundMessage { room, event
+}`). The search box at the top searches everything this way, but in
 a room, where it searches the room's messages (§12.11): the search page
 lists rooms, messages, to-dos and events found above the mail, each a
 link to it (a message to its room); it lists again when rooms, to-dos or
@@ -1743,7 +1759,8 @@ calendars change, as it does when mail does. Today, which `due:` and
 `is:overdue` count from, is the server's, of UTC (`uplink_query::today`)
 as dates are: the user is assumed to be on UTC, until time zones are
 supported (ROADMAP). Rooms, to-dos and events are few, so they are
-matched as listed, in Rust (`uplink_query::matches`); mail's terms of
+matched as listed, in Rust (`uplink_query::matches`, a room's own terms
+by `decides`); mail's terms of
 other kinds fold to constants in its SQL, and a query of other kinds
 reads no mail.
 
@@ -2459,7 +2476,9 @@ which a verified device gives.
 
 - A room's unread count is computed locally: messages (and undecryptable
   events, which nearly always are messages) from others after the read
-  marker. The homeserver's notification counts are not used, since they
+  marker (by the conditions queries find messages by, §8.7:
+  `rooms::message`, `rooms::after`). The homeserver's notification
+  counts are not used, since they
   could not follow an undo. Of those, of the main timeline and threads,
   a room counts those that notify (`notifying`) and highlight
   (`highlighted`: mention the account, or a keyword), by the account's
@@ -3503,7 +3522,7 @@ top says how many messages are after it, with "Jump to first unread"
 (`Shift+PageUp`, as Element's) and "Mark as read". A mention of the user
 (a message that highlights, §9.5, `RoomEvent.highlight`) after the
 fully-read marker counts however the read marker moved: in
-`is:mention`, so in Immediate's count, until catching up passes it (no
+`is:mention is:new`, so in Immediate's count, until catching up passes it (no
 mark of its own: a mention seen out of order counts until what is
 before it is caught up on, or the user is done). The bar says how many
 of those loaded have not been on screen (`@ 2`) and jumps to the oldest

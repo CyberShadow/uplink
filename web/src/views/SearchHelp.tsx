@@ -54,8 +54,9 @@ const SECTIONS: { title: string; rows: Row[] }[] = [
     rows: [
       ['is:room', 'Rooms, and their messages; is:mail, is:todo and is:event too'],
       ['is:unread is:room', 'Rooms with messages unread, and those messages'],
-      ['is:mention', 'Rooms whose unread messages mention you, and messages that do'],
-      ['is:notifying', 'Rooms with unread messages that notify (not of muted rooms)'],
+      ['is:new', 'Messages not yet caught up on, however far they were read'],
+      ['is:mention', 'Messages that mention you, read or not: is:mention is:new, those new'],
+      ['is:notifying', 'Messages that notify, by your rules (none of muted rooms)'],
       ['is:dm', 'Direct chats'],
       ['is:invite', 'Rooms you are invited to'],
       ['tag:lowpriority', 'Rooms with the tag: favourite, lowpriority, or one of yours'],

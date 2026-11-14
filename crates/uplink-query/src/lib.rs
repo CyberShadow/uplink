@@ -48,11 +48,14 @@ pub enum Term {
     MessageId(String),
     /// Of a kind: `is:mail`, `is:room`, `is:todo`, `is:event`.
     Kind(Kind),
-    /// Unread: mail with `UNREAD`, a room with messages unread.
+    /// Unread: mail with `UNREAD`, a room's message after its read marker.
     Unread,
-    /// A room whose unread messages mention the account (or a keyword).
+    /// A room's message after its fully-read marker: not yet caught up on
+    /// (SPEC §12.15), however the read marker moved.
+    New,
+    /// A room's message that mentions the account (or a keyword).
     Mention,
-    /// A room with unread messages that notify, by the push rules.
+    /// A room's message that notifies, by the push rules.
     Notifying,
     /// A direct chat.
     Direct,
@@ -451,6 +454,7 @@ fn operator(name: &str, value: &str, quoted: bool, now: i64) -> Result<Query, In
             "room" => term(Term::Kind(Kind::Room)),
             "todo" => term(Term::Kind(Kind::Todo)),
             "event" => term(Term::Kind(Kind::Event)),
+            "new" => term(Term::New),
             "mention" => term(Term::Mention),
             "notifying" => term(Term::Notifying),
             "dm" => term(Term::Direct),
@@ -459,7 +463,7 @@ fn operator(name: &str, value: &str, quoted: bool, now: i64) -> Result<Query, In
             "done" => term(Term::Done),
             _ => Err(invalid(format!(
                 "is:{value}: is: takes unread, read, starred, important, mail, room, todo, \
-                 event, mention, notifying, dm, invite, overdue or done"
+                 event, new, mention, notifying, dm, invite, overdue or done"
             ))),
         },
         "space" => term(Term::Space(value.to_owned())),
@@ -503,6 +507,32 @@ pub fn matches(query: &Query, term: &impl Fn(&Term) -> bool) -> bool {
         Query::And(all) => all.iter().all(|q| matches(q, term)),
         Query::Or(any) => any.iter().any(|q| matches(q, term)),
         Query::Not(q) => !matches(q, term),
+        Query::Term(t) => term(t),
+    }
+}
+
+/// Whether `query` matches an item, each term by `term`, which may leave
+/// it undecided (`None`): as a room's own terms leave its messages' to
+/// them. Undecided is decided neither way by what else holds (true or
+/// false, and undecided, is undecided), so that whatever decides it
+/// decides the query.
+pub fn decides(query: &Query, term: &impl Fn(&Term) -> Option<bool>) -> Option<bool> {
+    // Of `all`, `short` decides; else any undecided leaves it undecided.
+    let combined = |all: &[Query], short: bool| {
+        let mut decided = true;
+        for q in all {
+            match decides(q, term) {
+                Some(b) if b == short => return Some(short),
+                Some(_) => {}
+                None => decided = false,
+            }
+        }
+        decided.then_some(!short)
+    };
+    match query {
+        Query::And(all) => combined(all, false),
+        Query::Or(any) => combined(any, true),
+        Query::Not(q) => decides(q, term).map(|b| !b),
         Query::Term(t) => term(t),
     }
 }
@@ -802,6 +832,7 @@ mod tests {
         assert_eq!(ok("in:anywhere"), Query::Term(Term::Anywhere));
         assert_eq!(ok("is:unread"), Query::Term(Term::Unread));
         assert_eq!(ok("is:read"), not(Query::Term(Term::Unread)));
+        assert_eq!(ok("is:new"), Query::Term(Term::New));
         assert_eq!(ok("category:social"), label("CATEGORY_SOCIAL"));
         assert_eq!(ok("has:attachment"), Query::Term(Term::HasAttachment));
         assert_eq!(
@@ -885,6 +916,21 @@ mod tests {
         assert!(!unread("is:unread from:alice", true));
         assert!(unread("is:unread -from:alice", true));
         assert!(unread("from:alice OR is:unread", true));
+        // What decides a term decides the query, if it can.
+        let decided = |query: &str| {
+            decides(&ok(query), &|t| match t {
+                Term::Unread => None,
+                Term::Direct => Some(true),
+                _ => Some(false),
+            })
+        };
+        assert_eq!(decided("is:unread"), None);
+        assert_eq!(decided("-is:unread"), None);
+        assert_eq!(decided("is:dm is:unread"), None);
+        assert_eq!(decided("is:invite is:unread"), Some(false));
+        assert_eq!(decided("is:dm OR is:unread"), Some(true));
+        assert_eq!(decided("is:invite OR is:unread"), None);
+        assert_eq!(decided("-(is:invite OR is:dm)"), Some(false));
         let done = |query: &str| names(&ok(query), &|t| *t == Term::Done);
         assert!(done("is:todo (is:done OR x)"));
         assert!(!done("-is:done"));

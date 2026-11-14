@@ -235,6 +235,7 @@ fn term_matches(event: &CalendarEvent, term: &Term) -> bool {
         | Term::Smaller(_)
         | Term::MessageId(_)
         | Term::Unread
+        | Term::New
         | Term::Mention
         | Term::Notifying
         | Term::Direct

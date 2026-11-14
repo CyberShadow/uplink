@@ -431,7 +431,12 @@ fn others(
     now: i64,
 ) -> Result<Others, ServerError> {
     Ok(Others {
-        rooms: rooms.matching(query),
+        rooms: rooms
+            .matching(tx, query)
+            .map_err(internal)?
+            .into_iter()
+            .map(|group| group.room)
+            .collect(),
         todos: uplink_todos::matching(tx, query, today).map_err(internal)?,
         events: uplink_calendar::matching(tx, query, now).map_err(internal)?,
     })

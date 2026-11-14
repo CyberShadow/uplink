@@ -74,7 +74,7 @@ pub struct Room {
     /// Where catching up has got to (`m.fully_read`, SPEC §12.15).
     pub fully_read: Option<ReadMarker>,
     /// Messages from others after it that mention the account: they are
-    /// unread however the read marker moved (`is:mention`).
+    /// unread however the read marker moved (`is:mention is:new`).
     pub mentions: u32,
     /// Its latest message, as lists of rooms show it (SPEC §12.13).
     pub preview: Option<RoomPreview>,

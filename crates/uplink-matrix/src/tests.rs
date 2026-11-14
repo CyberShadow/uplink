@@ -1841,9 +1841,10 @@ mod query {
             let query = uplink_query::parse(query, 0).unwrap();
             let mut names: Vec<String> = crate::query::Rooms::load(&tx, &accounts)
                 .unwrap()
-                .matching(&query)
+                .matching(&tx, &query)
+                .unwrap()
                 .into_iter()
-                .map(|r| r.name)
+                .map(|g| g.room.name)
                 .collect();
             names.sort();
             names
@@ -1856,9 +1857,12 @@ mod query {
         assert_eq!(matching("is:dm"), ["Bob"]);
         assert_eq!(matching("is:invite"), ["Party"]);
         assert_eq!(matching("tea"), ["Team chat"], "by name, not spaces");
-        assert_eq!(matching("account:@me:example.org is:read").len(), 2);
+        assert_eq!(matching("account:@me:example.org").len(), 4);
+        // A room has the terms of its messages, of one of them.
+        assert_eq!(matching("from:bob"), ["Team chat"]);
+        assert_eq!(matching("is:read").len(), 0, "no message is read");
         // Terms of other kinds are false of rooms.
-        assert!(matching("from:bob OR is:todo OR in:inbox").is_empty());
+        assert!(matching("is:todo OR in:inbox").is_empty());
         assert_eq!(matching("-in:inbox").len(), 4);
 
         let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
@@ -1923,9 +1927,20 @@ mod query {
         let mut bob = room("!bob:x", "Bob");
         bob.direct = true;
         bob.events = vec![said("$4", "@bob:x", "100% deployed", 4_000)];
+        // Read up to $8, caught up on to $7.
+        let mut ops = room("!ops:x", "Ops");
+        let mut ping = said("$8", "@dave:x", "Ship now, @me", 8_000);
+        ping.push.highlight = true;
+        ops.events = vec![
+            said("$7", "@dave:x", "Ship it", 7_000),
+            ping,
+            said("$9", "@dave:x", "Shipped, ops", 9_000),
+        ];
+        ops.own_receipts = vec!["$8".into()];
+        ops.fully_read = Some("$7".into());
         db.observe(Synced {
             next_batch: "next".into(),
-            rooms: vec![work, team, bob],
+            rooms: vec![work, team, bob, ops],
         })
         .await
         .unwrap();
@@ -1950,7 +1965,7 @@ mod query {
         assert_eq!(matching("deploy is:unread"), ["$5", "$4", "$3", "$2"]);
         assert_eq!(matching("deploy from:me"), ["$1"]);
         assert_eq!(matching("from:bob"), ["$4", "$3", "$2"]);
-        assert_eq!(matching("is:mention"), ["$3"]);
+        assert_eq!(matching("is:mention"), ["$8", "$3"]);
         assert_eq!(matching("deploy is:dm"), ["$4"]);
         assert_eq!(matching("deploy -space:work"), ["$4"]);
         assert_eq!(matching("tag:projects green"), ["$2"]);
@@ -1960,12 +1975,61 @@ mod query {
         assert!(matching("deploy is:todo").is_empty());
         assert!(matching("in:inbox OR subject:deploy").is_empty());
         assert_eq!(matching("deploy is:room").len(), 5);
+        // Unread after the read marker, new after the fully-read one.
+        assert_eq!(matching("ship is:unread"), ["$9"]);
+        assert_eq!(matching("ship is:new"), ["$9", "$8"]);
+        assert_eq!(matching("ship (is:new OR is:unread)"), ["$9", "$8"]);
+        assert_eq!(matching("ship -is:unread"), ["$8", "$7"]);
+        assert_eq!(matching("is:mention is:new"), ["$8", "$3"]);
+        assert_eq!(matching("is:mention is:new is:unread"), ["$3"]);
+        // A room its name matches is found as a room, not by its messages.
+        assert_eq!(matching("ops"), Vec::<String>::new());
+
+        // Of rooms: by their own terms, or by their messages, the latest
+        // of which they show; the most recently active first.
+        let groups = |query: &str| -> Vec<(String, Option<(u32, String)>)> {
+            let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
+            let tx = conn.transaction().unwrap();
+            let accounts = [ConfiguredAccount {
+                id: "mx".into(),
+                mxid: ME.into(),
+            }];
+            let query = uplink_query::parse(query, 0).unwrap();
+            crate::query::Rooms::load(&tx, &accounts)
+                .unwrap()
+                .matching(&tx, &query)
+                .unwrap()
+                .into_iter()
+                .map(|g| {
+                    let hits = g.hits.map(|h| (h.count, h.latest.event_id));
+                    (g.room.name, hits)
+                })
+                .collect()
+        };
+        let hits =
+            |name: &str, count, latest: &str| (name.to_owned(), Some((count, latest.to_owned())));
+        assert_eq!(
+            groups("deploy"),
+            [hits("Team chat", 4, "$5"), hits("Bob", 1, "$4")]
+        );
+        assert_eq!(
+            groups("is:mention is:new"),
+            [hits("Ops", 1, "$8"), hits("Team chat", 1, "$3")]
+        );
+        assert_eq!(groups("ops"), [("Ops".to_owned(), None)]);
+        assert_eq!(
+            groups("is:dm OR from:dave"),
+            [hits("Ops", 3, "$9"), ("Bob".to_owned(), None)]
+        );
 
         // Each room's preview is its latest message, as last edited (the
         // edit is not one of its own); a room with none has none.
         let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
         let tx = conn.transaction().unwrap();
         let rooms = crate::rooms::rooms(&tx, "mx", ME).unwrap();
+        // Its counts are of what the terms of its messages find.
+        let ops = rooms.iter().find(|r| r.name == "Ops").unwrap();
+        assert_eq!((ops.unread, ops.mentions, ops.highlighted), (1, 1, 0));
         let preview = |name: &str| {
             let room = rooms.iter().find(|r| r.name == name).unwrap();
             room.preview

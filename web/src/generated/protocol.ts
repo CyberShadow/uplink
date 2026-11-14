@@ -893,7 +893,7 @@ latest: RoomEventId | null, read_up_to: ReadMarker | null,
 fully_read: ReadMarker | null, 
 /**
  * Messages from others after it that mention the account: they are
- * unread however the read marker moved (`is:mention`).
+ * unread however the read marker moved (`is:mention is:new`).
  */
 mentions: number, 
 /**
@@ -1377,4 +1377,4 @@ refused: string | null, };
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "961bcd60e1b8c6f5"
+export const PROTOCOL_VERSION = "65821baf8d3e86d5"

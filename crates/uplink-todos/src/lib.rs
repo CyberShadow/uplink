@@ -99,6 +99,7 @@ fn term_matches(todo: &Todo, term: &Term, today: &str) -> bool {
         | Term::Smaller(_)
         | Term::MessageId(_)
         | Term::Unread
+        | Term::New
         | Term::Mention
         | Term::Notifying
         | Term::Direct

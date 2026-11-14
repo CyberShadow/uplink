@@ -326,7 +326,8 @@ impl Compiler<'_> {
             Term::Unread => self.label("UNREAD", positive),
             Term::Kind(kind) => Ok(Condition::Const(*kind == Kind::Mail)),
             // Of other kinds.
-            Term::Mention
+            Term::New
+            | Term::Mention
             | Term::Notifying
             | Term::Direct
             | Term::Invited

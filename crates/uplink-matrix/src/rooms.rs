@@ -1093,18 +1093,16 @@ pub fn sync_state(conn: &Connection, account: &str) -> Result<Option<SyncState>>
 
 /// The rooms of `account`, but those left (unless joining them again),
 /// most recently active first.
-/// `mxid` is the account's user: its own messages are never unread.
-/// Undecryptable events count as unread messages, which they nearly
-/// always are; edits and redacted messages do not.
+/// `mxid` is the account's user: its own messages are never unread. Its
+/// counts are by the conditions queries find messages by (`message`,
+/// `after`).
 pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
-    // Of room `r`, its messages from others after its marker `marker`.
-    let after = |marker: &str| {
+    // Of room `r`, its messages from others after its marker.
+    let after = |marker: Marker| {
         format!(
-            "e.room = r.id
-             AND (r.{marker} IS NULL OR e.pos > {pos})
-             AND e.type IN ('m.room.message', 'm.room.encrypted')
-             AND e.sender != ?2 AND NOT e.redacted AND {LISTED}",
-            pos = pos_of(&format!("r.{marker}")),
+            "e.room = r.id AND {message} AND {after}",
+            message = message(),
+            after = after(marker, "?2"),
         )
     };
     Ok(tx
@@ -1145,8 +1143,8 @@ pub fn rooms(tx: &Transaction, account: &str, mxid: &str) -> Result<Vec<Room>> {
              ORDER BY 8 DESC NULLS LAST, r.id",
             read_pos = pos_of("r.read_up_to"),
             fully_pos = pos_of("r.fully_read"),
-            after_fully = after("fully_read"),
-            unread = after("read_up_to"),
+            after_fully = after(Marker::FullyRead),
+            unread = after(Marker::Read),
             shown_order = space_order::SHOWN,
             shown_tags = room_tags::SHOWN,
         ))?
@@ -1520,6 +1518,42 @@ pub fn gaps(tx: &Transaction, room: RoomId) -> Result<Vec<TimelineGap>> {
             })
         })?
         .collect::<Result<_, _>>()?)
+}
+
+/// Of an event `e`, whether it is a message, as rooms count them and
+/// queries find them: undecryptable events are, which nearly always are
+/// messages; edits, redacted messages and other events are not.
+pub(crate) fn message() -> String {
+    format!("(e.type IN ('m.room.message', 'm.room.encrypted') AND NOT e.redacted AND {LISTED})")
+}
+
+/// A room's marker of how far its messages are caught up on (SPEC
+/// §12.15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Marker {
+    /// `read_up_to`: the messages after it are unread.
+    Read,
+    /// `fully_read`: the messages after it are new.
+    FullyRead,
+}
+
+impl Marker {
+    /// Of room `r`, the position its messages after it are after, or
+    /// below every position without it: a bound of `e.pos`, so that the
+    /// index `(room, pos)` finds them rather than all of the room's.
+    pub(crate) fn pos(self) -> String {
+        let column = match self {
+            Marker::Read => "r.read_up_to",
+            Marker::FullyRead => "r.fully_read",
+        };
+        format!("coalesce({}, {})", pos_of(column), i64::MIN)
+    }
+}
+
+/// Of a message `e` of room `r`, whether it is after `r`'s `marker`,
+/// and of others than `me` (SQL of the room's account's Matrix id).
+pub(crate) fn after(marker: Marker, me: &str) -> String {
+    format!("(e.pos > {pos} AND e.sender != {me})", pos = marker.pos())
 }
 
 /// The position of the event whose id `id` (an SQL expression) is.

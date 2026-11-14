@@ -1,19 +1,20 @@
-//! Rooms and their messages by the query language (SPEC §8.7). A room
-//! matches by its name, what is unread in it, its tags, the spaces it is
-//! in, and its latest activity: rooms are few, so they are matched as
-//! listed, not in SQL. A message matches by its text and sender, whether
-//! it is unread, mentions or notifies, its time, and its room's terms:
-//! messages are many, so they are matched in SQL.
+//! Rooms and their messages by the query language (SPEC §8.7). A room's
+//! own terms (its name, tags, the spaces it is in, whether it is a direct
+//! chat or an invitation, its account) are matched as listed, not in SQL,
+//! since rooms are few; they decide what they can, and its messages
+//! decide the rest. A message has a text and sender, is unread, new, a
+//! mention or notifying, and has a time: messages are many, so they are
+//! matched in SQL, those after a marker by the index of positions.
 
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
-use uplink_protocol::matrix::{FoundMessage, Membership, Room, RoomEventId, RoomId};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use uplink_protocol::matrix::{FoundMessage, Membership, Room, RoomEvent, RoomEventId, RoomId};
 use uplink_query::{text_matches, Fields, Kind, Query, Term};
 use uplink_storage::rusqlite::{params_from_iter, types::Value, Transaction};
 
 use crate::{
     room_tags,
-    rooms::{self, has_text, having, pos_of, LISTED},
+    rooms::{self, after, has_text, having, message, Marker, MAIN},
     service::ConfiguredAccount,
 };
 
@@ -23,6 +24,32 @@ pub struct Rooms<'a> {
     accounts: &'a [ConfiguredAccount],
     all: Vec<Room>,
     spaces: Spaces,
+}
+
+/// A room a query matches: by its own terms, or by its messages, which
+/// are then its `hits`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Group {
+    pub room: Room,
+    pub hits: Option<Hits>,
+}
+
+/// The messages of a room that a query matches.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Hits {
+    pub count: u32,
+    /// The latest, by the room's timeline.
+    pub latest: RoomEvent,
+}
+
+impl Group {
+    /// When it was last active: its latest hit, else its latest event.
+    pub fn active(&self) -> Option<i64> {
+        match &self.hits {
+            Some(hits) => Some(hits.latest.ts),
+            None => self.room.last_event_ts,
+        }
+    }
 }
 
 impl<'a> Rooms<'a> {
@@ -44,19 +71,130 @@ impl<'a> Rooms<'a> {
         self.all.iter().filter(|room| !room.space)
     }
 
-    /// Those `query` matches, most recently active first.
-    pub fn matching(&self, query: &Query) -> Vec<Room> {
-        let mut matched: Vec<Room> = self
-            .listed()
-            .filter(|room| uplink_query::matches(query, &|term| self.term_matches(room, term)))
-            .cloned()
-            .collect();
-        matched.sort_by(|a, b| b.last_event_ts.cmp(&a.last_event_ts).then(a.id.cmp(&b.id)));
-        matched
+    /// Those `query` matches, the most recently active first.
+    pub fn matching(&self, tx: &Transaction, query: &Query) -> Result<Vec<Group>> {
+        let mut groups = vec![];
+        let mut undecided = vec![];
+        for room in self.listed() {
+            match uplink_query::decides(query, &|term| self.of_room(room, term)) {
+                Some(true) => groups.push(Group {
+                    room: room.clone(),
+                    hits: None,
+                }),
+                Some(false) => {}
+                None => undecided.push(room),
+            }
+        }
+        if let Some(mut search) = self.search(query, &undecided) {
+            let sql = format!(
+                "SELECT e.room, count(*), max(e.pos), e.id {from} GROUP BY e.room",
+                from = search.from(),
+            );
+            // Of `max`, SQLite's other columns are of the row it is of.
+            let found: Vec<(i64, u32, i64, i64)> = tx
+                .prepare(&sql)?
+                .query_map(params_from_iter(search.sql.params.iter()), |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                })?
+                .collect::<Result<_, _>>()?;
+            for (room, count, _, latest) in found {
+                let latest = rooms::listed_events(tx, RoomId(room), &[RoomEventId(latest)])?
+                    .pop()
+                    .expect("a message found is listed");
+                let room = undecided
+                    .iter()
+                    .find(|r| r.id.0 == room)
+                    .expect("messages are found of the rooms searched");
+                groups.push(Group {
+                    room: (*room).clone(),
+                    hits: Some(Hits { count, latest }),
+                });
+            }
+        }
+        groups.sort_by(|a, b| b.active().cmp(&a.active()).then(a.room.id.cmp(&b.room.id)));
+        Ok(groups)
     }
 
-    fn term_matches(&self, room: &Room, term: &Term) -> bool {
-        term_matches(room, term, &self.spaces, self.accounts)
+    /// The messages `query` matches, the latest first, up to `limit`: of
+    /// the rooms it leaves to their messages.
+    pub fn messages(
+        &self,
+        tx: &Transaction,
+        query: &Query,
+        limit: u32,
+    ) -> Result<Vec<FoundMessage>> {
+        let undecided: Vec<&Room> = self
+            .listed()
+            .filter(|room| uplink_query::decides(query, &|t| self.of_room(room, t)).is_none())
+            .collect();
+        let Some(mut search) = self.search(query, &undecided) else {
+            return Ok(vec![]);
+        };
+        let from = search.from();
+        search.sql.params.push(Value::Integer(limit.into()));
+        let found: Vec<(i64, i64)> = tx
+            .prepare(&format!(
+                "SELECT e.room, e.id {from} ORDER BY e.ts DESC, e.id DESC LIMIT ?{n}",
+                n = search.sql.params.len(),
+            ))?
+            .query_map(params_from_iter(search.sql.params.iter()), |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?
+            .collect::<Result<_, _>>()?;
+        let mut by_room: HashMap<i64, Vec<RoomEventId>> = HashMap::new();
+        for (room, event) in &found {
+            by_room.entry(*room).or_default().push(RoomEventId(*event));
+        }
+        let mut events = HashMap::new();
+        for (room, ids) in by_room {
+            for event in rooms::listed_events(tx, RoomId(room), &ids)? {
+                events.insert(event.id, (RoomId(room), event));
+            }
+        }
+        Ok(found
+            .into_iter()
+            .map(|(_, event)| {
+                let (room, event) = events
+                    .remove(&RoomEventId(event))
+                    .expect("a listed event found is listed");
+                FoundMessage { room, event }
+            })
+            .collect())
+    }
+
+    /// What `query` asks of the messages of `rooms`, those it leaves to
+    /// them; `None` if no message can match.
+    fn search(&self, query: &Query, rooms: &[&Room]) -> Option<Search> {
+        let condition = Cond::of(query, &|term| {
+            Cond::term(term, &|term| {
+                rooms
+                    .iter()
+                    .filter(|room| self.of_room(room, term) == Some(true))
+                    .map(|room| room.id.0)
+                    .collect()
+            })
+        });
+        if condition == Cond::Const(false) || rooms.is_empty() {
+            return None;
+        }
+        Some(Search {
+            condition,
+            rooms: rooms.iter().map(|room| room.id.0).collect(),
+            sql: Sql {
+                params: vec![],
+                accounts: self
+                    .accounts
+                    .iter()
+                    .map(|a| (a.id.clone(), a.mxid.clone()))
+                    .collect(),
+            },
+        })
+    }
+
+    /// What a room's own terms say of it; `None` of a term of its
+    /// messages (and of words its name lacks, which they may have).
+    fn of_room(&self, room: &Room, term: &Term) -> Option<bool> {
+        of_room(room, term, &self.spaces, self.accounts)
     }
 }
 
@@ -129,34 +267,49 @@ impl Spaces {
     }
 }
 
-fn term_matches(room: &Room, term: &Term, spaces: &Spaces, accounts: &[ConfiguredAccount]) -> bool {
+fn of_room(
+    room: &Room,
+    term: &Term,
+    spaces: &Spaces,
+    accounts: &[ConfiguredAccount],
+) -> Option<bool> {
     match term {
+        // Its name, or its messages' text.
         Term::Text {
             fields: None,
             text,
             exact,
-        } => text_matches(&room.name, text, *exact),
-        Term::Kind(kind) => *kind == Kind::Room,
-        Term::Label(name) => room.tags.iter().any(|tag| names_tag(name, tag)),
-        Term::Unread => room.unread > 0,
-        // However the read marker moved (SPEC §12.15).
-        Term::Mention => room.mentions > 0,
-        Term::Notifying => room.notifying > 0,
-        Term::Direct => room.direct,
-        Term::Invited => room.membership == Membership::Invited,
-        Term::Space(name) => spaces.within(&room.room_id, name),
-        Term::Account(account) => accounts
-            .iter()
-            .any(|a| a.id == room.account && (a.id == *account || a.mxid == *account)),
+        } => text_matches(&room.name, text, *exact).then_some(true),
+        Term::Kind(kind) => Some(*kind == Kind::Room),
+        Term::Label(name) => Some(room.tags.iter().any(|tag| names_tag(name, tag))),
+        Term::Direct => Some(room.direct),
+        Term::Invited => Some(room.membership == Membership::Invited),
+        Term::Space(name) => Some(spaces.within(&room.room_id, name)),
+        Term::Account(account) => Some(
+            accounts
+                .iter()
+                .any(|a| a.id == room.account && (a.id == *account || a.mxid == *account)),
+        ),
         // Of everything, as Trash and Spam are not of rooms.
-        Term::Anywhere => true,
-        Term::After(at) => room.last_event_ts.is_some_and(|ts| ts >= *at),
-        Term::Before(at) => room.last_event_ts.is_some_and(|ts| ts < *at),
-        // Of messages, or of other kinds.
+        Term::Anywhere => Some(true),
+        // Of its messages.
         Term::Text {
-            fields: Some(_), ..
+            fields: Some(Fields::Body | Fields::From),
+            ..
         }
-        | Term::Me(_)
+        | Term::Me(Fields::From)
+        | Term::Unread
+        | Term::New
+        | Term::Mention
+        | Term::Notifying
+        | Term::After(_)
+        | Term::Before(_) => None,
+        // Of mail, or of other kinds.
+        Term::Text {
+            fields: Some(Fields::To | Fields::Cc | Fields::Subject),
+            ..
+        }
+        | Term::Me(Fields::To | Fields::Cc | Fields::Subject | Fields::Body)
         | Term::HasAttachment
         | Term::Larger(_)
         | Term::Smaller(_)
@@ -164,74 +317,44 @@ fn term_matches(room: &Room, term: &Term, spaces: &Spaces, accounts: &[Configure
         | Term::Due(_)
         | Term::Overdue
         | Term::HasDue
-        | Term::Done => false,
+        | Term::Done => Some(false),
     }
 }
 
-impl Rooms<'_> {
-    /// The messages of the rooms (spaces' and rooms left aside) that
-    /// `query` matches, the latest first, up to `limit`.
-    pub fn messages(
-        &self,
-        tx: &Transaction,
-        query: &Query,
-        limit: u32,
-    ) -> Result<Vec<FoundMessage>> {
-        let rooms: Vec<&Room> = self.listed().collect();
-        let mut sql = Sql {
-            params: vec![],
-            mine: self.accounts.iter().map(|a| a.mxid.clone()).collect(),
-        };
-        let condition = Cond::of(query, &|term| {
-            Cond::term(term, &|term| {
-                rooms
-                    .iter()
-                    .filter(|room| self.term_matches(room, term))
-                    .map(|room| room.id.0)
-                    .collect()
-            })
-        });
-        if condition == Cond::Const(false) || rooms.is_empty() {
-            return Ok(vec![]);
-        }
-        let within = rooms
-            .iter()
-            .map(|room| room.id.0.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let matches = sql.render(&condition);
-        sql.params.push(Value::Integer(limit.into()));
-        let found: Vec<(i64, i64)> = tx
-            .prepare(&format!(
-                "SELECT e.room, e.id FROM matrix_event e JOIN matrix_room r ON r.id = e.room
-             WHERE e.room IN ({within}) AND e.type = 'm.room.message' AND NOT e.redacted
-               AND {LISTED} AND {matches}
-             ORDER BY e.ts DESC, e.id DESC LIMIT ?{n}",
-                n = sql.params.len(),
-            ))?
-            .query_map(params_from_iter(sql.params.iter()), |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })?
-            .collect::<Result<_, _>>()?;
-        let mut by_room: HashMap<i64, Vec<RoomEventId>> = HashMap::new();
-        for (room, event) in &found {
-            by_room.entry(*room).or_default().push(RoomEventId(*event));
-        }
-        let mut events = HashMap::new();
-        for (room, ids) in by_room {
-            for event in rooms::listed_events(tx, RoomId(room), &ids)? {
-                events.insert(event.id, (RoomId(room), event));
+/// What a query asks of the messages of some rooms.
+struct Search {
+    condition: Cond,
+    rooms: Vec<i64>,
+    sql: Sql,
+}
+
+impl Search {
+    /// SQL from `FROM` of its messages, `e` of room `r`: room by room,
+    /// those after a marker by the index of their positions, if the
+    /// condition holds only of those.
+    fn from(&mut self) -> String {
+        let matches = self.sql.render(&self.condition);
+        let after = match self.condition.markers() {
+            None => "1".to_owned(),
+            Some(markers) => {
+                let positions: Vec<String> = markers.into_iter().map(Marker::pos).collect();
+                match positions.as_slice() {
+                    [one] => format!("e.pos > {one}"),
+                    _ => format!("e.pos > min({})", positions.join(", ")),
+                }
             }
-        }
-        Ok(found
-            .into_iter()
-            .map(|(_, event)| {
-                let (room, event) = events
-                    .remove(&RoomEventId(event))
-                    .expect("a listed event found is listed");
-                FoundMessage { room, event }
-            })
-            .collect())
+        };
+        format!(
+            "FROM matrix_room r CROSS JOIN matrix_event e
+             WHERE r.id IN ({rooms}) AND e.room = r.id AND {after} AND {message} AND {matches}",
+            rooms = self
+                .rooms
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+            message = message(),
+        )
     }
 }
 
@@ -249,8 +372,11 @@ enum Cond {
     Sender(String),
     /// Sent by one of the accounts.
     Mine,
-    /// After its room's read marker, and not the account's own.
+    /// After its room's read marker, of the main timeline, and not the
+    /// account's own: as its room counts it unread.
     Unread,
+    /// After its room's fully-read marker, and not the account's own.
+    New,
     Highlights,
     Notifies,
     /// In one of these rooms.
@@ -263,36 +389,8 @@ impl Cond {
     /// `term` makes a room term a condition, given the rooms it holds of.
     fn of(query: &Query, term: &impl Fn(&Term) -> Cond) -> Cond {
         match query {
-            Query::And(all) => {
-                let all: Vec<Cond> = all.iter().map(|q| Cond::of(q, term)).collect();
-                if all.contains(&Cond::Const(false)) {
-                    return Cond::Const(false);
-                }
-                let all: Vec<Cond> = all
-                    .into_iter()
-                    .filter(|c| *c != Cond::Const(true))
-                    .collect();
-                match all.len() {
-                    0 => Cond::Const(true),
-                    1 => all.into_iter().next().expect("one"),
-                    _ => Cond::And(all),
-                }
-            }
-            Query::Or(all) => {
-                let all: Vec<Cond> = all.iter().map(|q| Cond::of(q, term)).collect();
-                if all.contains(&Cond::Const(true)) {
-                    return Cond::Const(true);
-                }
-                let all: Vec<Cond> = all
-                    .into_iter()
-                    .filter(|c| *c != Cond::Const(false))
-                    .collect();
-                match all.len() {
-                    0 => Cond::Const(false),
-                    1 => all.into_iter().next().expect("one"),
-                    _ => Cond::Or(all),
-                }
-            }
+            Query::And(all) => Cond::and(all.iter().map(|q| Cond::of(q, term)).collect()),
+            Query::Or(all) => Cond::or(all.iter().map(|q| Cond::of(q, term)).collect()),
             Query::Not(q) => match Cond::of(q, term) {
                 Cond::Const(c) => Cond::Const(!c),
                 c => Cond::Not(Box::new(c)),
@@ -301,11 +399,49 @@ impl Cond {
         }
     }
 
+    fn and(all: Vec<Cond>) -> Cond {
+        if all.contains(&Cond::Const(false)) {
+            return Cond::Const(false);
+        }
+        let all: Vec<Cond> = all
+            .into_iter()
+            .filter(|c| *c != Cond::Const(true))
+            .collect();
+        match all.len() {
+            0 => Cond::Const(true),
+            1 => all.into_iter().next().expect("one"),
+            _ => Cond::And(all),
+        }
+    }
+
+    fn or(all: Vec<Cond>) -> Cond {
+        if all.contains(&Cond::Const(true)) {
+            return Cond::Const(true);
+        }
+        let all: Vec<Cond> = all
+            .into_iter()
+            .filter(|c| *c != Cond::Const(false))
+            .collect();
+        match all.len() {
+            0 => Cond::Const(false),
+            1 => all.into_iter().next().expect("one"),
+            _ => Cond::Or(all),
+        }
+    }
+
     /// `rooms` lists the rooms a term of rooms holds of.
     fn term(term: &Term, rooms: &impl Fn(&Term) -> Vec<i64>) -> Cond {
+        let of_rooms = |term| match rooms(term) {
+            ids if ids.is_empty() => Cond::Const(false),
+            ids => Cond::Rooms(ids),
+        };
         match term {
+            // Its room's name, or its text.
             Term::Text {
-                fields: None | Some(Fields::Body),
+                fields: None, text, ..
+            } => Cond::or(vec![of_rooms(term), Cond::Text(text.clone())]),
+            Term::Text {
+                fields: Some(Fields::Body),
                 text,
                 ..
             } => Cond::Text(text.clone()),
@@ -318,6 +454,7 @@ impl Cond {
             // A message is of its room.
             Term::Kind(kind) => Cond::Const(*kind == Kind::Room),
             Term::Unread => Cond::Unread,
+            Term::New => Cond::New,
             Term::Mention => Cond::Highlights,
             Term::Notifying => Cond::Notifies,
             Term::After(at) => Cond::After(*at),
@@ -326,10 +463,7 @@ impl Cond {
             Term::Anywhere => Cond::Const(true),
             // Of its room.
             Term::Label(_) | Term::Account(_) | Term::Direct | Term::Invited | Term::Space(_) => {
-                match rooms(term) {
-                    ids if ids.is_empty() => Cond::Const(false),
-                    ids => Cond::Rooms(ids),
-                }
+                of_rooms(term)
             }
             // Of mail, or of other kinds.
             Term::Text {
@@ -347,13 +481,28 @@ impl Cond {
             | Term::Done => Cond::Const(false),
         }
     }
+
+    /// The markers a message it holds of is after one of, if any is:
+    /// what bounds a search to what is after them.
+    fn markers(&self) -> Option<BTreeSet<Marker>> {
+        match self {
+            Cond::Unread => Some(BTreeSet::from([Marker::Read])),
+            Cond::New => Some(BTreeSet::from([Marker::FullyRead])),
+            Cond::And(all) => all.iter().find_map(Cond::markers),
+            Cond::Or(any) => any.iter().try_fold(BTreeSet::new(), |mut all, c| {
+                all.extend(c.markers()?);
+                Some(all)
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// SQL of a condition on a message `e` of room `r`, and its parameters.
 struct Sql {
     params: Vec<Value>,
-    /// The accounts' Matrix ids.
-    mine: Vec<String>,
+    /// The accounts, and their Matrix ids.
+    accounts: Vec<(String, String)>,
 }
 
 impl Sql {
@@ -362,14 +511,26 @@ impl Sql {
         format!("?{}", self.params.len())
     }
 
+    /// The accounts' Matrix ids.
     fn mine(&mut self) -> String {
         let mine: Vec<String> = self
-            .mine
+            .accounts
             .clone()
             .into_iter()
-            .map(|m| self.param(m))
+            .map(|(_, mxid)| self.param(mxid))
             .collect();
         format!("({})", mine.join(", "))
+    }
+
+    /// The Matrix id of `r`'s account.
+    fn me(&mut self) -> String {
+        let cases: Vec<String> = self
+            .accounts
+            .clone()
+            .into_iter()
+            .map(|(id, mxid)| format!("WHEN {} THEN {}", self.param(id), self.param(mxid)))
+            .collect();
+        format!("(CASE r.account_id {} END)", cases.join(" "))
     }
 
     fn render(&mut self, cond: &Cond) -> String {
@@ -391,11 +552,14 @@ impl Sql {
                 format!("(e.sender LIKE {p} ESCAPE '\\' OR e.sender_name LIKE {p} ESCAPE '\\')")
             }
             Cond::Mine => format!("e.sender IN {}", self.mine()),
-            Cond::Unread => format!(
-                "((r.read_up_to IS NULL OR e.pos > {read}) AND e.sender NOT IN {mine})",
-                read = pos_of("r.read_up_to"),
-                mine = self.mine(),
-            ),
+            Cond::Unread => {
+                let me = self.me();
+                format!("({} AND {MAIN})", after(Marker::Read, &me))
+            }
+            Cond::New => {
+                let me = self.me();
+                after(Marker::FullyRead, &me)
+            }
             Cond::Highlights => "e.highlight".to_owned(),
             Cond::Notifies => "e.notify".to_owned(),
             Cond::Rooms(ids) => format!(

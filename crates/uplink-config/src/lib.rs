@@ -82,7 +82,7 @@ fn default_home() -> Vec<HomeBucket> {
     vec![
         bucket(
             "Immediate",
-            "is:mention OR is:invite OR (is:dm is:unread) OR is:overdue OR due:today \
+            "(is:mention is:new) OR is:invite OR (is:dm is:unread) OR is:overdue OR due:today \
              OR (in:inbox is:unread is:important)",
             Some(Badge::Count),
         ),
