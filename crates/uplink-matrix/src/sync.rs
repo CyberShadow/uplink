@@ -13,7 +13,7 @@ use crate::{
     crawl::Crawler,
     image_packs, markdown,
     membership::{self, MembershipChanged},
-    room_tags::{self, RoomTagSet, RoomTagsRead},
+    room_tags::{self, RoomTagPushesSettled, RoomTagSet, RoomTagsClaimed, RoomTagsRead},
     rooms::{
         self, Decrypted, ObservedEvent, ObservedInvitation, ObservedRoom, Push, ReceiptSent,
         SpaceChild, Synced,
@@ -48,8 +48,8 @@ use matrix_sdk::{
             receipt::ReceiptThread,
             room::message::{AddMentions, FormattedBody},
             tag::{TagInfo, TagName},
-            AnyRoomAccountDataEventContent, GlobalAccountDataEventType, RoomAccountDataEventType,
-            StateEventType,
+            AnyRoomAccountDataEvent, AnyRoomAccountDataEventContent, GlobalAccountDataEventType,
+            RoomAccountDataEventType, StateEventType,
         },
         EventId, OwnedEventId, OwnedTransactionId, RoomId, UserId,
     },
@@ -73,7 +73,7 @@ use uplink_protocol::{
         Bridge, Encryption, MatrixContent, MemberAction, Membership, MembershipChange,
         ReceiptsChanged, RoomMember, SecurityChanged, TextFormat, Typing,
     },
-    LogEntry, Notice, Source, TxLogId,
+    LogEntry, Notice, Source,
 };
 use uplink_storage::{
     rusqlite::Connection,
@@ -82,6 +82,7 @@ use uplink_storage::{
 };
 use uplink_tx_log::{
     push::{self, PushFailing},
+    reconcile::{Ended, Outcome},
     Conflict, Dispatcher, Observation,
 };
 
@@ -221,15 +222,6 @@ pub(crate) async fn retry<T, F: std::future::Future<Output = Result<T>>>(
     }
 }
 
-/// The latest entry: what is requested after it may tell of what is
-/// before entries after it.
-async fn head(reader: &Arc<Mutex<Connection>>) -> Result<TxLogId> {
-    read(reader, |conn| {
-        uplink_tx_log::as_of(&conn.unchecked_transaction()?)
-    })
-    .await
-}
-
 pub(crate) async fn read<R: Send + 'static>(
     reader: &Arc<Mutex<Connection>>,
     f: impl FnOnce(&Connection) -> Result<R> + Send + 'static,
@@ -279,7 +271,7 @@ impl Syncer {
                 None => SyncToken::NoToken,
             })
             .timeout(if first { FIRST_SYNC } else { LONG_POLL });
-        let requested = head(&self.reader).await?;
+        let as_of = read(&self.reader, uplink_tx_log::as_of).await?;
         let response = self.client.sync_once(settings).await?;
         let next_batch = response.next_batch.clone();
         let moment = self.moment(&response).await?;
@@ -308,13 +300,12 @@ impl Syncer {
                     self.account.clone(),
                     Synced {
                         next_batch: next_batch.clone(),
-                        requested,
+                        as_of,
                         rooms,
                         packs,
                     },
                 )
                 .await?;
-            self.read_tags_again(requested).await?;
         }
         self.notify(moment).await?;
         if !undecryptable.is_empty() {
@@ -323,47 +314,6 @@ impl Syncer {
                 .expect("the redecryptor runs as long as the syncer");
         }
         Ok(next_batch)
-    }
-
-    /// Reads from the homeserver again the tags of the rooms it set after
-    /// entry `requested`, which a sync requested then may have told of as
-    /// they were before (`room_tags::stale`), until read as of after.
-    async fn read_tags_again(&self, requested: TxLogId) -> Result<()> {
-        let account = self.account.clone();
-        let mut rooms = read(&self.reader, move |conn| {
-            room_tags::set_since(conn, &account, requested)
-        })
-        .await?;
-        while let Some((room, room_id)) = rooms.pop() {
-            let requested = head(&self.reader).await?;
-            let user = self.client.user_id().context("the client has no user")?;
-            let response = self
-                .client
-                .send(get_tags::v3::Request::new(
-                    user.to_owned(),
-                    <&RoomId>::try_from(room_id.as_str())?.to_owned(),
-                ))
-                .await?;
-            let tags = room_tags::parse(&serde_json::json!({ "tags": response.tags }))?;
-            self.dispatcher
-                .observe(
-                    self.account.clone(),
-                    RoomTagsRead {
-                        room,
-                        tags,
-                        requested,
-                    },
-                )
-                .await?;
-            if read(&self.reader, move |conn| {
-                room_tags::stale(conn, room, requested)
-            })
-            .await?
-            {
-                rooms.push((room, room_id));
-            }
-        }
-        Ok(())
     }
 
     /// What the response says of the moment, by joined room: who is
@@ -464,6 +414,7 @@ impl Syncer {
                 || !update.account_data.is_empty()
                 || !receipts.is_empty()
             {
+                let tags = response_tags(&update.account_data, first)?;
                 observed.push(
                     self.room(
                         &room_id,
@@ -471,12 +422,14 @@ impl Syncer {
                         update.timeline.events,
                         update.timeline.limited,
                         receipts,
+                        tags,
                     )
                     .await?,
                 );
             }
         }
         for (room_id, update) in response.rooms.left {
+            let tags = response_tags(&update.account_data, first)?;
             observed.push(
                 self.room(
                     &room_id,
@@ -484,13 +437,14 @@ impl Syncer {
                     update.timeline.events,
                     update.timeline.limited,
                     vec![],
+                    tags,
                 )
                 .await?,
             );
         }
         for room_id in response.rooms.invited.into_keys() {
             observed.push(
-                self.room(&room_id, Membership::Invited, vec![], false, vec![])
+                self.room(&room_id, Membership::Invited, vec![], false, vec![], None)
                     .await?,
             );
         }
@@ -504,6 +458,7 @@ impl Syncer {
         events: Vec<TimelineEvent>,
         limited: bool,
         own_receipts: Vec<String>,
+        tags: Option<Vec<String>>,
     ) -> Result<ObservedRoom> {
         let room = self
             .client
@@ -525,7 +480,7 @@ impl Syncer {
             bridge: bridge(&room).await?,
             children: space_children(&room).await?,
             space_order: order(&room).await?,
-            tags: tags(&room).await?,
+            tags,
             topic: room.topic().filter(|t| !t.trim().is_empty()),
             alias: room.canonical_alias().map(|a| a.to_string()),
             pinned: room
@@ -714,13 +669,21 @@ async fn created(room: &Room) -> Result<Option<i64>> {
     )
 }
 
-/// The room's tags, as the client's store has them.
-async fn tags(room: &Room) -> Result<Vec<String>> {
-    let Some(raw) = room.account_data(RoomAccountDataEventType::Tag).await? else {
-        return Ok(vec![]);
-    };
-    let event: serde_json::Value = serde_json::from_str(raw.json().get())?;
-    room_tags::parse(&event["content"])
+/// The room's tags, if the response's account data of it tells them: as
+/// the response has them, not the client's store, which may be newer or
+/// older than what uplink knows (SPEC §6.6.2). The first sync tells all a
+/// room's account data, so without `m.tag` it has none.
+fn response_tags(
+    account_data: &[Raw<AnyRoomAccountDataEvent>],
+    first: bool,
+) -> Result<Option<Vec<String>>> {
+    for raw in account_data {
+        let event: serde_json::Value = serde_json::from_str(raw.json().get())?;
+        if event["type"] == "m.tag" {
+            return room_tags::parse(&event["content"]).map(Some);
+        }
+    }
+    Ok(first.then(Vec::new))
 }
 
 /// The sync filter: no presence, and of ephemeral events receipts and
@@ -1052,7 +1015,11 @@ impl Sender {
             })
             .await?;
         }
-        Ok(())
+        self.observe(RoomTagPushesSettled {
+            now_ms: send::now_ms(),
+            interrupted: true,
+        })
+        .await
     }
 
     async fn step(&self) -> Result<()> {
@@ -1141,38 +1108,116 @@ impl Sender {
         Ok(())
     }
 
-    /// Tags and untags the rooms the user asked to.
+    /// Tags and untags the rooms the user asked to, and reads back what
+    /// that is to be confirmed by (SPEC §6.6): until nothing is left to
+    /// push or read. Every push claimed is pushed and its outcome recorded,
+    /// though one fails; then the first failure, that may pass, is
+    /// returned, for the step to be retried with backoff.
     async fn tag_rooms(&self) -> Result<()> {
+        // Each round pushes or confirms; few are needed.
+        const ROUNDS: usize = 8;
+        for _ in 0..ROUNDS {
+            let account = self.account.clone();
+            let tags = read(&self.reader, move |conn| {
+                room_tags::reconciling(conn, &account)
+            })
+            .await?;
+            let now = send::now_ms();
+            if tags.iter().any(|t| t.field.expiring(now)) {
+                self.observe(RoomTagPushesSettled {
+                    now_ms: now,
+                    interrupted: false,
+                })
+                .await?;
+                continue;
+            }
+            let wanted: Vec<_> = tags
+                .iter()
+                .filter(|t| t.field.wanted().is_some())
+                .map(|t| (t.room, t.tag.clone()))
+                .collect();
+            if !wanted.is_empty() {
+                self.observe(RoomTagsClaimed { tags: wanted }).await?;
+                self.push_tags().await?;
+                continue;
+            }
+            let mut read_back: Vec<_> = tags
+                .iter()
+                .filter(|t| t.field.read_back())
+                .map(|t| (t.room, t.room_id.clone()))
+                .collect();
+            read_back.dedup();
+            if read_back.is_empty() {
+                return Ok(());
+            }
+            for (room, room_id) in read_back {
+                self.read_tags(room, &room_id).await?;
+            }
+        }
+        anyhow::bail!("room tags still to push or read after {ROUNDS} rounds")
+    }
+
+    /// Pushes the tags claimed, recording each outcome as it ends.
+    async fn push_tags(&self) -> Result<()> {
         let account = self.account.clone();
-        let wanted = read(&self.reader, move |conn| room_tags::wanted(conn, &account)).await?;
-        for wanted in wanted {
-            let room_id = <&RoomId>::try_from(wanted.room_id.as_str())?;
+        let tags = read(&self.reader, move |conn| {
+            room_tags::reconciling(conn, &account)
+        })
+        .await?;
+        let mut failed = None;
+        for stored in tags {
+            let Some(attempt) = stored
+                .field
+                .attempt
+                .as_ref()
+                .filter(|a| a.outcome == Outcome::InFlight)
+            else {
+                continue;
+            };
+            let tagged = attempt.value;
+            let room_id = <&RoomId>::try_from(stored.room_id.as_str())?;
             let room = self
                 .client
                 .get_room(room_id)
                 .with_context(|| format!("room {room_id} is not in the client"))?;
-            let tag = TagName::from(wanted.tag.as_str());
-            let done = if wanted.desired {
+            let tag = TagName::from(stored.tag.as_str());
+            let done = if tagged {
                 room.set_tag(tag, TagInfo::new()).await.map(drop)
             } else {
                 room.remove_tag(tag).await.map(drop)
             };
-            let refused = match &done {
-                Ok(()) => None,
-                Err(e) => match refusal(e) {
-                    Some(refused) => Some(refused),
-                    None => return done.context("tagging a room"),
-                },
-            };
+            let ended = ended(&done);
+            if let (Err(e), Ended::NotApplied { refused: None } | Ended::Unknown { .. }) =
+                (done, &ended)
+            {
+                failed.get_or_insert(anyhow::Error::from(e).context("tagging a room"));
+            }
             self.observe(RoomTagSet {
-                room: wanted.room,
-                tag: wanted.tag,
-                tagged: wanted.desired,
-                refused,
+                room: stored.room,
+                tag: stored.tag,
+                tagged,
+                ended,
             })
             .await?;
         }
-        Ok(())
+        failed.map_or(Ok(()), Err)
+    }
+
+    /// Reads the room's tags back from the homeserver.
+    async fn read_tags(&self, room: uplink_protocol::matrix::RoomId, room_id: &str) -> Result<()> {
+        let user = self.client.user_id().context("the client has no user")?;
+        let room_id = <&RoomId>::try_from(room_id)?;
+        let as_of = read(&self.reader, uplink_tx_log::as_of).await?;
+        let response = self
+            .client
+            .send(get_tags::v3::Request::new(
+                user.to_owned(),
+                room_id.to_owned(),
+            ))
+            .await
+            .context("reading a room's tags")?;
+        let tags = response.tags.keys().map(ToString::to_string).collect();
+        self.observe(RoomTagsRead { room, tags, as_of }).await
     }
 
     /// Until the user changes something, or the interval passes.
@@ -1629,6 +1674,35 @@ fn mentions(markdown: &str) -> (String, Vec<String>) {
     }
     plain.push_str(rest);
     (plain, users)
+}
+
+/// How a push ended (SPEC §6.6.3): applied; not applied, refused if the
+/// homeserver said why, or else never sent or rate limited; or else of
+/// unknown outcome, as of now.
+pub(crate) fn ended<T>(result: &Result<T, matrix_sdk::Error>) -> Ended {
+    let Err(error) = result else {
+        return Ended::Applied;
+    };
+    if let Some(refused) = refusal(error) {
+        return Ended::NotApplied {
+            refused: Some(refused),
+        };
+    }
+    let rate_limited = error
+        .as_client_api_error()
+        .is_some_and(|api| api.status_code.as_u16() == 429);
+    let unsent = matches!(
+        error,
+        matrix_sdk::Error::Http(http)
+            if matches!(&**http, matrix_sdk::HttpError::Reqwest(e) if e.is_connect())
+    );
+    if rate_limited || unsent {
+        Ended::NotApplied { refused: None }
+    } else {
+        Ended::Unknown {
+            at_ms: send::now_ms(),
+        }
+    }
 }
 
 /// The homeserver's reason, if it refused the request (a 4xx other than

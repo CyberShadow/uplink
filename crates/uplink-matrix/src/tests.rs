@@ -24,9 +24,6 @@ use uplink_protocol::{
 use uplink_realtime::Hub;
 use uplink_tx_log::{Dispatcher, Observation, Registry};
 
-/// What a sync requested after every entry tells of: current.
-const FRESH: uplink_protocol::TxLogId = uplink_protocol::TxLogId(i64::MAX);
-
 const ME: &str = "@me:example.org";
 const ROOM: &str = "!room:example.org";
 
@@ -74,6 +71,12 @@ impl Db {
         self.dispatcher.observe("mx".into(), observation).await
     }
 
+    /// The position a request sent now is stamped with (SPEC §6.6.2).
+    fn as_of(&self) -> TxLogId {
+        let conn = uplink_storage::open_reader(self._dir.path()).unwrap();
+        uplink_tx_log::as_of(&conn).unwrap()
+    }
+
     /// Syncs `events` (by event id and sender) into the room, and the
     /// account's own receipts.
     async fn sync(&self, events: &[(&str, &str)], own_receipts: &[&str]) {
@@ -115,9 +118,9 @@ impl Db {
         fully_read: Option<&str>,
     ) -> TxLogId {
         self.observe(Synced {
-            requested: FRESH,
             next_batch: "next".into(),
             packs: None,
+            as_of: self.as_of(),
             rooms: vec![ObservedRoom {
                 own_receipts: own_receipts.iter().map(|r| r.to_string()).collect(),
                 fully_read: fully_read.map(str::to_owned),
@@ -289,7 +292,7 @@ fn joined(room_id: &str, events: Vec<ObservedEvent>) -> ObservedRoom {
         bridge: None,
         children: vec![],
         space_order: None,
-        tags: vec![],
+        tags: None,
         topic: None,
         alias: None,
         pinned: vec![],
@@ -766,9 +769,9 @@ mod membership {
         /// Syncs the room with `membership`, and no events.
         async fn sync_membership(&self, membership: Membership) {
             self.observe(Synced {
-                requested: FRESH,
                 next_batch: "next".into(),
                 packs: None,
+                as_of: self.as_of(),
                 rooms: vec![ObservedRoom {
                     room_id: ROOM.into(),
                     name: "Room".into(),
@@ -791,7 +794,7 @@ mod membership {
                     bridge: None,
                     children: vec![],
                     space_order: None,
-                    tags: vec![],
+                    tags: None,
                     topic: None,
                     alias: None,
                     pinned: vec![],
@@ -966,11 +969,12 @@ mod membership {
 
 mod room_tags {
     use super::*;
-    use crate::room_tags::RoomTagSet;
+    use crate::room_tags::{RoomTagSet, RoomTagsClaimed, RoomTagsRead};
     use uplink_protocol::{
         matrix::{PendingRoomTags, RoomTagChange},
         ErrorCode, ServerError,
     };
+    use uplink_tx_log::reconcile::Ended;
 
     const FAV: &str = "m.favourite";
     const LOW: &str = "m.lowpriority";
@@ -978,23 +982,15 @@ mod room_tags {
     impl Db {
         /// Syncs the room, its tags as the homeserver has them.
         async fn sync_tags(&self, tags: &[&str]) -> TxLogId {
-            self.sync_tags_requested(tags, FRESH).await
+            self.sync_tags_as_of(tags, self.as_of()).await
         }
 
-        /// The latest entry.
-        fn head(&self) -> TxLogId {
-            let conn = uplink_storage::open_reader(self._dir.path()).unwrap();
-            let tx = conn.unchecked_transaction().unwrap();
-            uplink_tx_log::as_of(&tx).unwrap()
-        }
-
-        /// Syncs the room as requested after entry `requested`, its tags as
-        /// the homeserver then had them.
-        async fn sync_tags_requested(&self, tags: &[&str], requested: TxLogId) -> TxLogId {
+        /// Syncs the room's tags, by a request sent after `as_of`.
+        async fn sync_tags_as_of(&self, tags: &[&str], as_of: TxLogId) -> TxLogId {
             self.observe(Synced {
-                requested,
                 next_batch: "next".into(),
                 packs: None,
+                as_of,
                 rooms: vec![ObservedRoom {
                     room_id: ROOM.into(),
                     name: "Room".into(),
@@ -1012,7 +1008,7 @@ mod room_tags {
                     bridge: None,
                     children: vec![],
                     space_order: None,
-                    tags: tags.iter().map(|t| t.to_string()).collect(),
+                    tags: Some(tags.iter().map(|t| t.to_string()).collect()),
                     topic: None,
                     alias: None,
                     pinned: vec![],
@@ -1039,17 +1035,29 @@ mod room_tags {
             }
         }
 
-        /// The homeserver tagged the room, or untagged it, or refused.
-        async fn tag_set(&self, tag: &str, tagged: bool, refused: Option<&str>) {
+        /// The reconciler pushes the room's `tag`, which ends so.
+        async fn push(&self, tag: &str, ended: Ended) {
             let room = self.room().await.id;
+            self.observe(RoomTagsClaimed {
+                tags: vec![(room, tag.into())],
+            })
+            .await
+            .unwrap();
+            let tagged = self.stored(tag).field.attempt.unwrap().value;
             self.observe(RoomTagSet {
                 room,
                 tag: tag.into(),
                 tagged,
-                refused: refused.map(Into::into),
+                ended,
             })
             .await
             .unwrap();
+        }
+
+        fn stored(&self, tag: &str) -> crate::room_tags::Stored {
+            let conn = uplink_storage::open_reader(self._dir.path()).unwrap();
+            let all = crate::room_tags::reconciling(&conn, "mx").unwrap();
+            all.into_iter().find(|t| t.tag == tag).unwrap()
         }
 
         async fn tags(&self) -> Vec<String> {
@@ -1059,10 +1067,13 @@ mod room_tags {
         /// The tags still to set, `+tag` or `-tag`.
         fn wanted_tags(&self) -> Vec<String> {
             let conn = uplink_storage::open_reader(self._dir.path()).unwrap();
-            crate::room_tags::wanted(&conn, "mx")
+            crate::room_tags::reconciling(&conn, "mx")
                 .unwrap()
                 .into_iter()
-                .map(|w| format!("{}{}", if w.desired { '+' } else { '-' }, w.tag))
+                .filter_map(|t| {
+                    let sign = if *t.field.wanted()? { '+' } else { '-' };
+                    Some(format!("{sign}{}", t.tag))
+                })
                 .collect()
         }
 
@@ -1100,11 +1111,12 @@ mod room_tags {
             }]
         );
 
-        db.tag_set(FAV, true, None).await;
+        db.push(FAV, Ended::Applied).await;
         assert!(db.wanted_tags().is_empty());
-        assert!(db.pending_tags().is_empty());
-        // The echo changes nothing.
+        assert!(db.stored(FAV).field.read_back(), "until confirmed");
+        // The echo, or a read back, confirms it.
         db.sync_tags(&[FAV, "u.work"]).await;
+        assert!(db.pending_tags().is_empty());
         assert_eq!(db.tags().await, [FAV, "u.work"]);
 
         db.dispatcher.undo(tagged).await.unwrap();
@@ -1117,44 +1129,95 @@ mod room_tags {
     }
 
     /// The homeserver sets tags one by one, and a sync requested before
-    /// it set one may tell of them as they were before: they are not taken
-    /// for its, but read again, as what is requested after tells of them.
+    /// it set one may tell of them as they were before: it does not undo
+    /// them, but they are read back; read so, or synced after, they are
+    /// the homeserver's, a tag asked for winning until seen (SPEC §6.6.2).
     #[tokio::test]
-    async fn tags_told_of_as_before_they_were_set_are_read_again() {
-        use crate::room_tags::{set_since, stale, RoomTagsRead};
+    async fn tags_told_of_as_before_they_were_set_are_read_back() {
         let db = Db::new();
         db.sync_tags(&[LOW]).await;
         let room = db.room().await.id;
         db.tag(&[FAV], &[]).await.unwrap();
-        let before = db.head();
-        db.tag_set(LOW, false, None).await;
-        db.tag_set(FAV, true, None).await;
-        assert!(db.pending_tags().is_empty());
-        // Of between the two: stale, so not the homeserver's.
-        db.sync_tags_requested(&[], before).await;
+        let before = db.as_of();
+        db.push(LOW, Ended::Applied).await;
+        db.push(FAV, Ended::Applied).await;
+        assert!(db.wanted_tags().is_empty());
+        // Of between the two: not the homeserver's.
+        db.sync_tags_as_of(&[], before).await;
         assert_eq!(db.tags().await, [FAV]);
-        let conn = uplink_storage::open_reader(db._dir.path()).unwrap();
-        assert_eq!(
-            set_since(&conn, "mx", before).unwrap(),
-            [(room, ROOM.to_owned())]
-        );
-        // Agreeing, it is of after, whenever requested.
-        db.sync_tags_requested(&[FAV], before).await;
-        assert_eq!(db.tags().await, [FAV]);
-        // Read since, they are the homeserver's: another client's.
-        let requested = db.head();
-        assert!(!stale(&conn, room, requested).unwrap());
+        assert!(db.stored(FAV).field.read_back());
+        // Read back, they are the homeserver's: another client's, and the
+        // favourite not, so pushed again.
+        let as_of = db.as_of();
         db.observe(RoomTagsRead {
             room,
             tags: vec!["u.other".into()],
-            requested,
+            as_of,
         })
         .await
         .unwrap();
-        assert_eq!(db.tags().await, ["u.other"]);
+        assert_eq!(db.tags().await, [FAV, "u.other"]);
+        assert_eq!(db.wanted_tags(), ["+m.favourite"]);
+        db.push(FAV, Ended::Applied).await;
+        db.sync_tags(&[FAV, "u.other"]).await;
+        assert!(db.pending_tags().is_empty());
         // As is what a sync requested after tells of.
-        db.sync_tags_requested(&[LOW], db.head()).await;
+        db.sync_tags(&[LOW]).await;
         assert_eq!(db.tags().await, [LOW]);
+    }
+
+    /// The CI failure: a long poll answered before a push, recorded after
+    /// its outcome, does not undo it; the push is read back.
+    #[tokio::test]
+    async fn a_sync_older_than_a_push_does_not_undo_it() {
+        let db = Db::new();
+        db.sync_tags(&[]).await;
+        let stale = db.as_of();
+        db.tag(&[FAV], &[]).await.unwrap();
+        db.push(FAV, Ended::Applied).await;
+        db.sync_tags_as_of(&[], stale).await;
+        assert_eq!(db.tags().await, [FAV]);
+        assert!(db.wanted_tags().is_empty(), "applied");
+        assert!(db.stored(FAV).field.read_back());
+        let room = db.room().await.id;
+        let as_of = db.as_of();
+        db.observe(RoomTagsRead {
+            room,
+            tags: vec![FAV.into()],
+            as_of,
+        })
+        .await
+        .unwrap();
+        assert!(db.pending_tags().is_empty());
+        assert_eq!(db.tags().await, [FAV]);
+    }
+
+    /// Undoing while the push is in flight: the undo is pushed after it,
+    /// though it asks for what was observed.
+    #[tokio::test]
+    async fn an_undo_during_a_push_is_pushed_after_it() {
+        let db = Db::new();
+        db.sync_tags(&[]).await;
+        let tagged = db.tag(&["u.a"], &[]).await.unwrap();
+        let room = db.room().await.id;
+        db.observe(RoomTagsClaimed {
+            tags: vec![(room, "u.a".into())],
+        })
+        .await
+        .unwrap();
+        db.dispatcher.undo(tagged).await.unwrap();
+        assert!(db.tags().await.is_empty());
+        assert!(!db.pending_tags().is_empty(), "the push may land");
+        assert!(db.wanted_tags().is_empty(), "one push at a time");
+        db.observe(RoomTagSet {
+            room,
+            tag: "u.a".into(),
+            tagged: true,
+            ended: Ended::Applied,
+        })
+        .await
+        .unwrap();
+        assert_eq!(db.wanted_tags(), ["-u.a"]);
     }
 
     #[tokio::test]
@@ -1196,7 +1259,8 @@ mod room_tags {
         let db = Db::new();
         db.sync_tags(&[]).await;
         let tagged = db.tag(&["u.x"], &[]).await.unwrap();
-        db.tag_set("u.x", true, Some("M_FORBIDDEN")).await;
+        let refused = Some("M_FORBIDDEN".into());
+        db.push("u.x", Ended::NotApplied { refused }).await;
         assert!(db.wanted_tags().is_empty(), "not asked again");
         assert_eq!(db.pending_tags()[0].refused.as_deref(), Some("M_FORBIDDEN"));
         assert_eq!(db.tags().await, ["u.x"]);
@@ -1248,9 +1312,9 @@ mod space_order {
         /// has it.
         async fn sync_space(&self, order: Option<&str>) {
             self.observe(Synced {
-                requested: FRESH,
                 next_batch: "next".into(),
                 packs: None,
+                as_of: self.as_of(),
                 rooms: vec![ObservedRoom {
                     room_id: ROOM.into(),
                     name: "Space".into(),
@@ -1268,7 +1332,7 @@ mod space_order {
                     bridge: None,
                     children: vec![],
                     space_order: order.map(Into::into),
-                    tags: vec![],
+                    tags: None,
                     topic: None,
                     alias: None,
                     pinned: vec![],
@@ -2134,7 +2198,7 @@ mod query {
             bridge: None,
             children: vec![],
             space_order: None,
-            tags: vec![],
+            tags: None,
             topic: None,
             alias: None,
             pinned: vec![],
@@ -2154,7 +2218,7 @@ mod query {
         let mut small = room("!small:x", "Small");
         small.events = vec![message("$1", "@bob:x")];
         small.limited = true;
-        small.tags = vec!["u.Projects".into()];
+        small.tags = Some(vec!["u.Projects".into()]);
         small.created = Some(1_600_000_000_000);
         let mut large = room("!large:x", "Large");
         large.events = vec![message("$2", "@bob:x")];
@@ -2163,9 +2227,9 @@ mod query {
         let mut whole = room("!whole:x", "Whole");
         whole.events = vec![message("$3", "@bob:x")];
         db.observe(Synced {
-            requested: FRESH,
             next_batch: "next".into(),
             packs: None,
+            as_of: db.as_of(),
             rooms: vec![small, large, whole],
         })
         .await
@@ -2249,7 +2313,7 @@ mod query {
             ("other".into(), pack(None, &["other"])),
         ];
         db.observe(Synced {
-            requested: FRESH,
+            as_of: db.as_of(),
             next_batch: "next".into(),
             packs: Some(image_packs::AccountPacks {
                 user: Some(pack(None, &["mine"])),
@@ -2320,7 +2384,7 @@ mod query {
         let mut lounge = room("!lounge:x", "Lounge");
         lounge.image_packs = vec![(String::new(), pack(None, &["dog"]))];
         db.observe(Synced {
-            requested: FRESH,
+            as_of: db.as_of(),
             next_batch: "next".into(),
             packs: None,
             rooms: vec![lounge],
@@ -2353,12 +2417,12 @@ mod query {
             order: None,
         }];
         let mut team = room("!team:x", "Team chat");
-        team.tags = vec!["u.Projects".into()];
+        team.tags = Some(vec!["u.Projects".into()]);
         team.events = vec![message("$1", "@bob:x")];
         let mut bob = room("!bob:x", "Bob");
         bob.direct = true;
         let mut news = room("!news:x", "News");
-        news.tags = vec!["m.lowpriority".into()];
+        news.tags = Some(vec!["m.lowpriority".into()]);
         news.events = vec![message("$2", "@feed:x")];
         let mut party = room("!party:x", "Party");
         party.membership = Membership::Invited;
@@ -2367,9 +2431,9 @@ mod query {
             inviter_name: None,
         });
         db.observe(Synced {
-            requested: FRESH,
             next_batch: "next".into(),
             packs: None,
+            as_of: db.as_of(),
             rooms: vec![work, team, bob, news, party],
         })
         .await
@@ -2437,7 +2501,7 @@ mod query {
         let mut small = room("!small:x", "Small");
         small.events = vec![said("$s", "@c:x", "hey", 3)];
         db.observe(Synced {
-            requested: FRESH,
+            as_of: db.as_of(),
             next_batch: "next".into(),
             packs: None,
             rooms: vec![hq, dm, small],
@@ -2567,7 +2631,7 @@ mod query {
             edited,
             edit,
         ];
-        team.tags = vec!["u.Projects".into()];
+        team.tags = Some(vec!["u.Projects".into()]);
         let mut bob = room("!bob:x", "Bob");
         bob.direct = true;
         bob.events = vec![said("$4", "@bob:x", "100% deployed", 4_000)];
@@ -2583,9 +2647,9 @@ mod query {
         ops.own_receipts = vec!["$8".into()];
         ops.fully_read = Some("$7".into());
         db.observe(Synced {
-            requested: FRESH,
             next_batch: "next".into(),
             packs: None,
+            as_of: db.as_of(),
             rooms: vec![work, team, bob, ops],
         })
         .await
@@ -2967,9 +3031,9 @@ async fn listing_rooms_costs_as_the_rooms_not_their_history() {
             })
             .collect();
         db.observe(Synced {
-            requested: FRESH,
             next_batch: "next".into(),
             packs: None,
+            as_of: db.as_of(),
             rooms: synced,
         })
         .await

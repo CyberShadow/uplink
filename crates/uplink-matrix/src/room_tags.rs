@@ -2,7 +2,8 @@
 //! them: `m.favourite`, `m.lowpriority`, and the user's own, `u.*`. They
 //! are desired state (§6.6), as mail's labels are: tagging records the
 //! tags asked for, and the account's sync task sets them on the
-//! homeserver. A room is a favourite or of low priority, not both, as
+//! homeserver. Each is a reconciled field of its own, as Matrix sets and
+//! removes tags one by one. A room is a favourite or of low priority, not both, as
 //! Element has it: tagging it one untags it the other.
 
 use anyhow::{Context, Result};
@@ -13,7 +14,10 @@ use uplink_protocol::{
     ServerEvent, TxLogId,
 };
 use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Transaction};
-use uplink_tx_log::{this_entry, Applied, Conflict, Inverse, Observation, Observed, Op};
+use uplink_tx_log::{
+    reconcile::{Ended, Field},
+    this_entry, Applied, Conflict, Inverse, Observation, Observed, Op,
+};
 
 use crate::outbox;
 
@@ -61,116 +65,80 @@ pub(crate) fn name(tag: &str) -> &str {
     }
 }
 
-/// `(desired, observed, desired_by)` of the room's tag, if it has a row.
-fn row(tx: &Transaction, room: RoomId, tag: &str) -> Result<Option<(bool, bool, Option<i64>)>> {
-    Ok(tx
+/// A tag's state (SPEC §6.6): had (`observed`) or asked for (`desired`).
+pub type Tag = Field<bool>;
+
+/// The room's tag as stored, or, without a row, as known of every tag it
+/// has none of: neither had nor asked for.
+fn load(tx: &Connection, room: RoomId, tag: &str) -> Result<(Tag, bool)> {
+    let stored: Option<String> = tx
         .query_row(
-            "SELECT desired, observed, desired_by FROM matrix_room_tag
-             WHERE room = ?1 AND tag = ?2",
+            "SELECT field FROM matrix_room_tag WHERE room = ?1 AND tag = ?2",
             params![room.0, tag],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| r.get(0),
         )
-        .optional()?)
+        .optional()?;
+    match stored {
+        Some(json) => Ok((parse_field(&json)?, true)),
+        None => Ok((Field::new(false, known_at(tx, room)?), false)),
+    }
 }
 
-/// Stores the tag's state: no row if neither asked for nor had, and no op
-/// (nor refusal) unless they differ.
-fn set_row(
-    tx: &Transaction,
-    room: RoomId,
-    tag: &str,
-    desired: bool,
-    observed: bool,
-    by: Option<i64>,
-) -> Result<()> {
-    if !desired && !observed {
-        tx.execute(
-            "DELETE FROM matrix_room_tag WHERE room = ?1 AND tag = ?2",
-            params![room.0, tag],
-        )?;
-        return Ok(());
-    }
-    let by = (desired != observed).then(|| by.expect("a pending change is an op's"));
+fn parse_field(json: &str) -> Result<Tag> {
+    serde_json::from_str(json).with_context(|| format!("a room tag's field: {json}"))
+}
+
+/// What is known of the room's tags it has no row of, since when.
+fn known_at(tx: &Connection, room: RoomId) -> Result<TxLogId> {
+    Ok(TxLogId(tx.query_row(
+        "SELECT tags_known_at FROM matrix_room WHERE id = ?1",
+        [room.0],
+        |r| r.get(0),
+    )?))
+}
+
+fn store(tx: &Transaction, room: RoomId, tag: &str, field: &Tag) -> Result<()> {
     tx.execute(
-        "INSERT INTO matrix_room_tag (room, tag, desired, observed, desired_by, refused)
-         VALUES (?1, ?2, ?3, ?4, ?5, NULL)
-         ON CONFLICT (room, tag) DO UPDATE SET desired = excluded.desired,
-           observed = excluded.observed, desired_by = excluded.desired_by, refused = NULL",
-        params![room.0, tag, desired, observed, by],
+        "INSERT INTO matrix_room_tag (room, tag, field) VALUES (?1, ?2, ?3)
+         ON CONFLICT (room, tag) DO UPDATE SET field = excluded.field",
+        params![room.0, tag, serde_json::to_string(field)?],
     )?;
     Ok(())
 }
 
-/// Whether the room's tags as told by what was requested after entry
-/// `requested` (a sync, a read) may be of before the homeserver set one
-/// (as recorded since), and so are not known by it: the homeserver sets
-/// them one by one, and its sync tells of them as it can.
-pub fn stale(conn: &Connection, room: RoomId, requested: TxLogId) -> Result<bool> {
-    Ok(conn.query_row(
-        "SELECT coalesce(tags_set_by > ?2, 0) FROM matrix_room WHERE id = ?1",
-        params![room.0, requested.0],
-        |r| r.get(0),
-    )?)
-}
-
-/// The account's rooms whose tags the homeserver set after entry
-/// `requested`, of which a sync requested then may tell [`stale`]ly.
-pub fn set_since(
-    conn: &Connection,
-    account: &str,
-    requested: TxLogId,
-) -> Result<Vec<(RoomId, String)>> {
-    Ok(conn
-        .prepare("SELECT id, room_id FROM matrix_room WHERE account_id = ?1 AND tags_set_by > ?2")?
-        .query_map(params![account, requested.0], |r| {
-            Ok((RoomId(r.get(0)?), r.get(1)?))
-        })?
-        .collect::<Result<_, _>>()?)
-}
-
-/// Records the room's tags as the homeserver has them, as told by what
-/// was requested after entry `requested`; returns whether those shown
-/// changed, or `None` if they may be stale and differ: read them again.
-/// A tag asked for prevails until set (or refused); one had as asked for,
-/// however it came about, is no longer pending.
+/// Records the room's tags as observed by a request sent after `as_of`
+/// (SPEC §6.6.2); returns whether those shown changed.
 pub(crate) fn observe(
     tx: &Transaction,
     room: RoomId,
     tags: &[String],
-    requested: TxLogId,
-) -> Result<Option<bool>> {
-    let had: BTreeSet<&String> = tags.iter().collect();
-    let observed: BTreeSet<String> = tx
-        .prepare("SELECT tag FROM matrix_room_tag WHERE room = ?1 AND observed")?
+    as_of: TxLogId,
+) -> Result<bool> {
+    let at = this_entry(tx)?;
+    let stored: Vec<String> = tx
+        .prepare("SELECT tag FROM matrix_room_tag WHERE room = ?1")?
         .query_map([room.0], |r| r.get(0))?
         .collect::<Result<_, _>>()?;
-    if had != observed.iter().collect() && stale(tx, room, requested)? {
-        return Ok(None);
-    }
-    let stored: Vec<(String, bool, bool, Option<i64>)> = tx
-        .prepare("SELECT tag, desired, observed, desired_by FROM matrix_room_tag WHERE room = ?1")?
-        .query_map([room.0], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-        })?
-        .collect::<Result<_, _>>()?;
+    let unstored = Field::new(false, known_at(tx, room)?);
+    let mut after = unstored.clone();
+    after.observe(false, as_of, at)?;
     let mut changed = false;
-    for (tag, desired, observed, by) in &stored {
-        let had = tags.contains(tag);
-        if had == *observed {
-            continue;
-        }
-        // Pending, it is had as asked for now (it differed from what was).
-        let shown = if by.is_some() { *desired } else { had };
-        changed |= shown != *desired;
-        set_row(tx, room, tag, shown, had, *by)?;
-    }
-    for tag in tags {
-        if !stored.iter().any(|(t, ..)| t == tag) {
-            set_row(tx, room, tag, true, true, None)?;
-            changed = true;
+    let new = tags.iter().filter(|t| !stored.contains(t));
+    for tag in stored.iter().chain(new) {
+        let (mut field, had_row) = load(tx, room, tag)?;
+        let shown = field.desired;
+        field.observe(tags.contains(tag), as_of, at)?;
+        changed |= field.desired != shown;
+        // A tag without a row stays so if it is as all of them are.
+        if had_row || field != after {
+            store(tx, room, tag, &field)?;
         }
     }
-    Ok(Some(changed))
+    tx.execute(
+        "UPDATE matrix_room SET tags_known_at = ?2 WHERE id = ?1",
+        params![room.0, after.known_at.0],
+    )?;
+    Ok(changed)
 }
 
 // ── ops ───────────────────────────────────────────────────────────────────
@@ -199,7 +167,7 @@ impl Op for SetRoomTags {
     const KIND: &'static str = "matrix.set_room_tags";
 
     fn apply(self, tx: &Transaction) -> Result<Applied> {
-        let this = this_entry(tx)?.0;
+        let this = this_entry(tx)?;
         let implied: Vec<RoomTagChange> = self
             .changes
             .iter()
@@ -236,18 +204,13 @@ impl Op for SetRoomTags {
                 let before = outbox::pending_rooms(tx, vacant.key())?;
                 vacant.insert(before);
             }
-            let (desired, observed, _) = row(tx, change.room, &change.tag)?.unwrap_or_default();
+            let (mut field, _) = load(tx, change.room, &change.tag)?;
+            let desired = field.desired;
             if desired == change.desired {
                 continue;
             }
-            set_row(
-                tx,
-                change.room,
-                &change.tag,
-                change.desired,
-                observed,
-                Some(this),
-            )?;
+            field.want(change.desired, this);
+            store(tx, change.room, &change.tag, &field)?;
             rooms.insert(change.room);
             if describe {
                 described
@@ -291,33 +254,208 @@ impl Op for SetRoomTags {
     }
 }
 
-/// A tag to set or remove on the homeserver.
+/// A room's tag, as stored, of an account.
 #[derive(Debug, Clone)]
-pub struct Wanted {
+pub struct Stored {
     pub room: RoomId,
     pub room_id: String,
     pub tag: String,
-    pub desired: bool,
+    pub field: Tag,
 }
 
-/// The account's tags still to set or remove, but those refused.
-pub fn wanted(conn: &Connection, account: &str) -> Result<Vec<Wanted>> {
-    Ok(conn
-        .prepare(
-            "SELECT r.id, r.room_id, t.tag, t.desired
-             FROM matrix_room_tag t JOIN matrix_room r ON r.id = t.room
-             WHERE r.account_id = ?1 AND t.desired != t.observed AND t.refused IS NULL
-             ORDER BY r.id, t.tag",
-        )?
-        .query_map([account], |r| {
-            Ok(Wanted {
-                room: RoomId(r.get(0)?),
-                room_id: r.get(1)?,
-                tag: r.get(2)?,
-                desired: r.get(3)?,
-            })
-        })?
-        .collect::<Result<_, _>>()?)
+/// The account's tags uplink has an opinion of, or is to read back.
+pub fn reconciling(conn: &Connection, account: &str) -> Result<Vec<Stored>> {
+    conn.prepare(
+        "SELECT r.id, r.room_id, t.tag, t.field
+         FROM matrix_room_tag t JOIN matrix_room r ON r.id = t.room
+         WHERE r.account_id = ?1
+           AND (t.desired_by IS NOT NULL OR json_extract(t.field, '$.check') IS NOT NULL)
+         ORDER BY r.id, t.tag",
+    )?
+    .query_map([account], |r| {
+        Ok((
+            RoomId(r.get(0)?),
+            r.get(1)?,
+            r.get(2)?,
+            r.get::<_, String>(3)?,
+        ))
+    })?
+    .map(|row| {
+        let (room, room_id, tag, json) = row?;
+        let field = parse_field(&json)?;
+        Ok(Stored {
+            room,
+            room_id,
+            tag,
+            field,
+        })
+    })
+    .collect()
+}
+
+/// The tags the reconciler pushes, in one entry (SPEC §6.6.3): those
+/// still wanted of `tags`.
+#[derive(Debug, Serialize)]
+pub struct RoomTagsClaimed {
+    pub tags: Vec<(RoomId, String)>,
+}
+
+impl Observation for RoomTagsClaimed {
+    const KIND: &'static str = "matrix.room_tags_claimed";
+
+    fn apply(self, _account: &str, tx: &Transaction) -> Result<Observed> {
+        let mut claimed = 0;
+        for (room, tag) in &self.tags {
+            let (mut field, _) = load(tx, *room, tag)?;
+            // Unless an op settled it meanwhile.
+            if field.wanted().is_some() {
+                field.claim()?;
+                store(tx, *room, tag, &field)?;
+                claimed += 1;
+            }
+        }
+        Ok(Observed {
+            description: format!("Setting {claimed} room tags on the homeserver"),
+            events: vec![],
+        })
+    }
+}
+
+/// How a push of the room's tag ended: of `tagged`, the value pushed.
+#[derive(Debug, Serialize)]
+pub struct RoomTagSet {
+    pub room: RoomId,
+    pub tag: String,
+    pub tagged: bool,
+    pub ended: Ended,
+}
+
+impl Observation for RoomTagSet {
+    const KIND: &'static str = "matrix.room_tag_set";
+
+    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
+        let before = outbox::pending_rooms(tx, account)?;
+        let room_name = room_name(tx, self.room)?;
+        let (mut field, _) = load(tx, self.room, &self.tag)?;
+        let shown = field.desired;
+        field.ended(self.ended.clone(), this_entry(tx)?)?;
+        store(tx, self.room, &self.tag, &field)?;
+        let events = events(tx, account, self.room, before, field.desired != shown)?;
+        let tag = name(&self.tag);
+        let verb = if self.tagged { "tag" } else { "untag" };
+        Ok(Observed {
+            description: match &self.ended {
+                Ended::Applied if self.tagged => {
+                    format!("Tagged '{room_name}' {tag} on the homeserver")
+                }
+                Ended::Applied => format!("Untagged '{room_name}' {tag} on the homeserver"),
+                Ended::NotApplied {
+                    refused: Some(error),
+                } => {
+                    format!("The homeserver refused to {verb} '{room_name}' {tag}: {error}")
+                }
+                Ended::NotApplied { refused: None } => {
+                    format!("Could not {verb} '{room_name}' {tag} on the homeserver")
+                }
+                Ended::Unknown { .. } => {
+                    format!("Whether the homeserver did {verb} '{room_name}' {tag} is unknown")
+                }
+            },
+            events,
+        })
+    }
+}
+
+/// The room's tags, read back from the homeserver by a request sent after
+/// `as_of` (SPEC §6.6.2).
+#[derive(Debug, Serialize)]
+pub struct RoomTagsRead {
+    pub room: RoomId,
+    pub tags: Vec<String>,
+    pub as_of: TxLogId,
+}
+
+impl Observation for RoomTagsRead {
+    const KIND: &'static str = "matrix.room_tags_read";
+
+    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
+        let before = outbox::pending_rooms(tx, account)?;
+        let room_name = room_name(tx, self.room)?;
+        let changed = observe(tx, self.room, &self.tags, self.as_of)?;
+        Ok(Observed {
+            description: format!("Read the tags of '{room_name}' from the homeserver"),
+            events: events(tx, account, self.room, before, changed)?,
+        })
+    }
+}
+
+/// Pushes of tags whose outcome became unknown, as of `now_ms`: those in
+/// flight, as the process stopped (`interrupted`), else those so long
+/// enough to expire (SPEC §6.6.3).
+#[derive(Debug, Serialize)]
+pub struct RoomTagPushesSettled {
+    pub now_ms: i64,
+    pub interrupted: bool,
+}
+
+impl Observation for RoomTagPushesSettled {
+    const KIND: &'static str = "matrix.room_tag_pushes_settled";
+
+    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
+        let at = this_entry(tx)?;
+        let mut settled = 0;
+        for mut stored in reconciling(tx, account)? {
+            let field = &mut stored.field;
+            let before = field.clone();
+            if self.interrupted {
+                field.interrupted(self.now_ms);
+            } else if field.expiring(self.now_ms) {
+                field.expire(self.now_ms, at)?;
+            }
+            if *field != before {
+                store(tx, stored.room, &stored.tag, field)?;
+                settled += 1;
+            }
+        }
+        Ok(Observed {
+            description: if self.interrupted {
+                format!("Whether {settled} room tags were set on the homeserver is unknown")
+            } else {
+                format!("Took {settled} room tags set or not on the homeserver for good")
+            },
+            events: vec![],
+        })
+    }
+}
+
+fn room_name(tx: &Transaction, room: RoomId) -> Result<String> {
+    tx.query_row(
+        "SELECT name FROM matrix_room WHERE id = ?1",
+        [room.0],
+        |r| r.get(0),
+    )
+    .with_context(|| format!("no room {}", room.0))
+}
+
+/// What changed for clients: the room's tags shown, if `shown`; the
+/// outbox, if not as `before`.
+fn events(
+    tx: &Transaction,
+    account: &str,
+    room: RoomId,
+    before: outbox::PendingRooms,
+    shown: bool,
+) -> Result<Vec<ServerEvent>> {
+    let mut events = vec![];
+    if shown {
+        events.push(ServerEvent::RoomsChanged(RoomsChanged {
+            rooms: vec![room],
+        }));
+    }
+    if outbox::pending_rooms(tx, account)? != before {
+        events.push(outbox::outbox_changed(account));
+    }
+    Ok(events)
 }
 
 /// A change of a room's tag pending, for the outbox.
@@ -326,129 +464,40 @@ pub(crate) struct Pending {
     /// The op that asked.
     pub op: TxLogId,
     pub change: RoomTagChange,
-    /// Why the homeserver refused, if it did.
+    /// Why it needs a decision, if it does.
     pub refused: Option<String>,
 }
 
 /// The tags of rooms pending, by account, then by the op that asked,
 /// newest first.
 pub(crate) fn pending(conn: &Connection) -> Result<Vec<Pending>> {
-    Ok(conn
-        .prepare(
-            "SELECT r.account_id, t.desired_by, t.room, t.tag, t.desired, t.refused
-             FROM matrix_room_tag t JOIN matrix_room r ON r.id = t.room
-             WHERE t.desired != t.observed
-             ORDER BY r.account_id, t.desired_by DESC, t.room, t.tag",
-        )?
-        .query_map([], |r| {
-            Ok(Pending {
-                account: r.get(0)?,
-                op: TxLogId(r.get(1)?),
-                change: RoomTagChange {
-                    room: RoomId(r.get(2)?),
-                    tag: r.get(3)?,
-                    desired: r.get(4)?,
-                },
-                refused: r.get(5)?,
-            })
-        })?
-        .collect::<Result<_, _>>()?)
-}
-
-/// The homeserver has the room tagged `tag`, or not, as `tagged` says; or
-/// refused, saying why.
-#[derive(Debug, Serialize)]
-pub struct RoomTagSet {
-    pub room: RoomId,
-    pub tag: String,
-    pub tagged: bool,
-    pub refused: Option<String>,
-}
-
-impl Observation for RoomTagSet {
-    const KIND: &'static str = "matrix.room_tag_set";
-
-    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
-        let before = outbox::pending_rooms(tx, account)?;
-        let room_name: String = tx
-            .query_row(
-                "SELECT name FROM matrix_room WHERE id = ?1",
-                [self.room.0],
-                |r| r.get(0),
-            )
-            .with_context(|| format!("no room {}", self.room.0))?;
-        let (desired, observed, by) = row(tx, self.room, &self.tag)?.unwrap_or_default();
-        let mut events = vec![];
-        match &self.refused {
-            // Unless asked otherwise meanwhile (that is the sync task's
-            // next step), refused until the user decides.
-            Some(error) => {
-                tx.execute(
-                    "UPDATE matrix_room_tag SET refused = ?3
-                     WHERE room = ?1 AND tag = ?2 AND desired = ?4 AND desired != observed",
-                    params![self.room.0, self.tag, error, self.tagged],
-                )?;
-            }
-            None if observed != self.tagged => {
-                // Asked for no longer, the tag shown is the homeserver's.
-                let shown = if by.is_some() { desired } else { self.tagged };
-                set_row(tx, self.room, &self.tag, shown, self.tagged, by)?;
-                tx.execute(
-                    "UPDATE matrix_room SET tags_set_by = ?2 WHERE id = ?1",
-                    params![self.room.0, this_entry(tx)?.0],
-                )?;
-                if shown != desired {
-                    events.push(ServerEvent::RoomsChanged(RoomsChanged {
-                        rooms: vec![self.room],
-                    }));
-                }
-            }
-            None => {}
-        }
-        if outbox::pending_rooms(tx, account)? != before {
-            events.push(outbox::outbox_changed(account));
-        }
-        let tag = name(&self.tag);
-        Ok(Observed {
-            description: match (&self.refused, self.tagged) {
-                (None, true) => format!("Tagged '{room_name}' {tag} on the homeserver"),
-                (None, false) => format!("Untagged '{room_name}' {tag} on the homeserver"),
-                (Some(error), _) => {
-                    format!("The homeserver refused to tag '{room_name}' {tag}: {error}")
-                }
+    conn.prepare(
+        "SELECT r.account_id, t.room, t.tag, t.field
+         FROM matrix_room_tag t JOIN matrix_room r ON r.id = t.room
+         WHERE t.desired_by IS NOT NULL
+         ORDER BY r.account_id, t.desired_by DESC, t.room, t.tag",
+    )?
+    .query_map([], |r| {
+        Ok((
+            r.get(0)?,
+            RoomId(r.get(1)?),
+            r.get(2)?,
+            r.get::<_, String>(3)?,
+        ))
+    })?
+    .map(|row| {
+        let (account, room, tag, json) = row?;
+        let field = parse_field(&json)?;
+        Ok(Pending {
+            account,
+            op: field.opinion.context("pending without an opinion")?,
+            change: RoomTagChange {
+                room,
+                tag,
+                desired: field.desired,
             },
-            events,
+            refused: field.decision.as_ref().map(|d| d.reason().to_owned()),
         })
-    }
-}
-
-/// The room's tags, read from the homeserver as a sync told of them
-/// [`stale`]: as of after that sync, so of after what it may have missed.
-/// Read after entry `requested`, they may be [`stale`] in turn, and are
-/// read again.
-#[derive(Debug, Serialize)]
-pub struct RoomTagsRead {
-    pub room: RoomId,
-    pub tags: Vec<String>,
-    pub requested: TxLogId,
-}
-
-impl Observation for RoomTagsRead {
-    const KIND: &'static str = "matrix.room_tags_read";
-
-    fn apply(self, _account: &str, tx: &Transaction) -> Result<Observed> {
-        let changed = observe(tx, self.room, &self.tags, self.requested)?;
-        Ok(Observed {
-            description: match changed {
-                None => "Read room tags, set meanwhile".to_owned(),
-                Some(_) => "Read room tags".to_owned(),
-            },
-            events: match changed {
-                Some(true) => vec![ServerEvent::RoomsChanged(RoomsChanged {
-                    rooms: vec![self.room],
-                })],
-                Some(false) | None => vec![],
-            },
-        })
-    }
+    })
+    .collect()
 }

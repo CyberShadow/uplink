@@ -994,9 +994,6 @@ mod tests {
         idle_minutes: 5,
     };
 
-    /// What a sync requested after every entry tells of: current.
-    const FRESH: uplink_protocol::TxLogId = uplink_protocol::TxLogId(i64::MAX);
-
     /// A room for the account `mx`, joined, of these events.
     fn room(
         room_id: &str,
@@ -1004,9 +1001,9 @@ mod tests {
         events: Vec<uplink_matrix::rooms::ObservedEvent>,
     ) -> Synced {
         Synced {
-            requested: FRESH,
             next_batch: "next".into(),
             packs: None,
+            as_of: uplink_protocol::TxLogId(0),
             rooms: vec![ObservedRoom {
                 room_id: room_id.into(),
                 name: room_id.into(),
@@ -1018,7 +1015,7 @@ mod tests {
                 bridge: None,
                 children: vec![],
                 space_order: None,
-                tags: vec![],
+                tags: None,
                 topic: None,
                 alias: None,
                 pinned: vec![],
@@ -1798,9 +1795,9 @@ mod tests {
             .observe(
                 "mx".into(),
                 Synced {
-                    requested: FRESH,
                     next_batch: "next".into(),
                     packs: None,
+                    as_of: uplink_protocol::TxLogId(0),
                     rooms: vec![ObservedRoom {
                         room_id: "!r:x".into(),
                         name: "Rent talk".into(),
@@ -1812,7 +1809,7 @@ mod tests {
                         bridge: None,
                         children: vec![],
                         space_order: None,
-                        tags: vec!["u.home".into()],
+                        tags: Some(vec!["u.home".into()]),
                         topic: None,
                         alias: None,
                         pinned: vec![],

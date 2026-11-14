@@ -189,12 +189,11 @@ impl World {
                 };
                 self.changed();
                 if answer {
-                    let at = TxLogId(0); // set by the client as it records
                     self.answer(
                         epoch,
                         Answer::Write {
                             push,
-                            ended: Ended::Applied { at },
+                            ended: Ended::Applied,
                         },
                     );
                 }
@@ -249,16 +248,10 @@ impl World {
                     return; // given up on
                 }
                 self.pushing = None;
-                let ended = match ended {
-                    Ended::Applied { .. } => Ended::Applied { at: self.entry() },
-                    other => {
-                        self.entry();
-                        other
-                    }
-                };
+                let at = self.entry();
                 {
                     trace!(self, "ended {ended:?}");
-                    self.field.ended(ended).unwrap();
+                    self.field.ended(ended, at).unwrap();
                     trace!(self, "  {:?}", self.field);
                 }
             }
@@ -312,11 +305,11 @@ impl World {
             let push = self.pushes;
             if faults && self.rng.one_in(8) {
                 // Refused at connect: never sent.
-                self.entry();
+                let at = self.entry();
                 let ended = Ended::NotApplied { refused: None };
                 {
                     trace!(self, "ended {ended:?}");
-                    self.field.ended(ended).unwrap();
+                    self.field.ended(ended, at).unwrap();
                     trace!(self, "  {:?}", self.field);
                 }
                 return;
@@ -390,10 +383,12 @@ impl World {
                 // The client gives up on the push: outcome unknown.
                 let push = self.pushing.take().unwrap();
                 self.given_up.push((push, self.ms));
-                self.entry();
+                let at = self.entry();
                 {
                     trace!(self, "gave up");
-                    self.field.ended(Ended::Unknown { at_ms: self.ms }).unwrap();
+                    self.field
+                        .ended(Ended::Unknown { at_ms: self.ms }, at)
+                        .unwrap();
                 }
             }
             3 if faults && self.rng.one_in(10) => {
@@ -456,10 +451,12 @@ impl World {
             if !sent && !answered {
                 self.pushing = None;
                 self.given_up.push((push, self.ms));
-                self.entry();
+                let at = self.entry();
                 {
                     trace!(self, "gave up");
-                    self.field.ended(Ended::Unknown { at_ms: self.ms }).unwrap();
+                    self.field
+                        .ended(Ended::Unknown { at_ms: self.ms }, at)
+                        .unwrap();
                 }
             }
         }

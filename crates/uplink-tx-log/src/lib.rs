@@ -475,10 +475,11 @@ pub fn this_entry(tx: &Transaction) -> Result<TxLogId> {
     Ok(TxLogId(last + 1))
 }
 
-/// The last entry recorded, as seen by `tx`: the position a query run in
-/// `tx` reflects.
-pub fn as_of(tx: &Transaction) -> Result<TxLogId> {
-    Ok(TxLogId(tx.query_row(
+/// The last entry recorded, as seen by `conn`: the position a query run
+/// in it reflects, or a request sent after it is answered after
+/// (SPEC §6.6.2).
+pub fn as_of(conn: &Connection) -> Result<TxLogId> {
+    Ok(TxLogId(conn.query_row(
         "SELECT coalesce(max(id), 0) FROM tx_log",
         [],
         |r| r.get(0),

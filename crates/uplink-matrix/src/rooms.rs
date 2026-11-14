@@ -67,9 +67,8 @@ pub struct SyncState {
 #[derive(Debug, Serialize)]
 pub struct Synced {
     pub next_batch: String,
-    /// The latest entry as it was requested: what it tells of may be of
-    /// before entries after (room tags, `room_tags::stale`).
-    pub requested: TxLogId,
+    /// The last entry before the sync request was sent (SPEC §6.6.2).
+    pub as_of: TxLogId,
     pub rooms: Vec<ObservedRoom>,
     /// What the account's account data says of image packs, if the
     /// response changed it (or is the first). Not in the log: it is
@@ -97,8 +96,9 @@ pub struct ObservedRoom {
     pub children: Vec<SpaceChild>,
     /// Its MSC3230 order among the top-level spaces, if valid.
     pub space_order: Option<String>,
-    /// Its tags (`m.tag`), as the homeserver has them.
-    pub tags: Vec<String>,
+    /// Its tags (`m.tag`), as the homeserver has them, if the response
+    /// told them.
+    pub tags: Option<Vec<String>>,
     /// `m.room.topic`, if set and not empty.
     pub topic: Option<String>,
     /// Its address, `m.room.canonical_alias`, if it has one.
@@ -331,8 +331,10 @@ impl Observation for Synced {
                 room.invitation
             );
             let (id, upserted) = upsert_room(tx, account, &room)?;
-            // Stale, they are read again.
-            let tagged = room_tags::observe(tx, id, &room.tags, self.requested)? == Some(true);
+            let tagged = match &room.tags {
+                Some(tags) => room_tags::observe(tx, id, tags, self.as_of)?,
+                None => false,
+            };
             image_packs::observe_room(tx, account, id, &room.image_packs)?;
             let invited = observe_invitation(tx, id, room.invitation.as_ref(), !first)?;
             let changed = set_children(tx, id, &room.children)? || upserted || tagged || invited;

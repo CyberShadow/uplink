@@ -638,6 +638,63 @@ mod tests {
         );
     }
 
+    /// Room tags become reconciled fields (V0069), pending and refused
+    /// changes as they were, known as of the homeserver last setting one
+    /// (V0066).
+    #[test]
+    fn room_tags_become_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = migrated_to(dir.path(), 68);
+        conn.execute_batch(
+            r#"INSERT INTO account (id, kind) VALUES ('mx', 'matrix');
+               INSERT INTO tx_log (id, ts, description, op_type, op_json, inverse_type,
+                                   inverse_json, events_json)
+               VALUES (1, 0, '', 'matrix.set_room_tags', '{}', 'matrix.set_room_tags', '{}', '[]');
+               INSERT INTO matrix_room (id, account_id, room_id, name, encrypted, membership,
+                                        tags_set_by)
+               VALUES (5, 'mx', '!a:x', 'A', 0, 'joined', 1);
+               INSERT INTO matrix_room_tag (room, tag, desired, observed, desired_by, refused)
+               VALUES (5, 'm.favourite', 1, 1, NULL, NULL),
+                      (5, 'u.a', 1, 0, 1, NULL),
+                      (5, 'u.b', 0, 1, 1, 'M_FORBIDDEN');"#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open(dir.path()).unwrap();
+        type Tag = (String, bool, Option<i64>, Option<String>);
+        let tags: Vec<Tag> = conn
+            .prepare("SELECT tag, desired, desired_by, decision FROM matrix_room_tag ORDER BY tag")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let refused = Some(r#"{"refused":"M_FORBIDDEN"}"#.into());
+        assert_eq!(
+            tags,
+            [
+                ("m.favourite".into(), true, None, None),
+                ("u.a".into(), true, Some(1), None),
+                ("u.b".into(), false, Some(1), refused),
+            ]
+        );
+        let field: String = conn
+            .query_row(
+                "SELECT field FROM matrix_room_tag WHERE tag = 'u.b'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let field: serde_json::Value = serde_json::from_str(&field).unwrap();
+        assert_eq!(field["observed"], true);
+        assert_eq!(field["known_at"], 1);
+        let known: i64 = conn
+            .query_row("SELECT tags_known_at FROM matrix_room", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(known, 1);
+    }
+
     /// Matrix sends' text becomes their content (V0026), and so do the
     /// recorded ops that send it; ids go on past those deleted.
     #[test]

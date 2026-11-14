@@ -7,9 +7,6 @@ use uplink_protocol::matrix::{Encryption, GapId, Membership, RoomId};
 use uplink_storage::rusqlite::Connection;
 use uplink_tx_log::{Dispatcher, Registry};
 
-/// What a sync requested after every entry tells of: current.
-const FRESH: uplink_protocol::TxLogId = uplink_protocol::TxLogId(i64::MAX);
-
 const ROOM: &str = "!room:example.org";
 
 fn event(raw: serde_json::Value) -> ObservedEvent {
@@ -71,7 +68,7 @@ impl Db {
             .observe(
                 "mx".into(),
                 Synced {
-                    requested: FRESH,
+                    as_of: uplink_protocol::TxLogId(0),
                     next_batch: "next".into(),
                     packs: None,
                     rooms: vec![ObservedRoom {
@@ -91,7 +88,7 @@ impl Db {
                         bridge: None,
                         children: vec![],
                         space_order: None,
-                        tags: vec![],
+                        tags: None,
                         topic: None,
                         alias: None,
                         pinned: vec![],

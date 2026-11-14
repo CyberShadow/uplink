@@ -197,7 +197,7 @@ fn unsent_receipts(conn: &Connection) -> Result<Vec<(String, RoomId)>> {
 #[derive(Debug, PartialEq)]
 pub(crate) struct PendingRooms(Vec<PendingRoom>, Vec<PendingTag>);
 
-/// A room's tag: `(room, tag, desired, desired_by, refused)`.
+/// A room's tag: `(room, tag, desired, desired_by, decision)`.
 type PendingTag = (i64, String, bool, i64, Option<String>);
 
 type PendingRoom = (
@@ -212,9 +212,9 @@ type PendingRoom = (
 pub(crate) fn pending_rooms(conn: &Connection, account: &str) -> Result<PendingRooms> {
     let tags = conn
         .prepare(
-            "SELECT t.room, t.tag, t.desired, t.desired_by, t.refused
+            "SELECT t.room, t.tag, t.desired, t.desired_by, t.decision
              FROM matrix_room_tag t JOIN matrix_room r ON r.id = t.room
-             WHERE r.account_id = ?1 AND t.desired != t.observed
+             WHERE r.account_id = ?1 AND t.desired_by IS NOT NULL
              ORDER BY t.room, t.tag",
         )?
         .query_map([account], |r| {

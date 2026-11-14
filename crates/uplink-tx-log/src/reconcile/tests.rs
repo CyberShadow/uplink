@@ -42,12 +42,12 @@ impl Log {
 
     fn applied(&mut self) {
         let at = self.entry();
-        self.field.ended(Ended::Applied { at }).unwrap();
+        self.field.ended(Ended::Applied, at).unwrap();
     }
 
     fn ended(&mut self, ended: Ended) {
-        self.entry();
-        self.field.ended(ended).unwrap();
+        let at = self.entry();
+        self.field.ended(ended, at).unwrap();
     }
 
     /// Wanted 2 and pushed it, superseding the unknown push, but refused.

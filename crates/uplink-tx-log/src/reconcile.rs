@@ -97,11 +97,22 @@ pub enum Decision {
     NotKept,
 }
 
+impl Decision {
+    /// Why, as the user is told.
+    pub fn reason(&self) -> &str {
+        match self {
+            Self::Refused(reason) => reason,
+            Self::NotKept => "the provider kept another value",
+        }
+    }
+}
+
 /// How a push ended, as the provider's crate classifies it (SPEC §6.6.3).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Ended {
-    /// Accepted, recorded at `at`.
-    Applied { at: TxLogId },
+    /// Accepted.
+    Applied,
     /// The provider cannot have acted on it; refused if it said why it
     /// won't, else to be retried.
     NotApplied { refused: Option<String> },
@@ -190,14 +201,14 @@ impl<V: Clone + PartialEq> Field<V> {
         Ok(self.desired.clone())
     }
 
-    /// The claimed push ended so.
-    pub fn ended(&mut self, ended: Ended) -> Result<()> {
+    /// The claimed push ended so, as recorded at `at`.
+    pub fn ended(&mut self, ended: Ended, at: TxLogId) -> Result<()> {
         let attempt = self.attempt.as_mut();
         let Some(attempt) = attempt.filter(|a| a.outcome == Outcome::InFlight) else {
             bail!("no push in flight");
         };
         match ended {
-            Ended::Applied { at } => {
+            Ended::Applied => {
                 ensure!(
                     at >= self.known_at,
                     "applied at {at:?}, before {:?}",
