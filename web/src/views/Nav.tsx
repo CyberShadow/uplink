@@ -141,22 +141,17 @@ function Syncing(props: { account: string; listing: ListingProgress | null }) {
   )
 }
 
-/** A Matrix account's first sync, then how far fetching its rooms'
- * history has got (SPEC §9.2): back to when all of them are stored, as
- * the latest history is fetched first. */
+/** A Matrix account's first sync, then, as a mail account's, how far
+ * fetching its rooms' history has got (SPEC §9.2). */
 function MatrixSyncing(props: { synced: boolean; rooms: readonly Room[] }) {
   if (!props.synced) return <span class={styles.syncing}> (syncing)</span>
-  const progress = historyProgress(props.rooms)
+  const progress = historyProgress(props.rooms.map((room) => room.history), Date.now())
   if (!progress) return null
-  const since = date(new Date(progress.since))
   const rooms = progress.rooms === 1 ? '1 room' : `${progress.rooms} rooms`
   return (
-    <span
-      class={styles.syncing}
-      title={`Fetching the history of ${rooms}, to be searched: all of it since ${since} is stored`}
-    >
+    <span class={styles.syncing} title={`Fetching the history of ${rooms}: stored since ${date(new Date(progress.since))}`}>
       {' '}
-      (history back to {since})
+      (syncing{progress.percent === null ? '' : `, ${progress.percent}%`})
     </span>
   )
 }

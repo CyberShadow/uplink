@@ -119,6 +119,7 @@ impl Db {
                 pinned: pinned.iter().map(|p| p.to_string()).collect(),
                 may_pin: true,
                 joined_members: 2,
+                created: None,
                 version: "11".into(),
             }],
         })
@@ -685,6 +686,7 @@ mod membership {
                     pinned: vec![],
                     may_pin: false,
                     joined_members: 2,
+                    created: None,
                     version: "11".into(),
                 }],
             })
@@ -887,6 +889,7 @@ mod room_tags {
                     pinned: vec![],
                     may_pin: false,
                     joined_members: 1,
+                    created: None,
                     version: "11".into(),
                 }],
             })
@@ -1096,6 +1099,7 @@ mod space_order {
                     pinned: vec![],
                     may_pin: false,
                     joined_members: 1,
+                    created: None,
                     version: "11".into(),
                 }],
             })
@@ -1848,6 +1852,7 @@ mod query {
             pinned: vec![],
             may_pin: false,
             joined_members: 2,
+            created: None,
             version: "11".into(),
         }
     }
@@ -1862,6 +1867,7 @@ mod query {
         small.events = vec![message("$1", "@bob:x")];
         small.limited = true;
         small.tags = vec!["u.Projects".into()];
+        small.created = Some(1_600_000_000_000);
         let mut large = room("!large:x", "Large");
         large.events = vec![message("$2", "@bob:x")];
         large.limited = true;
@@ -1885,7 +1891,13 @@ mod query {
                 .history
         };
         let since = 1_700_000_000_000; // `message` events' time
-        assert_eq!(history("Small"), RoomHistory::Fetching { since });
+        assert_eq!(
+            history("Small"),
+            RoomHistory::Fetching {
+                since,
+                created: Some(1_600_000_000_000)
+            }
+        );
         assert_eq!(history("Large"), RoomHistory::Partial { since });
         assert_eq!(history("Whole"), RoomHistory::Whole);
 

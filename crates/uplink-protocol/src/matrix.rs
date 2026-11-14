@@ -119,8 +119,9 @@ pub enum RoomHistory {
     Whole,
     /// All of it since `since` (ms since the Unix epoch, the time of the
     /// event just after its latest gap), and of earlier, what was
-    /// scrolled to; the rest is being fetched.
-    Fetching { since: i64 },
+    /// scrolled to; the rest is being fetched, back to `created`, when
+    /// the room was created, if the client knows.
+    Fetching { since: i64, created: Option<i64> },
     /// Likewise, but too large to fetch whole: no more is fetched but
     /// what is scrolled to.
     Partial { since: i64 },

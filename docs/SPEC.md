@@ -334,7 +334,7 @@ accounts:
     homeserver: "https://matrix.example.org"
     mxid: "@alice:example.org"
     # Rooms of at most this many joined members have their whole history
-    # fetched in the background, to be searched (§9.2); 0: of none.
+    # fetched in the background, so that search finds it (§9.2); 0: of none.
     history_members: 100             # default
 ```
 
@@ -2575,11 +2575,19 @@ much.)
 How much is stored shows, as it is what search finds. A listed room
 says it (`Room::history`): `whole`; or, of a room with gaps, `fetching`
 or `partial` (too large to be fetched whole), with `since`, the time of
-the event just after its latest gap, since which all of it is stored.
-The nav says of a synced account whose rooms are being fetched, as of
-mail's first listing, "(history back to 2024-03-03)": the latest `since`
-of those, as the latest history is fetched first, so every one is
-stored since then; its tooltip, how many rooms are left. A search's
+the event just after its latest gap, since which all of it is stored,
+and of one being fetched, `created`, when it was created (its
+`m.room.create`'s time, which sync records from the client's state,
+V0056: `matrix_room.created`), how far back fetching it goes. The nav
+says of a synced account whose rooms are being fetched, as of mail's
+first listing, "(syncing, 43%)": of the time from the oldest one's
+creation to now, how much is fetched, back to the latest `since` of
+them (the latest history is fetched first, so every one is stored since
+then); not linear, as rooms are of different times and paces, and
+jumping to the end of a room whose history visibility hides its start;
+99% at most until done, and without a percentage while no creation is
+known. Its tooltip says how many rooms are left, and since when all are
+stored. A search's
 `Items` name the rooms whose messages it looked through (those their
 own terms leave undecided) of which not the whole history is stored
 (`partial_rooms`), which the list says under it, once all is loaded:

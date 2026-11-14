@@ -1,7 +1,7 @@
 // What Matrix events and sends say, as the views show it (SPEC §9).
 
 import { type Linked, linkify as linkifyText, linkifyHtml } from './linkify'
-import type { MatrixContent, MemberAction, Room, RoomEvent, RoomId, RoomPreview } from './generated/protocol'
+import type { MatrixContent, MemberAction, Room, RoomEvent, RoomHistory, RoomId, RoomPreview } from './generated/protocol'
 import { date } from './format'
 
 /** Message types of text: shown as such, and edited. */
@@ -325,19 +325,28 @@ export function links(body: string, html: string | null): string[] {
 }
 
 /** How far fetching the whole history of an account's rooms has got
- * (SPEC §9.2): how many rooms are still being fetched, and back to when
- * all of them are stored, as the latest history is fetched first. */
+ * (SPEC §9.2): how many rooms are still being fetched, back to when all
+ * of them are stored, as the latest history is fetched first, and so what
+ * part of the time back to the oldest one's creation is fetched, if any
+ * one's is known. */
 export interface HistoryProgress {
   rooms: number
   since: number
+  percent: number | null
 }
 
-/** Of `rooms` (an account's), how far fetching their history has got;
- * `null` if none is being fetched. */
-export function historyProgress(rooms: readonly Room[]): HistoryProgress | null {
-  const since = rooms.flatMap((room) => (room.history.type === 'fetching' ? [room.history.since] : []))
-  if (since.length === 0) return null
-  return { rooms: since.length, since: Math.max(...since) }
+/** Of an account's rooms' histories, how far fetching them has got, as of
+ * `now`; `null` if none is being fetched. Up to 99% until done. */
+export function historyProgress(histories: readonly RoomHistory[], now: number): HistoryProgress | null {
+  const fetching = histories.flatMap((history) => (history.type === 'fetching' ? [history] : []))
+  if (fetching.length === 0) return null
+  const since = Math.max(...fetching.map((h) => h.since))
+  const created = fetching.flatMap((h) => (h.created === null ? [] : [h.created]))
+  const percent =
+    created.length === 0
+      ? null
+      : Math.min(99, Math.floor(((now - since) / Math.max(now - Math.min(...created), 1)) * 100))
+  return { rooms: fetching.length, since, percent }
 }
 
 /** What of a room's history is stored, and so searched; `null` if all. */

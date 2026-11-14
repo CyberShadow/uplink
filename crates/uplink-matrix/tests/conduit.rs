@@ -1810,6 +1810,16 @@ async fn small_rooms_history_is_fetched_by_itself() {
     let expected: Vec<String> = (0..120).map(|i| format!("message {i}")).collect();
     assert_eq!(bodies, expected, "every message, in order, once");
     assert_eq!(events[0].kind, "m.room.create", "back to the room's start");
+    // Which the room's creation, as synced, was the time of.
+    let created: Option<i64> = uplink_storage::open_reader(uplink.dir.path())
+        .unwrap()
+        .query_row(
+            "SELECT created FROM matrix_room WHERE room_id = ?1",
+            [small.room_id().as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(created, Some(events[0].ts));
     // Not the larger room's, though its gap is the latest history.
     let (events, _, gaps) = page(&uplink, &large_room, TimelinePage::Latest).await;
     assert!(events.len() < 120);

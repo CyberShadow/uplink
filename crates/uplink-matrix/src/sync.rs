@@ -29,7 +29,9 @@ use matrix_sdk::stream::StreamExt;
 use matrix_sdk::{
     attachment::AttachmentConfig,
     config::{SyncSettings, SyncToken},
-    deserialized_responses::{RawAnySyncOrStrippedState, TimelineEvent, TimelineEventKind},
+    deserialized_responses::{
+        RawAnySyncOrStrippedState, RawSyncOrStrippedState, TimelineEvent, TimelineEventKind,
+    },
     room::reply::{EnforceThread, Reply},
     ruma::{
         api::client::{
@@ -468,6 +470,7 @@ impl Syncer {
                 matrix_sdk::ruma::events::StateEventType::RoomPinnedEvents,
             ),
             joined_members: room.joined_members_count(),
+            created: created(&room).await?,
             version: room
                 .version()
                 .unwrap_or(matrix_sdk::ROOM_VERSION_FALLBACK)
@@ -522,6 +525,28 @@ async fn order(room: &Room) -> Result<Option<String>> {
     };
     let event: serde_json::Value = serde_json::from_str(raw.json().get())?;
     Ok(space_order::parse(&event["content"]))
+}
+
+/// When the room was created, by its `m.room.create` as the client's store
+/// has it: of a room invited to, only stripped, which has no time.
+async fn created(room: &Room) -> Result<Option<i64>> {
+    use matrix_sdk::ruma::events::room::create::RoomCreateEventContent;
+    Ok(
+        match room
+            .get_state_event_static::<RoomCreateEventContent>()
+            .await?
+        {
+            Some(RawSyncOrStrippedState::Sync(raw)) => {
+                let event: serde_json::Value = serde_json::from_str(raw.json().get())?;
+                Some(
+                    event["origin_server_ts"]
+                        .as_i64()
+                        .context("m.room.create without origin_server_ts")?,
+                )
+            }
+            Some(RawSyncOrStrippedState::Stripped(_)) | None => None,
+        },
+    )
 }
 
 /// The room's tags, as the client's store has them.

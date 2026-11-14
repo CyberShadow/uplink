@@ -92,6 +92,9 @@ pub struct ObservedRoom {
     pub may_pin: bool,
     /// How many members have joined, as the homeserver counts them.
     pub joined_members: u64,
+    /// When it was created (its `m.room.create`'s time, ms), if the client
+    /// has that event: not of rooms invited to.
+    pub created: Option<i64>,
     /// The room version, whose rules redact its events: the SDK's
     /// fallback if it does not know.
     pub version: String,
@@ -364,12 +367,13 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
         Option<String>,
         bool,
         Option<String>,
+        Option<i64>,
     );
     let pinned = serde_json::to_string(&room.pinned)?;
     let existing: Option<Stored> = tx
         .query_row(
             "SELECT id, name, encrypted, membership, space, avatar, topic, joined_members, pinned,
-                    may_pin, space_order, direct, alias
+                    may_pin, space_order, direct, alias, created
              FROM matrix_room WHERE account_id = ?1 AND room_id = ?2",
             [account, &room.room_id],
             |r| {
@@ -387,6 +391,7 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                     r.get(10)?,
                     r.get(11)?,
                     r.get(12)?,
+                    r.get(13)?,
                 ))
             },
         )
@@ -406,6 +411,7 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
             order,
             direct,
             alias,
+            created,
         )) => {
             let changed = name != room.name
                 || encrypted != room.encrypted
@@ -418,7 +424,8 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                 || may_pin != room.may_pin
                 || order != room.space_order
                 || direct != room.direct
-                || alias != room.alias;
+                || alias != room.alias
+                || created != room.created;
             if changed {
                 // A membership or space order asked for is had, however it
                 // came about.
@@ -426,7 +433,7 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                     &format!(
                         "UPDATE matrix_room SET name = ?1, encrypted = ?2, membership = ?3,
                            space = ?4, avatar = ?5, topic = ?6, joined_members = ?7, pinned = ?9,
-                           may_pin = ?10, direct = ?12, alias = ?13,
+                           may_pin = ?10, direct = ?12, alias = ?13, created = ?14,
                            membership_by = CASE WHEN desired = ?3 THEN NULL ELSE membership_by END,
                            membership_error =
                              CASE WHEN desired = ?3 THEN NULL ELSE membership_error END,
@@ -454,6 +461,7 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                         room.space_order,
                         room.direct,
                         room.alias,
+                        room.created,
                     ],
                 )?;
             }
@@ -463,8 +471,9 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
             let id = tx.query_row(
                 "INSERT INTO matrix_room
                    (account_id, room_id, name, encrypted, membership, space, avatar, topic,
-                    joined_members, pinned, may_pin, space_order, direct, alias)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) RETURNING id",
+                    joined_members, pinned, may_pin, space_order, direct, alias, created)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                 RETURNING id",
                 params![
                     account,
                     room.room_id,
@@ -480,6 +489,7 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                     room.space_order,
                     room.direct,
                     room.alias,
+                    room.created,
                 ],
                 |r| r.get(0),
             )?;
@@ -1157,7 +1167,7 @@ pub fn rooms(tx: &Transaction, account: &ConfiguredAccount) -> Result<Vec<Room>>
                     p.id, p.sender, p.sender_name, p.type,
                     coalesce(json_extract(pe.raw_json, '$.content.\"m.new_content\".msgtype'), p.msgtype),
                     coalesce(json_extract(pe.raw_json, '$.content.\"m.new_content\".body'), p.body),
-                    {HISTORY_SINCE}, {fetched}
+                    {HISTORY_SINCE}, {fetched}, r.created
              FROM matrix_room r
              -- Its preview: its latest message, and that's latest edit.
              LEFT JOIN matrix_event p ON p.id = (
@@ -1241,7 +1251,10 @@ pub fn rooms(tx: &Transaction, account: &ConfiguredAccount) -> Result<Vec<Room>>
                 },
                 history: match (r.get::<_, Option<i64>>(35)?, r.get(36)?) {
                     (None, _) => RoomHistory::Whole,
-                    (Some(since), true) => RoomHistory::Fetching { since },
+                    (Some(since), true) => RoomHistory::Fetching {
+                        since,
+                        created: r.get(37)?,
+                    },
                     (Some(since), false) => RoomHistory::Partial { since },
                 },
             })

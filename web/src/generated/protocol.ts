@@ -196,7 +196,7 @@ body: string | null, };
 /**
  * How much of a room's history is stored.
  */
-export type RoomHistory = { "type": "whole" } | { "type": "fetching", since: number, } | { "type": "partial", since: number, };
+export type RoomHistory = { "type": "whole" } | { "type": "fetching", since: number, created: number | null, } | { "type": "partial", since: number, };
 
 export type GapId = number;
 
@@ -1575,4 +1575,4 @@ export type EventChangeKind = "create" | "update" | "delete";
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "8463590f6f6b0576"
+export const PROTOCOL_VERSION = "72f6a2e5b3721b82"

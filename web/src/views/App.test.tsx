@@ -2894,16 +2894,16 @@ describe('search', () => {
     // Midday, that the day is the same in every time zone.
     const since = Date.UTC(2024, 2, 3, 12)
     const lounge = server.addRoom('Lounge')
-    lounge.history = { type: 'fetching', since }
+    lounge.history = { type: 'fetching', since, created: Date.UTC(2020, 0, 1) }
     server.addRoom('Hall').history = { type: 'partial', since: Date.UTC(2025, 0, 9, 12) }
     server.addRoom('Kitchen')
     server.receive(lounge.id, { body: 'Lunch at noon?' })
     const user = await start()
 
-    // The nav, as of mail's first sync.
+    // The nav, as of mail's first sync (`historyProgress`'s tests count).
     const nav = within(screen.getByRole('navigation'))
-    const status = await nav.findByTitle('Fetching the history of 1 room, to be searched: all of it since 2024-03-03 is stored')
-    expect(status.textContent).toBe(' (history back to 2024-03-03)')
+    const status = await nav.findByTitle('Fetching the history of 1 room: stored since 2024-03-03')
+    expect(status.textContent).toMatch(/^ \(syncing, \d+%\)$/)
 
     // A search that looked through their messages.
     await user.keyboard('/')

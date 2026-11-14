@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { gist, linkify, links, mxcPath, permalink, roomLink } from './matrix'
+import { gist, historyProgress, linkify, links, mxcPath, permalink, roomLink } from './matrix'
 import type { RoomPreview } from './generated/protocol'
 
 describe('gist', () => {
@@ -110,5 +110,30 @@ describe('mxcPath', () => {
     ]) {
       expect(mxcPath(mxc), mxc).toBeNull()
     }
+  })
+})
+
+describe('historyProgress', () => {
+  const day = 86_400_000
+  const now = 100 * day
+  it('is how far back every room is stored, of the time back to the oldest one created', () => {
+    expect(
+      historyProgress(
+        [
+          { type: 'fetching', since: 80 * day, created: 50 * day },
+          { type: 'fetching', since: 90 * day, created: 20 * day },
+          { type: 'whole' },
+          { type: 'partial', since: 10 * day },
+        ],
+        now,
+      ),
+    ).toEqual({ rooms: 2, since: 90 * day, percent: 12 })
+  })
+  it('has no percentage without a creation known, and 99% at most', () => {
+    expect(historyProgress([{ type: 'fetching', since: 90 * day, created: null }], now)?.percent).toBeNull()
+    expect(historyProgress([{ type: 'fetching', since: 1, created: 0 }], now)?.percent).toBe(99)
+  })
+  it('is none once no room is being fetched', () => {
+    expect(historyProgress([{ type: 'whole' }, { type: 'partial', since: 0 }], now)).toBeNull()
   })
 })
