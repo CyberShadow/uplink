@@ -4,7 +4,7 @@
 
 import { type RefObject } from 'preact'
 import { signal } from '@preact/signals'
-import { useEffect, useLayoutEffect, useRef } from 'preact/hooks'
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
 import {
   matchKeybindingPress,
   parseKeybinding,
@@ -157,22 +157,22 @@ export const KEYMAP: Binding[] = [
     // Backspace is left to the browser (as Back, where it is).
     keys: MAC ? ['[Shift]+#', 'Backspace'] : ['[Shift]+#', 'Delete'],
     label: '#, Delete',
-    help: 'Delete (mail: move to Trash; in a room, the message, if your own, once asked)',
+    help: 'Delete (mail: move to Trash; in a room, the message, if your own, once asked; in the calendar: the event open, if your own, of a series the occurrence)',
   },
-  { action: 'edit', keys: ['e'], label: 'e', help: 'Edit the message (in a room, your own)' },
+  { action: 'edit', keys: ['e'], label: 'e', help: 'Edit the message (in a room, your own); in the calendar: the event open, if your own' },
   { action: 'thread', keys: ['t'], label: 't', help: 'Open the message\'s thread, or reply in one (in a room)' },
   { action: 'react', keys: ['[Shift]++'], label: '+', help: 'React to the message (in a room)' },
   { action: 'pin', keys: ['p'], label: 'p', help: 'Pin or unpin the message (in a room)' },
   { action: 'spam', keys: ['[Shift]+!'], label: '!', help: 'Report spam, or not spam' },
   { action: 'add', keys: ['a'], label: 'a', help: 'Add a to-do (in to-dos)' },
   { action: 'undo', keys: ['z'], label: 'z', help: 'Undo the last action; again, the one before it (in history: undo or redo the one focused)' },
-  { action: 'compose', keys: ['c'], label: 'c', help: 'Compose' },
+  { action: 'compose', keys: ['c'], label: 'c', help: 'Compose (in the calendar: a new event)' },
   { action: 'reply', keys: ['r'], label: 'r', help: 'Reply (in a room: to the message, or else write one)' },
   { action: 'write', keys: ['i', 'Enter'], label: 'i, Enter', help: 'Write a message (in a room, whose box Esc leaves)' },
   { action: 'replyAll', keys: ['a'], label: 'a', help: 'Reply all' },
   { action: 'forward', keys: ['f'], label: 'f', help: 'Forward' },
-  { action: 'send', keys: ['$mod+Enter'], label: `${MOD}+Enter`, help: 'Send (in compose)' },
-  { action: 'close', keys: ['Escape'], label: 'Esc', help: 'Close compose (the draft is kept)' },
+  { action: 'send', keys: ['$mod+Enter'], label: `${MOD}+Enter`, help: 'Send (in compose; in an event: save it)' },
+  { action: 'close', keys: ['Escape'], label: 'Esc', help: 'Close compose (the draft is kept), or an event unsaved' },
   {
     action: 'up',
     keys: ['Escape'],
@@ -303,6 +303,9 @@ export function useKeymap(actions: Actions, where?: Where) {
   const bound = Object.keys(actions).sort().join()
   const scope = where && 'focus' in where ? where.focus : null
   const within = where && 'within' in where ? where.within : null
+  // Where its bindings rank: as of its first render, which comes after its
+  // parent's, as its effects do not.
+  const [rank] = useState(() => nextRank++)
   // At once, not after paint, so that keys pressed right after a view
   // change reach its bindings.
   useLayoutEffect(() => {
@@ -320,7 +323,9 @@ export function useKeymap(actions: Actions, where?: Where) {
       })),
     )
     if (!within) {
-      windowBindings.push(bindings)
+      const at = windowBindings.findIndex((b) => ranks.get(b)! > rank)
+      ranks.set(bindings, rank)
+      windowBindings.splice(at === -1 ? windowBindings.length : at, 0, bindings)
       return () => {
         windowBindings.splice(windowBindings.indexOf(bindings), 1)
       }
@@ -334,7 +339,7 @@ export function useKeymap(actions: Actions, where?: Where) {
     const element = within.current!
     element.addEventListener('keydown', handler)
     return () => element.removeEventListener('keydown', handler)
-  }, [bound, scope, within])
+  }, [bound, scope, within, rank])
 }
 
 /** A binding's keys, parsed, as bound by a component. */
@@ -350,8 +355,12 @@ interface Bound {
   fire: (event: KeyboardEvent) => void
 }
 
-/** The window's bindings, by component, in the order they mounted. */
+/** The window's bindings, by component, in the order they first
+ * rendered: a component's after its parent's, and after those on show
+ * before it; the nearest last. */
 const windowBindings: Bound[][] = []
+const ranks = new WeakMap<Bound[], number>()
+let nextRank = 0
 
 /** The actions the views on show bind, for the help to list first. */
 export function boundActions(): Set<Action> {
