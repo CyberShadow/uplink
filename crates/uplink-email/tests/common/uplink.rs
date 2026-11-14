@@ -10,7 +10,7 @@ use uplink_email::{
     service::Mail,
 };
 use uplink_protocol::{
-    compose::{DraftContent, DraftId, Pending, SendState},
+    compose::{DraftContent, DraftId, OutboxItem, Pending, SendState},
     mail::{EntryId, Identity, LabelId, MailProvider, MessageId},
     ServerResponse,
 };
@@ -18,12 +18,13 @@ use uplink_realtime::Hub;
 use uplink_storage::rusqlite::{Connection, OptionalExtension};
 use uplink_tx_log::{Dispatcher, Registry};
 
-/// The identities of an account of `address` alone, unnamed.
-pub fn own(address: &str) -> Vec<Identity> {
-    vec![Identity::Address {
+/// The identities of an account of `address`, unnamed, then `others`.
+pub fn own(address: &str, others: &[Identity]) -> Vec<Identity> {
+    let own = Identity::Address {
         address: address.into(),
         name: None,
-    }]
+    };
+    std::iter::once(own).chain(others.iter().cloned()).collect()
 }
 
 pub const SEND_DELAY: Duration = Duration::from_millis(500);
@@ -32,11 +33,19 @@ pub struct Uplink {
     pub dir: tempfile::TempDir,
     pub dispatcher: Dispatcher,
     pub mail: Mail,
+    /// The account's identities besides its address.
+    others: Vec<Identity>,
 }
 
 impl Uplink {
     /// An account `test` at `provider`.
     pub fn new(provider: MailProvider) -> Self {
+        Self::with_identities(provider, vec![])
+    }
+
+    /// An account `test` at `provider`, of identities `others` besides its
+    /// address.
+    pub fn with_identities(provider: MailProvider, others: Vec<Identity>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let mut registry = Registry::new();
         mailbox::register(&mut registry);
@@ -53,7 +62,7 @@ impl Uplink {
             vec![ConfiguredAccount {
                 id: "test".into(),
                 address: "alice@example.com".into(),
-                identities: own("alice@example.com"),
+                identities: own("alice@example.com", &others),
                 provider,
             }],
             SEND_DELAY,
@@ -62,6 +71,7 @@ impl Uplink {
             dir,
             dispatcher,
             mail,
+            others,
         }
     }
 
@@ -95,7 +105,7 @@ impl Uplink {
         SyncTask::new(
             provider,
             "test".into(),
-            own(address),
+            own(address, &self.others),
             self.dispatcher.clone(),
             self.reader(),
             self.dir.path(),
@@ -186,6 +196,15 @@ impl Uplink {
     }
 
     pub async fn outbox(&self) -> Vec<(i64, SendState)> {
+        self.sends()
+            .await
+            .into_iter()
+            .map(|i| (i.id.0, i.state))
+            .collect()
+    }
+
+    /// The outbox's sends.
+    pub async fn sends(&self) -> Vec<OutboxItem> {
         let mut conn = self.reader();
         let tx = conn.transaction().unwrap();
         uplink_email::outbox::outbox(&tx)
@@ -197,7 +216,6 @@ impl Uplink {
                     unreachable!("a mail account's mail")
                 }
             })
-            .map(|i| (i.id.0, i.state))
             .collect()
     }
 
@@ -224,12 +242,25 @@ impl Uplink {
 
     /// Creates a draft to `to` and sends it.
     pub async fn send(&self, to: &str, subject: &str, in_reply_to: Option<MessageId>) -> i64 {
+        self.send_from("", to, subject, in_reply_to).await
+    }
+
+    /// Creates a draft from `from` (the account's address if empty) to
+    /// `to`, and sends it.
+    pub async fn send_from(
+        &self,
+        from: &str,
+        to: &str,
+        subject: &str,
+        in_reply_to: Option<MessageId>,
+    ) -> i64 {
         let id = DraftId(subject.into());
         self.mail
             .create_draft(
                 id.clone(),
                 "test".into(),
                 DraftContent {
+                    from: from.into(),
                     to: to.into(),
                     cc: String::new(),
                     bcc: String::new(),

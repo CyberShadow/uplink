@@ -346,6 +346,35 @@ out of the Inbox, and one left in no mailbox goes into the Archive
 Sent mail goes by the server's own submission, which files the copy in
 Sent.
 
+### Sending from more than one address
+
+A mail account sends from its `address`, and from any of its
+`identities`: addresses, and domains any address at which is yours
+(handy if you give everyone an address of their own). Each is sent
+under the account's `name`, unless it has a `name` of its own:
+
+```yaml
+  - id: alice-jmap
+    kind: jmap
+    address: alice@example.com
+    name: Alice Liddell
+    identities:
+      - domain: example.com
+      - address: alice@example.org
+        name: "Alice (Example.org)"
+```
+
+All of them are you: `me` in searches (`from:me`) and in conversation
+lists, and left out when replying to all. The compose window's From
+offers them, and the server refuses to send from any other address.
+Whether the provider sends from an address is the provider's: Gmail,
+only from its send-as aliases (Settings → Accounts → Send mail as),
+and uplink refuses to send from any other rather than let Gmail send
+it from your Gmail address; a mail server, from what it lets the
+account send from (Stalwart: its addresses and aliases, and for JMAP,
+any address at their domains); Microsoft 365, from addresses you may
+send as.
+
 ### Connecting a Matrix account
 
 Add the account to `uplink.yaml` (see the commented example), then pair

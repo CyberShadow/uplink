@@ -597,7 +597,7 @@ export class FakeServer implements Requester, Blobs {
 
   /** Mail the provider sent though cancelled meanwhile (SPEC §6.7). */
   sentThoughCancelled(account: string, subject: string) {
-    const content = { to: 'bob@example.org', cc: '', bcc: '', subject, body: '' }
+    const content = { from: '', to: 'bob@example.org', cc: '', bcc: '', subject, body: '' }
     const draft = { id: `sent-${this.nextOutbox}`, account, content, attachments: [], in_reply_to: null, revision: 0, updated_at: 0 }
     this.outbox.push({ id: this.nextOutbox++, account, draft, state: 'sent', wanted: false, error: null, not_before: 0 })
     this.observe(account, [{ type: 'outbox_changed', accounts: [account] }])

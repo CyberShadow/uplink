@@ -174,6 +174,7 @@ impl Provider for Pop3Sync {
             &self.config.smtp,
             &self.sign_in,
             &self.tls,
+            mail.from,
             mail.raw,
         )
         .await?;

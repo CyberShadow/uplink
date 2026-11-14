@@ -662,6 +662,11 @@ export type OutboxId = number;
 
 export type DraftContent = { 
 /**
+ * The address it is sent from, as typed: one of the account's
+ * identities (SPEC §3.2), or empty for the account's own address.
+ */
+from: string, 
+/**
  * Address lists as typed, e.g. `Bob <bob@example.com>, carol@example.com`.
  */
 to: string, cc: string, bcc: string, subject: string, 
@@ -723,7 +728,7 @@ in_reply_to: MessageId | null,
  */
 updated_at: number, };
 
-export type DraftField = "to" | "cc" | "bcc" | "subject" | "body";
+export type DraftField = "from" | "to" | "cc" | "bcc" | "subject" | "body";
 
 /**
  * Replaces `delete` at `offset` of `field` with `insert`.
@@ -1504,4 +1509,4 @@ export type EventChangeKind = "create" | "update" | "delete";
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "744228d7d0290602"
+export const PROTOCOL_VERSION = "82b90214acd0f7bb"

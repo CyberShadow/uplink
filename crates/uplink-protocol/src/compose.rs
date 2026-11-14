@@ -22,6 +22,9 @@ pub struct OutboxId(pub i64);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct DraftContent {
+    /// The address it is sent from, as typed: one of the account's
+    /// identities (SPEC §3.2), or empty for the account's own address.
+    pub from: String,
     /// Address lists as typed, e.g. `Bob <bob@example.com>, carol@example.com`.
     pub to: String,
     pub cc: String,
@@ -84,6 +87,7 @@ pub struct Draft {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum DraftField {
+    From,
     To,
     Cc,
     Bcc,

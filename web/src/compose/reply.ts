@@ -11,7 +11,7 @@ export interface NewDraft {
   inReplyTo: MessageId | null
 }
 
-export const EMPTY: DraftContent = { to: '', cc: '', bcc: '', subject: '', body: '' }
+export const EMPTY: DraftContent = { from: '', to: '', cc: '', bcc: '', subject: '', body: '' }
 
 /** A draft responding to `message`, from the account of identities
  * `own`. */

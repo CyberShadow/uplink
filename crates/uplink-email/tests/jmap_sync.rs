@@ -6,7 +6,7 @@ mod common;
 
 use common::{
     eventually, message,
-    stalwart::{Stalwart, ALICE, BOB},
+    stalwart::{Stalwart, ALICE, ALICE_ALIAS, BOB},
     uplink::{label_set, Uplink},
 };
 use serde_json::{json, Value};
@@ -22,7 +22,10 @@ use uplink_email::{
     },
     mail_server::smtp,
 };
-use uplink_protocol::{compose::OutboxId, mail::MailProvider};
+use uplink_protocol::{
+    compose::OutboxId,
+    mail::{Identity, MailProvider},
+};
 
 /// uplink's side of Alice's account.
 fn provider(stalwart: &Stalwart) -> JmapSync {
@@ -321,6 +324,7 @@ async fn changes_are_told_by_the_event_source() {
         &bob.smtp,
         &stalwart.sign_in(bob.login()),
         &stalwart.tls,
+        BOB,
         &message("pushed", ""),
     )
     .await
@@ -461,6 +465,66 @@ async fn sends_by_submission_and_files_the_copy_in_sent() {
     sync.abort();
 }
 
+/// Mail from an identity is submitted as the server's identity of the
+/// address, else as one at its domain (Stalwart has none of a domain's
+/// catch-all): from the address, under the identity's name, the
+/// envelope the server's identity's.
+#[tokio::test(flavor = "multi_thread")]
+async fn sends_from_an_identity() {
+    let shop = Identity::Domain {
+        domain: "example.com".into(),
+        name: Some("Alice's Shop".into()),
+    };
+    let uplink = Uplink::with_identities(MailProvider::Jmap, vec![shop]);
+    let stalwart = Stalwart::start(uplink.dir.path()).await;
+    let sync = uplink.start(provider(&stalwart), ALICE);
+    eventually("the first sync", || async { uplink.synced().then_some(()) }).await;
+    let bob = stalwart.jmap("bob");
+    let headers = |tag: &'static str| {
+        let bob = &bob;
+        async move {
+            let (id, ..) =
+                eventually("the mail to reach Bob", || async { find(bob, tag).await }).await;
+            let got: Got<Value> = call(
+                bob,
+                "Email/get",
+                json!({ "ids": [id], "properties": ["from", "header:Return-Path:asText"] }),
+            )
+            .await;
+            let from = &got.list[0]["from"][0];
+            let return_path = &got.list[0]["header:Return-Path:asText"];
+            (
+                format!(
+                    "{} <{}>",
+                    from["name"].as_str().unwrap(),
+                    from["email"].as_str().unwrap()
+                ),
+                return_path.as_str().unwrap().trim().to_owned(),
+            )
+        }
+    };
+    uplink.send_from(ALICE_ALIAS, BOB, "aliased 1", None).await;
+    assert_eq!(
+        headers("aliased").await,
+        (
+            format!("Alice's Shop <{ALICE_ALIAS}>"),
+            format!("<{ALICE_ALIAS}>")
+        )
+    );
+    uplink
+        .send_from("anyone@Example.com", BOB, "anyone 1", None)
+        .await;
+    let (from, return_path) = headers("anyone").await;
+    assert_eq!(from, "Alice's Shop <anyone@Example.com>");
+    assert!(
+        [ALICE, ALICE_ALIAS]
+            .map(|a| format!("<{a}>"))
+            .contains(&return_path),
+        "{return_path}"
+    );
+    sync.abort();
+}
+
 /// A send tried again, its first attempt's outcome unknown: its draft,
 /// submitted already, is not submitted twice; Bcc goes to its recipient,
 /// but not in what is delivered.
@@ -501,6 +565,7 @@ async fn a_draft_submitted_is_not_submitted_again() {
             &task.account,
             Outgoing {
                 item: OutboxId(1),
+                from: ALICE,
                 raw: raw.as_bytes(),
                 message_id: "once@uplink.test",
                 not_before: 0,

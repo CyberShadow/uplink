@@ -16,7 +16,8 @@ use uplink_config::{Login, MailServer, Security};
 const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Submits `raw` (RFC 5322, as built) from the account, by its SMTP
-/// server `smtp`, to whom its To, Cc and Bcc name; Bcc is not in what they receive. Which step failed
+/// server `smtp`, from `from` (`MAIL FROM`, as its `From:` is), to whom
+/// its To, Cc and Bcc name; Bcc is not in what they receive. Which step failed
 /// says whether the message may have gone out: only once all of it is
 /// written, and before the server's answer, may it have.
 pub async fn send(
@@ -24,6 +25,7 @@ pub async fn send(
     smtp: &MailServer,
     sign_in: &SignIn,
     tls: &TlsConnector,
+    from: &str,
     raw: &[u8],
 ) -> Result<(), SendError> {
     let recipients = recipients(raw);
@@ -54,7 +56,7 @@ pub async fn send(
             ));
         }
     };
-    let result = submit(&mut client, account.address, &recipients, &without_bcc(raw)).await;
+    let result = submit(&mut client, from, &recipients, &without_bcc(raw)).await;
     // Whatever the server says to leaving, the message is settled.
     let _ = client.quit().await;
     result

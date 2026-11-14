@@ -11,6 +11,7 @@ import type { Draft, DraftField } from '../generated/protocol'
 import type { ComposeSession } from '../compose/session'
 import { diff, movePosition } from '../compose/splice'
 import { useServices } from '../context'
+import { defaultAddress, identityOf } from '../identities'
 import { keepFocus, useKeymap } from '../keymap'
 import styles from './Compose.module.css'
 import { fileSize } from './size'
@@ -117,8 +118,9 @@ function ComposeForm(props: { session: ComposeSession; draft: Draft }) {
     }
   }, [session])
 
-  const from = mail.accounts.value?.find((a) => a.id === session.account)?.address ?? session.account
-  const field = (name: DraftField, label: string) => (
+  const identities = mail.accounts.value?.find((a) => a.id === session.account)?.identities ?? []
+  const listId = `identities-${session.id}`
+  const field = (name: DraftField, label: string, extra: { placeholder?: string; list?: string } = {}) => (
     <label key={name} class={styles.field}>
       <span>{label}</span>
       <input
@@ -129,9 +131,14 @@ function ComposeForm(props: { session: ComposeSession; draft: Draft }) {
         value={content[name]}
         disabled={gone}
         onInput={(event) => session.set(name, event.currentTarget.value)}
+        {...extra}
       />
     </label>
   )
+  // Whom it is from: an identity's address, or empty for the account's
+  // own (SPEC §3.2); the name it goes under is the identity's.
+  const from = content.from.trim()
+  const fromIdentity = identities.length > 0 ? identityOf(identities, from || defaultAddress(identities)) : undefined
 
   return (
     <form
@@ -152,7 +159,17 @@ function ComposeForm(props: { session: ComposeSession; draft: Draft }) {
         attach([...files])
       }}
     >
-      <div class={styles.from}>From {from}</div>
+      {field('from', 'From', { placeholder: identities.length > 0 ? defaultAddress(identities) : '', list: listId })}
+      <datalist id={listId}>
+        {identities.flatMap((i) => ('address' in i ? [<option key={i.address} value={i.address} label={i.name ?? undefined} />] : []))}
+      </datalist>
+      {identities.length > 0 && (
+        <div class={fromIdentity ? styles.from : `${styles.from} ${styles.error}`} aria-live="polite">
+          {fromIdentity
+            ? fromIdentity.name && `As ${fromIdentity.name}`
+            : 'Not one of the account’s addresses'}
+        </div>
+      )}
       {ADDRESS_FIELDS.map(([name, label]) => field(name, label))}
       {field('subject', 'Subject')}
       <div class={styles.body} ref={body} aria-label="Body" />

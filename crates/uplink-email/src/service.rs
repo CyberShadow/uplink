@@ -460,6 +460,7 @@ impl Mail {
     /// outbox.
     pub async fn send_draft(&self, draft: DraftId) -> Response {
         let id = draft.clone();
+        let accounts = self.accounts.clone();
         self.reader
             .read(move |conn| {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
@@ -468,7 +469,13 @@ impl Mail {
                     .into_iter()
                     .find(|d| d.id == id)
                     .ok_or_else(|| error(ErrorCode::NotFound, format!("no draft {}", id.0)))?;
-                compose::check_sendable(&draft.content)
+                let account = accounts
+                    .iter()
+                    .find(|a| a.id == draft.account)
+                    .ok_or_else(|| {
+                        error(ErrorCode::NotFound, format!("no account {}", draft.account))
+                    })?;
+                compose::check_sendable(&draft.content, &account.identities)
                     .map_err(|e| error(ErrorCode::Invalid, format!("{e:#}")))
             })
             .await?;

@@ -238,6 +238,7 @@ impl Provider for GmailSync {
         let (draft, thread) = match (mail.provider_draft, mail.provider_thread) {
             (Some(draft), Some(thread)) => (draft.to_owned(), thread.to_owned()),
             (None, None) => {
+                self.check_send_as(mail.from).await?;
                 let drafted = self.gmail.create_draft(mail.raw, mail.thread).await?;
                 account
                     .observe(SendDrafted {
@@ -274,6 +275,26 @@ impl Provider for GmailSync {
 }
 
 impl GmailSync {
+    /// Refuses a message from an address Gmail would not send it from:
+    /// it sends mail from an address that is not one of its send-as
+    /// addresses from the account's own instead (SPEC §8.2).
+    async fn check_send_as(&self, from: &str) -> Result<(), SendError> {
+        let send_as = self.gmail.send_as().await.map_err(SendError::NotSent)?;
+        match send_as
+            .iter()
+            .find(|s| s.send_as_email.eq_ignore_ascii_case(from))
+        {
+            Some(s) if s.usable() => Ok(()),
+            Some(_) => Err(SendError::Rejected(format!(
+                "Gmail's send-as address {from} is not verified yet"
+            ))),
+            None => Err(SendError::Rejected(format!(
+                "{from} is not one of Gmail's send-as addresses \
+                 (Settings, Accounts, Send mail as)"
+            ))),
+        }
+    }
+
     /// The copy of a send whose draft is gone: sent by an earlier attempt
     /// whose answer was lost, or deleted at Gmail. A copy is in the draft's
     /// thread, in Sent, from no earlier than the send was due, and no other

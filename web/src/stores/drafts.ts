@@ -25,7 +25,7 @@ import { apply } from '../compose/splice'
 import { Loader, query, type Response } from './query'
 import type { Ops } from './ops'
 
-export const FIELDS: readonly DraftField[] = ['to', 'cc', 'bcc', 'subject', 'body']
+export const FIELDS: readonly DraftField[] = ['from', 'to', 'cc', 'bcc', 'subject', 'body']
 
 export type EditOutcome = 'applied' | 'conflict' | 'gone'
 

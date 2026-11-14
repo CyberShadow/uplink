@@ -1085,6 +1085,29 @@ describe('compose', () => {
     expect(within(drafts).getByText('Lunch')).toBeTruthy()
   })
 
+  it('sends from an identity typed or picked, the account\'s own address without one', async () => {
+    server.addAccount('home', [], [
+      { address: 'me@example.net', name: 'Me' },
+      { domain: 'shop.example', name: 'Shop' },
+    ])
+    server.deliver('home', 'Hello')
+    const user = await start('/mail/home/INBOX')
+    await user.keyboard('c')
+    const from = (await screen.findByRole('combobox', { name: 'From' })) as HTMLInputElement
+    expect(from.value).toBe('')
+    expect(from.placeholder).toBe('home@example.com')
+    const offered = [...from.list!.querySelectorAll('option')].map((o) => o.value)
+    expect(offered).toEqual(['home@example.com', 'me@example.net'])
+    await user.click(from)
+    await user.keyboard('bob@Shop.Example')
+    await screen.findByText('As Shop')
+    const [draft] = server.drafts.values()
+    await waitFor(() => expect(server.drafts.get(draft.id)!.content.from).toBe('bob@Shop.Example'))
+    await user.clear(from)
+    await user.keyboard('bob@example.org')
+    await screen.findByText('Not one of the account’s addresses')
+  })
+
   it('replies to the open message with r', async () => {
     const user = await start('/mail/work/INBOX')
     await user.keyboard('{Enter}')

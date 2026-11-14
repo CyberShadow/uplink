@@ -50,6 +50,8 @@ mod cost {
     /// `threads.get`.
     pub const THREAD: u32 = 10;
     pub const WATCH: u32 = 100;
+    /// `settings.sendAs.list`.
+    pub const SEND_AS: u32 = 1;
 }
 
 /// One account's client. Its clones share the account's quota.
@@ -138,6 +140,27 @@ pub struct Profile {
     pub history_id: String,
     /// In every label, Spam and Trash too.
     pub messages_total: u32,
+}
+
+/// An address Gmail sends from (`users.settings.sendAs`): the account's
+/// own, or an alias added in its settings ("Send mail as").
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendAs {
+    pub send_as_email: String,
+    #[serde(default)]
+    pub is_primary: bool,
+    /// Of an alias: `accepted` once its owner has verified it.
+    #[serde(default)]
+    pub verification_status: Option<String>,
+}
+
+impl SendAs {
+    /// Whether Gmail sends from it: mail from any other address it sends
+    /// from the account's own instead.
+    pub fn usable(&self) -> bool {
+        self.is_primary || self.verification_status.as_deref() == Some("accepted")
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -250,6 +273,21 @@ impl Gmail {
         self.get("/profile", &[], cost::PROFILE)
             .await?
             .context("no profile")
+    }
+
+    /// The addresses the account sends from.
+    pub async fn send_as(&self) -> Result<Vec<SendAs>> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct List {
+            #[serde(default)]
+            send_as: Vec<SendAs>,
+        }
+        let list: List = self
+            .get("/settings/sendAs", &[], cost::SEND_AS)
+            .await?
+            .context("no send-as addresses")?;
+        Ok(list.send_as)
     }
 
     pub async fn labels(&self) -> Result<Vec<Label>> {

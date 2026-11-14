@@ -7,7 +7,7 @@ mod common;
 use common::{
     dovecot::Dovecot,
     eventually, message,
-    stalwart::{append, find, store, Directory, Stalwart, ALICE, BOB},
+    stalwart::{append, find, store, Directory, Stalwart, ALICE, ALICE_ALIAS, BOB},
     uplink::{label_set, Uplink},
 };
 use futures_util::TryStreamExt;
@@ -20,7 +20,11 @@ use uplink_email::{
         smtp,
     },
 };
-use uplink_protocol::{mail::MailProvider, ServerResponse};
+use uplink_protocol::{
+    compose::SendState,
+    mail::{Identity, MailProvider},
+    ServerResponse,
+};
 
 /// uplink's side of Alice's account.
 fn provider(stalwart: &Stalwart) -> ImapSync {
@@ -392,6 +396,72 @@ async fn sends_mail_by_smtp_and_files_it_in_sent() {
     sync.abort();
 }
 
+/// Mail from an identity goes from it, under its name, envelope and
+/// all; one the server does not let the account send from is refused,
+/// not sent from another.
+#[tokio::test(flavor = "multi_thread")]
+async fn sends_from_an_identity() {
+    let shop = Identity::Domain {
+        domain: "example.com".into(),
+        name: Some("Alice's Shop".into()),
+    };
+    let uplink = Uplink::with_identities(MailProvider::Imap, vec![shop]);
+    let stalwart = Stalwart::start(uplink.dir.path()).await;
+    let sync = uplink.start(provider(&stalwart), ALICE);
+    eventually("the first sync", || async { uplink.synced().then_some(()) }).await;
+
+    uplink.send_from(ALICE_ALIAS, BOB, "aliased 1", None).await;
+    let (uid, _) = eventually("the mail to reach Bob", || async {
+        find(&mut stalwart.client("bob").await, "INBOX", "aliased").await
+    })
+    .await;
+    let mut bob = stalwart.client("bob").await;
+    bob.session.select("INBOX").await.unwrap();
+    let fetched: Vec<_> = bob
+        .session
+        .uid_fetch(
+            uid.to_string(),
+            "BODY.PEEK[HEADER.FIELDS (FROM RETURN-PATH)]",
+        )
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap();
+    let headers = String::from_utf8(fetched[0].header().unwrap().to_vec()).unwrap();
+    assert!(
+        headers.contains(&format!("From: \"Alice's Shop\" <{ALICE_ALIAS}>")),
+        "{headers}"
+    );
+    assert!(
+        headers.contains(&format!("Return-Path: <{ALICE_ALIAS}>")),
+        "{headers}"
+    );
+
+    // An address of the identity's domain that the server has not given
+    // Alice: refused, saying why.
+    uplink
+        .send_from("eve@example.com", BOB, "spoofed 1", None)
+        .await;
+    let refused = eventually("the send to be refused", || async {
+        let sends = uplink.sends().await;
+        sends.into_iter().find(|s| s.state == SendState::Refused)
+    })
+    .await;
+    assert!(
+        refused
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("not allowed to send from"),
+        "{refused:?}"
+    );
+    assert!(find(&mut stalwart.client("bob").await, "INBOX", "spoofed")
+        .await
+        .is_none());
+    sync.abort();
+}
+
 /// An account that signs in by XOAUTH2, emulate's Google its OAuth
 /// provider: authorized as `uplink oauth init` does it, by the account's
 /// own `oauth` settings, the browser played on emulate's sign-in form.
@@ -455,6 +525,7 @@ async fn signs_in_by_xoauth2() {
         &account.smtp,
         &sign_in,
         &stalwart.tls,
+        ALICE,
         raw.as_bytes(),
     )
     .await

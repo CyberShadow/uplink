@@ -17,11 +17,20 @@ fn splice(field: DraftField, offset: u32, delete: &str, insert: &str) -> Splice 
 
 fn content(to: &str, subject: &str, body: &str) -> DraftContent {
     DraftContent {
+        from: String::new(),
         to: to.into(),
         cc: String::new(),
         bcc: String::new(),
         subject: subject.into(),
         body: body.into(),
+    }
+}
+
+/// Mail from account `a`'s address.
+fn a_x() -> Sender {
+    Sender {
+        address: "a@x".into(),
+        name: None,
     }
 }
 
@@ -187,6 +196,19 @@ async fn discarded_drafts_are_restored_by_undo() {
     let [draft] = &db.drafts()[..] else { panic!() };
     assert_eq!(draft.revision, 1);
     assert_eq!(draft.content.body, "body!");
+    // Whom it is from is edited as its other fields are, and kept.
+    let from = db
+        .dispatch(edit("d", 1, splice(DraftField::From, 0, "", "s@x")))
+        .await;
+    let delete = db
+        .dispatch(DeleteDraft {
+            id: DraftId("d".into()),
+        })
+        .await;
+    db.dispatcher.undo(delete).await.unwrap();
+    assert_eq!(db.drafts()[0].content.from, "s@x");
+    db.dispatcher.undo(from).await.unwrap();
+    assert_eq!(db.drafts()[0].content.from, "");
     assert_eq!(
         db.conflict(put("d", content("", "", ""))).await,
         "draft d exists already"
@@ -366,7 +388,7 @@ async fn sync_copy(db: &Db, raw_sent: &[u8]) {
 
 fn built(message_id: &str) -> Vec<u8> {
     build_message(
-        "a@x",
+        &a_x(),
         &content("Bob <b@x>", "Lunch", "<p>noon?</p>"),
         vec![],
         message_id,
@@ -549,8 +571,9 @@ fn messages_are_built_sanitized_with_reply_headers() {
     original_with_refs.extend(&original);
     let reply = ReplyContext::of("orig@x", &original_with_refs);
     let raw = build_message(
-        "a@x",
+        &a_x(),
         &DraftContent {
+            from: String::new(),
             to: "Bob <b@x>".into(),
             cc: "c@x".into(),
             bcc: "d@x".into(),
@@ -582,7 +605,7 @@ fn messages_are_built_sanitized_with_reply_headers() {
     assert!(message.body_html(0).unwrap().contains("<b>works</b>"));
 
     let none = build_message(
-        "a@x",
+        &a_x(),
         &content("", "", ""),
         vec![],
         "n@a",
@@ -593,6 +616,51 @@ fn messages_are_built_sanitized_with_reply_headers() {
         none.unwrap_err().to_string(),
         "the message has no recipients"
     );
+}
+
+/// Mail is from the draft's From, an identity's address as typed, under
+/// the identity's name; or from the account's own address.
+#[test]
+fn mail_is_from_an_identity() {
+    let identities = [
+        Identity::Address {
+            address: "a@x".into(),
+            name: Some("A".into()),
+        },
+        Identity::Domain {
+            domain: "shop.x".into(),
+            name: Some("A's Shop".into()),
+        },
+    ];
+    let from = |from: &str| {
+        sender(
+            &DraftContent {
+                from: from.into(),
+                ..content("b@x", "", "")
+            },
+            &identities,
+        )
+        .map_err(|e| format!("{e:#}"))
+    };
+    let sender = |address: &str, name: &str| {
+        Ok(Sender {
+            address: address.into(),
+            name: Some(name.into()),
+        })
+    };
+    assert_eq!(from(""), sender("a@x", "A"));
+    assert_eq!(from(" A@X "), sender("A@X", "A"));
+    assert_eq!(from("Bob@Shop.X"), sender("Bob@Shop.X", "A's Shop"));
+    assert_eq!(
+        from("c@x"),
+        Err("From: c@x is not one of the account's identities".into())
+    );
+    assert_eq!(
+        from("Shop <s@shop.x>"),
+        Err("From: the address alone; the name is its identity's".into())
+    );
+    assert_eq!(from("a@x, s@shop.x"), Err("From: one address".into()));
+    assert_eq!(from("a"), Err("From: not an address: a".into()));
 }
 
 #[tokio::test]
@@ -606,6 +674,26 @@ async fn unsendable_drafts_are_refused() {
     let e = mail.send_draft(id.clone()).await.unwrap_err();
     assert_eq!(e.code, ErrorCode::Invalid);
     assert_eq!(e.message, "To: not an address: bob");
+    // From an address not the account's.
+    let elsewhere = DraftId("f".into());
+    mail.create_draft(
+        elsewhere.clone(),
+        "a".into(),
+        DraftContent {
+            from: "b@x".into(),
+            ..content("c@x", "", "")
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    let e = mail.send_draft(elsewhere.clone()).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::Invalid);
+    assert_eq!(
+        e.message,
+        "From: b@x is not one of the account's identities"
+    );
+    mail.delete_draft(elsewhere).await.unwrap();
     let e = mail
         .create_draft(DraftId("e".into()), "z".into(), content("", "", ""), None)
         .await
@@ -687,7 +775,7 @@ async fn files_are_attached_and_detached_by_undoable_ops() {
 fn messages_are_built_with_attached_files() {
     let pdf = b"%PDF-1.4 \x00\xff binary".to_vec();
     let raw = build_message(
-        "a@x",
+        &a_x(),
         &content("b@x", "Report", "<p>Attached.</p>"),
         vec![
             File {

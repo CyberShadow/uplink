@@ -248,6 +248,7 @@ impl Provider for ImapSync {
             &self.config.smtp,
             &self.sign_in,
             &self.tls,
+            mail.from,
             mail.raw,
         )
         .await?;

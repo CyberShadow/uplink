@@ -88,6 +88,9 @@ pub trait Provider: Send + Sync + 'static {
 /// A message to send, and what is known of earlier attempts.
 pub struct Outgoing<'a> {
     pub item: OutboxId,
+    /// The address it is from, of an identity of the account's (SPEC
+    /// §3.2): the provider sends from it, or refuses to.
+    pub from: &'a str,
     /// RFC 5322, as built.
     pub raw: &'a [u8],
     pub message_id: &'a str,
@@ -551,8 +554,11 @@ impl<P: Provider> SyncTask<P> {
             })
             .await
             .map_err(|e| SendError::Rejected(format!("{e:#}")))?;
+        // The server is the boundary: mail goes from an identity only.
+        let from = compose::sender(&due.draft.content, &self.account.identities)
+            .map_err(|e| SendError::Rejected(format!("{e:#}")))?;
         let raw = build_message(
-            crate::identity::default(&self.account.identities),
+            &from,
             &due.draft.content,
             files,
             &due.message_id,
@@ -566,6 +572,7 @@ impl<P: Provider> SyncTask<P> {
                 &self.account,
                 Outgoing {
                     item: due.item,
+                    from: &from.address,
                     raw: &raw,
                     message_id: &due.message_id,
                     not_before: due.not_before,

@@ -175,6 +175,7 @@ async fn sends_mail_by_smtp_and_files_it_in_sent() {
         &bob.smtp,
         &stalwart.sign_in(bob.login()),
         &stalwart.tls,
+        BOB,
         answer.as_bytes(),
     )
     .await

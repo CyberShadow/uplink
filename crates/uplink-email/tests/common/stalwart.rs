@@ -17,6 +17,8 @@ use uplink_storage::seal::MasterKey;
 
 pub const ALICE: &str = "alice@example.com";
 pub const BOB: &str = "bob@example.com";
+/// An address of Alice's besides her own.
+pub const ALICE_ALIAS: &str = "alice.shop@example.com";
 
 /// A Stalwart of Alice's and Bob's, its IMAP, SMTP and JMAP over TLS, and
 /// POP3 upgraded to it, by a certificate of the test's.
@@ -64,7 +66,7 @@ type = "memory"
 name = "alice"
 class = "individual"
 secret = "alice-secret"
-email = ["{ALICE}"]
+email = ["{ALICE}", "{ALICE_ALIAS}"]
 [[directory.memory.principals]]
 name = "bob"
 class = "individual"
@@ -133,9 +135,10 @@ type = "rocksdb"
 path = "{d}/data"
 {directories}
 # Received headers, as on mail from the internet (port 25), which POP3
-# dates mail by.
+# dates mail by; and Return-Path, which shows whom the envelope is from.
 [session.data.add-headers]
 received = true
+return-path = true
 [spam-filter]
 enable = false
 [tracer.log]

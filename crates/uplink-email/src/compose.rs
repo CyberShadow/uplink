@@ -31,7 +31,7 @@ use uplink_protocol::{
         BlobId, Draft, DraftAttachment, DraftAttachmentId, DraftContent, DraftEdited, DraftField,
         DraftId, DraftsChanged, OutboxId, OutboxItem, SendState, Splice,
     },
-    mail::MessageId,
+    mail::{Identity, MessageId},
     ServerEvent,
 };
 use uplink_storage::rusqlite::{params, OptionalExtension, Row, Transaction};
@@ -52,7 +52,7 @@ pub fn register(registry: &mut Registry) {
 // ── drafts ────────────────────────────────────────────────────────────────
 
 const DRAFT_COLUMNS: &str = "id, account_id, revision, to_addrs, cc_addrs, bcc_addrs, subject,
-                             body_html, in_reply_to, updated_at";
+                             body_html, in_reply_to, updated_at, from_addr";
 
 /// The draft, without its attachments.
 fn draft_row(r: &Row) -> uplink_storage::rusqlite::Result<Draft> {
@@ -61,6 +61,7 @@ fn draft_row(r: &Row) -> uplink_storage::rusqlite::Result<Draft> {
         account: r.get(1)?,
         revision: r.get(2)?,
         content: DraftContent {
+            from: r.get(10)?,
             to: r.get(3)?,
             cc: r.get(4)?,
             bcc: r.get(5)?,
@@ -120,7 +121,8 @@ fn insert_draft(tx: &Transaction, draft: &Draft) -> Result<()> {
     let c = &draft.content;
     let inserted = tx.execute(
         &format!(
-            "INSERT INTO draft ({DRAFT_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "INSERT INTO draft ({DRAFT_COLUMNS})
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT (id) DO NOTHING"
         ),
         params![
@@ -134,6 +136,7 @@ fn insert_draft(tx: &Transaction, draft: &Draft) -> Result<()> {
             c.body,
             draft.in_reply_to.map(|m| m.0),
             draft.updated_at,
+            c.from,
         ],
     )?;
     if inserted == 0 {
@@ -280,6 +283,7 @@ impl Op for EditDraft {
         }
         let splice = &self.splice;
         let column = match splice.field {
+            DraftField::From => "from_addr",
             DraftField::To => "to_addrs",
             DraftField::Cc => "cc_addrs",
             DraftField::Bcc => "bcc_addrs",
@@ -288,6 +292,7 @@ impl Op for EditDraft {
         };
         let c = &draft.content;
         let text = match splice.field {
+            DraftField::From => &c.from,
             DraftField::To => &c.to,
             DraftField::Cc => &c.cc,
             DraftField::Bcc => &c.bcc,
@@ -1075,8 +1080,38 @@ fn recipients(draft: &DraftContent) -> Result<[Vec<Recipient>; 3]> {
     Ok(lists)
 }
 
-/// Fails, saying why, if `draft` could not be sent.
-pub fn check_sendable(draft: &DraftContent) -> Result<()> {
+/// Whom a message is from: the address, and the name it is sent under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sender {
+    pub address: String,
+    pub name: Option<String>,
+}
+
+/// Whom `draft` is from, of the account of `identities`: its From, or
+/// the account's own address if it names none; fails unless that is of
+/// an identity (SPEC §3.2). The address is as typed; the name is the
+/// identity's.
+pub fn sender(draft: &DraftContent, identities: &[Identity]) -> Result<Sender> {
+    let address = match draft.from.trim() {
+        "" => crate::identity::default(identities).to_owned(),
+        from => match parse_addresses(from).context("From")?.as_slice() {
+            [(None, address)] => address.clone(),
+            [(Some(_), _)] => bail!("From: the address alone; the name is its identity's"),
+            _ => bail!("From: one address"),
+        },
+    };
+    let identity = crate::identity::of(identities, &address)
+        .with_context(|| format!("From: {address} is not one of the account's identities"))?;
+    Ok(Sender {
+        name: crate::identity::name(identity).map(str::to_owned),
+        address,
+    })
+}
+
+/// Fails, saying why, if `draft` could not be sent from the account of
+/// `identities`.
+pub fn check_sendable(draft: &DraftContent, identities: &[Identity]) -> Result<()> {
+    sender(draft, identities)?;
     recipients(draft).map(drop)
 }
 
@@ -1139,7 +1174,7 @@ impl File {
 /// dated `date` (unix seconds). The HTML is sanitized, and a plain-text
 /// part derived from it.
 pub fn build_message(
-    from: &str,
+    from: &Sender,
     draft: &DraftContent,
     files: Vec<File>,
     message_id: &str,
@@ -1154,7 +1189,10 @@ pub fn build_message(
     let html = ammonia::clean(&draft.body);
     let text = mail_parser::decoders::html::html_to_text(&html);
     let mut message = MessageBuilder::new()
-        .from(Address::new_address(None::<&str>, from.to_owned()))
+        .from(Address::new_address(
+            from.name.clone(),
+            from.address.clone(),
+        ))
         .subject(draft.subject.clone())
         .message_id(message_id.to_owned())
         .date(date)

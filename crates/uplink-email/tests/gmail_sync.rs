@@ -12,7 +12,11 @@ use uplink_email::{
     gmail::{api::Gmail, oauth, pubsub::PubSub, sync::GmailSync, watch::Push},
     oauth::Credentials,
 };
-use uplink_protocol::{compose::SendState, mail::MailProvider, ServerResponse};
+use uplink_protocol::{
+    compose::SendState,
+    mail::{Identity, MailProvider},
+    ServerResponse,
+};
 
 /// Gmail's sync of the account, polling every `unwatched_poll` while
 /// there are no push notifications.
@@ -411,6 +415,48 @@ async fn sends_mail_after_the_delay_unless_undone() {
     assert!(uplink.outbox().await.is_empty());
     assert!(uplink.entry("undone").is_none());
 
+    sync.abort();
+    provider.clean_up().await;
+}
+
+/// Mail from an identity that is not one of Gmail's send-as addresses is
+/// refused, rather than sent from the account's own as Gmail would.
+#[tokio::test(flavor = "multi_thread")]
+async fn mail_from_an_address_gmail_does_not_send_from_is_refused() {
+    let alias = "not-an-alias@uplink.invalid";
+    let uplink = Uplink::with_identities(
+        MailProvider::Gmail,
+        vec![Identity::Address {
+            address: alias.into(),
+            name: None,
+        }],
+    );
+    let provider = Provider::start(uplink.dir.path(), None).await;
+    let me = provider.account.address.clone();
+    let sync = start_sync(&uplink, &provider);
+    eventually("the first sync", || async { uplink.synced().then_some(()) }).await;
+
+    let subject = format!("aliased {}", common::nonce());
+    uplink.send_from(alias, &me, &subject, None).await;
+    let refused = eventually("the send to be refused", || async {
+        let sends = uplink.sends().await;
+        sends.into_iter().find(|s| s.state == SendState::Refused)
+    })
+    .await;
+    assert_eq!(
+        refused.error.as_deref(),
+        Some(
+            "not-an-alias@uplink.invalid is not one of Gmail's send-as addresses \
+             (Settings, Accounts, Send mail as)"
+        )
+    );
+    // Nothing went to Gmail, not even a draft.
+    assert!(refused.draft.content.subject == subject);
+    let draft: Option<String> = uplink
+        .reader()
+        .query_row("SELECT provider_draft FROM mail_send", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(draft, None);
     sync.abort();
     provider.clean_up().await;
 }

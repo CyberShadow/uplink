@@ -685,6 +685,8 @@ CREATE TABLE draft (
   id             TEXT PRIMARY KEY,          -- chosen by the creating client
   account_id     TEXT NOT NULL,             -- configured account sent from
   revision       INTEGER NOT NULL,          -- edits so far (§7.2)
+  from_addr      TEXT NOT NULL,             -- an identity's address as typed,
+                                            -- '' for the account's (§8.5)
   to_addrs       TEXT NOT NULL,             -- address lists as typed
   cc_addrs       TEXT NOT NULL,
   bcc_addrs      TEXT NOT NULL,
@@ -1388,8 +1390,9 @@ struct EditDraft { id: DraftId, revision: Option<i64>, splice: Splice }
 struct Splice { field: DraftField, offset: u32, delete: String, insert: String }
 ```
 
-Every field is text: To, Cc and Bcc are address lists as typed, parsed
-when sent, so they are edited like the subject and body. Offsets count
+Every field is text: From is an address as typed, and To, Cc and Bcc
+address lists as typed, parsed when sent, so they are edited like the
+subject and body, undone and rebased as they are. Offsets count
 UTF-16 code units, as JavaScript strings do; a splice inside a surrogate
 pair is refused.
 
@@ -1603,7 +1606,18 @@ IMAP's per-folder copies, and a REST fake is practical to test against
 - **Library**: hand-rolled HTTPS+JSON via `reqwest`. No SDK; Gmail send is
   ~30 lines of code.
 - **OAuth scope**: `gmail.modify`, which uplink already asks for, covers
-  sending (`gmail.send` is the narrower scope for send-only clients).
+  sending (`gmail.send` is the narrower scope for send-only clients),
+  and reading the send-as addresses (`settings.sendAs.list`).
+- **From** (§8.5): Gmail sends from the account's address and its
+  send-as aliases (Settings, Accounts, "Send mail as"), and puts the
+  account's address in a From of any other. So before the draft is
+  made, the send-as addresses are listed, and mail from one that is not
+  among them, or not yet verified (`verificationStatus` not
+  `accepted`), is refused, saying so; nothing reaches Gmail. An
+  identity that is a domain does not make its addresses Gmail's: each
+  must be an alias there. (Verified against emulate, which lists the
+  account's own address only; what real Gmail does with an alias's
+  display name, and an alias of `treatAsAlias`, is not.)
 - **Threading**: a reply carries `In-Reply-To` and `References` (the
   original's References plus its Message-ID), and is sent with the
   `threadId` of the original's entry in the account, as Gmail requires
@@ -1701,6 +1715,16 @@ IMAP's per-folder copies, and a REST fake is practical to test against
   the draft by an upload session (not done). Verified against the
   emulator only (§15.12).
 - **OAuth scope required**: `Mail.Send`.
+- **From** (§8.5): the MIME message's From is Exchange's to honour. From
+  an address of another mailbox, Graph refuses the send
+  (`ErrorSendAsDenied`) unless the user has Send As (or Send on Behalf)
+  permission on it, which is a refusal (§6.7). From a proxy address (an
+  alias) of the user's own mailbox, Exchange Online sends from the
+  primary address unless the organization allows sending from aliases
+  (`Set-OrganizationConfig -SendFromAliasEnabled $true`); uplink cannot
+  tell which from Graph, so an M365 account's identities should be
+  addresses it may send from. Not verified against a real tenant
+  (§15.12).
 
 ### 8.5 Compose
 
@@ -1715,6 +1739,19 @@ IMAP's per-folder copies, and a REST fake is practical to test against
   `html_to_text`), inside `multipart/mixed` with the attached files
   (§7.4), read from the blob store when the message is sent. The Message-ID is generated when the mail is queued,
   `<random@account.uplink>`; the Date when it is sent.
+- **From**: the draft's `from`, an address as typed, or empty for the
+  account's own `address`; drafts made before it were all from that.
+  Mail goes from an identity of the account (§3.2) only, under that
+  identity's name: the server is the boundary, and refuses another
+  address when the draft is sent (`SendDraft`), and again as the send is
+  built, should the configuration have changed meanwhile (then the send
+  is `refused`, §6.7). The address is sent as typed; a name typed with
+  it (`Name <addr>`) is refused, as the name is the identity's. The
+  compose window offers the account's addresses (its domains being
+  typed), shows its own as the placeholder, and says the name it is
+  sent under, or that it is none of the account's. Each provider sends
+  from the address or refuses to, never from another (§8.2, §8.4,
+  §8.11, §8.13).
 - **Replies and forwards** are prefilled by the client from the loaded
   message: `Re:`/`Fwd:` subject, recipients (reply-all drops the
   account's identities, §3.2), and the body quoted. A forward takes the
@@ -2118,9 +2155,12 @@ fit uplink better (§8.1, §8.3).
 
 - **Transport**: SMTP submission (`mail-send`, the stalwartlabs crate
   beside mail-parser and mail-builder), over TLS from the start (port
-  465) or by STARTTLS (587), signed in as IMAP is. The envelope is the
-  message's To, Cc and Bcc; the Bcc header is left out of what is
-  transmitted.
+  465) or by STARTTLS (587), signed in as IMAP is. The envelope is from
+  the message's From (`MAIL FROM`, the draft's identity, §8.5), to its
+  To, Cc and Bcc; the Bcc header is left out of what is transmitted. A
+  server that does not let the account send from the address refuses
+  `MAIL FROM` (Stalwart: 501, unless the address, or its domain's
+  catch-all, is the account's), which refuses the send.
 - **Outcome**: a failure before the message is written (connecting,
   signing in, `MAIL`, `RCPT`) did not send it: a 5xx reply refuses it, a
   4xx or a broken connection leaves it to be tried again. A reply to
@@ -2257,8 +2297,15 @@ credentials it was built with, which an OAuth token outlives.
   (`Email/import`, `$draft` and `$seen`), which is recorded
   (`SendDrafted`), then submitted (`EmailSubmission/set`, the envelope
   the server's: From, and To, Cc and Bcc; the server takes Bcc out of
-  what it delivers, and the copy keeps it), from the identity of the
-  account's address, else of its domain (`*@domain`), the copy moved
+  what it delivers, and the copy keeps it), as the server's identity
+  of the message's From (§8.5), else of its domain (`*@domain`, RFC
+  8621's wildcard), else any identity at its domain; with none, the
+  send is refused. The envelope is from the identity's address, the
+  message from its own: Stalwart has identities of the account's
+  addresses only (it makes one of each, and none of a domain's
+  catch-all, nor lets one be made), so mail from an address at a
+  catch-all's domain goes as another address there, its bounces to
+  that, its domain aligned for DMARC. The copy moved
   from Drafts to Sent as the server accepts it (`onSuccessUpdateEmail`):
   the draft is the copy (`SentCopy::Id`). Before a draft recorded is
   submitted again, its submissions are asked for (`EmailSubmission/query`
@@ -4473,7 +4520,8 @@ together with `odata.maxpagesize`, `$select` on delta queries, whether
 Graph's real delta pages report a move as a removal from one folder and
 an addition to another (as the emulator does) and flags, importance and
 category changes as updates, a draft created from MIME keeping our
-Message-ID and its immutable id when sent, what `send` answers for a
+Message-ID and its immutable id when sent, what Exchange does with a
+From of another address (§8.4), what `send` answers for a
 draft already sent or being sent, and the
 throttling of polling every folder every 30 s; for the calendar, that
 calendar view delta expands series and reports exceptions and cancelled

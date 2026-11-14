@@ -638,6 +638,62 @@ mod tests {
         assert_eq!(event, "$e");
     }
 
+    /// Drafts say whom they are from (V0055): the account's own address,
+    /// as all were, in the outbox's and the log's copies too, as sending,
+    /// undo and redo read them.
+    #[test]
+    fn drafts_are_from_the_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = migrated_to(dir.path(), 54);
+        let content = r#"{"to":"b@x","cc":"","bcc":"","subject":"Hi","body":"<p>hi</p>"}"#;
+        let draft = format!(
+            r#"{{"id":"d","account":"a","revision":0,"content":{content},"attachments":[],"in_reply_to":null,"updated_at":0}}"#
+        );
+        let put = format!(
+            r#"{{"id":"d","account":"a","revision":0,"content":{content},"attachments":[],"in_reply_to":null}}"#
+        );
+        conn.execute_batch(&format!(
+            r#"INSERT INTO draft (id, account_id, revision, to_addrs, cc_addrs, bcc_addrs,
+                                  subject, body_html, updated_at)
+               VALUES ('e', 'a', 0, 'b@x', '', '', 'Hi', '', 0);
+               INSERT INTO tx_log (id, ts, description, op_type, op_json, inverse_type,
+                                   inverse_json, events_json)
+               VALUES (1, 0, '', 'draft.put', '{put}', 'draft.delete', '{{"id":"d"}}', '[]'),
+                      (2, 0, '', 'draft.delete', '{{"id":"d"}}', 'draft.put', '{put}', '[]'),
+                      (3, 0, '', 'mail.send', '{{"id":"d","delay_ms":0}}', 'mail.cancel_send',
+                       '{{"item":1}}', '[]');
+               INSERT INTO mail_send (id, account_id, draft, message_id, delay_ms, not_before,
+                                      wanted, desired_by, state, synced)
+               VALUES (1, 'a', '{draft}', 'm@a', 0, 0, 1, 3, 'queued', 0);"#
+        ))
+        .unwrap();
+        drop(conn);
+
+        let conn = open(dir.path()).unwrap();
+        let from = |sql: &str| -> Vec<Option<String>> {
+            conn.prepare(sql)
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        let empty = || Some(String::new());
+        assert_eq!(from("SELECT from_addr FROM draft"), [empty()]);
+        assert_eq!(
+            from("SELECT json_extract(draft, '$.content.from') FROM mail_send"),
+            [empty()]
+        );
+        assert_eq!(
+            from("SELECT json_extract(op_json, '$.content.from') FROM tx_log ORDER BY id"),
+            [empty(), None, None]
+        );
+        assert_eq!(
+            from("SELECT json_extract(inverse_json, '$.content.from') FROM tx_log ORDER BY id"),
+            [None, empty(), None]
+        );
+    }
+
     /// The full-text index gets Cc (V0031), from what was stored before.
     #[test]
     fn search_indexes_cc() {

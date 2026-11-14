@@ -223,7 +223,7 @@ with subtest("mail sent to Bob reaches him, and its copy in Sent Items shows up"
         "type": "create_draft",
         "id": "to-bob",
         "account": "alice-m365",
-        "content": {"to": "Bob <bob@example.com>", "cc": "", "bcc": "", "subject": "Plans", "body": "<p>See you there</p>"},
+        "content": {"from": "", "to": "Bob <bob@example.com>", "cc": "", "bcc": "", "subject": "Plans", "body": "<p>See you there</p>"},
         "in_reply_to": None,
     })
     ws({"type": "send_draft", "draft": "to-bob"})

@@ -431,8 +431,7 @@ impl Provider for JmapSync {
                 draft
             }
         };
-        self.submit(crate::identity::default(&account.identities), &draft)
-            .await?;
+        self.submit(mail.from, &draft).await?;
         Ok(SentCopy::Id(draft))
     }
 
@@ -930,7 +929,9 @@ impl JmapSync {
         }
         let identities: Got<Identity> = responses.take(identities).map_err(not_sent)?;
         let identity = identity_of(&identities.list, address).ok_or_else(|| {
-            SendError::Rejected(format!("the server has no identity of {address}"))
+            SendError::Rejected(format!(
+                "the server has no identity of {address}, nor at its domain"
+            ))
         })?;
         let drafts = self
             .mailbox(&mut mailboxes, "DRAFT")
@@ -1013,10 +1014,20 @@ fn patch(mailboxes: &Mailboxes, pending: &[Pending]) -> Result<Patch, Pushed> {
     })
 }
 
-/// The identity mail from `address` is sent as: of the address, or of
-/// its domain's (`*@domain`).
+/// The identity mail from `address` is submitted as: of the address,
+/// else of its domain (`*@domain`, as RFC 8621 has wildcards), else any
+/// at its domain. Stalwart has identities of the account's addresses
+/// only, a catch-all of a domain not among them, so mail from an address
+/// of that domain (an identity of uplink's, SPEC §3.2) is submitted as
+/// another at it: the message is from the address, its envelope (where
+/// bounces go) from the identity's, of the same domain, so DMARC holds.
 fn identity_of<'a>(identities: &'a [Identity], address: &str) -> Option<&'a str> {
     let (_, domain) = address.rsplit_once('@')?;
+    let at = |email: &str| {
+        email
+            .rsplit_once('@')
+            .is_some_and(|(_, d)| d.eq_ignore_ascii_case(domain))
+    };
     let of = |email: &str| email.eq_ignore_ascii_case(address);
     let of_domain = |email: &str| {
         email
@@ -1027,6 +1038,7 @@ fn identity_of<'a>(identities: &'a [Identity], address: &str) -> Option<&'a str>
         .iter()
         .find(|i| of(&i.email))
         .or_else(|| identities.iter().find(|i| of_domain(&i.email)))
+        .or_else(|| identities.iter().find(|i| at(&i.email)))
         .map(|i| i.id.as_str())
 }
 
@@ -1208,11 +1220,16 @@ mod tests {
             email: email.into(),
         };
         let all = [
-            identity("1", "*@example.org"),
-            identity("2", "Alice@Example.org"),
+            identity("1", "carol@example.com"),
+            identity("2", "*@example.org"),
+            identity("3", "Alice@Example.org"),
+            identity("4", "bob@example.com"),
         ];
-        assert_eq!(identity_of(&all, "alice@example.org"), Some("2"));
-        assert_eq!(identity_of(&all, "bob@example.org"), Some("1"));
+        assert_eq!(identity_of(&all, "alice@example.org"), Some("3"));
+        assert_eq!(identity_of(&all, "bob@example.org"), Some("2"));
+        assert_eq!(identity_of(&all, "bob@example.com"), Some("4"));
+        // At a domain of identities but none of its own: as another there.
+        assert_eq!(identity_of(&all, "shop@Example.COM"), Some("1"));
         assert_eq!(identity_of(&all, "bob@example.net"), None);
     }
 }
