@@ -1331,13 +1331,12 @@ timeline).
 
 Ops record what the user wants; they do not call providers. Everything
 that mirrors a provider is stored twice: *desired* (set by ops) and
-*observed* (set by sync, and by the reconciler as it learns what the
-provider made of a push):
+*observed* (what the provider was last seen to have):
 
 - a mail entry's labels: its labels, folder, read and starred state;
 - whether a mail or a Matrix message is sent (§6.7);
-- a Matrix room's membership (§9.7) and read receipt, and a space's
-  order (§9.5);
+- a Matrix room's membership (§9.7), tags, pinned events and read
+  receipt, and a space's order (§9.5);
 - the user's answer to a meeting request (§10.3);
 - the user's own events created, changed and deleted (§10.4).
 
@@ -1359,48 +1358,264 @@ label (All Mail) and Trash and Spam apart by itself (§8.1).
 Each account runs a reconciler (its sync task) that, after every commit
 touching its state, pushes the differences — Gmail `messages.batchModify`
 and draft `send`; Graph `PATCH`, `move` and draft `send`; Matrix sends,
-joins, leaves, receipts and space orders; Graph `accept`,
+joins, leaves, receipts, tags and space orders; Graph `accept`,
 `tentativelyAccept` and `decline`, and events' `POST`, `PATCH`,
 `DELETE` and `cancel` (the calendar's sync task). The UI shows desired state
 immediately, so actions feel instant and survive a provider outage.
 
-A difference is *pending* until the provider is observed to match. Each
-records the op that made it (`desired_by`), so that it can be told in
-the user's terms. A push ends one of four ways:
+The provider is not ours, and pushing to it races with syncing from it,
+with the user's further changes, and with the network failing midway. So
+that every account and every kind of state is reconciled alike, the
+reconciliation is in layers: one model of a field (§6.6.1) and of when
+what is seen of the provider can be trusted (§6.6.2); how pushes end
+(§6.6.3); the kinds of state built on fields (§6.6.4); the entities they
+are of (§6.6.5); and what each provider supplies (§6.6.6). The model is
+one pure module, tested by simulating providers that lag, reorder,
+time out and apply requests late (§15.10); the crates hold none of it.
 
-- **done**: the provider matches; the difference is gone;
-- **not done, for a passing reason** (connection refused, 5xx, 429, token
-  refresh): still pending, retried with the task's backoff. The account
-  records, as an observation, when its pushes start failing (with the
-  error) and when they recover, not each retry;
-- **refused** by the provider (4xx other than for rate): the difference
-  is marked refused, with the provider's reason, and not retried; the
-  rest are pushed regardless (a refused batch is split until the
-  differences it refused are found);
-- **outcome unknown** (a timeout, the process stopped mid-request):
-  still pending. A push states what should be, not a step to take, so
-  it is pushed again: harmlessly for labels, receipts and membership,
-  and, for sends, only once the provider has been observed not to have
-  the message (§6.7).
+The model is Kubernetes' (desired *spec*, observed *status*, reconciled
+level by level, never trusting a cache older than one's own last write:
+KEP-5647) with Firestore's view of pending writes (shown over the
+provider's state until confirmed); unlike either, its providers mostly
+give no versions to order by, so it orders by its own log (§6.6.2).
+
+#### 6.6.1 Fields and opinions
+
+A *field* is one value the provider holds: an entry's having a label, a
+room's membership, a space's order, an answer. Of each, uplink records:
+
+- `desired`, and `desired_by`: the op whose *opinion* it is. Without one
+  (`desired_by` NULL) uplink has no opinion: desired follows observed,
+  and the provider's changes, by whomever, are the user's state;
+- `observed`: the value last seen authoritatively (§6.6.2), and when;
+- the *attempt*, if any: the value last pushed, the op whose opinion it
+  pushed, its position in the log when claimed (§6.6.3), and its
+  outcome so far — *in flight*, *applied* (and when recorded), or
+  *unknown*.
+
+What the provider may hold is the observed value and, while there is an
+attempt, the attempted one. A field is **pending** while uplink has an
+opinion and the provider may hold anything but the desired value: that
+is, `desired != observed`, or an attempt is outstanding. (Pending is
+never `desired != observed` alone: the attempt is what makes "back to
+as it was" safe, below.)
+
+An opinion is formed by an op, and goes only when:
+
+- an op sets desired back to observed, and **no attempt is
+  outstanding**: nothing was asked of the provider, so nothing is left
+  to reconcile (cancelling a send before it is claimed, §6.7, is this);
+- it is **confirmed**: an authoritative observation (§6.6.2) shows the
+  desired value, after the last attempt's outcome was recorded;
+- its entity is authoritatively gone (§6.6.5);
+- the user resolves it, when it needs a decision (§6.6.3).
+
+Ops never touch attempts, and never cancel what is in flight: undo is a
+desired-state change like any other (§6.2). Undoing while a push is in
+flight or of unknown outcome leaves the field pending, and the
+reconciler pushes the desired value again once the attempt has ended:
+pushes state what should be, so a push superseding another is harmless.
+Of a change and its undo made before anything was pushed, nothing is
+pushed at all.
+
+An attempt's outcome is recorded against the value it pushed, whatever
+is desired by then: the provider has what was sent, not what is wanted
+now.
+
+#### 6.6.2 Order: when what is seen can be trusted
+
+Pushes and syncs are separate requests, possibly concurrent, and their
+answers arrive in an order unrelated to the provider's. A sync answered
+before a push but recorded after its outcome is older than what uplink
+knows; one that agrees with an undo may predate the change it undoes.
+Most providers' state has no version to tell (Matrix account data,
+Gmail's `batchModify`), so uplink orders by its own log, assuming only
+that a provider reads its own writes: a request sent after a write
+was answered sees it.
+
+Every observation of the provider carries `as_of`: the log position
+taken **before** the request that produced it was sent. (Taken early, it
+errs towards distrust.) An observation of a field is:
+
+- **authoritative** if its `as_of` is after the recording of the field's
+  last attempt's outcome, applied or not applied (or there was no
+  attempt). It becomes observed. With no opinion, that is the user's
+  state. With one, it confirms it if it shows the desired value; else
+  the local change wins, and is pushed again (but see *not kept*,
+  §6.6.3);
+- **ambiguous** otherwise: it may predate the attempt, or be another
+  client's change after it, and nothing tells which. It is never
+  adopted. If it contradicts the desired value, the desired value is
+  pushed again: harmless if it was stale, and the local change winning
+  if it was not. (Ignoring it instead could lose another client's
+  change for good: syncs are incremental, and that change will not be
+  told again.) If it agrees, it confirms nothing.
+
+An attempt of unknown outcome is never ordered by: the request may
+still land. It is superseded by pushing the desired value again, whose
+outcome is.
+
+An applied push is confirmed only by an authoritative observation, and
+a sync may never give one: a Matrix long poll is usually already waiting
+when uplink pushes, and is woken by the push's own echo, so it is
+ambiguous, and it tells of the field once. So after an applied push, the
+reconciler **reads the field back** directly, unless the next sync is
+anyway sent after the outcome is recorded (providers whose sync and
+pushes take turns, §6.6.6).
+
+A provider that does not read its own writes (a replica behind) can
+still mislead an authoritative observation: while an opinion is pending,
+that only pushes again; once confirmed, a stale value is shown until the
+provider tells of the field again. Accepted (§6.6.7).
+
+#### 6.6.3 Pushes and how they end
+
+The reconciler **claims** what it pushes, in one transaction: it reads
+the desired value and records it as the field's attempt, in flight.
+The request sends exactly what was claimed, so that an op committed in
+between is pushed next, not lost. A batch is claimed, and its outcome
+recorded, as one entry; outcomes are recorded **as each request ends**,
+never only at the end of a step, so a failure later in a step loses
+none of those before it.
+
+A request ends one of three ways:
+
+- **applied**: the attempt is applied, and the field confirmed once seen
+  so (§6.6.2);
+- **not applied**: the provider cannot have acted on it — the
+  connection was never made (refused, DNS, TLS), or it answered with an
+  error that means it did not (4xx, 429). The attempt ends, as if it
+  had not been made: an undo meanwhile is then fulfilled locally.
+  Refused (4xx other than for rate): the difference is marked refused,
+  with the provider's reason, and not pushed again until the user
+  decides; the rest are pushed regardless (a refused batch is split
+  until the differences it refused are found). Rate limits and the like
+  are retried with the task's backoff;
+- **unknown**: it may have acted — a timeout once sent, the connection
+  lost mid-request, a 5xx, the process stopped while it was in flight.
+  The attempt stays, unknown, and the desired value is pushed again,
+  with backoff: harmlessly, as pushes state what should be (sends,
+  which are not states, are pushed again only once the provider is seen
+  not to have them, §6.7).
+
+The account records, as an observation, when its pushes start failing
+(with the error) and when they recover, not each retry.
+
+**Not kept.** A provider may accept a value and keep another: Gmail
+ignoring a change to some system labels, an IMAP server without the
+keyword among its `PERMANENTFLAGS`, a homeserver dropping an order it
+deems invalid. Or another client may keep setting its own. Either way,
+an authoritative observation contradicts an applied push of the same
+opinion. The first time, the local change wins and is pushed again; the
+second, the difference is *irreconcilable* ("not kept by the
+provider"), not pushed again until the user decides. Values are stored
+as the provider keeps them (§6.6.6), so that its spelling of a value is
+not mistaken for this.
 
 A difference that can't be reconciled is *irreconcilable*: one refused,
-or one asking for what no push can do, such as un-sending a message that
-has gone out. It stays until the user resolves it by changing desired
-state, usually to the observed ("keep Gmail's", "keep it sent"), with an
-op that is logged and undoable like any other; or otherwise (a refused
-send's draft fixed and sent again). Undo is therefore never refused for
-the provider's sake: what it asks of the provider is reconciled or
-shown, like everything else. (Undo refuses only conflicts in uplink's
-own state, §6.2.)
+one not kept, or one asking for what no push can do, such as un-sending
+a message that has gone out. It stays until the user resolves it by
+changing desired state, usually to the observed ("keep Gmail's", "keep
+it sent"), with an op that is logged and undoable like any other; or
+otherwise (a refused send's draft fixed and sent again). Undo is
+therefore never refused for the provider's sake: what it asks of the
+provider is reconciled or shown, like everything else. (Undo refuses
+only conflicts in uplink's own state, §6.2.)
+
+#### 6.6.4 Kinds of state
+
+Built on fields, by how their values combine:
+
+- **Registers**, one value each, as above: an entry's folder (where it
+  has exactly one), a room's membership, a space's order, an answer.
+- **Sets**, as one register per member (has it, or not): an entry's
+  labels and read and starred state, a room's tags, its pinned events.
+  So a change to one member is never a change to the others, however
+  the provider writes them. Where it writes the whole set
+  (`m.room.pinned_events`), the push is built from uplink's own state —
+  the observed members, with each member's attempt or desired value
+  over it — never from a copy that lags uplink's own pushes (the SDK's
+  store, which only a sync updates). Another client's change to the set
+  between uplink's observing it and its push is lost: Matrix has no
+  compare-and-swap. Accepted (§6.6.7).
+- **Monotonic** values, which only advance: read receipts and the
+  fully-read marker, by the position of the event they are at. An older
+  observation changes nothing, so they need no ordering; a desired value
+  behind the observed is not pushed (going back is local, §12.15).
+- **Sends**, fulfilled once rather than kept (§6.7): claimed before
+  sending, and told apart by the provider's id for them (a transaction
+  id, a draft) rather than by value.
+
+#### 6.6.5 Entities
+
+Fields are of entities the provider keys its own way: a message by
+folder and UID (IMAP), by id (Gmail, Graph, JMAP); a room by its id.
+
+- A push that changes the entity's key records the new key with its
+  outcome (IMAP `MOVE`'s `COPYUID`). Without one, the entity's key is
+  *unknown*, and it is left out of pushes until a sync finds it again
+  (by Message-ID), rather than pushed to a key that is gone, which IMAP
+  would silently accept.
+- An entity seen gone takes its pending changes with it, but only if
+  seen gone authoritatively (§6.6.2). Missing from an ambiguous
+  observation (a folder listed while a message moved, a room among a
+  stale sync's left rooms), it is in *limbo*: shown as it was, its
+  changes kept, until a direct read settles it.
+
+#### 6.6.6 What a provider supplies
+
+Each provider's crate adapts it to the model, supplying:
+
+- **observations** stamped with `as_of` (§6.6.2): its sync, and **direct
+  reads** of fields and entities, for confirming (read-back) and limbo;
+- **writes** of fields, each ending applied, not applied (refused or
+  not) or unknown (§6.6.3), and recording any new key (§6.6.5);
+- **normalization**: a desired value as the provider will keep it
+  (labels by id, categories as Graph spells them), so that its echo
+  confirms rather than contradicts;
+- **conditional writes**, where it has them, which also catch what
+  ordering cannot (§6.6.7): IMAP `UNCHANGEDSINCE`, Graph `If-Match`,
+  JMAP `ifInState`. Gmail's labels and Matrix have none.
+
+How they order:
+
+- Gmail, IMAP, Graph, JMAP and the calendar: one task per account takes
+  sync and pushes in turns, so each sync is sent after the
+  outcomes of the pushes before it are recorded, and is authoritative
+  for them; no read-back is needed. IDLE and JMAP's push only wake the
+  task. Should anything observe out of turn, it stamps `as_of` like any
+  other.
+- POP3: labels are uplink's own; a push is applied at once.
+- Matrix: `/sync` long-polls alongside the pushes, so its answers are
+  often ambiguous, and applied pushes are read back (room account data
+  by `GET .../account_data/{type}`, membership by the room's state).
+
+#### 6.6.7 Accepted risks
+
+Without versions from the provider, some interleavings can't be told
+apart, and are accepted rather than guessed at:
+
+- a request of unknown outcome that the provider applies **late**, after
+  a later push: the late value wins, and with no opinion left, it is
+  taken for another client's. Only conditional writes catch it;
+- a provider not reading its own writes (§6.6.2): a stale value shown
+  once a change is confirmed, until it changes again;
+- a set written whole: another client's concurrent change to it lost
+  (§6.6.4);
+- another client insisting on its own value: irreconcilable after the
+  second contradiction (§6.6.3), for the user to decide, rather than a
+  tug of war.
+
+#### 6.6.8 Remote changes and the outbox
 
 When sync observes a remote change:
 
-- if there is no pending local change for that field, desired follows
-  observed (the remote change wins);
-- if there is, the local change wins and is pushed. Surfacing such
+- if uplink has no opinion of the field, desired follows observed (the
+  remote change wins);
+- if it has, the local change wins and is pushed (§6.6.2). Surfacing such
   conflicts to the user is deferred, together with undo conflicts (§6.2);
-- an entry the provider deleted takes its pending changes with it: there
-  is nothing left for them to apply to.
+- an entity the provider deleted takes its pending changes with it
+  (§6.6.5): there is nothing left for them to apply to.
 
 **The outbox** (atop the history, §6.3) shows everything not yet
 reconciled: per account, the ops whose desired state the provider does not reflect yet,
@@ -1408,13 +1623,24 @@ newest first, each with what is left of it ("Archived 214
 conversations: 180 to go") and its state: waiting (a send's delay),
 being pushed, retrying (with the account's error, and since when), or
 needing a decision (refused or irreconcilable: the reason, and the
-actions that resolve it). Each has its Undo. Changes pending from before
+actions that resolve it). Each has its Undo. A field pending for an
+attempt after its opinion went back to as it was (an undo while a push
+was in flight) stays listed under the undo. Changes pending from before
 ops were recorded with them (V0018) are listed together, as made
 earlier. Sends are listed until the
 provider's copy is synced (§8.6), so a sent mail stays until it is in
 Sent. The nav shows the outbox's count on the history, and marks it
 while an account's pushes are failing or something needs a decision. An empty outbox means
 the providers, as last observed, match what the user has done.
+
+**Not yet so.** The crates predate this model, and each reconciles in
+its own way: the attempt, `as_of`, read-back, not kept and limbo are not
+yet implemented. Known to fail meanwhile: Matrix tags, space orders and
+membership (stale syncs overwrite pushes; undo during a push lost);
+membership and calendar answers (an undo during the push lost); mail
+(a step's failure loses the outcomes of its earlier pushes, so an undo
+then is lost); IMAP (a push after a move goes to the old UID); Matrix
+pins (built from the SDK's store).
 
 ### 6.7 Sends: desired state fulfilled once
 
@@ -4831,6 +5057,14 @@ flake is the source of truth.
 - `rstest` for parameterized fixtures.
 - Op-trait tests assert apply → inverse → apply round-trips for every
   Op variant.
+- The reconciliation model (§6.6) is tested apart from any provider, as
+  Dropbox tests its sync planner: a simulated provider that lags behind
+  its writes, answers out of order, times out (applying the request or
+  not), applies a request late, keeps another value than it accepted,
+  and has another client change it; random interleavings of these with
+  ops and undos, from a seed, reproducible. After each run, with the
+  network quiet, every field must be reconciled or need a decision, and
+  the provider must have the desired value of each reconciled one.
 
 **Integration tests (NixOS VM tests, `pkgs.testers.nixosTest`)**
 
