@@ -1691,7 +1691,10 @@ its own way: the model is implemented, and simulated, as
 `uplink_tx_log::reconcile`, and Matrix room tags, pinned events, space
 orders (§9.5) and memberships (§9.7), calendar answers (§10.3) and mail
 labels (§8) use it, and an IMAP move re-keys its entry (§6.6.5); nothing
-uses limbo yet.
+uses limbo yet. The user's own events created, changed and deleted
+(§10.4) are reconciled their own way still: desired as a whole change
+of the event (`calendar_event.desired`), pushed with its outcome, not
+as fields.
 
 ### 6.7 Sends: desired state fulfilled once
 
