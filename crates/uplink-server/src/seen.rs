@@ -3,7 +3,7 @@
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use uplink_protocol::Place;
+use uplink_protocol::{Place, ServerEvent};
 use uplink_storage::rusqlite::{params, OptionalExtension, Transaction};
 use uplink_tx_log::{Applied, Conflict, Inverse, Op, Registry};
 
@@ -62,7 +62,7 @@ impl Op for MarkSeen {
                 rows: previous,
                 expected: rows,
             }),
-            events: vec![],
+            events: vec![ServerEvent::SeenChanged],
         })
     }
 
@@ -92,7 +92,7 @@ impl Op for RestoreSeen {
                 rows: self.expected,
                 expected: self.rows,
             }),
-            events: vec![],
+            events: vec![ServerEvent::SeenChanged],
         })
     }
 }

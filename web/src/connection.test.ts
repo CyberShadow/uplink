@@ -1,7 +1,15 @@
 import { Server, type Client } from 'mock-socket'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BACKOFF_MS, Connection, ConnectionLost, HEARTBEAT_MS } from './connection'
-import { PROTOCOL_VERSION, type LogEntry, type WsClientMsg, type WsServerMsg } from './generated/protocol'
+import {
+  PROTOCOL_VERSION,
+  type Listed,
+  type ListScope,
+  type LogEntry,
+  type WindowChange,
+  type WsClientMsg,
+  type WsServerMsg,
+} from './generated/protocol'
 
 const URL = 'ws://uplink.test/ws'
 
@@ -46,6 +54,22 @@ function entry(id: number): LogEntry {
     undoes: null,
     events: [],
   }
+}
+
+function todo(id: number): Listed {
+  const item = {
+    kind: 'todo' as const,
+    todo: { id, title: `to-do ${id}`, notes: '', due: null, done_at: null, message: null, created_at: 0, updated_at: id },
+  }
+  return { key: `todo:${id}`, position: { at: id, kind: 'todo', id }, item }
+}
+
+function change(upserted: Listed[], more: boolean): WindowChange {
+  return { upserted, removed: [], more, partial_rooms: [] }
+}
+
+function window(as_of: number, upserted: Listed[], more: boolean, scope: ListScope) {
+  return { type: 'window' as const, as_of, change: change(upserted, more), scope }
 }
 
 let server: Server
@@ -172,6 +196,71 @@ describe('Connection', () => {
       body: { type: 'accounts', as_of: 1, accounts: [] },
     })
     await expect(query).resolves.toMatchObject({ type: 'accounts' })
+  })
+
+  it('keeps subscriptions across connections, from their first page anew', async () => {
+    const { connection } = connect()
+    const listener = { reset: vi.fn(), change: vi.fn(), failed: vi.fn() }
+    // Subscribed to before the connection is welcomed: once it is.
+    const subscription = connection.subscribe('is:starred', 100, listener)
+    const first = await accept({ cursor: 1, resumed: false })
+    const subscribe = await first.peer.next('request')
+    expect(subscribe.body).toEqual({ type: 'subscribe', subscription: 1, query: 'is:starred', limit: 100 })
+    const scope: ListScope = { type: 'except', labels: [] }
+    first.peer.send({ type: 'response', request_id: subscribe.request_id, body: window(1, [todo(1)], true, scope) })
+    await vi.waitFor(() => expect(listener.reset).toHaveBeenCalledWith(change([todo(1)], true), scope))
+
+    // What changes of it, and its widening, it is told of.
+    first.peer.send({ type: 'window_changed', subscription: 1, change: change([todo(2)], true) })
+    await vi.waitFor(() => expect(listener.change).toHaveBeenCalledWith(change([todo(2)], true)))
+    subscription.extend(100)
+    const extend = await first.peer.next('request')
+    expect(extend.body).toEqual({ type: 'extend', subscription: 1, limit: 100 })
+
+    // The widening on its way is of the socket gone: a new one subscribes
+    // anew, from the first page.
+    first.peer.socket.close()
+    const second = await accept({ cursor: 3, resumed: true })
+    const again = await second.peer.next('request')
+    expect(again.body).toEqual({ type: 'subscribe', subscription: 1, query: 'is:starred', limit: 100 })
+    second.peer.send({ type: 'response', request_id: again.request_id, body: window(3, [todo(3)], false, scope) })
+    await vi.waitFor(() => expect(listener.reset).toHaveBeenLastCalledWith(change([todo(3)], false), scope))
+    expect(listener.change).toHaveBeenCalledOnce()
+    expect(listener.failed).not.toHaveBeenCalled()
+
+    // Closed, it is unsubscribed from, and told of nothing more.
+    subscription.close()
+    const unsubscribe = await second.peer.next('request')
+    expect(unsubscribe.body).toEqual({ type: 'unsubscribe', subscription: 1 })
+    second.peer.send({ type: 'window_changed', subscription: 1, change: change([todo(4)], false) })
+    second.peer.send({ type: 'response', request_id: unsubscribe.request_id, body: { type: 'done' } })
+    const query = connection.request({ type: 'list_accounts' })
+    const request = await second.peer.next('request')
+    second.peer.send({ type: 'response', request_id: request.request_id, body: { type: 'accounts', as_of: 3, accounts: [] } })
+    await query
+    expect(listener.change).toHaveBeenCalledOnce()
+  })
+
+  it('tells a subscription the server refused why, and no longer subscribes to it', async () => {
+    const { connection } = connect()
+    const listener = { reset: vi.fn(), change: vi.fn(), failed: vi.fn() }
+    const first = await accept({ cursor: 1, resumed: false })
+    const subscription = connection.subscribe('label:nope', 100, listener)
+    const subscribe = await first.peer.next('request')
+    first.peer.send({
+      type: 'request_failed',
+      request_id: subscribe.request_id,
+      error: { code: 'invalid', message: 'no label nope' },
+    })
+    await vi.waitFor(() => expect(listener.failed).toHaveBeenCalledOnce())
+    expect(listener.failed.mock.calls[0][0].message).toBe('no label nope')
+
+    // Neither subscribed to anew, nor unsubscribed from.
+    first.peer.socket.close()
+    const second = await accept({ cursor: 1, resumed: true })
+    subscription.close()
+    void connection.request({ type: 'list_accounts' })
+    expect((await second.peer.next('request')).body).toEqual({ type: 'list_accounts' })
   })
 
   it('pings, and reconnects when a ping goes unanswered', async () => {

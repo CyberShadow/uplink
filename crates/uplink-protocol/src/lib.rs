@@ -91,6 +91,12 @@ pub enum WsServerMsg {
     Notice {
         notice: Notice,
     },
+    /// What changed of a subscription's window (SPEC §5.7), right after
+    /// the entries it reflects.
+    WindowChanged {
+        subscription: SubscriptionId,
+        change: WindowChange,
+    },
 }
 
 /// A notice of the moment (SPEC §5.5).
@@ -159,6 +165,25 @@ pub enum ClientRequest {
         query: String,
         after: Option<ItemPosition>,
         limit: u32,
+    },
+    /// Keeps the client's copy of what `query` matches, as `ListItems`
+    /// lists it, current (SPEC §5.7): its first `limit` items, its
+    /// window, answered `Window`; then `WindowChanged` as they change,
+    /// until `Unsubscribe` or the connection's end. `subscription` is the
+    /// client's name for it, of none other on the connection.
+    Subscribe {
+        subscription: SubscriptionId,
+        query: String,
+        limit: u32,
+    },
+    /// Widens the subscription's window by `limit` items, answered
+    /// `Window`.
+    Extend {
+        subscription: SubscriptionId,
+        limit: u32,
+    },
+    Unsubscribe {
+        subscription: SubscriptionId,
     },
     /// The home view (SPEC §12.13): each configured bucket's first page
     /// of `limit` items, as `ListItems` lists them; an item is in the
@@ -549,6 +574,14 @@ pub enum ServerResponse {
         /// found all it would.
         partial_rooms: Vec<matrix::RoomId>,
     },
+    /// Of `Subscribe` and `Extend`: what changed of the window, from
+    /// nothing at first.
+    Window {
+        as_of: TxLogId,
+        change: WindowChange,
+        /// Of its conversations.
+        scope: mail::ListScope,
+    },
     Message {
         message: Box<mail::MessageContent>,
     },
@@ -670,6 +703,7 @@ impl ServerResponse {
             | Self::Conversations { as_of, .. }
             | Self::Entries { as_of, .. }
             | Self::Items { as_of, .. }
+            | Self::Window { as_of, .. }
             | Self::Home { as_of, .. }
             | Self::Drafts { as_of, .. }
             | Self::Outbox { as_of, .. }
@@ -731,6 +765,87 @@ pub enum Item {
     Event {
         event: calendar::CalendarEvent,
     },
+}
+
+impl Item {
+    /// Identifies it while it changes: a conversation by its thread (or
+    /// by its entry, of none), as it gains and loses entries.
+    pub fn key(&self) -> ItemKey {
+        ItemKey(match self {
+            Item::Mail { conversation } => {
+                let latest = &conversation.latest;
+                match &latest.thread_id {
+                    Some(thread) => format!("{}/{thread}", latest.account),
+                    None => format!("#{}", latest.id.0),
+                }
+            }
+            Item::Room { room, .. } => format!("room:{}", room.id.0),
+            Item::Todo { todo } => format!("todo:{}", todo.id.0),
+            Item::Event { event } => format!("event:{}", event.id.0),
+        })
+    }
+
+    /// Where it is listed.
+    pub fn position(&self) -> ItemPosition {
+        let (at, kind, id) = match self {
+            Item::Mail { conversation } => (
+                conversation.latest.received_at,
+                ItemKind::Mail,
+                conversation.latest.id.0,
+            ),
+            Item::Room { room, hits } => (
+                // An invitation has no activity of its own: the oldest.
+                hits.as_ref()
+                    .map(|hits| hits.latest.ts)
+                    .or(room.last_event_ts)
+                    .unwrap_or(0),
+                ItemKind::Room,
+                room.id.0,
+            ),
+            Item::Todo { todo } => (todo.updated_at, ItemKind::Todo, todo.id.0),
+            Item::Event { event } => (event.modified, ItemKind::Event, event.id.0),
+        };
+        ItemPosition { at, kind, id }
+    }
+}
+
+/// What identifies an item of a list while it changes ([`Item::key`]).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(transparent)]
+pub struct ItemKey(pub String);
+
+/// The client's name for a subscription (SPEC §5.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(transparent)]
+pub struct SubscriptionId(pub u64);
+
+/// The most items a page, or a window's widening, may ask for.
+pub const MAX_PAGE: u32 = 500;
+
+/// What changed of a subscription's window (SPEC §5.7): applied to the
+/// items the client has of it, it gives those the window has now, in
+/// their order, `position`'s.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct WindowChange {
+    /// Items new to the window, or changed (moved, too).
+    pub upserted: Vec<Listed>,
+    /// Items gone from it.
+    pub removed: Vec<ItemKey>,
+    /// Whether the query matches more than the window has.
+    pub more: bool,
+    /// As `Items`' (`ListItems`): the rooms whose messages the query
+    /// looked through, of which not the whole history is stored.
+    pub partial_rooms: Vec<matrix::RoomId>,
+}
+
+/// An item, as a window lists it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Listed {
+    pub key: ItemKey,
+    pub position: ItemPosition,
+    pub item: Item,
 }
 
 /// The kinds of item, in the order items as recently active are listed.
@@ -924,6 +1039,34 @@ pub enum ServerEvent {
     MatrixSendsChanged(matrix::MatrixSendsChanged),
     TodosChanged(todos::TodosChanged),
     CalendarChanged(calendar::CalendarChanged),
+    /// Places were seen, or no longer (SPEC §12.15): what was new may
+    /// not be, or be again.
+    SeenChanged,
+}
+
+impl ServerEvent {
+    /// Whether it may change what a query lists (SPEC §8.7): which items
+    /// match, in what order, or what they show.
+    pub fn may_change_lists(&self) -> bool {
+        match self {
+            Self::EntriesAdded(_)
+            | Self::EntriesRemoved(_)
+            | Self::LabelsChanged(_)
+            | Self::LabelListChanged(_)
+            | Self::RoomsChanged(_)
+            | Self::TimelineAdded(_)
+            | Self::TimelineFilled(_)
+            | Self::TimelineChanged(_)
+            | Self::TodosChanged(_)
+            | Self::CalendarChanged(_)
+            | Self::SeenChanged => true,
+            Self::ImageRuleChanged(_)
+            | Self::DraftEdited(_)
+            | Self::DraftsChanged(_)
+            | Self::OutboxChanged(_)
+            | Self::MatrixSendsChanged(_) => false,
+        }
+    }
 }
 
 #[cfg(test)]

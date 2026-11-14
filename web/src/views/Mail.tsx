@@ -1,7 +1,7 @@
 import type { Ref } from 'preact'
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
-import type { ClientRequest, Conversation, Entry, EntryId, ImageRule, Label, MessageContent, RemoteHost, Room, RoomId } from '../generated/protocol'
+import type { Conversation, Entry, EntryId, ImageRule, Label, MessageContent, RemoteHost, Room, RoomId } from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus, lines, useKeymap } from '../keymap'
 import {
@@ -278,7 +278,7 @@ export function Mail(props: Props) {
                 ? null
                 : {
                     index: conversations.indexOf(opened!),
-                    count: list!.more === null ? conversations.length : null,
+                    count: list!.more ? null : conversations.length,
                     newer: sibling(-1) ? () => openSibling(-1) : null,
                     older: sibling(1) ? () => openSibling(1) : null,
                   }
@@ -439,7 +439,7 @@ function ListToolbar(props: { mail: MailStore; actions: Actions; shared: SharedA
   const matching = mail.matching.value
   // With all those loaded selected, and more to load, Gmail's offer to
   // select every match (of mail alone); and once they are, a way back.
-  const offer = !matching && rooms.length === 0 && chosen.length === conversations.length && list.more !== null
+  const offer = !matching && rooms.length === 0 && chosen.length === conversations.length && list.more
   const count = useCount(mail, list.view, offer || matching)
   const all = count === null ? 'all' : `all ${count.toLocaleString()}`
   return (
@@ -721,7 +721,7 @@ function MessageList(props: {
             </li>
           )
         })}
-        {list.more && <More mail={mail} next={list.more} />}
+        {list.more && <More mail={mail} loaded={rows.length} />}
       </ul>
       {!list.more && <PartialRooms rooms={list.partialRooms} />}
     </>
@@ -751,10 +751,10 @@ function PartialRooms(props: { rooms: RoomId[] }) {
 }
 
 /** The end of the rows loaded, with more to load: those load as
- * it comes into view. */
-function More(props: { mail: MailStore; next: ClientRequest }) {
+ * it comes into view, and again as more are listed while it is. */
+function More(props: { mail: MailStore; loaded: number }) {
   const element = useRef<HTMLLIElement>(null)
-  useLoadInView(element, props.next, () => props.mail.loadMore())
+  useLoadInView(element, props.loaded, () => props.mail.loadMore())
   return (
     <li ref={element} class={styles.more}>
       Loading more…

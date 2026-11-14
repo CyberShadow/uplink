@@ -1,7 +1,7 @@
 // The tab's state: what each domain mirrors, fed by the connection.
 
 import type { Blobs } from '../blobs'
-import type { Requester } from '../connection'
+import type { Requester, Subscriber } from '../connection'
 import type { LogEntry, Notice } from '../generated/protocol'
 import { CalendarStore } from './calendar'
 import { DraftStore } from './drafts'
@@ -22,7 +22,7 @@ export class Client {
   readonly calendar: CalendarStore
   readonly home: HomeStore
 
-  constructor(server: Requester & Blobs) {
+  constructor(server: Requester & Subscriber & Blobs) {
     this.ops = new Ops(server)
     this.mail = new MailStore(server, this.ops)
     this.drafts = new DraftStore(server, this.ops)

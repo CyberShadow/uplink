@@ -924,6 +924,8 @@ than it buffers is closed; the client reconnects and resumes.
   `CalendarEventChanged`.
 - **To-dos**: `TodosChanged { todos }` (added, edited or deleted; the
   client lists them again, as it does drafts).
+- **Seen**: `SeenChanged` — places were seen, or no longer (§12.15),
+  so what `is:new` matches changed.
 - **Draft**: `DraftEdited { draft, revision, splice }` (§7.2), and
   `DraftsChanged { drafts }` when drafts are created or deleted.
 - **Outbox**: `OutboxChanged { accounts }` — something not yet reconciled
@@ -946,10 +948,9 @@ than it buffers is closed; the client reconnects and resumes.
   act on them and follow label changes), its senders, and whether any
   has attachments; a page ends at its last conversation's newest entry.
   The response says the list's scope, as labels an entry has one of or
-  none of, so the client keeps it as labels change; how a search's
-  matches change, only the server knows, so the client reloads it. A
-  query that does not parse, or names a label or account there is none
-  of, is `Invalid`, with why.
+  none of: which of a conversation's entries the list shows. A query
+  that does not parse, or names a label or account there is none of, is
+  `Invalid`, with why. The client's lists subscribe instead (§5.7).
 - `CountConversations { query }` — how many conversations a query
   lists, as a search does, loaded or not: the toolbar's offer to select
   every match.
@@ -1067,6 +1068,48 @@ log, and a client that lost the connection asks again what it still
 wants (§12.3). What waits remotely and must keep its order is desired
 state instead (`SetTyping`, §9.5). A request answered later is still
 positioned in the log as one answered at once (§5.4).
+
+### 5.7 Subscriptions
+
+A list the client shows — a search, a label's, the Inboxes', an
+account's All Mail (`is:mail …`) — is a subscription to its query, which
+the server keeps current, sending only what changed of it.
+`Subscribe { subscription, query, limit }` opens it: its window, the
+first `limit` items of what the query matches, as `ListItems` lists
+them (§8.7), answered `Window { as_of, change, scope }`;
+`Extend { subscription, limit }` widens the window by `limit` items, as
+the client pages on, answered `Window` too; `Unsubscribe` closes it, as
+does the connection's end. The id is the client's, new on its
+connection. A page, or a widening, is of 500 items at most; a window
+is of however many it was widened to.
+
+A `change` is what changed of the window since the client was last
+told: the items new to it or changed (`upserted`, each with its key,
+which stays the same as it changes — a conversation's is its thread's —
+and its position), the keys of those gone from it (`removed`),
+whether the query matches more than it has, and, as `Items` says, the
+rooms it looked through of which not the whole history is stored
+(`partial_rooms`), which change as it is fetched. Applied to what the client
+had, it gives what the window has now; the client orders the items by
+position. The session keeps, of each window, its query, its size, and
+the items it last sent: after a log entry with an event that may change
+what a query lists (`ServerEvent::may_change_lists`: of mail, rooms and
+their timelines, to-dos, calendars and what is seen, not a draft's
+keystrokes), once the entries that came meanwhile are sent, and each
+minute (time alone moves items, into `due:today`), it lists each window
+again as of then, and sends `WindowChanged { subscription, change }`
+for those that changed, after the entries it reflects. So the client
+needs no reloads, and neither judges what a query matches, nor
+truncates what it has paged through: a window has exactly the first
+items it was widened to, whatever comes and goes before them; an item
+after it is not sent, so a client showing a page while thousands of
+messages are first synced is sent only what changes of that page.
+
+Windows are of their connection. On a new one, resumed or not, the
+client subscribes anew, from the first page: what it had of them is
+void, and replaced. One that fails to list again, as a label it names
+was deleted, ends the session (1011); subscribing anew is then
+`Invalid`, which the client shows.
 
 ## 6. Transaction log & undo
 
@@ -3361,16 +3404,21 @@ a moment too long would archive several messages).
 with its Undo), `mail.ts` and `drafts.ts` (drafts and the outbox, plus
 the compose sessions editing drafts in the tab, §7.2).
 
-`stores/mail.ts` mirrors accounts and the list on show. Responses replace
-what they cover; log entries apply on top — label changes and removals
-locally (an entry losing the label on show leaves the list, focus moving
-on), anything else (new entries, an entry joining the label) by reloading
-the list's loaded range. This needs no id bookkeeping because the server
-sends the entries a response reflects before the response (§5.4). A
-query in flight when the socket drops is sent again on the next
-connection; an op is failed, since it may have been applied (the log will
-show it), except draft creation and edits, which can't apply twice
-(§7.2). The last op dispatched from the tab is shown with an Undo button,
+`stores/mail.ts` mirrors accounts, the list on show, and the
+conversation open. Responses replace what they cover; log entries apply
+on top. This needs no id bookkeeping because the server sends the
+entries a response reflects before the response (§5.4). The list is its
+subscription's window (§5.7), once the labels are in, which its rows
+show: the server's changes apply to it, focus and selection staying on
+their rows, and focus moving to the next one if its own left (or the
+last). The conversation open stays listed where it was while it leaves
+the window (reading it takes it out of an unread search, unstarring out
+of the starred), as Gmail keeps it, and leaves once closed. A
+`connection.ts` subscription outlives its sockets: on a new one it is
+subscribed to anew, and its listener reset. A query in flight when the
+socket drops is sent again on the next connection; an op is failed,
+since it may have been applied (the log will show it), except draft
+creation and edits, which can't apply twice (§7.2). The last op dispatched from the tab is shown with an Undo button,
 unless what it did shows at once where it was done, which is notice
 enough: Matrix sends (the room shows them), draft creation and edits,
 attaching to a draft, and read receipts. Failures are always shown.
@@ -3378,8 +3426,8 @@ Drafts apply their edits locally and reload on creation and deletion; the
 outbox, while shown, reloads on `OutboxChanged`, and the nav's count of it
 with it.
 
-Lists are not virtualized yet: pages of 100 load as the focus or scroll
-nears the end; a reload re-reads up to 500. `@tanstack/react-virtual`
+Lists are not virtualized yet: pages of 100 load, widening the window,
+as the focus or scroll nears the end. `@tanstack/react-virtual`
 comes in when lists get long enough to need it.
 
 Tests: vitest + jsdom + `@testing-library/preact`; the connection against

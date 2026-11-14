@@ -21,6 +21,8 @@ const CHANGING: ReadonlySet<ServerEvent['type']> = new Set([
   'timeline_added',
   'todos_changed',
   'calendar_changed',
+  // Of `is:new`.
+  'seen_changed',
 ])
 
 export interface Home {

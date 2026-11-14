@@ -5,11 +5,13 @@ import { signal } from '@preact/signals'
 import type {
   Badges,
   ClientRequest,
+  ListScope,
   LogEntry,
   Notice,
   ServerError,
   ServerResponse,
   TxLogId,
+  WindowChange,
   WsClientMsg,
   WsServerMsg,
 } from './generated/protocol'
@@ -61,6 +63,31 @@ export interface Requester {
   request(body: ClientRequest): Promise<ServerResponse>
 }
 
+/** Told of a subscription's window (SPEC §5.7), as it changes. */
+export interface WindowListener {
+  /** The window, from nothing: at first, and again on a new connection,
+   * as what it had is void then. */
+  reset(change: WindowChange, scope: ListScope): void
+  /** What changed of it since. */
+  change(change: WindowChange): void
+  /** The server refused it: it is told of nothing more. */
+  failed(error: Error): void
+}
+
+/** A subscription's handle. Its listener is told of nothing once it is
+ * closed. */
+export interface Subscription {
+  /** Widens the window by `limit` items, which the listener is told of. */
+  extend(limit: number): void
+  close(): void
+}
+
+export interface Subscriber {
+  /** Keeps `listener` told of the first `limit` items of what `query`
+   * matches, and more as it widens, until closed (SPEC §5.7). */
+  subscribe(query: string, limit: number, listener: WindowListener): Subscription
+}
+
 interface Pending {
   body: ClientRequest
   resolve(response: ServerResponse): void
@@ -105,6 +132,10 @@ function isResendable(body: ClientRequest): boolean {
     case 'create_draft':
     case 'edit_draft':
       return true
+    // Of the connection they were sent on: a new one subscribes anew.
+    case 'subscribe':
+    case 'extend':
+    case 'unsubscribe':
     case 'undo':
     case 'modify_labels':
     case 'act_on_conversations':
@@ -142,7 +173,15 @@ function isResendable(body: ClientRequest): boolean {
   }
 }
 
-export class Connection implements Requester {
+/** A subscription, as the connection keeps it across sockets. */
+interface Window {
+  query: string
+  /** Of its first page, which a new socket subscribes to. */
+  limit: number
+  listener: WindowListener
+}
+
+export class Connection implements Requester, Subscriber {
   readonly status = signal<Status>('connecting')
 
   private ws!: WebSocket
@@ -161,6 +200,13 @@ export class Connection implements Requester {
   private pingSeq = 0
   private reconnect: ReturnType<typeof setTimeout> | undefined
   private disposed = false
+  /** The subscriptions open, by their ids, each subscribed to on the
+   * current socket once welcomed. */
+  private windows = new Map<number, Window>()
+  private nextSubscription = 1
+  /** Counts sockets closed, so that answers of a socket gone, which
+   * its subscriptions are gone with, are dropped. */
+  private socket = 0
 
   constructor(
     private readonly url: string,
@@ -180,6 +226,73 @@ export class Connection implements Requester {
         this.queued.set(id, pending)
       }
     })
+  }
+
+  subscribe(query: string, limit: number, listener: WindowListener): Subscription {
+    const id = this.nextSubscription++
+    const window = { query, limit, listener }
+    this.windows.set(id, window)
+    if (this.welcomed) this.open(id, window)
+    return {
+      extend: (limit) => {
+        // Not yet subscribed to, it is reset, at its first page, soon.
+        if (this.welcomed) this.widen(id, limit)
+      },
+      close: () => {
+        // One the server refused is gone already.
+        if (this.windows.delete(id) && this.welcomed) this.forSocket({ type: 'unsubscribe', subscription: id }, () => {})
+      },
+    }
+  }
+
+  private open(id: number, { query, limit, listener }: Window) {
+    this.forSocket(
+      { type: 'subscribe', subscription: id, query, limit },
+      (response) => {
+        if (response.type !== 'window') throw new Error(`expected window in response to subscribe, got ${response.type}`)
+        listener.reset(response.change, response.scope)
+      },
+      (error) => {
+        this.windows.delete(id)
+        listener.failed(error)
+      },
+      id,
+    )
+  }
+
+  private widen(id: number, limit: number) {
+    this.forSocket(
+      { type: 'extend', subscription: id, limit },
+      (response) => {
+        if (response.type !== 'window') throw new Error(`expected window in response to extend, got ${response.type}`)
+        this.windows.get(id)!.listener.change(response.change)
+      },
+      (error) => this.windows.get(id)!.listener.failed(error),
+      id,
+    )
+  }
+
+  /** Sends a request of subscriptions on the socket welcomed, and takes
+   * its answer only while that socket is current, and `id` still open: a
+   * new socket subscribes anew. */
+  private forSocket(
+    body: ClientRequest,
+    then: (response: ServerResponse) => void,
+    failed: (error: Error) => void = (error) => {
+      throw error
+    },
+    id?: number,
+  ) {
+    const socket = this.socket
+    const current = () => socket === this.socket && (id === undefined || this.windows.has(id))
+    this.request(body).then(
+      (response) => {
+        if (current()) then(response)
+      },
+      (error: Error) => {
+        if (current()) failed(error)
+      },
+    )
   }
 
   dispose() {
@@ -212,8 +325,13 @@ export class Connection implements Requester {
         const queued = [...this.queued]
         this.queued.clear()
         for (const [id, pending] of queued) this.send(id, pending)
+        for (const [id, window] of this.windows) this.open(id, window)
         break
       }
+      case 'window_changed':
+        // One unsubscribed from may still be on its way.
+        this.windows.get(msg.subscription)?.listener.change(msg.change)
+        break
       case 'entry':
         this.cursor = msg.entry.id
         this.handlers.entry(msg.entry)
@@ -254,6 +372,8 @@ export class Connection implements Requester {
 
   private onClose() {
     this.welcomed = false
+    // Before the requests on it fail: its subscriptions are gone with it.
+    this.socket++
     clearInterval(this.heartbeat)
     for (const [id, pending] of this.sent) {
       if (isResendable(pending.body)) {

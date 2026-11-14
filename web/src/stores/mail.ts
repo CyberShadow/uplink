@@ -1,14 +1,14 @@
-// Mail state: accounts with their labels, and the message list on show,
-// mirrored from query responses and the log entries that follow them.
-//
-// The server sends every entry a response reflects before the response
-// itself (SPEC §5.4), so a response simply replaces what it covers, and
-// each later entry applies on top.
+// Mail state: accounts with their labels, the list on show, and the
+// conversation open. Accounts and the conversation open are mirrored from
+// query responses and the log entries that follow them: the server sends
+// every entry a response reflects before the response itself (SPEC §5.4),
+// so a response simply replaces what it covers, and each later entry
+// applies on top. A list of a query is its subscription's window, which
+// the server keeps current (SPEC §5.7).
 
 import { batch, computed, signal } from '@preact/signals'
 import type {
   Account,
-  ClientRequest,
   Conversation,
   ConversationAction,
   ConversationSet,
@@ -20,20 +20,20 @@ import type {
   ListScope,
   LogEntry,
   ImageRule,
+  Listed,
   MessageContent,
   MessageId,
   Room,
   RoomId,
+  WindowChange,
 } from '../generated/protocol'
-import type { Requester } from '../connection'
-import { compare, keyOf, rowOf, type Row } from '../items'
+import type { Requester, Subscriber, Subscription } from '../connection'
+import { before, compare, keyOf, rowOf, type Row } from '../items'
 import { FAVOURITE } from '../roomTags'
 import type { Ops } from './ops'
-import { query } from './query'
+import { Loader, query } from './query'
 
 export const PAGE = 100
-/** The server's limit on a page. */
-const MAX_PAGE = 500
 
 export type View =
   | { kind: 'label'; account: string; label: string }
@@ -68,8 +68,8 @@ export interface List {
   /** A search's items of other kinds than mail (SPEC §8.7), as listed,
    * among its conversations. */
   others: Other[]
-  /** What asks for the next page, if there is more. */
-  more: ClientRequest | null
+  /** Whether its query matches more than are loaded. */
+  more: boolean
   /** The entries its conversations are made of; known once loaded. */
   scope: ListScope | null
   /** The rooms a search looked through the messages of, of which not the
@@ -150,8 +150,6 @@ export interface Open {
   entries: Entry[] | null
 }
 
-type Load = 'reload' | 'more'
-
 export class MailStore {
   readonly accounts = signal<Account[] | null>(null)
   readonly list = signal<List | null>(null)
@@ -170,11 +168,6 @@ export class MailStore {
    * changed since messages loaded, by `ruleKey`: newer than what those
    * say (`image_rules`). */
   readonly imageRuleChanges = signal<ReadonlyMap<string, boolean>>(new Map())
-  /** Whether the list keeps the conversation open though it may no
-   * longer be listed: reading it may take it out of an unread search,
-   * which it stays in while open, as in Gmail. Closing it reloads the
-   * list, which only the server knows. */
-  private kept = false
 
   readonly labels = computed(() => {
     const byId = new Map<LabelId, Label>()
@@ -212,24 +205,36 @@ export class MailStore {
 
   private accountsLoading = false
   private accountsStale = false
-  private listLoad: Load | null = null
-  private listStale = false
+  /** The window of the list's query; `null` of a message's entries, and
+   * until the labels are in, which its rows show. */
+  private window: Subscription | null = null
+  /** Its items, as the server last said, by key. */
+  private windowed = new Map<string, Listed>()
+  /** How many items the window was asked for. */
+  private asked = PAGE
+  /** The conversation open, as last listed, once its window no longer
+   * has it: it stays listed until closed, as Gmail keeps one read in a
+   * search of the unread. */
+  private held: Listed | null = null
   /** Bumped when the view changes, so responses for an old one are dropped. */
   private generation = 0
   /** Likewise, for the conversation open. */
   private openGeneration = 0
+  /** A message's entries, the list of a message's view. */
+  private messageEntries = new Loader(() => this.loadMessageEntries())
 
   constructor(
-    private readonly server: Requester,
+    private readonly server: Requester & Subscriber,
     private readonly ops: Ops,
   ) {}
 
   // ── state from the server ───────────────────────────────────────────────
 
-  /** Everything is void; load afresh. */
+  /** Everything is void; load afresh. Windows are subscribed to anew by
+   * the connection itself. */
   reset() {
     this.invalidateAccounts()
-    this.invalidateList()
+    this.invalidateMessageEntries()
     this.loadOpen()
   }
 
@@ -237,7 +242,6 @@ export class MailStore {
     for (const event of entry.events) {
       switch (event.type) {
         case 'entries_added':
-          this.invalidateList()
           // It may be a reply in the conversation open.
           this.loadOpen()
           break
@@ -258,9 +262,7 @@ export class MailStore {
         case 'timeline_added':
         case 'todos_changed':
         case 'calendar_changed':
-          // Not mail, but a search lists them too.
-          if (this.list.value?.view.kind === 'search') this.invalidateList()
-          continue
+        case 'seen_changed':
         case 'draft_edited':
         case 'drafts_changed':
         case 'outbox_changed':
@@ -269,23 +271,14 @@ export class MailStore {
           // Not mail; no counts change.
           continue
       }
-      // Every mail event can change the labels' counts.
+      // Every mail event can change the labels' counts, and a message's
+      // entries.
       this.invalidateAccounts()
+      this.invalidateMessageEntries()
     }
   }
 
   private removeEntries(gone: Set<EntryId>) {
-    let stale = false
-    this.updateList((conversations) =>
-      conversations.flatMap((c) => {
-        const earlier = c.earlier.filter((m) => !gone.has(m.id))
-        if (!gone.has(c.latest.id)) return [{ ...c, earlier }]
-        // Which is its latest now, only the server knows.
-        if (earlier.length > 0) stale = true
-        return []
-      }),
-    )
-    if (stale) this.invalidateList()
     const open = this.open.value
     if (open?.entries) this.open.value = { ...open, entries: open.entries.filter((e) => !gone.has(e.id)) }
   }
@@ -295,7 +288,7 @@ export class MailStore {
     for (const change of changes) {
       byEntry.set(change.entry, [...(byEntry.get(change.entry) ?? []), change])
     }
-    const relabel = <T extends { id: EntryId; labels: LabelId[] }>(item: T): T => {
+    const relabel = (item: Entry): Entry => {
       const own = byEntry.get(item.id)
       if (!own) return item
       const labels = new Set(item.labels)
@@ -307,59 +300,6 @@ export class MailStore {
     }
     const open = this.open.value
     if (open?.entries) this.open.value = { ...open, entries: open.entries.map(relabel) }
-
-    const list = this.list.value
-    // Until the list is loaded, the response on its way reflects them.
-    if (!list?.scope) return
-    const { view, scope } = list
-    const shown = view.kind === 'label' ? this.labelOf(view) : null
-    // The labels that put a conversation on the list, if it is of labels.
-    const listing: ((label: LabelId) => boolean) | null =
-      view.kind === 'inbox'
-        ? (label) => this.labels.value.get(label)!.external_id === 'INBOX'
-        : shown
-          ? (label) => label === shown.id
-          : null
-    const present = new Set(list.conversations.flatMap((c) => threadOf(c).entries.map((e) => e.id)))
-    // Gaining a label of a scope of them, or losing one of a scope
-    // without them, brings an entry into scope.
-    const enters = (c: (typeof changes)[number]) =>
-      scope.labels.includes(c.label) && c.desired === (scope.type === 'within')
-    const joins = (c: (typeof changes)[number]) => (!!listing && listing(c.label) && c.desired) || enters(c)
-    // What a search lists by, only the server knows.
-    let stale = view.kind === 'search' || changes.some((c) => !present.has(c.entry) && joins(c))
-    this.updateList((conversations) =>
-      conversations.flatMap((c) => {
-        if (![c.latest, ...c.earlier].some((e) => byEntry.has(e.id))) return [c]
-        const latest = relabel(c.latest)
-        const earlier = c.earlier.map(relabel).filter((m) => inScope(scope, m.labels))
-        const latestIn = inScope(scope, latest.labels)
-        if (!latestIn && earlier.length === 0) return []
-        const entries = latestIn ? [...earlier, latest] : earlier
-        if (listing && !entries.some((e) => e.labels.some(listing))) {
-          if (!this.isOpen(c)) return []
-          this.kept = true
-        }
-        // Which is its latest now, only the server knows.
-        if (!latestIn) stale = true
-        return [{ ...c, latest, earlier }]
-      }),
-    )
-    // An entry may have joined the list on show; only the server knows
-    // whether, and where.
-    if (stale) this.invalidateList()
-  }
-
-  /** Replaces the list's conversations, keeping focus and selection on
-   * those that remain; focus moves to the next one if its own left. */
-  private updateList(update: (conversations: Conversation[]) => Conversation[]) {
-    const list = this.list.value
-    if (!list) return
-    const conversations = update(list.conversations)
-    batch(() => {
-      this.list.value = { ...list, conversations }
-      this.keepFocus(list)
-    })
   }
 
   /** Keeps focus on the row it is on, or the next one still listed, and
@@ -412,8 +352,8 @@ export class MailStore {
       this.accountsLoading = false
     }
     this.pumpAccounts()
-    // A list of a label may be waiting for the labels' ids.
-    this.pumpList()
+    // A list may be waiting for the labels.
+    this.openWindow()
   }
 
   labelOf(view: { account: string; label: string }): Label | undefined {
@@ -436,115 +376,106 @@ export class MailStore {
   show(view: View) {
     if (this.list.value && sameView(this.list.value.view, view)) return
     this.generation++
+    this.window?.close()
+    this.window = null
+    this.windowed = new Map()
+    this.held = null
     batch(() => {
-      this.list.value = {
-        view,
-        loaded: false,
-        conversations: [],
-        others: [],
-        more: null,
-        scope: null,
-        partialRooms: [],
-      }
+      this.list.value = { view, loaded: false, conversations: [], others: [], more: false, scope: null, partialRooms: [] }
       this.focus.value = null
       this.select(new Set())
     })
-    this.listLoad = null
-    this.listStale = true
-    this.kept = false
-    this.pumpList()
+    if (view.kind === 'message') this.messageEntries.invalidate()
+    else this.openWindow()
   }
 
   loadMore() {
     const list = this.list.value
-    if (!list?.more || this.listLoad) return
-    this.loadList('more')
+    // While it has more, the window has as many as asked for once its
+    // widening is in.
+    if (!list?.more || this.windowed.size < this.asked) return
+    this.asked += PAGE
+    this.window!.extend(PAGE)
   }
 
-  private invalidateList() {
-    if (!this.list.value || this.listLoad === 'reload') return
-    this.listStale = true
-    this.pumpList()
-  }
-
-  private pumpList() {
-    if (this.listLoad || !this.listStale) return
-    const list = this.list.value!
-    // Until the accounts are in, a label's id is unknown.
-    if (list.view.kind === 'label' && !this.accounts.value) return
-    this.listStale = false
-    this.loadList('reload')
-  }
-
-  private async loadList(load: Load) {
-    const list = this.list.value!
-    const generation = this.generation
-    const request = this.listRequest(list, load)
-    if (!request) {
+  /** Subscribes to the list's query once the labels are in, which its
+   * rows show (and a label's list names), unless subscribed already or
+   * the list is a message's. */
+  private openWindow() {
+    const list = this.list.value
+    if (!list || list.view.kind === 'message' || this.window || !this.accounts.value) return
+    const query = this.windowQuery(list.view)
+    if (query === null) {
       this.list.value = { ...list, loaded: true }
       return
     }
-    this.listLoad = load
-    let page: Pick<List, 'conversations' | 'others' | 'more' | 'scope' | 'partialRooms'> | undefined
-    try {
-      switch (request.type) {
-        case 'list_message_entries': {
-          const response = await query(this.server, request, 'entries')
-          page = {
-            conversations: response.entries.map(alone),
-            others: [],
-            more: null,
-            scope: EVERY,
-            partialRooms: [],
-          }
-          break
-        }
-        case 'list_items': {
-          const { items, next, scope, partial_rooms } = await query(this.server, request, 'items')
-          page = {
-            conversations: items.flatMap((item) => (item.kind === 'mail' ? [item.conversation] : [])),
-            others: items.filter((item): item is Other => item.kind !== 'mail'),
-            more: next && { ...request, after: next, limit: PAGE },
-            scope,
-            partialRooms: partial_rooms,
-          }
-          break
-        }
-        case 'list_entries': {
-          const { conversations, next, scope } = await query(this.server, request, 'conversations')
-          page = {
-            conversations,
-            others: [],
-            more: next && { ...request, after: next, limit: PAGE },
-            scope,
-            partialRooms: [],
-          }
-          break
-        }
-        default:
-          throw new Error(`no list is listed by ${request.type}`)
+    this.asked = PAGE
+    this.window = this.server.subscribe(query, PAGE, {
+      reset: (change, scope) => {
+        this.asked = PAGE
+        this.takeWindow(new Map(), change, scope)
+      },
+      change: (change) => this.takeWindow(this.windowed, change, this.list.value!.scope!),
+      failed: (error) => {
+        this.error.value = error.message
+      },
+    })
+  }
+
+  /** What the window lists now: what it had, `items`, with `change`. */
+  private takeWindow(items: Map<string, Listed>, change: WindowChange, scope: ListScope) {
+    const open = this.list.value!.conversations.find((c) => this.isOpen(c))
+    const key = open && conversationKey(open)
+    const was = key === undefined ? undefined : (this.windowed.get(key) ?? this.held)
+    for (const key of change.removed) items.delete(key)
+    for (const listed of change.upserted) items.set(listed.key, listed)
+    this.windowed = items
+    // The conversation open stays, though it left.
+    this.held = key !== undefined && !items.has(key) ? was! : null
+    this.showWindow(change.more, scope, change.partial_rooms)
+  }
+
+  /** Lists the window's items, and the conversation held open. */
+  private showWindow(more: boolean, scope: ListScope, partialRooms: RoomId[]) {
+    const listed = [...this.windowed.values(), ...(this.held ? [this.held] : [])].sort((a, b) =>
+      before(a.position, b.position),
+    )
+    const current = this.list.value!
+    batch(() => {
+      this.list.value = {
+        ...current,
+        loaded: true,
+        conversations: listed.flatMap(({ item }) => (item.kind === 'mail' ? [item.conversation] : [])),
+        others: listed.flatMap(({ item }) => (item.kind === 'mail' ? [] : [item])),
+        more,
+        scope,
+        partialRooms,
       }
+      this.keepFocus(current)
+    })
+  }
+
+  private invalidateMessageEntries() {
+    if (this.list.value?.view.kind === 'message') this.messageEntries.invalidate()
+  }
+
+  private async loadMessageEntries() {
+    const { view } = this.list.value!
+    if (view.kind !== 'message') return
+    const generation = this.generation
+    let entries: Entry[]
+    try {
+      entries = (await query(this.server, { type: 'list_message_entries', message: view.message }, 'entries')).entries
     } catch (error) {
       this.error.value = (error as Error).message
+      return
     }
     if (generation !== this.generation) return
-    this.listLoad = null
-    if (page) {
-      const current = this.list.value!
-      const [conversations, others] =
-        load === 'reload'
-          ? [this.keepOpen(current.conversations, page.conversations), page.others]
-          : [
-              [...current.conversations, ...page.conversations],
-              [...current.others, ...page.others],
-            ]
-      const { more, scope, partialRooms } = page
-      batch(() => {
-        this.list.value = { ...current, loaded: true, conversations, others, more, scope, partialRooms }
-        this.keepFocus(current)
-      })
-    }
-    this.pumpList()
+    const current = this.list.value!
+    batch(() => {
+      this.list.value = { ...current, loaded: true, conversations: entries.map(alone), scope: EVERY }
+      this.keepFocus(current)
+    })
   }
 
   private isOpen(conversation: Conversation): boolean {
@@ -552,36 +483,13 @@ export class MailStore {
     return open !== null && hasEntry(conversation, open.entry)
   }
 
-  /** A reload's conversations, and the one open, where it would be by
-   * its latest entry, if they leave it out. */
-  private keepOpen(before: Conversation[], after: Conversation[]): Conversation[] {
-    const open = before.find((c) => this.isOpen(c))
-    if (!open || after.some((c) => conversationKey(c) === conversationKey(open))) return after
-    this.kept = true
-    const newer = (c: Conversation) =>
-      c.latest.received_at > open.latest.received_at ||
-      (c.latest.received_at === open.latest.received_at && c.latest.id > open.latest.id)
-    const at = after.findIndex((c) => !newer(c))
-    return at === -1 ? [...after, open] : [...after.slice(0, at), open, ...after.slice(at)]
-  }
-
-  /** `null` if the view's label does not exist. */
-  private listRequest(list: List, load: Load): ClientRequest | null {
-    if (load === 'more') return list.more
-    // A reload covers what is already listed, so the user's place stays.
-    const limit = Math.min(Math.max(list.conversations.length + list.others.length, PAGE), MAX_PAGE)
-    const { view } = list
-    switch (view.kind) {
-      // Of every kind, so names of every kind's.
-      case 'search':
-        return { type: 'list_items', query: view.query, after: null, limit }
-      case 'message':
-        return { type: 'list_message_entries', message: view.message }
-      default: {
-        const query = this.queryOf(view)
-        return query === null ? null : { type: 'list_entries', query, after: null, limit }
-      }
-    }
+  /** The query of a list's window: a search's own; else of mail alone,
+   * as a list of a label, an account or the Inboxes is; `null` if the
+   * view's label does not exist. */
+  private windowQuery(view: View & { kind: 'search' | 'all' | 'inbox' | 'label' }): string | null {
+    if (view.kind === 'search') return view.query
+    const query = this.queryOf(view)
+    return query === null ? null : `is:mail ${query}`
   }
 
   /** The query a list of a label, an account or the Inboxes is; `null`
@@ -629,9 +537,11 @@ export class MailStore {
     if ((this.open.value?.entry ?? null) === entry) return
     this.openGeneration++
     this.open.value = entry === null ? null : { entry, entries: null }
-    if (this.kept) {
-      this.kept = false
-      this.invalidateList()
+    // The conversation that was open leaves, if its window no longer has it.
+    if (this.held) {
+      this.held = null
+      const { more, scope, partialRooms } = this.list.value!
+      this.showWindow(more, scope!, partialRooms)
     }
     this.loadOpen()
   }

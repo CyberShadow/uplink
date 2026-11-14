@@ -3,7 +3,7 @@
 // entry before the op's response (SPEC §5.4).
 
 import type { Blobs } from '../blobs'
-import type { Requester } from '../connection'
+import type { Requester, Subscriber, Subscription, WindowListener } from '../connection'
 import { RequestError } from '../connection'
 import type {
   Arrived,
@@ -40,6 +40,7 @@ import type {
   Item,
   ItemPosition,
   ListPosition,
+  Listed,
   ListScope,
   ListingProgress,
   MailProvider,
@@ -65,6 +66,7 @@ import type {
   RoomId,
   Sender,
   ServerEvent,
+  WindowChange,
   RoomTagChange,
   SpaceOrderChange,
   TimelinePage,
@@ -79,7 +81,7 @@ import type { Client } from '../stores/client'
 import { ruleKey } from '../stores/mail'
 import { apply } from '../compose/splice'
 import { sendSummary } from '../matrix'
-import { before, compare, positionOf } from '../items'
+import { before, compare, keyOf, positionOf } from '../items'
 
 /** A page of a list of every kind (SPEC §8.7): up to `limit` of `items`
  * after `after`, as listed. */
@@ -121,7 +123,42 @@ function preview(event: RoomEvent | undefined): RoomPreview | null {
   }
 }
 
-export class FakeServer implements Requester, Blobs {
+/** A subscription's window, as the client was last told of it. */
+interface FakeWindow {
+  query: string
+  limit: number
+  listener: WindowListener
+  items: Map<string, Listed>
+  more: boolean
+  partialRooms: RoomId[]
+}
+
+/** Whether it may change what a query lists, as the server says
+ * (`ServerEvent::may_change_lists`). */
+function mayChangeLists(event: ServerEvent): boolean {
+  switch (event.type) {
+    case 'entries_added':
+    case 'entries_removed':
+    case 'labels_changed':
+    case 'label_list_changed':
+    case 'rooms_changed':
+    case 'timeline_added':
+    case 'timeline_filled':
+    case 'timeline_changed':
+    case 'todos_changed':
+    case 'calendar_changed':
+    case 'seen_changed':
+      return true
+    case 'image_rule_changed':
+    case 'draft_edited':
+    case 'drafts_changed':
+    case 'outbox_changed':
+    case 'matrix_sends_changed':
+      return false
+  }
+}
+
+export class FakeServer implements Requester, Subscriber, Blobs {
   readonly requests: ClientRequest[] = []
   private client!: Client
   private accounts: { id: string; address: string; identities: Identity[]; provider: MailProvider; labels: Label[] }[] = []
@@ -252,6 +289,12 @@ export class FakeServer implements Requester, Blobs {
   /** Records a sync observation and delivers its entry to the store. */
   observe(account: string, events: ServerEvent[]) {
     this.commit({ type: 'account', id: account }, 'Synced', events)
+  }
+
+  /** The entry is gone from its account, as syncing finds. */
+  remove(entry: Entry) {
+    this.entries.splice(this.entries.indexOf(this.entries.find((e) => e.id === entry.id)!), 1)
+    this.observe(entry.account, [{ type: 'entries_removed', entries: [entry.id] }])
   }
 
   /** Adds an event to `account`'s calendar, as syncing would, without
@@ -764,32 +807,115 @@ export class FakeServer implements Requester, Blobs {
    * the request was on its way. */
   meanwhile: (() => void) | null = null
 
+  private readonly windows = new Map<number, FakeWindow>()
+  private nextSubscription = 1
+
+  subscribe(query: string, limit: number, listener: WindowListener): Subscription {
+    const id = this.nextSubscription++
+    this.requests.push({ type: 'subscribe', subscription: id, query, limit })
+    const window: FakeWindow = { query, limit, listener, items: new Map(), more: false, partialRooms: [] }
+    let closed = false
+    this.inTurn(() => {
+      const first = this.windowChange(window)
+      if (!closed) this.windows.set(id, window)
+      return first
+    }).then(
+      ({ change, scope }) => this.windows.has(id) && listener.reset(change, scope),
+      (error: Error) => !closed && listener.failed(error),
+    )
+    return {
+      extend: (more) => {
+        this.requests.push({ type: 'extend', subscription: id, limit: more })
+        void this.inTurn(() => {
+          window.limit += more
+          return this.windowChange(window).change
+        }).then((change) => this.windows.has(id) && listener.change(change))
+      },
+      close: () => {
+        closed = true
+        this.requests.push({ type: 'unsubscribe', subscription: id })
+        this.windows.delete(id)
+      },
+    }
+  }
+
+  /** What changed of the window, as the server says it, which it then
+   * has. */
+  private windowChange(window: FakeWindow): { change: WindowChange; scope: ListScope } {
+    const response = this.listItems(window.query, null, window.limit)
+    if (response.type !== 'items') throw new Error('items are listed as items')
+    const listed = response.items.map((item): Listed => ({ key: keyOf(item), position: positionOf(item), item }))
+    const now = new Set(listed.map((l) => l.key))
+    const change: WindowChange = {
+      removed: [...window.items.keys()].filter((key) => !now.has(key)),
+      upserted: listed.filter((l) => JSON.stringify(window.items.get(l.key)) !== JSON.stringify(l)),
+      more: response.next !== null,
+      partial_rooms: response.partial_rooms,
+    }
+    window.items = new Map(listed.map((l) => [l.key, l]))
+    window.more = change.more
+    window.partialRooms = change.partial_rooms
+    return { change, scope: response.scope }
+  }
+
+  /** Tells each window what changed of it, after the entries before. */
+  private changeWindows() {
+    for (const [id, window] of this.windows) {
+      const { more, partialRooms } = window
+      const { change } = this.windowChange(window)
+      if (
+        change.upserted.length > 0 ||
+        change.removed.length > 0 ||
+        change.more !== more ||
+        JSON.stringify(change.partial_rooms) !== JSON.stringify(partialRooms)
+      ) {
+        this.tell(() => this.windows.has(id) && window.listener.change(change))
+      }
+    }
+  }
+
+  /** Delivers what `message` says in its turn on the way to the client,
+   * as responses are. */
+  private tell(message: () => void) {
+    this.channel.push(message)
+    this.flush()
+  }
+
   async request(body: ClientRequest): Promise<ServerResponse> {
     this.requests.push(body)
+    return this.inTurn(() => {
+      // What a view did by being shown (SPEC §12.15) is logged as such.
+      this.showing =
+        body.type === 'mark_seen' || body.type === 'mark_room_fully_read' || ('shown' in body && body.shown)
+      try {
+        return this.answer(body)
+      } finally {
+        this.showing = false
+      }
+    })
+  }
+
+  /** Answers a request, as `answer` does, once its turn comes. */
+  private async inTurn<T>(answer: () => T): Promise<T> {
     await Promise.resolve()
     const meanwhile = this.meanwhile
     this.meanwhile = null
     meanwhile?.()
     // Entries it commits are sent before it, as the server sends them
     // (`ServerResponse::position`).
-    let answer: () => ServerResponse
-    // What a view did by being shown (SPEC §12.15) is logged as such.
-    this.showing =
-      body.type === 'mark_seen' || body.type === 'mark_room_fully_read' || ('shown' in body && body.shown)
+    let answered: () => T
     try {
-      const response = this.answer(body)
-      answer = () => response
+      const response = answer()
+      answered = () => response
     } catch (error) {
-      answer = () => {
+      answered = () => {
         throw error
       }
-    } finally {
-      this.showing = false
     }
     return new Promise((resolve, reject) => {
       this.channel.push(() => {
         try {
-          resolve(answer())
+          resolve(answered())
         } catch (error) {
           reject(error as Error)
         }
@@ -838,6 +964,10 @@ export class FakeServer implements Requester, Blobs {
         return { type: 'accounts', as_of: this.head(), accounts: this.listAccounts() }
       case 'list_items':
         return this.listItems(body.query, body.after, body.limit)
+      case 'subscribe':
+      case 'extend':
+      case 'unsubscribe':
+        throw new Error(`${body.type} is the connection's own (\`subscribe\`)`)
       case 'list_home': {
         // Its own buckets, not the language: rooms with unread messages
         // and open to-dos, then the Inboxes' mail.
@@ -1419,7 +1549,7 @@ export class FakeServer implements Requester, Blobs {
         return { type: 'dispatched', tx_log_id: this.deleteTodo(body.todo) }
       case 'mark_seen':
         this.seen.push(body.place)
-        return this.dispatched('Seen', [])
+        return this.dispatched('Seen', [{ type: 'seen_changed' }])
       case 'mark_room_read': {
         const room = this.rooms.find((r) => r.id === body.room)!
         room.read_up_to = this.marker(body.room, body.event)
@@ -1554,6 +1684,9 @@ export class FakeServer implements Requester, Blobs {
       switch (name) {
         case 'account':
           return (e) => e.account === value
+        case 'is':
+          if (value !== 'mail') throw new Error(`the test server knows no is:${value}`)
+          return () => true
         case 'label':
         case 'in': {
           const ids = named(value).map((l) => l.id)
@@ -1600,10 +1733,13 @@ export class FakeServer implements Requester, Blobs {
   private listItems(query: string, after: ItemPosition | null, limit: number): ServerResponse {
     const { conversations, scope } = this.listEntries(query, null, Infinity)
     const words = query.split(/\s+/).filter((w) => w !== '' && !w.includes(':')).map((w) => w.toLowerCase())
-    const has = (text: string | null) => words.length > 0 && words.every((w) => (text ?? '').toLowerCase().includes(w))
+    // Of mail alone, no other kind's text has them.
+    const mail = query.split(/\s+/).includes('is:mail')
+    const has = (text: string | null) =>
+      !mail && words.length > 0 && words.every((w) => (text ?? '').toLowerCase().includes(w))
     const listed = this.matrixRooms().filter((r) => !r.space)
     // Those whose messages are looked through.
-    const searched = listed.filter((room) => words.length > 0 && !has(room.name))
+    const searched = listed.filter((room) => !mail && words.length > 0 && !has(room.name))
     const rooms = listed
       .flatMap((room): Item[] => {
         if (has(room.name)) return [{ kind: 'room', room, hits: null }]
@@ -1785,6 +1921,7 @@ export class FakeServer implements Requester, Blobs {
     this.log.push(entry)
     this.channel.push(entry)
     this.flush()
+    if (events.some(mayChangeLists)) this.changeWindows()
     return entry.id
   }
 

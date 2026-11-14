@@ -37,7 +37,7 @@ use uplink_protocol::{
     mail::{ConversationAction, ConversationSet, MailProvider},
     ClientRequest, ErrorCode, Notice, ServerError, ServerResponse, TxLogId,
 };
-use uplink_realtime::{Answer, Backend, Hub, Replay};
+use uplink_realtime::{Answer, Backend, Hub, Listing, Replay};
 use uplink_storage::seal::MasterKey;
 use uplink_todos::service::Todos;
 use uplink_tx_log::{Dispatcher, LogReader, Registry, UndoError};
@@ -1087,6 +1087,11 @@ impl Backend for Services {
         // Those that wait on a homeserver return how they are answered:
         // their remote part, later (SPEC §5.6).
         let response = match request {
+            ClientRequest::Subscribe { .. }
+            | ClientRequest::Extend { .. }
+            | ClientRequest::Unsubscribe { .. } => {
+                unreachable!("sessions keep their subscriptions themselves")
+            }
             ClientRequest::Undo { tx_log_id } => self
                 .dispatcher
                 .undo(tx_log_id)
@@ -1298,6 +1303,10 @@ impl Backend for Services {
 
     async fn replay(&self, since: Option<TxLogId>) -> Result<Replay> {
         self.reader.replay(since).await
+    }
+
+    async fn window(&self, query: String, limit: u32) -> Result<Listing, ServerError> {
+        self.items.window(query, limit).await
     }
 }
 

@@ -34,7 +34,7 @@ use uplink_tx_log::{
 };
 
 /// The most entries a list or search request may ask for.
-pub const MAX_LIMIT: u32 = 500;
+pub const MAX_LIMIT: u32 = uplink_protocol::MAX_PAGE;
 
 /// The most a draft's attachments may total, in bytes: Gmail's limit.
 /// Encoded as base64, they make a message of up to ~34 MB, within the 35

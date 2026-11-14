@@ -24,7 +24,7 @@ export type WsServerMsg = { "type": "pong", seq: number, } | { "type": "welcome"
 /**
  * The most recent entry at the time of `Hello`.
  */
-cursor: TxLogId, resumed: boolean, } | { "type": "response", request_id: number, body: ServerResponse, } | { "type": "request_failed", request_id: number, error: ServerError, } | { "type": "entry", entry: LogEntry, } | { "type": "badges", badges: Badges, } | { "type": "notice", notice: Notice, };
+cursor: TxLogId, resumed: boolean, } | { "type": "response", request_id: number, body: ServerResponse, } | { "type": "request_failed", request_id: number, error: ServerError, } | { "type": "entry", entry: LogEntry, } | { "type": "badges", badges: Badges, } | { "type": "notice", notice: Notice, } | { "type": "window_changed", subscription: SubscriptionId, change: WindowChange, };
 
 /**
  * A notice of the moment (SPEC §5.5).
@@ -245,7 +245,7 @@ export type SasEmoji = { symbol: string, description: string, };
  */
 export type VerificationAnswer = "accept" | "confirm" | "mismatch" | "cancel";
 
-export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": "list_history", before: TxLogId | null, limit: number, } | { "type": "list_accounts" } | { "type": "list_entries", query: string, after: ListPosition | null, limit: number, } | { "type": "list_items", query: string, after: ItemPosition | null, limit: number, } | { "type": "list_home", limit: number, } | { "type": "list_conversation", entry: EntryId, } | { "type": "list_message_entries", message: MessageId, } | { "type": "load_message", message: MessageId, } | { "type": "always_show_images", rule: ImageRule, always: boolean, } | { "type": "modify_labels", entries: Array<EntryId>, add: Array<LabelId>, remove: Array<LabelId>, } | { "type": "act_on_conversations", conversations: ConversationSet, action: ConversationAction, 
+export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": "list_history", before: TxLogId | null, limit: number, } | { "type": "list_accounts" } | { "type": "list_entries", query: string, after: ListPosition | null, limit: number, } | { "type": "list_items", query: string, after: ItemPosition | null, limit: number, } | { "type": "subscribe", subscription: SubscriptionId, query: string, limit: number, } | { "type": "extend", subscription: SubscriptionId, limit: number, } | { "type": "unsubscribe", subscription: SubscriptionId, } | { "type": "list_home", limit: number, } | { "type": "list_conversation", entry: EntryId, } | { "type": "list_message_entries", message: MessageId, } | { "type": "load_message", message: MessageId, } | { "type": "always_show_images", rule: ImageRule, always: boolean, } | { "type": "modify_labels", entries: Array<EntryId>, add: Array<LabelId>, remove: Array<LabelId>, } | { "type": "act_on_conversations", conversations: ConversationSet, action: ConversationAction, 
 /**
  * Done by a view being shown (opening a conversation reads it).
  */
@@ -282,7 +282,11 @@ scope: ListScope,
  * the whole history is stored (`Room::history`): it may not have
  * found all it would.
  */
-partial_rooms: Array<RoomId>, } | { "type": "message", message: MessageContent, } | { "type": "drafts", as_of: TxLogId, drafts: Array<Draft>, } | { "type": "outbox", as_of: TxLogId, accounts: Array<AccountOutbox>, } | { "type": "rooms", as_of: TxLogId, accounts: Array<MatrixAccount>, rooms: Array<Room>, } | { "type": "timeline", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, 
+partial_rooms: Array<RoomId>, } | { "type": "window", as_of: TxLogId, change: WindowChange, 
+/**
+ * Of its conversations.
+ */
+scope: ListScope, } | { "type": "message", message: MessageContent, } | { "type": "drafts", as_of: TxLogId, drafts: Array<Draft>, } | { "type": "outbox", as_of: TxLogId, accounts: Array<AccountOutbox>, } | { "type": "rooms", as_of: TxLogId, accounts: Array<MatrixAccount>, rooms: Array<Room>, } | { "type": "timeline", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, 
 /**
  * Whether there are earlier events than those listed.
  */
@@ -385,6 +389,45 @@ export type ItemKind = "mail" | "room" | "todo" | "event";
 export type ItemPosition = { at: number, kind: ItemKind, id: number, };
 
 /**
+ * What identifies an item of a list while it changes ([`Item::key`]).
+ */
+export type ItemKey = string;
+
+/**
+ * The client's name for a subscription (SPEC §5.7).
+ */
+export type SubscriptionId = number;
+
+/**
+ * What changed of a subscription's window (SPEC §5.7): applied to the
+ * items the client has of it, it gives those the window has now, in
+ * their order, `position`'s.
+ */
+export type WindowChange = { 
+/**
+ * Items new to the window, or changed (moved, too).
+ */
+upserted: Array<Listed>, 
+/**
+ * Items gone from it.
+ */
+removed: Array<ItemKey>, 
+/**
+ * Whether the query matches more than the window has.
+ */
+more: boolean, 
+/**
+ * As `Items`' (`ListItems`): the rooms whose messages the query
+ * looked through, of which not the whole history is stored.
+ */
+partial_rooms: Array<RoomId>, };
+
+/**
+ * An item, as a window lists it.
+ */
+export type Listed = { key: ItemKey, position: ItemPosition, item: Item, };
+
+/**
  * A room's messages a query matches (SPEC §8.7).
  */
 export type RoomHits = { count: number, 
@@ -458,7 +501,7 @@ export type Source = { "type": "user" } | { "type": "account", id: string, };
  * rather than content, since they are stored in the log; clients query
  * what they display.
  */
-export type ServerEvent = { "type": "entries_added" } & EntriesAdded | { "type": "entries_removed" } & EntriesRemoved | { "type": "labels_changed" } & LabelsChanged | { "type": "label_list_changed" } & LabelListChanged | { "type": "image_rule_changed" } & ImageRuleChanged | { "type": "draft_edited" } & DraftEdited | { "type": "drafts_changed" } & DraftsChanged | { "type": "outbox_changed" } & OutboxChanged | { "type": "rooms_changed" } & RoomsChanged | { "type": "timeline_added" } & TimelineAdded | { "type": "timeline_filled" } & TimelineFilled | { "type": "timeline_changed" } & TimelineChanged | { "type": "matrix_sends_changed" } & MatrixSendsChanged | { "type": "todos_changed" } & TodosChanged | { "type": "calendar_changed" } & CalendarChanged;
+export type ServerEvent = { "type": "entries_added" } & EntriesAdded | { "type": "entries_removed" } & EntriesRemoved | { "type": "labels_changed" } & LabelsChanged | { "type": "label_list_changed" } & LabelListChanged | { "type": "image_rule_changed" } & ImageRuleChanged | { "type": "draft_edited" } & DraftEdited | { "type": "drafts_changed" } & DraftsChanged | { "type": "outbox_changed" } & OutboxChanged | { "type": "rooms_changed" } & RoomsChanged | { "type": "timeline_added" } & TimelineAdded | { "type": "timeline_filled" } & TimelineFilled | { "type": "timeline_changed" } & TimelineChanged | { "type": "matrix_sends_changed" } & MatrixSendsChanged | { "type": "todos_changed" } & TodosChanged | { "type": "calendar_changed" } & CalendarChanged | { "type": "seen_changed" };
 
 export type MessageId = number;
 
@@ -1532,4 +1575,4 @@ export type EventChangeKind = "create" | "update" | "delete";
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "7f9eb3b087c33c13"
+export const PROTOCOL_VERSION = "8463590f6f6b0576"

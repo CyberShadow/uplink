@@ -6,7 +6,11 @@ import { App } from './views/App'
 import './styles.css'
 
 const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
-const client = new Client({ request: (body) => connection.request(body), ...httpBlobs })
+const client = new Client({
+  request: (body) => connection.request(body),
+  subscribe: (query, limit, listener) => connection.subscribe(query, limit, listener),
+  ...httpBlobs,
+})
 const connection = new Connection(url, {
   reset: () => client.reset(),
   outdated: () => location.reload(),

@@ -18,9 +18,10 @@ use uplink_protocol::{
     matrix::RoomEventId,
     todos::Todo,
     Arrival, Arrived, Badge, Badges, ErrorCode, Item, ItemKind, ItemPosition, Mark, Marks, Place,
-    ServerError, ServerResponse,
+    ServerError, ServerResponse, TxLogId,
 };
 use uplink_query::{Query, Term};
+use uplink_realtime::Listing;
 use uplink_storage::rusqlite::{Connection, Transaction};
 use uplink_tx_log::answer::{error, internal, Reader, Response};
 
@@ -191,29 +192,6 @@ struct Page {
     scope: ListScope,
 }
 
-/// Where an item is listed.
-fn position(item: &Item) -> ItemPosition {
-    let (at, kind, id) = match item {
-        Item::Mail { conversation } => (
-            conversation.latest.received_at,
-            ItemKind::Mail,
-            conversation.latest.id.0,
-        ),
-        Item::Room { room, hits } => (
-            // An invitation has no activity of its own: the oldest.
-            hits.as_ref()
-                .map(|hits| hits.latest.ts)
-                .or(room.last_event_ts)
-                .unwrap_or(0),
-            ItemKind::Room,
-            room.id.0,
-        ),
-        Item::Todo { todo } => (todo.updated_at, ItemKind::Todo, todo.id.0),
-        Item::Event { event } => (event.modified, ItemKind::Event, event.id.0),
-    };
-    ItemPosition { at, kind, id }
-}
-
 /// Mail's position after which its conversations are listed after
 /// `after`: conversations are first of what is as recently active.
 fn mail_after(after: ItemPosition) -> ListPosition {
@@ -277,7 +255,38 @@ impl Items {
     }
 
     pub async fn list(&self, query: String, after: Option<ItemPosition>, limit: u32) -> Response {
-        let (today, now) = checked(limit)?;
+        checked(limit)?;
+        let (as_of, page, partial_rooms) = self.read_page(query, after, limit).await?;
+        Ok(ServerResponse::Items {
+            as_of,
+            items: page.items,
+            next: page.next,
+            scope: page.scope,
+            partial_rooms,
+        })
+    }
+
+    /// A subscription's window (SPEC §5.7): the first `limit` items of
+    /// what `query` matches, as `list` lists them, however many.
+    pub async fn window(&self, query: String, limit: u32) -> Result<Listing, ServerError> {
+        let (as_of, page, partial_rooms) = self.read_page(query, None, limit).await?;
+        Ok(Listing {
+            as_of,
+            items: page.items,
+            more: page.next.is_some(),
+            scope: page.scope,
+            partial_rooms,
+        })
+    }
+
+    async fn read_page(
+        &self,
+        query: String,
+        after: Option<ItemPosition>,
+        limit: u32,
+    ) -> Result<(TxLogId, Page, Vec<uplink_protocol::matrix::RoomId>), ServerError> {
+        let now = now();
+        let today = uplink_query::today(now);
         let query = uplink_query::parse(&query, now).map_err(|e| invalid(e.0))?;
         let this = self.clone();
         self.reader
@@ -287,14 +296,12 @@ impl Items {
                 let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
                 let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
                 let others = others(&tx, &rooms, &query, today, now)?;
-                let page = this.page(&tx, &query, others, after, limit)?;
-                Ok(ServerResponse::Items {
+                let partial_rooms = rooms.partly_searched(&query);
+                Ok((
                     as_of,
-                    items: page.items,
-                    next: page.next,
-                    scope: page.scope,
-                    partial_rooms: rooms.partly_searched(&query),
-                })
+                    this.page(&tx, &query, others, after, limit)?,
+                    partial_rooms,
+                ))
             })
             .await
     }
@@ -491,14 +498,14 @@ impl Items {
             .chain(rooms)
             .chain(todos)
             .chain(events)
-            .filter(|item| after.is_none_or(|after| position(item) > after))
+            .filter(|item| after.is_none_or(|after| item.position() > after))
             .collect();
-        items.sort_by_key(position);
+        items.sort_by_key(Item::position);
         // More mail is after the last of its page, so after the last here.
         let more = items.len() > limit as usize || mail.next.is_some();
         items.truncate(limit as usize);
         Ok(Page {
-            next: more.then(|| position(items.last().expect("more is after some"))),
+            next: more.then(|| items.last().expect("more is after some").position()),
             items,
             scope: mail.scope,
         })
