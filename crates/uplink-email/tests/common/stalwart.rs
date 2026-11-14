@@ -281,9 +281,14 @@ enable = true
     /// Another mail client, signed in as `user`.
     pub async fn client(&self, user: &str) -> Connection {
         let account = self.account(user);
-        session::connect(&account, &self.sign_in(account.login()), &self.tls)
-            .await
-            .unwrap()
+        session::connect(
+            &account.imap,
+            account.login().user,
+            &self.sign_in(account.login()),
+            &self.tls,
+        )
+        .await
+        .unwrap()
     }
 }
 

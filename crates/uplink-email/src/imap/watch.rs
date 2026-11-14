@@ -17,7 +17,7 @@ use futures_util::TryStreamExt;
 use std::{fmt, sync::Arc, time::Duration};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_rustls::TlsConnector;
-use uplink_config::ImapAccountConfig;
+use uplink_config::MailServer;
 
 /// How long an IDLE lasts before it is renewed: under RFC 2177's 29
 /// minutes, and short enough that a connection lost without a word (a NAT
@@ -37,10 +37,26 @@ pub struct Watcher {
     task: JoinHandle<()>,
 }
 
+/// What is watched: the account's mailbox at IMAP `server`, as `user`;
+/// besides the Inbox, `folders`, by their paths (as [`path`] gives them).
+#[derive(Clone)]
+pub struct Watched {
+    pub account: String,
+    pub server: MailServer,
+    pub user: String,
+    pub folders: Vec<String>,
+}
+
+impl Watched {
+    async fn connect(&self, sign_in: &SignIn, tls: &TlsConnector) -> Result<Connection> {
+        session::connect(&self.server, &self.user, sign_in, tls).await
+    }
+}
+
 impl Watcher {
-    pub fn start(config: ImapAccountConfig, sign_in: SignIn, tls: TlsConnector) -> Self {
+    pub fn start(watched: Watched, sign_in: SignIn, tls: TlsConnector) -> Self {
         let watching = Arc::new(Watching::default());
-        let task = tokio::spawn(watch(config, sign_in, tls, watching.clone()));
+        let task = tokio::spawn(watch(watched, sign_in, tls, watching.clone()));
         Self { watching, task }
     }
 
@@ -79,18 +95,13 @@ impl fmt::Display for Watch {
 }
 
 /// Learns what the server can do, and keeps the watches it allows.
-async fn watch(
-    config: ImapAccountConfig,
-    sign_in: SignIn,
-    tls: TlsConnector,
-    watching: Arc<Watching>,
-) {
-    let account = &config.id;
-    let host = &config.imap.host;
+async fn watch(watched: Watched, sign_in: SignIn, tls: TlsConnector, watching: Arc<Watching>) {
+    let account = &watched.account;
+    let host = &watched.server.host;
     // Before what the server can do is known, the one watch is learning it.
     const LEARNING: &str = "the server";
     let connection = loop {
-        match session::connect(&config, &sign_in, &tls).await {
+        match watched.connect(&sign_in, &tls).await {
             Ok(connection) => break connection,
             Err(e) => {
                 tracing::warn!(account, "watching for changes: {e:#}");
@@ -108,7 +119,7 @@ async fn watch(
         return;
     }
     let watches = if connection.notify {
-        if !config.watch.is_empty() {
+        if !watched.folders.is_empty() {
             tracing::info!(
                 account,
                 "{host} tells of every folder (NOTIFY): `watch` is not needed"
@@ -117,14 +128,14 @@ async fn watch(
         vec![Watch::Every]
     } else {
         std::iter::once(Watch::Inbox)
-            .chain(config.watch.iter().cloned().map(Watch::Folder))
+            .chain(watched.folders.iter().cloned().map(Watch::Folder))
             .collect()
     };
     let mut first = Some(connection);
     let mut watches_kept = JoinSet::new();
     for watch in watches {
         watches_kept.spawn(keep(
-            config.clone(),
+            watched.clone(),
             sign_in.clone(),
             tls.clone(),
             watching.clone(),
@@ -139,7 +150,7 @@ async fn watch(
 
 /// Keeps `watch`, on `connection` at first, until stopped.
 async fn keep(
-    config: ImapAccountConfig,
+    watched: Watched,
     sign_in: SignIn,
     tls: TlsConnector,
     watching: Arc<Watching>,
@@ -150,13 +161,13 @@ async fn keep(
     loop {
         let connected = match connection.take() {
             Some(connection) => Ok(connection),
-            None => session::connect(&config, &sign_in, &tls).await,
+            None => watched.connect(&sign_in, &tls).await,
         };
         let Err(e) = match connected {
             Ok(connection) => listen(connection.session, &watch, &name, &watching).await,
             Err(e) => Err(e),
         };
-        tracing::warn!(account = config.id, "watching {watch}: {e:#}");
+        tracing::warn!(account = watched.account, "watching {watch}: {e:#}");
         watching.failing(&name, format!("{watch}: {e:#}"));
         tokio::time::sleep(RETRY).await;
     }

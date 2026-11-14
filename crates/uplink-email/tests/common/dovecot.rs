@@ -158,8 +158,13 @@ service anvil {{
     /// Another mail client, signed in as Alice.
     pub async fn client(&self) -> Connection {
         let account = self.account();
-        session::connect(&account, &self.sign_in(&account), &self.tls)
-            .await
-            .unwrap()
+        session::connect(
+            &account.imap,
+            account.login().user,
+            &self.sign_in(&account),
+            &self.tls,
+        )
+        .await
+        .unwrap()
     }
 }

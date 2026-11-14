@@ -388,11 +388,6 @@ impl ImapAccountConfig {
             password_file: &self.password_file,
         }
     }
-
-    /// The IMAP server's port: 993, or 143 for STARTTLS, unless set.
-    pub fn imap_port(&self) -> u16 {
-        self.imap.port_or(993, 143)
-    }
 }
 
 /// An account at any mail server, read by POP3 and sent from by SMTP
@@ -571,6 +566,11 @@ pub struct MailServer {
 }
 
 impl MailServer {
+    /// As an IMAP server, its port: 993, or 143 for STARTTLS, unless set.
+    pub fn imap_port(&self) -> u16 {
+        self.port_or(993, 143)
+    }
+
     /// As the account's SMTP server, its port: 465, or 587 for STARTTLS,
     /// unless set.
     pub fn smtp_port(&self) -> u16 {
@@ -1104,7 +1104,7 @@ accounts:
         // The address signs in, over TLS from the start, with the password
         // `uplink password` seals.
         assert_eq!(i.login().user, "alice@example.org");
-        assert_eq!((i.imap_port(), i.smtp.smtp_port()), (993, 465));
+        assert_eq!((i.imap.imap_port(), i.smtp.smtp_port()), (993, 465));
         assert_eq!(i.imap.security, Security::Tls);
         assert_eq!(i.oauth, None);
         assert_eq!(
@@ -1289,7 +1289,7 @@ accounts:
             panic!("expected imap account");
         };
         assert_eq!(i.login().user, "alice");
-        assert_eq!((i.imap_port(), i.smtp.smtp_port()), (143, 2525));
+        assert_eq!((i.imap.imap_port(), i.smtp.smtp_port()), (143, 2525));
         assert_eq!(i.watch, ["Alerts", "Lists/rust"]);
         let oauth = i.oauth.as_ref().unwrap();
         assert_eq!(oauth.client_secret, None);

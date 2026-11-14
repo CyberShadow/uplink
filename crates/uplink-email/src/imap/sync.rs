@@ -19,7 +19,7 @@
 use super::{
     names,
     session::{self, Connection},
-    watch::Watcher,
+    watch::{Watched, Watcher},
 };
 use crate::watching::Told;
 use crate::{
@@ -270,7 +270,16 @@ impl Provider for ImapSync {
     async fn told(&self) -> Told {
         self.watcher
             .get_or_init(|| {
-                Watcher::start(self.config.clone(), self.sign_in.clone(), self.tls.clone())
+                Watcher::start(
+                    Watched {
+                        account: self.config.id.clone(),
+                        server: self.config.imap.clone(),
+                        user: self.config.login().user.to_owned(),
+                        folders: self.config.watch.clone(),
+                    },
+                    self.sign_in.clone(),
+                    self.tls.clone(),
+                )
             })
             .told()
             .await
@@ -293,7 +302,9 @@ impl ImapSync {
     async fn connected(&self) -> Result<tokio::sync::MutexGuard<'_, Option<Connection>>> {
         let mut slot = self.connection.lock().await;
         if slot.is_none() {
-            *slot = Some(session::connect(&self.config, &self.sign_in, &self.tls).await?);
+            let user = self.config.login().user;
+            *slot =
+                Some(session::connect(&self.config.imap, user, &self.sign_in, &self.tls).await?);
         }
         Ok(slot)
     }

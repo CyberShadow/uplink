@@ -556,7 +556,7 @@ async fn signs_in_by_xoauth2() {
     let sign_in = stalwart.sign_in(account.login());
     assert!(matches!(sign_in, SignIn::OAuth(_)));
     // Stalwart makes Alice's account as she first signs in.
-    session::connect(&account, &sign_in, &stalwart.tls)
+    session::connect(&account.imap, account.login().user, &sign_in, &stalwart.tls)
         .await
         .unwrap();
     let raw = format!(
@@ -574,9 +574,10 @@ async fn signs_in_by_xoauth2() {
     .await
     .unwrap();
     eventually("the message to arrive", || async {
-        let mut alice = session::connect(&account, &sign_in, &stalwart.tls)
-            .await
-            .unwrap();
+        let mut alice =
+            session::connect(&account.imap, account.login().user, &sign_in, &stalwart.tls)
+                .await
+                .unwrap();
         find(&mut alice, "INBOX", "oauth").await
     })
     .await;

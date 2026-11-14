@@ -5,7 +5,7 @@ use anyhow::{bail, Context, Result};
 use async_imap::imap_proto::{Response, Status};
 use tokio::net::TcpStream;
 use tokio_rustls::{rustls::pki_types::ServerName, TlsConnector};
-use uplink_config::{ImapAccountConfig, Security};
+use uplink_config::{MailServer, Security};
 
 pub type Stream = tokio_rustls::client::TlsStream<TcpStream>;
 pub type Session = async_imap::Session<Stream>;
@@ -46,19 +46,20 @@ pub struct Connection {
     pub notify: bool,
 }
 
-/// Connects to `account`'s IMAP server and signs in.
+/// Connects to IMAP `server` and signs in as `user`.
 pub async fn connect(
-    account: &ImapAccountConfig,
+    server: &MailServer,
+    user: &str,
     sign_in: &SignIn,
     tls: &TlsConnector,
 ) -> Result<Connection> {
-    let host = &account.imap.host;
-    let port = account.imap_port();
+    let host = &server.host;
+    let port = server.imap_port();
     let tcp = TcpStream::connect((host.as_str(), port))
         .await
         .with_context(|| format!("connecting to {host}:{port}"))?;
     let name = ServerName::try_from(host.clone())?;
-    let client = match account.imap.security {
+    let client = match server.security {
         Security::Tls => {
             let mut client = async_imap::Client::new(tls.connect(name, tcp).await?);
             greeting(&mut client).await?;
@@ -71,7 +72,6 @@ pub async fn connect(
             async_imap::Client::new(tls.connect(name, plain.into_inner()).await?)
         }
     };
-    let user = account.login().user;
     let signed_in = match sign_in.secret().await? {
         Secret::Password(password) => client.login(user, &password).await,
         Secret::AccessToken(token) => {
