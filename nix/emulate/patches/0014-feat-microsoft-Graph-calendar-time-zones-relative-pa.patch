@@ -1,0 +1,747 @@
+From 694815f379853fada6e2e98d553eb418a7ac1c1d Mon Sep 17 00:00:00 2001
+From: Vladimir Panteleev <git@cy.md>
+Date: Sat, 14 Nov 2026 11:14:59 +0000
+Subject: [PATCH] feat(microsoft): Graph calendar: time zones, relative
+ patterns, transaction ids and cancelling
+
+Times are taken in Windows' and IANA's time zones (CLDR's mapping), and a
+series expanded in its own, across daylight saving time;
+relativeMonthly and relativeYearly patterns expand; a transactionId
+makes creating an event idempotent; an organizer cancels a meeting, or
+one occurrence of it.
+---
+ packages/@emulators/microsoft/README.md       |   5 +-
+ .../microsoft/src/__tests__/calendar.test.ts  | 102 ++++++++++--
+ packages/@emulators/microsoft/src/calendar.ts | 128 ++++++++++++---
+ packages/@emulators/microsoft/src/entities.ts |  15 +-
+ .../microsoft/src/routes/calendar.ts          |  56 +++++--
+ .../@emulators/microsoft/src/timezones.ts     | 146 ++++++++++++++++++
+ 6 files changed, 402 insertions(+), 50 deletions(-)
+ create mode 100644 packages/@emulators/microsoft/src/timezones.ts
+
+diff --git a/packages/@emulators/microsoft/README.md b/packages/@emulators/microsoft/README.md
+index 833d8ec..8da6393 100644
+--- a/packages/@emulators/microsoft/README.md
++++ b/packages/@emulators/microsoft/README.md
+@@ -30,6 +30,7 @@ npm install @emulators/microsoft
+ - `POST /v1.0/me/sendMail` — send MIME or a JSON message, delivering to seeded recipients
+ - `POST /v1.0/me/messages/:message/send` — send a draft, which keeps its id in Sent Items
+ - `POST /v1.0/me/events`, `GET|PATCH|DELETE /v1.0/me/events/:id`, `GET /v1.0/me/events/:id/instances` — events and recurring series; an occurrence's id changes or cancels that occurrence
++- `POST /v1.0/me/events/:id/accept|tentativelyAccept|decline` — answer a meeting request (a declined one leaves the calendar); `POST /v1.0/me/events/:id/cancel` — cancel a meeting the user organizes, or one occurrence of it
+ - `GET /v1.0/me/calendarView`, `GET /v1.0/me/calendarView/delta` — the events in a window, series expanded, and their changes
+ - `GET /oauth2/v2.0/logout` — end session / logout
+ - `POST /oauth2/v2.0/revoke` — token revocation
+@@ -61,9 +62,9 @@ Each user's mailbox starts with the well-known folders (Inbox, Drafts, Sent Item
+ 
+ ## Microsoft Graph calendar
+ 
+-Events live in the user's one calendar. Times are UTC: requests give them with `timeZone: "UTC"` (others are refused), and responses give them so, as with `Prefer: outlook.timezone="UTC"`. A series' `recurrence` may follow a `daily`, `weekly`, `absoluteMonthly` or `absoluteYearly` pattern, over an `endDate`, `numbered` or `noEnd` range (expanded three years ahead). Changing or deleting one of its occurrences, by the occurrence's id, makes an exception of it.
++Events live in the user's one calendar. Requests give times in any `timeZone` Graph takes, a Windows time zone's name or an IANA one's (CLDR maps the one to the other), UTC if none; an event keeps them as `originalStartTimeZone` and `originalEndTimeZone`. Responses give times in UTC, as with `Prefer: outlook.timezone="UTC"`; an all-day event's are its dates, wherever one is. A series' `recurrence` may follow a `daily`, `weekly`, `absoluteMonthly`, `absoluteYearly`, `relativeMonthly` or `relativeYearly` pattern, over an `endDate`, `numbered` or `noEnd` range (expanded three years ahead), its occurrences at the time of day its start has in its time zone, across daylight saving time. Changing or deleting one of its occurrences, by the occurrence's id, makes an exception of it. A `transactionId` given in creating an event is kept, and creating one with it again gives the event already created.
+ 
+-An event keeps its `body` (`text` or `html`), `showAs`, `attendees` and reminder (`isReminderOn`, `reminderMinutesBeforeStart`; 15 minutes by default) as given; `isOnlineMeeting: true` gives it an `onlineMeeting.joinUrl` at the emulator. What Graph sets itself of a meeting someone else organizes, the emulator takes too, to seed one: its `organizer`, the user's `responseStatus` (`notResponded` by default, `organizer` for the user's own) and `isCancelled`.
++An event keeps its `body` (`text` or `html`), `showAs`, `attendees` (each of a `type`, `required` unless given, and with a `status`, `none` unless given) and reminder (`isReminderOn`, `reminderMinutesBeforeStart`; 15 minutes by default) as given; `isOnlineMeeting: true` gives it an `onlineMeeting.joinUrl` at the emulator. What Graph sets itself of a meeting someone else organizes, the emulator takes too, to seed one: its `organizer`, the user's `responseStatus` (`notResponded` by default, `organizer` for the user's own) and `isCancelled`.
+ 
+ `calendarView` lists the events overlapping `startDateTime`–`endDateTime`, series as their occurrences and exceptions. Its `delta` lists them, then, from its `@odata.deltaLink`, those changed since, and as `@removed` those deleted, cancelled or moved out of the window. An unknown delta token answers 410 `SyncStateNotFound`.
+ 
+diff --git a/packages/@emulators/microsoft/src/__tests__/calendar.test.ts b/packages/@emulators/microsoft/src/__tests__/calendar.test.ts
+index 7936dd1..bcc0071 100644
+--- a/packages/@emulators/microsoft/src/__tests__/calendar.test.ts
++++ b/packages/@emulators/microsoft/src/__tests__/calendar.test.ts
+@@ -175,24 +175,98 @@ describe("Microsoft Graph calendar", () => {
+     expect(res.status).toBe(410);
+   });
+ 
+-  it("takes UTC times and the patterns it expands only", async () => {
+-    const res = await request("/v1.0/me/events", {
++  it("takes times in Windows' and IANA's time zones, and expands a series in its own", async () => {
++    const zoned = (dateTime: string) => ({ dateTime, timeZone: "W. Europe Standard Time" });
++    const event = await create({
++      subject: "Elsewhere",
++      start: { dateTime: "2026-11-10T14:00:00", timeZone: "America/Los_Angeles" },
++      end: { dateTime: "2026-11-10T15:00:00", timeZone: "Pacific Standard Time" },
++    });
++    expect([event.start.dateTime, event.end.dateTime]).toEqual(["2026-11-10T22:00:00.0000000", "2026-11-10T23:00:00.0000000"]);
++    expect([event.originalStartTimeZone, event.originalEndTimeZone]).toEqual(["America/Los_Angeles", "Pacific Standard Time"]);
++    // 10:00 in Berlin, before daylight saving time ends and after.
++    await create({
++      subject: "Weekly",
++      start: zoned("2026-10-19T10:00:00"),
++      end: zoned("2026-10-19T10:30:00"),
++      recurrence: {
++        pattern: { type: "weekly", interval: 1, daysOfWeek: ["monday"] },
++        range: { type: "numbered", startDate: "2026-10-19", numberOfOccurrences: 3, recurrenceTimeZone: "W. Europe Standard Time" },
++      },
++    });
++    const weeks = await json("/v1.0/me/calendarView?startDateTime=2026-10-01T00:00:00Z&endDateTime=2026-11-01T00:00:00Z");
++    expect(weeks.value.map((e: any) => [e.start.dateTime, e.end.dateTime])).toEqual([
++      ["2026-10-19T08:00:00.0000000", "2026-10-19T08:30:00.0000000"],
++      ["2026-10-26T09:00:00.0000000", "2026-10-26T09:30:00.0000000"],
++    ]);
++    const unknown = await request("/v1.0/me/events", {
+       method: "POST",
+-      body: JSON.stringify({
+-        subject: "Elsewhere",
+-        start: { dateTime: "2026-11-10T14:00:00", timeZone: "Pacific Standard Time" },
+-        end: { dateTime: "2026-11-10T15:00:00", timeZone: "Pacific Standard Time" },
+-      }),
++      body: JSON.stringify({ subject: "Nowhere", start: { dateTime: "2026-11-10T14:00:00", timeZone: "Mars/Olympus" }, end: utc("2026-11-10T15:00:00") }),
++    });
++    expect(unknown.status).toBe(400);
++  });
++
++  it("expands relative patterns, and takes no pattern it does not know", async () => {
++    await create({
++      ...weekly,
++      subject: "Second Tuesday",
++      recurrence: {
++        pattern: { type: "relativeMonthly", interval: 1, daysOfWeek: ["tuesday"], index: "second" },
++        range: { type: "numbered", startDate: "2026-11-01", numberOfOccurrences: 2 },
++      },
++    });
++    await create({
++      ...weekly,
++      subject: "Last Friday of November",
++      recurrence: {
++        pattern: { type: "relativeYearly", interval: 1, daysOfWeek: ["friday"], index: "last", month: 11 },
++        range: { type: "noEnd", startDate: "2026-11-01" },
++      },
+     });
+-    expect(res.status).toBe(400);
+-    const relative = await request("/v1.0/me/events", {
++    const months = await json("/v1.0/me/calendarView?startDateTime=2026-11-01T00:00:00Z&endDateTime=2027-01-01T00:00:00Z");
++    expect(months.value.map((e: any) => [e.subject, e.start.dateTime.slice(0, 10)])).toEqual([
++      ["Second Tuesday", "2026-11-10"],
++      ["Last Friday of November", "2026-11-27"],
++      ["Second Tuesday", "2026-12-08"],
++    ]);
++    const hourly = await request("/v1.0/me/events", {
+       method: "POST",
+-      body: JSON.stringify({
+-        ...weekly,
+-        recurrence: { ...weekly.recurrence, pattern: { type: "relativeMonthly", interval: 1 } },
+-      }),
++      body: JSON.stringify({ ...weekly, recurrence: { ...weekly.recurrence, pattern: { type: "hourly", interval: 1 } } }),
++    });
++    expect(hourly.status).toBe(400);
++  });
++
++  it("creates an event once per transaction id", async () => {
++    const event = { subject: "Once", start: utc("2026-11-10T09:00:00"), end: utc("2026-11-10T10:00:00"), transactionId: "t-1" };
++    const first = await create(event);
++    expect(first.transactionId).toBe("t-1");
++    expect((await create(event)).id).toBe(first.id);
++    const meeting = await create({ ...event, transactionId: "t-2", attendees: [{ emailAddress: { address: "bob@example.com" } }] });
++    expect(meeting.attendees).toEqual([
++      { emailAddress: { address: "bob@example.com" }, type: "required", status: { response: "none", time: "0001-01-01T00:00:00Z" } },
++    ]);
++    expect(await view()).toEqual([
++      ["Once", "2026-11-10T09:00:00.0000000", "singleInstance"],
++      ["Once", "2026-11-10T09:00:00.0000000", "singleInstance"],
++    ]);
++    const plain = await create({ subject: "Plain", start: utc("2026-11-10T11:00:00"), end: utc("2026-11-10T12:00:00") });
++    expect("transactionId" in plain).toBe(false);
++  });
++
++  it("cancels a meeting the user organizes, or one occurrence, but no one else's", async () => {
++    const meeting = await create({ ...weekly, attendees: [{ emailAddress: { address: "bob@example.com" }, type: "required" }] });
++    const [first] = (await json(`/v1.0/me/events/${meeting.id}/instances?${WINDOW}`)).value;
++    expect((await request(`/v1.0/me/events/${first.id}/cancel`, { method: "POST", body: JSON.stringify({ comment: "Off" }) })).status).toBe(202);
++    expect((await view())[0][1]).toBe("2026-11-05T09:00:00.0000000");
++    expect((await request(`/v1.0/me/events/${meeting.id}/cancel`, { method: "POST", body: "{}" })).status).toBe(202);
++    expect(await view()).toEqual([]);
++    const theirs = await create({
++      subject: "Theirs",
++      start: utc("2026-11-10T09:00:00"),
++      end: utc("2026-11-10T10:00:00"),
++      organizer: { emailAddress: { address: "bob@example.com" } },
+     });
+-    expect(relative.status).toBe(400);
++    expect((await request(`/v1.0/me/events/${theirs.id}/cancel`, { method: "POST", body: "{}" })).status).toBe(400);
+   });
+ 
+   it("keeps a meeting's attendees, organizer, answer, body and online meeting", async () => {
+diff --git a/packages/@emulators/microsoft/src/calendar.ts b/packages/@emulators/microsoft/src/calendar.ts
+index 5adc399..41a6677 100644
+--- a/packages/@emulators/microsoft/src/calendar.ts
++++ b/packages/@emulators/microsoft/src/calendar.ts
+@@ -1,12 +1,14 @@
+ import type { Store } from "@emulators/core";
+ import { getMicrosoftStore } from "./store.js";
+ import type { MicrosoftEvent, MicrosoftEventFields, MicrosoftRecurrence } from "./entities.js";
++import { WINDOWS_ZONES } from "./timezones.js";
+ 
+ /** Series without an end date are expanded this far past their start. */
+ const HORIZON_DAYS = 3 * 366;
+ const DAY = 86_400_000;
+ const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+-export const PATTERNS = ["daily", "weekly", "absoluteMonthly", "absoluteYearly"];
++export const PATTERNS = ["daily", "weekly", "absoluteMonthly", "absoluteYearly", "relativeMonthly", "relativeYearly"];
++const INDEXES = ["first", "second", "third", "fourth", "last"];
+ export const RANGES = ["endDate", "noEnd", "numbered"];
+ const SHOW_AS = ["free", "tentative", "busy", "oof", "workingElsewhere", "unknown"];
+ const RESPONSES = ["none", "organizer", "tentativelyAccepted", "accepted", "declined", "notResponded"];
+@@ -36,15 +38,55 @@ function utcString(ms: number): string {
+   return new Date(ms).toISOString().slice(0, 19);
+ }
+ 
+-/** A Graph `dateTimeTimeZone` as UTC `YYYY-MM-DDTHH:mm:ss`; the emulator
+- * takes UTC times only. `null` if it is not one. */
+-export function parseDateTime(value: unknown): string | null {
+-  const { dateTime, timeZone } = (value ?? {}) as { dateTime?: unknown; timeZone?: unknown };
+-  if (typeof dateTime !== "string" || (timeZone !== undefined && String(timeZone).toUpperCase() !== "UTC")) {
++/** The IANA time zone a Graph time zone name names, Windows' or IANA's;
++ * `null` if it names none. */
++export function ianaZone(name: string): string | null {
++  if (name.toUpperCase() === "UTC") return "UTC";
++  const zone = WINDOWS_ZONES[name] ?? name;
++  try {
++    new Intl.DateTimeFormat("en-US", { timeZone: zone });
++    return zone;
++  } catch {
+     return null;
+   }
++}
++
++/** The zone's offset from UTC at `ms`. */
++function offset(ms: number, zone: string): number {
++  const parts = Object.fromEntries(
++    new Intl.DateTimeFormat("en-US", {
++      timeZone: zone,
++      hourCycle: "h23",
++      year: "numeric",
++      month: "2-digit",
++      day: "2-digit",
++      hour: "2-digit",
++      minute: "2-digit",
++      second: "2-digit",
++    })
++      .formatToParts(ms)
++      .map((p) => [p.type, p.value]),
++  );
++  const wall = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second);
++  return wall - Math.floor(ms / 1000) * 1000;
++}
++
++/** Milliseconds since the epoch of a time as given, in the zone named; an
++ * all-day event's, a date wherever one is, as of UTC. */
++export function givenMs(dateTime: string, zone: string, allDay: boolean): number {
++  const wall = utcMs(dateTime);
++  if (allDay) return wall;
++  const iana = ianaZone(zone)!;
++  return wall - offset(wall - offset(wall, iana), iana);
++}
++
++/** A Graph `dateTimeTimeZone` as given: `YYYY-MM-DDTHH:mm:ss` and the zone
++ * it names (UTC if none). `null` if it is not one. */
++export function parseDateTime(value: unknown): { dateTime: string; zone: string } | null {
++  const { dateTime, timeZone = "UTC" } = (value ?? {}) as { dateTime?: unknown; timeZone?: unknown };
++  if (typeof dateTime !== "string" || typeof timeZone !== "string" || ianaZone(timeZone) === null) return null;
+   const ms = Date.parse(dateTime.endsWith("Z") ? dateTime : `${dateTime}Z`);
+-  return Number.isNaN(ms) ? null : utcString(ms);
++  return Number.isNaN(ms) ? null : { dateTime: utcString(ms), zone: dateTime.endsWith("Z") ? "UTC" : timeZone };
+ }
+ 
+ /** A query parameter's date and time (ISO 8601, UTC unless it says). */
+@@ -61,9 +103,15 @@ export function isSupportedRecurrence(recurrence: unknown): recurrence is Micros
+   if (!PATTERNS.includes(r.pattern.type) || !RANGES.includes(r.range.type)) return false;
+   if (!Number.isInteger(r.pattern.interval) || r.pattern.interval < 1) return false;
+   if (Number.isNaN(Date.parse(`${r.range.startDate}T00:00:00Z`))) return false;
+-  if (r.pattern.type === "weekly" && !r.pattern.daysOfWeek?.every((d) => WEEKDAYS.includes(d.toLowerCase()))) {
++  const relative = r.pattern.type.startsWith("relative");
++  if (
++    (r.pattern.type === "weekly" || relative) &&
++    !(r.pattern.daysOfWeek?.length && r.pattern.daysOfWeek.every((d) => WEEKDAYS.includes(d.toLowerCase())))
++  ) {
+     return false;
+   }
++  if (relative && !INDEXES.includes(r.pattern.index ?? "first")) return false;
++  if (r.range.recurrenceTimeZone !== undefined && ianaZone(r.range.recurrenceTimeZone) === null) return false;
+   if (r.range.type === "endDate" && Number.isNaN(Date.parse(`${r.range.endDate}T00:00:00Z`))) return false;
+   if (r.range.type === "numbered" && !(Number(r.range.numberOfOccurrences) > 0)) return false;
+   return true;
+@@ -92,11 +140,28 @@ function matches(pattern: MicrosoftRecurrence["pattern"], first: number, day: nu
+         d.getUTCDate() === pattern.dayOfMonth &&
+         (months / 12) % pattern.interval === 0
+       );
++    case "relativeMonthly":
++      return ordinal(pattern, d) && months % pattern.interval === 0;
++    case "relativeYearly":
++      return d.getUTCMonth() + 1 === pattern.month && ordinal(pattern, d) && (months / 12) % pattern.interval === 0;
+   }
+ }
+ 
++/** Whether the day is the pattern's day of the week of its month, as its
++ * index says which. */
++function ordinal(pattern: MicrosoftRecurrence["pattern"], d: Date): boolean {
++  const days = (pattern.daysOfWeek ?? []).map((x) => x.toLowerCase());
++  if (!days.includes(WEEKDAYS[d.getUTCDay()])) return false;
++  const index = pattern.index ?? "first";
++  if (index === "last") {
++    const length = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
++    return d.getUTCDate() + 7 > length;
++  }
++  return Math.ceil(d.getUTCDate() / 7) === INDEXES.indexOf(index) + 1;
++}
++
+ /** The original start of each occurrence of the series, at the time of day
+- * the master starts. */
++ * the master starts, in its time zone (so across daylight saving time). */
+ export function occurrenceStarts(event: MicrosoftEvent): string[] {
+   const r = event.recurrence!;
+   const first = Date.parse(`${r.range.startDate}T00:00:00Z`);
+@@ -110,7 +175,7 @@ export function occurrenceStarts(event: MicrosoftEvent): string[] {
+   return starts;
+ }
+ 
+-const graphTime = (dateTime: string) => ({ dateTime: `${dateTime}.0000000`, timeZone: "UTC" });
++const graphTime = (ms: number) => ({ dateTime: `${utcString(ms)}.0000000`, timeZone: "UTC" });
+ 
+ /** Graph's representation of an event, or of one occurrence of a series. */
+ export function formatEvent(
+@@ -124,12 +189,15 @@ export function formatEvent(
+     iCalUId: event.ical_uid,
+     type: instance?.type ?? (event.recurrence ? "seriesMaster" : "singleInstance"),
+     seriesMasterId: instance ? event.event_id : null,
+-    originalStart: instance ? `${instance.originalStart}Z` : null,
++    originalStart: instance ? `${utcString(givenMs(instance.originalStart, event.start_zone, event.is_all_day))}Z` : null,
++    originalStartTimeZone: fields.start_zone,
++    originalEndTimeZone: fields.end_zone,
++    ...(event.transaction_id !== null && !instance ? { transactionId: event.transaction_id } : {}),
+     subject: fields.subject,
+     bodyPreview: fields.body.slice(0, 255),
+     body: { contentType: fields.body_type, content: fields.body },
+-    start: graphTime(fields.start),
+-    end: graphTime(fields.end),
++    start: graphTime(givenMs(fields.start, fields.start_zone, fields.is_all_day)),
++    end: graphTime(givenMs(fields.end, fields.end_zone, fields.is_all_day)),
+     isAllDay: fields.is_all_day,
+     location: { displayName: fields.location },
+     recurrence: instance ? null : event.recurrence,
+@@ -158,10 +226,15 @@ export interface Instance {
+ /** The instances a calendar view lists of the event: itself, or its
+  * series' occurrences as changed, less those cancelled. */
+ export function instancesOf(event: MicrosoftEvent): Instance[] {
++  const span = (fields: MicrosoftEventFields) => ({
++    start: utcString(givenMs(fields.start, fields.start_zone, fields.is_all_day)),
++    end: utcString(givenMs(fields.end, fields.end_zone, fields.is_all_day)),
++  });
+   if (!event.recurrence) {
+-    return [{ instance_id: event.event_id, start: event.start, end: event.end, json: JSON.stringify(formatEvent(event)) }];
++    return [{ instance_id: event.event_id, ...span(event), json: JSON.stringify(formatEvent(event)) }];
+   }
+-  const duration = utcMs(event.end) - utcMs(event.start);
++  const duration =
++    givenMs(event.end, event.end_zone, event.is_all_day) - givenMs(event.start, event.start_zone, event.is_all_day);
+   return occurrenceStarts(event).flatMap((originalStart) => {
+     const date = originalStart.slice(0, 10);
+     const exception = event.exceptions[date];
+@@ -180,7 +253,9 @@ export function instancesOf(event: MicrosoftEvent): Instance[] {
+       join_url: event.join_url,
+       reminder: event.reminder,
+       start: originalStart,
+-      end: utcString(utcMs(originalStart) + duration),
++      start_zone: event.start_zone,
++      end: utcString(givenMs(originalStart, event.start_zone, event.is_all_day) + duration),
++      end_zone: event.is_all_day ? event.start_zone : "UTC",
+       ...exception,
+     };
+     const id = occurrenceId(event.event_id, date);
+@@ -188,8 +263,7 @@ export function instancesOf(event: MicrosoftEvent): Instance[] {
+     return [
+       {
+         instance_id: id,
+-        start: fields.start,
+-        end: fields.end,
++        ...span(fields),
+         json: JSON.stringify(formatEvent(event, { id, fields, type, originalStart })),
+       },
+     ];
+@@ -200,6 +274,13 @@ export function occurrenceId(eventId: string, date: string): string {
+   return `${eventId}_${date.replaceAll("-", "")}`;
+ }
+ 
++/** The original start date (`YYYY-MM-DD`, in the series' time zone) of the
++ * occurrence of `eventId` that `instanceId` is. */
++export function occurrenceDate(eventId: string, instanceId: string): string {
++  const day = instanceId.slice(eventId.length + 1);
++  return `${day.slice(0, 4)}-${day.slice(4, 6)}-${day.slice(6, 8)}`;
++}
++
+ /** Makes the event's recorded instances `wanted`, recording what changed
+  * and what is gone under one change of the calendar. */
+ export function syncInstances(store: Store, email: string, eventId: string, wanted: Instance[]): void {
+@@ -247,7 +328,13 @@ export function fieldsOf(body: Record<string, unknown>): Partial<MicrosoftEventF
+   }
+   if ("attendees" in body) {
+     if (!Array.isArray(body.attendees)) return null;
+-    fields.attendees = body.attendees;
++    // As Graph has them: of a type, required unless said, and with the
++    // attendee's answer, none yet unless seeded.
++    fields.attendees = body.attendees.map((a: { type?: string; status?: unknown }) => ({
++      type: "required",
++      status: { response: "none", time: "0001-01-01T00:00:00Z" },
++      ...a,
++    }));
+   }
+   // What Graph sets itself, of a meeting someone else organizes, the
+   // emulator takes too, to seed one: its organizer, the user's answer, and
+@@ -284,7 +371,8 @@ export function fieldsOf(body: Record<string, unknown>): Partial<MicrosoftEventF
+     if (key in body) {
+       const time = parseDateTime(body[key]);
+       if (time === null) return null;
+-      fields[key] = time;
++      fields[key] = time.dateTime;
++      fields[`${key}_zone`] = time.zone;
+     }
+   }
+   if ("isAllDay" in body) {
+diff --git a/packages/@emulators/microsoft/src/entities.ts b/packages/@emulators/microsoft/src/entities.ts
+index b701eb5..938a2cb 100644
+--- a/packages/@emulators/microsoft/src/entities.ts
++++ b/packages/@emulators/microsoft/src/entities.ts
+@@ -63,14 +63,17 @@ export interface MicrosoftMessageRemoval extends Entity {
+   change: number;
+ }
+ 
+-/** What an event, or one occurrence of a series, says. Times are UTC,
+- * `YYYY-MM-DDTHH:mm:ss`. */
++/** What an event, or one occurrence of a series, says. Times are as
++ * given, `YYYY-MM-DDTHH:mm:ss` in their time zone (as named: Windows' or
++ * IANA's, or UTC); an all-day event's are dates, wherever one is. */
+ export interface MicrosoftEventFields {
+   subject: string;
+   body: string;
+   location: string;
+   start: string;
++  start_zone: string;
+   end: string;
++  end_zone: string;
+   is_all_day: boolean;
+   body_type: "text" | "html";
+   /** Graph `showAs`: free, tentative, busy, oof, workingElsewhere. */
+@@ -93,17 +96,20 @@ export interface MicrosoftEventFields {
+ /** A Graph recurrence: its pattern and range, as Graph has them. */
+ export interface MicrosoftRecurrence {
+   pattern: {
+-    type: "daily" | "weekly" | "absoluteMonthly" | "absoluteYearly";
++    type: "daily" | "weekly" | "absoluteMonthly" | "absoluteYearly" | "relativeMonthly" | "relativeYearly";
+     interval: number;
+     daysOfWeek?: string[];
+     dayOfMonth?: number;
+     month?: number;
++    /** Of a relative pattern: which of the month's such days. */
++    index?: "first" | "second" | "third" | "fourth" | "last";
+   };
+   range: {
+     type: "endDate" | "noEnd" | "numbered";
+     startDate: string;
+     endDate?: string;
+     numberOfOccurrences?: number;
++    recurrenceTimeZone?: string;
+   };
+ }
+ 
+@@ -112,6 +118,9 @@ export interface MicrosoftEvent extends Entity, MicrosoftEventFields {
+   event_id: string;
+   user_email: string;
+   ical_uid: string;
++  /** The client's, if it gave one (Graph `transactionId`): a POST again
++   * with it creates nothing more. */
++  transaction_id: string | null;
+   recurrence: MicrosoftRecurrence | null;
+   /** A series' occurrences changed or cancelled, by their original start
+    * date (`YYYY-MM-DD`); `null` for cancelled. */
+diff --git a/packages/@emulators/microsoft/src/routes/calendar.ts b/packages/@emulators/microsoft/src/routes/calendar.ts
+index 5955918..6d29fda 100644
+--- a/packages/@emulators/microsoft/src/routes/calendar.ts
++++ b/packages/@emulators/microsoft/src/routes/calendar.ts
+@@ -7,6 +7,7 @@ import {
+   formatEvent,
+   instancesOf,
+   isSupportedRecurrence,
++  occurrenceDate,
+   overlaps,
+   parseWindowTime,
+   syncInstances,
+@@ -34,8 +35,9 @@ const encode = (state: object) => Buffer.from(JSON.stringify(state)).toString("b
+ 
+ /** Microsoft Graph calendar: events and recurring series in the user's
+  * calendar, calendar views of them (series expanded into occurrences),
+- * and delta queries of those views. Times are UTC: the emulator takes
+- * and gives UTC only, as with `Prefer: outlook.timezone="UTC"`. */
++ * and delta queries of those views. Times are taken in any time zone
++ * Graph takes (Windows' names, IANA's), series expanded in theirs, and
++ * given in UTC, as with `Prefer: outlook.timezone="UTC"`. */
+ export function calendarRoutes({ app, store, baseUrl }: RouteContext): void {
+   const ms = getMicrosoftStore(store);
+ 
+@@ -73,20 +75,26 @@ export function calendarRoutes({ app, store, baseUrl }: RouteContext): void {
+     if (!body) return invalid(c, "The request body is not JSON.");
+     const fields = fieldsOf(body);
+     if (!fields || fields.start === undefined || fields.end === undefined) {
+-      return invalid(c, "An event needs a start and an end, in UTC.");
++      return invalid(c, "An event needs a start and an end, in a time zone Graph knows.");
+     }
+     const recurrence = body.recurrence ?? null;
+     if (recurrence !== null && !isSupportedRecurrence(recurrence)) {
+-      return invalid(c, "The emulator expands daily, weekly, absoluteMonthly and absoluteYearly patterns only.");
++      return invalid(c, "The recurrence is malformed.");
+     }
+     if ("isOnlineMeeting" in body && typeof body.isOnlineMeeting !== "boolean") {
+       return invalid(c, "isOnlineMeeting is a boolean.");
+     }
++    const transactionId = body.transactionId ?? null;
++    if (transactionId !== null && typeof transactionId !== "string") return invalid(c, "transactionId is a string.");
++    // Created already, by a POST the client retries.
++    const created = transactionId !== null && ms.events.findBy("user_email", email).find((e) => e.transaction_id === transactionId);
++    if (created) return c.json(formatEvent(created), 201);
+     const eventId = generateGraphId("AAMkEvent");
+     const event = ms.events.insert({
+       event_id: eventId,
+       user_email: email,
+       ical_uid: generateGraphId("040000008200E00074C5B7101A82E008"),
++      transaction_id: transactionId,
+       subject: "",
+       body: "",
+       location: "",
+@@ -103,7 +111,9 @@ export function calendarRoutes({ app, store, baseUrl }: RouteContext): void {
+       reminder: 15,
+       ...fields,
+       start: fields.start,
++      start_zone: fields.start_zone!,
+       end: fields.end,
++      end_zone: fields.end_zone!,
+       recurrence,
+       exceptions: {},
+     });
+@@ -136,9 +146,8 @@ export function calendarRoutes({ app, store, baseUrl }: RouteContext): void {
+   });
+ 
+   /** Changes a series' occurrence: it becomes an exception. */
+-  const changeOccurrence = (event: MicrosoftEvent, instanceJson: string, change: object | null) => {
+-    const { originalStart } = JSON.parse(instanceJson) as { originalStart: string };
+-    const date = originalStart.slice(0, 10);
++  const changeOccurrence = (event: MicrosoftEvent, instanceId: string, change: object | null) => {
++    const date = occurrenceDate(event.event_id, instanceId);
+     const exceptions = { ...event.exceptions };
+     exceptions[date] = change === null ? null : { ...exceptions[date], ...change };
+     resync(ms.events.update(event.id, { exceptions })!);
+@@ -157,7 +166,7 @@ export function calendarRoutes({ app, store, baseUrl }: RouteContext): void {
+       const update: Partial<MicrosoftEvent> = { ...fields };
+       if ("recurrence" in body) {
+         if (body.recurrence !== null && !isSupportedRecurrence(body.recurrence)) {
+-          return invalid(c, "The emulator expands daily, weekly, absoluteMonthly and absoluteYearly patterns only.");
++          return invalid(c, "The recurrence is malformed.");
+         }
+         update.recurrence = body.recurrence as MicrosoftEvent["recurrence"];
+       }
+@@ -168,7 +177,7 @@ export function calendarRoutes({ app, store, baseUrl }: RouteContext): void {
+     const instance = instanceOf(email, id);
+     const master = instance && eventOf(email, instance.event_id);
+     if (!instance || !master || instance.instance_id === master.event_id) return notFound(c);
+-    changeOccurrence(master, instance.json, fields);
++    changeOccurrence(master, instance.instance_id, fields);
+     return c.json(JSON.parse(instanceOf(email, id)!.json));
+   });
+ 
+@@ -185,10 +194,35 @@ export function calendarRoutes({ app, store, baseUrl }: RouteContext): void {
+     const instance = instanceOf(email, id);
+     const master = instance && eventOf(email, instance.event_id);
+     if (!instance || !master) return notFound(c);
+-    changeOccurrence(master, instance.json, null);
++    changeOccurrence(master, instance.instance_id, null);
+     return c.body(null, 204);
+   });
+ 
++  /** Cancels a meeting the user organizes, or one occurrence of it:
++   * Graph tells its attendees, and takes it off the calendar. */
++  app.post("/v1.0/me/events/:event/cancel", async (c) => {
++    const email = user(c);
++    if (email instanceof Response) return email;
++    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
++    if (!body) return invalid(c, "The request body is not JSON.");
++    if ("comment" in body && typeof body.comment !== "string") return invalid(c, "comment is a string.");
++    const id = c.req.param("event");
++    const event = eventOf(email, id);
++    const instance = event ? undefined : instanceOf(email, id);
++    const master = event ?? (instance && eventOf(email, instance.event_id));
++    if (!master) return notFound(c);
++    if (master.organizer !== null) {
++      return invalid(c, "Your request can't be completed. You need to be an organizer to cancel a meeting.");
++    }
++    if (event) {
++      ms.events.delete(event.id);
++      syncInstances(store, email, event.event_id, []);
++    } else {
++      changeOccurrence(master, instance!.instance_id, null);
++    }
++    return c.body(null, 202);
++  });
++
+   /** Answers a meeting request: accepting or tentatively accepting sets
+    * the user's response; declining takes the event off the calendar, as
+    * Exchange moves a declined meeting to Deleted Items. The organizer
+@@ -218,7 +252,7 @@ export function calendarRoutes({ app, store, baseUrl }: RouteContext): void {
+           resync(ms.events.update(event.id, { response })!);
+         }
+       } else {
+-        changeOccurrence(master, instance!.json, response === "declined" ? null : { response });
++        changeOccurrence(master, instance!.instance_id, response === "declined" ? null : { response });
+       }
+       return c.body(null, 202);
+     });
+diff --git a/packages/@emulators/microsoft/src/timezones.ts b/packages/@emulators/microsoft/src/timezones.ts
+new file mode 100644
+index 0000000..807b5f1
+--- /dev/null
++++ b/packages/@emulators/microsoft/src/timezones.ts
+@@ -0,0 +1,146 @@
++// Each Windows time zone's IANA one, as CLDR maps them (windowsZones.xml,
++// territory 001): Graph takes event times in either.
++export const WINDOWS_ZONES: Record<string, string> = {
++  "Dateline Standard Time": "Etc/GMT+12",
++  "UTC-11": "Etc/GMT+11",
++  "Aleutian Standard Time": "America/Adak",
++  "Hawaiian Standard Time": "Pacific/Honolulu",
++  "Marquesas Standard Time": "Pacific/Marquesas",
++  "Alaskan Standard Time": "America/Anchorage",
++  "UTC-09": "Etc/GMT+9",
++  "Pacific Standard Time (Mexico)": "America/Tijuana",
++  "UTC-08": "Etc/GMT+8",
++  "Pacific Standard Time": "America/Los_Angeles",
++  "US Mountain Standard Time": "America/Phoenix",
++  "Mountain Standard Time (Mexico)": "America/Mazatlan",
++  "Mountain Standard Time": "America/Denver",
++  "British Columbia Standard Time": "America/Vancouver",
++  "Yukon Standard Time": "America/Whitehorse",
++  "Alberta Standard Time": "America/Edmonton",
++  "Central America Standard Time": "America/Guatemala",
++  "Central Standard Time": "America/Chicago",
++  "Easter Island Standard Time": "Pacific/Easter",
++  "Central Standard Time (Mexico)": "America/Mexico_City",
++  "Canada Central Standard Time": "America/Regina",
++  "Manitoba Standard Time": "America/Winnipeg",
++  "SA Pacific Standard Time": "America/Bogota",
++  "Eastern Standard Time (Mexico)": "America/Cancun",
++  "Eastern Standard Time": "America/New_York",
++  "Haiti Standard Time": "America/Port-au-Prince",
++  "Cuba Standard Time": "America/Havana",
++  "US Eastern Standard Time": "America/Indianapolis",
++  "Turks And Caicos Standard Time": "America/Grand_Turk",
++  "Paraguay Standard Time": "America/Asuncion",
++  "Atlantic Standard Time": "America/Halifax",
++  "Venezuela Standard Time": "America/Caracas",
++  "Central Brazilian Standard Time": "America/Cuiaba",
++  "SA Western Standard Time": "America/La_Paz",
++  "Pacific SA Standard Time": "America/Santiago",
++  "Newfoundland Standard Time": "America/St_Johns",
++  "Tocantins Standard Time": "America/Araguaina",
++  "E. South America Standard Time": "America/Sao_Paulo",
++  "SA Eastern Standard Time": "America/Cayenne",
++  "Argentina Standard Time": "America/Buenos_Aires",
++  "Greenland Standard Time": "America/Godthab",
++  "Montevideo Standard Time": "America/Montevideo",
++  "Magallanes Standard Time": "America/Punta_Arenas",
++  "Saint Pierre Standard Time": "America/Miquelon",
++  "Bahia Standard Time": "America/Bahia",
++  "UTC-02": "Etc/GMT+2",
++  "Azores Standard Time": "Atlantic/Azores",
++  "Cape Verde Standard Time": "Atlantic/Cape_Verde",
++  "UTC": "Etc/UTC",
++  "GMT Standard Time": "Europe/London",
++  "Greenwich Standard Time": "Atlantic/Reykjavik",
++  "Sao Tome Standard Time": "Africa/Sao_Tome",
++  "Morocco Standard Time": "Africa/Casablanca",
++  "W. Europe Standard Time": "Europe/Berlin",
++  "Central Europe Standard Time": "Europe/Budapest",
++  "Romance Standard Time": "Europe/Paris",
++  "Central European Standard Time": "Europe/Warsaw",
++  "W. Central Africa Standard Time": "Africa/Lagos",
++  "Jordan Standard Time": "Asia/Amman",
++  "GTB Standard Time": "Europe/Bucharest",
++  "Middle East Standard Time": "Asia/Beirut",
++  "Egypt Standard Time": "Africa/Cairo",
++  "E. Europe Standard Time": "Europe/Chisinau",
++  "Syria Standard Time": "Asia/Damascus",
++  "West Bank Standard Time": "Asia/Hebron",
++  "South Africa Standard Time": "Africa/Johannesburg",
++  "FLE Standard Time": "Europe/Kiev",
++  "Israel Standard Time": "Asia/Jerusalem",
++  "South Sudan Standard Time": "Africa/Juba",
++  "Kaliningrad Standard Time": "Europe/Kaliningrad",
++  "Sudan Standard Time": "Africa/Khartoum",
++  "Libya Standard Time": "Africa/Tripoli",
++  "Namibia Standard Time": "Africa/Windhoek",
++  "Arabic Standard Time": "Asia/Baghdad",
++  "Turkey Standard Time": "Europe/Istanbul",
++  "Arab Standard Time": "Asia/Riyadh",
++  "Belarus Standard Time": "Europe/Minsk",
++  "Russian Standard Time": "Europe/Moscow",
++  "E. Africa Standard Time": "Africa/Nairobi",
++  "Iran Standard Time": "Asia/Tehran",
++  "Arabian Standard Time": "Asia/Dubai",
++  "Astrakhan Standard Time": "Europe/Astrakhan",
++  "Azerbaijan Standard Time": "Asia/Baku",
++  "Russia Time Zone 3": "Europe/Samara",
++  "Mauritius Standard Time": "Indian/Mauritius",
++  "Saratov Standard Time": "Europe/Saratov",
++  "Georgian Standard Time": "Asia/Tbilisi",
++  "Volgograd Standard Time": "Europe/Volgograd",
++  "Caucasus Standard Time": "Asia/Yerevan",
++  "Afghanistan Standard Time": "Asia/Kabul",
++  "West Asia Standard Time": "Asia/Tashkent",
++  "Ekaterinburg Standard Time": "Asia/Yekaterinburg",
++  "Pakistan Standard Time": "Asia/Karachi",
++  "Qyzylorda Standard Time": "Asia/Qyzylorda",
++  "India Standard Time": "Asia/Calcutta",
++  "Sri Lanka Standard Time": "Asia/Colombo",
++  "Nepal Standard Time": "Asia/Katmandu",
++  "Central Asia Standard Time": "Asia/Bishkek",
++  "Bangladesh Standard Time": "Asia/Dhaka",
++  "Omsk Standard Time": "Asia/Omsk",
++  "Myanmar Standard Time": "Asia/Rangoon",
++  "SE Asia Standard Time": "Asia/Bangkok",
++  "Altai Standard Time": "Asia/Barnaul",
++  "W. Mongolia Standard Time": "Asia/Hovd",
++  "North Asia Standard Time": "Asia/Krasnoyarsk",
++  "N. Central Asia Standard Time": "Asia/Novosibirsk",
++  "Tomsk Standard Time": "Asia/Tomsk",
++  "China Standard Time": "Asia/Shanghai",
++  "North Asia East Standard Time": "Asia/Irkutsk",
++  "Singapore Standard Time": "Asia/Singapore",
++  "W. Australia Standard Time": "Australia/Perth",
++  "Taipei Standard Time": "Asia/Taipei",
++  "Ulaanbaatar Standard Time": "Asia/Ulaanbaatar",
++  "Aus Central W. Standard Time": "Australia/Eucla",
++  "Transbaikal Standard Time": "Asia/Chita",
++  "Tokyo Standard Time": "Asia/Tokyo",
++  "North Korea Standard Time": "Asia/Pyongyang",
++  "Korea Standard Time": "Asia/Seoul",
++  "Yakutsk Standard Time": "Asia/Yakutsk",
++  "Cen. Australia Standard Time": "Australia/Adelaide",
++  "AUS Central Standard Time": "Australia/Darwin",
++  "E. Australia Standard Time": "Australia/Brisbane",
++  "AUS Eastern Standard Time": "Australia/Sydney",
++  "West Pacific Standard Time": "Pacific/Port_Moresby",
++  "Tasmania Standard Time": "Australia/Hobart",
++  "Vladivostok Standard Time": "Asia/Vladivostok",
++  "Lord Howe Standard Time": "Australia/Lord_Howe",
++  "Bougainville Standard Time": "Pacific/Bougainville",
++  "Russia Time Zone 10": "Asia/Srednekolymsk",
++  "Magadan Standard Time": "Asia/Magadan",
++  "Norfolk Standard Time": "Pacific/Norfolk",
++  "Sakhalin Standard Time": "Asia/Sakhalin",
++  "Central Pacific Standard Time": "Pacific/Guadalcanal",
++  "Russia Time Zone 11": "Asia/Kamchatka",
++  "New Zealand Standard Time": "Pacific/Auckland",
++  "UTC+12": "Etc/GMT-12",
++  "Fiji Standard Time": "Pacific/Fiji",
++  "Chatham Islands Standard Time": "Pacific/Chatham",
++  "UTC+13": "Etc/GMT-13",
++  "Tonga Standard Time": "Pacific/Tongatapu",
++  "Samoa Standard Time": "Pacific/Apia",
++  "Line Islands Standard Time": "Pacific/Kiritimati",
++};
+-- 
+2.55.0
+

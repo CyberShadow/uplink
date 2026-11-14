@@ -4252,7 +4252,11 @@ request).
   tests and screenshots can seed one; `0009`, events' reminders;
   `0010`, answers to meeting requests (`accept`, `tentativelyAccept`,
   `decline`, which takes the event off the calendar); `0013`, events'
-  `lastModifiedDateTime` (by which lists of every kind order them, §8.7).
+  `lastModifiedDateTime` (by which lists of every kind order them, §8.7); `0014`, times in
+  Windows' and IANA's time zones (CLDR's mapping), series expanded in
+  theirs across daylight saving time, relative monthly and yearly
+  patterns, `transactionId` (creating an event with one again gives the
+  event created), and `cancel`.
 - **IMAP, POP3, SMTP and JMAP:** Stalwart (single-binary Rust mail
   server, from nixpkgs; IMAP, POP3, SMTP and JMAP), a real server rather
   than a fake. The Rust tests (`tests/imap_sync.rs`, `tests/pop3_sync.rs`,
