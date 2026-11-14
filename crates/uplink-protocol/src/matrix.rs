@@ -409,9 +409,6 @@ pub enum MatrixContent {
     Name { name: String },
     /// Sets the room's topic (`m.room.topic`); empty takes it away.
     Topic { topic: String },
-    /// Pins the room's event `event`, or unpins it
-    /// (`m.room.pinned_events`, of the events pinned when it is sent).
-    Pin { event: String, pinned: bool },
     /// Invites, kicks, bans or unbans `user`, a Matrix user id.
     Member {
         user: String,
@@ -424,13 +421,11 @@ impl MatrixContent {
     /// Whether, once sent, it is taken back if cancelled (SPEC §6.7,
     /// §9.3), as nearly as Matrix allows: a message, a file, a reaction or
     /// an edit is redacted (others may have seen it; an edit redacted
-    /// shows the message as it was), a pin reversed. A redaction cannot
+    /// shows the message as it was). A redaction cannot
     /// be taken back; a name, topic or change to a member is not, yet.
     pub fn retractable(&self) -> bool {
         match self {
-            Self::Text { .. } | Self::Reaction { .. } | Self::File { .. } | Self::Pin { .. } => {
-                true
-            }
+            Self::Text { .. } | Self::Reaction { .. } | Self::File { .. } => true,
             Self::Redaction { .. }
             | Self::Name { .. }
             | Self::Topic { .. }
@@ -523,6 +518,29 @@ pub struct PendingRoomTags {
     pub op: crate::compose::PendingOp,
     /// The changes yet to reach the homeserver.
     pub changes: Vec<RoomTagChange>,
+    /// Why the homeserver refused one, if it did: it needs a decision,
+    /// which undoing the op makes.
+    pub refused: Option<String>,
+}
+
+/// A room's event pinned, or unpinned (`m.room.pinned_events`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PinChange {
+    pub room: RoomId,
+    /// The event's Matrix id.
+    pub event: String,
+    pub pinned: bool,
+}
+
+/// Events being pinned or unpinned by one op.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PendingPins {
+    /// The op that asked: undoing it puts the pins back.
+    pub op: crate::compose::PendingOp,
+    /// The changes yet to reach the homeserver.
+    pub changes: Vec<PinChange>,
     /// Why the homeserver refused one, if it did: it needs a decision,
     /// which undoing the op makes.
     pub refused: Option<String>,

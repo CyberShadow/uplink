@@ -13,6 +13,7 @@ use crate::{
     crawl::Crawler,
     image_packs, markdown,
     membership::Memberships,
+    pins::Pins,
     reconciler::{self, Claimed, Homeserver, Kind, Pushed, Settled},
     room_tags::{self, Tags},
     rooms::{
@@ -1026,13 +1027,15 @@ impl Sender {
         let now = send::now_ms();
         self.observe(Settled::<Memberships>::new(now, true)).await?;
         self.observe(Settled::<Orders>::new(now, true)).await?;
-        self.observe(Settled::<Tags>::new(now, true)).await
+        self.observe(Settled::<Tags>::new(now, true)).await?;
+        self.observe(Settled::<Pins>::new(now, true)).await
     }
 
     async fn step(&self) -> Result<()> {
         self.reconcile::<Memberships>().await?;
         self.reconcile::<Orders>().await?;
         self.reconcile::<Tags>().await?;
+        self.reconcile::<Pins>().await?;
         self.send_due().await?;
         self.take_back_due().await?;
         self.push_receipts().await
@@ -1369,22 +1372,6 @@ impl Sender {
                 .send_state_event_raw("m.room.topic", "", json!({ "topic": topic }))
                 .await
                 .map(|sent| sent.event_id),
-            MatrixContent::Pin { event, pinned } => {
-                // Of the events pinned now, as the client has them: others
-                // pinned meanwhile stay.
-                let now: Vec<String> = room
-                    .pinned_event_ids()
-                    .unwrap_or_default()
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect();
-                let Some(list) = pins(&now, event, *pinned) else {
-                    return Ok(Ok(None));
-                };
-                room.send_state_event_raw("m.room.pinned_events", "", json!({ "pinned": list }))
-                    .await
-                    .map(|sent| sent.event_id)
-            }
             MatrixContent::Member {
                 user,
                 action,
@@ -1447,17 +1434,6 @@ impl Sender {
             .observe(self.account.clone(), observation)
             .await
             .map(drop)
-    }
-}
-
-/// The events pinned once `event` is pinned (last), or unpinned: `None`
-/// if it is so already.
-pub fn pins(now: &[String], event: &str, pinned: bool) -> Option<Vec<String>> {
-    let has = now.iter().any(|e| e == event);
-    match (pinned, has) {
-        (true, false) => Some(now.iter().cloned().chain([event.to_owned()]).collect()),
-        (false, true) => Some(now.iter().filter(|e| *e != event).cloned().collect()),
-        (true, true) | (false, false) => None,
     }
 }
 

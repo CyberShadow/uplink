@@ -136,7 +136,7 @@ function AccountSection(props: { account: AccountOutbox; provider: MailProvider 
 
 function MatrixRows(props: { pending: Extract<Pending, { kind: 'matrix' }>; failing: boolean }) {
   const { matrix, ops } = useServices()
-  const { sends, memberships, space_orders, room_tags, receipts } = props.pending
+  const { sends, memberships, space_orders, room_tags, pins, receipts } = props.pending
   const room = (id: number) => matrix.rooms.value?.find((r) => r.id === id)?.name ?? 'a room'
   return (
     <>
@@ -171,6 +171,28 @@ function MatrixRows(props: { pending: Extract<Pending, { kind: 'matrix' }>; fail
                 ? `the homeserver refused: ${refused}`
                 : `${props.failing ? 'waiting' : 'to go'}: ${changes
                     .map((c) => `${c.desired ? '+' : '−'}${tagName(c.tag)} ${room(c.room)}`)
+                    .join(', ')}`}
+            </span>
+          </span>
+          <span />
+          <span class={outgoing.actions}>
+            <button type="button" onMouseDown={keepFocus} onClick={() => ops.undo(op.id)}>
+              Undo
+            </button>
+          </span>
+        </li>
+      ))}
+      {pins.map(({ op, changes, refused }) => (
+        <li key={`pins:${op.id}`} class={styles.row}>
+          <Unused />
+          <span class={styles.from}>{dateTime(op.ts)}</span>
+          <span class={styles.summary}>
+            <span class={styles.subject}>{op.description}</span>
+            <span class={styles.snippet}>
+              {refused !== null
+                ? `the homeserver refused: ${refused}`
+                : `${props.failing ? 'waiting' : 'to go'}: ${changes
+                    .map((c) => `${c.pinned ? 'pin' : 'unpin'} in ${room(c.room)}`)
                     .join(', ')}`}
             </span>
           </span>

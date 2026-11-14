@@ -127,7 +127,7 @@ export function lineActions(line: Line, matrix: MatrixStore): LineActions {
     actions.delete = () => matrix.send(room.id, { type: 'redaction', event: event.event_id })
   }
   if (joined && room.may_pin && message && !event.redacted && !deleting) {
-    actions.pin = { pinned, toggle: () => matrix.send(room.id, { type: 'pin', event: event.event_id, pinned: !pinned }) }
+    actions.pin = { pinned, toggle: () => matrix.setPinned(room.id, event.event_id, !pinned) }
   }
   return actions
 }

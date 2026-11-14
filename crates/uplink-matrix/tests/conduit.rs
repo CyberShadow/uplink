@@ -234,6 +234,20 @@ impl Uplink {
     }
 
     /// How many of the room's sends are not yet reconciled.
+    /// The pins of the outbox: asked for, and not yet seen so.
+    async fn outbox_pins(&self) -> usize {
+        let mut conn = uplink_storage::open_reader(self.dir.path()).unwrap();
+        let tx = conn.transaction().unwrap();
+        uplink_matrix::outbox::outbox(&tx)
+            .unwrap()
+            .into_iter()
+            .map(|a| match a.pending {
+                uplink_protocol::compose::Pending::Matrix { pins, .. } => pins.len(),
+                other => panic!("{other:?}"),
+            })
+            .sum()
+    }
+
     async fn sends(&self, room: &Room) -> usize {
         match self
             .matrix
@@ -2126,18 +2140,51 @@ async fn members_are_listed_and_managed_and_the_room_renamed() {
         .unwrap()
         .event_id
         .clone();
-    for pin in [true, false] {
-        send(MatrixContent::Pin {
-            event: pinned.clone(),
-            pinned: pin,
-        })
-        .await;
-        let want = if pin { vec![pinned.clone()] } else { vec![] };
-        eventually("the pins to sync back", || async {
-            (uplink.room(bob_room.room_id()).await?.pinned == want).then_some(())
-        })
-        .await;
+    // Two at once: each write is of all uplink has pinned, so neither is
+    // lost to the other.
+    let earlier = uplink
+        .timeline(&room)
+        .await
+        .iter()
+        .rev()
+        .nth(1)
+        .unwrap()
+        .event_id
+        .clone();
+    for event in [&earlier, &pinned] {
+        uplink
+            .matrix
+            .set_pinned(room.id, event.clone(), true)
+            .await
+            .unwrap();
     }
+    let at_homeserver = || {
+        bob_room
+            .pinned_event_ids()
+            .unwrap_or_default()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+    };
+    eventually("both pins to reach the homeserver", || async {
+        (at_homeserver() == [earlier.clone(), pinned.clone()]).then_some(())
+    })
+    .await;
+    uplink
+        .matrix
+        .set_pinned(room.id, earlier.clone(), false)
+        .await
+        .unwrap();
+    eventually("the unpin to reach the homeserver", || async {
+        (at_homeserver() == [pinned.clone()]).then_some(())
+    })
+    .await;
+    eventually("the pins to be read back", || async {
+        (uplink.room(bob_room.room_id()).await?.pinned == [pinned.clone()]
+            && uplink.outbox_pins().await == 0)
+            .then_some(())
+    })
+    .await;
 
     let membership_of = |user: &'static str, wanted: MemberState| {
         let members = &members;

@@ -5,6 +5,7 @@ use crate::{
     client::{self, Clients},
     image_packs, markdown, media,
     membership::ChangeMembership,
+    pins::SetPins,
     preview,
     query::Rooms,
     room_tags::{self, SetRoomTags},
@@ -23,8 +24,8 @@ use uplink_protocol::{
     compose::BlobId,
     matrix::{
         GapId, MatrixAccount, MatrixContent, MatrixSendId, MemberAction, MemberInfo, MemberReceipt,
-        MemberState, Membership, MembershipChange, NewRoom, RoomEventId, RoomId, RoomMember,
-        RoomPowers, RoomTagChange, SpaceOrderChange, TimelinePage, VerificationAnswer,
+        MemberState, Membership, MembershipChange, NewRoom, PinChange, RoomEventId, RoomId,
+        RoomMember, RoomPowers, RoomTagChange, SpaceOrderChange, TimelinePage, VerificationAnswer,
     },
     ErrorCode, ServerError, ServerResponse,
 };
@@ -1092,11 +1093,6 @@ impl Matrix {
                     return invalid("an invitation has no reason".into());
                 }
             }
-            MatrixContent::Pin { event, .. } => {
-                if <&matrix_sdk::ruma::EventId>::try_from(event.as_str()).is_err() {
-                    return invalid(format!("not a Matrix event id: {event:?}"));
-                }
-            }
             MatrixContent::Text { .. }
             | MatrixContent::Reaction { .. }
             | MatrixContent::Redaction { .. }
@@ -1187,18 +1183,8 @@ impl Matrix {
                             event(reply_to)?;
                         }
                     }
-                    // Only stored events are pinned; any is unpinned.
-                    MatrixContent::Pin {
-                        event: of,
-                        pinned: true,
-                    } => {
-                        if event(of)?.redacted {
-                            return Err(error(ErrorCode::Conflict, format!("{of} is redacted")));
-                        }
-                    }
                     // Whether the account may is the homeserver's to say.
-                    MatrixContent::Pin { pinned: false, .. }
-                    | MatrixContent::Name { .. }
+                    MatrixContent::Name { .. }
                     | MatrixContent::Topic { .. }
                     | MatrixContent::Member { .. } => {}
                 }
@@ -1292,6 +1278,62 @@ impl Matrix {
             })
             .await?;
         self.dispatcher.answer(OrderSpaces { changes }).await
+    }
+
+    /// Pinning the joined room's stored event `event`, not deleted, or
+    /// unpinning any. Whether the account may is the homeserver's to say.
+    pub async fn set_pinned(&self, room: RoomId, event: String, pinned: bool) -> Response {
+        if <&matrix_sdk::ruma::EventId>::try_from(event.as_str()).is_err() {
+            return Err(error(
+                ErrorCode::Invalid,
+                format!("not a Matrix event id: {event:?}"),
+            ));
+        }
+        let accounts = self.accounts.clone();
+        let of = event.clone();
+        self.reader
+            .read(move |conn| {
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                let standing = rooms::standing(&tx, room)
+                    .map_err(internal)?
+                    .ok_or_else(|| no_room(room))?;
+                let joined = standing.membership == Membership::Joined
+                    && accounts.iter().any(|a| a.id == standing.account);
+                if !joined {
+                    return Err(error(
+                        ErrorCode::Invalid,
+                        format!(
+                            "room {} is not a joined room of a configured account",
+                            room.0
+                        ),
+                    ));
+                }
+                if !pinned {
+                    return Ok(());
+                }
+                let stored = rooms::stored_event(&tx, room, &of)
+                    .map_err(internal)?
+                    .ok_or_else(|| {
+                        error(
+                            ErrorCode::NotFound,
+                            format!("no event {of} in room {}", room.0),
+                        )
+                    })?;
+                if stored.redacted {
+                    return Err(error(ErrorCode::Conflict, format!("{of} is redacted")));
+                }
+                Ok(())
+            })
+            .await?;
+        self.dispatcher
+            .answer(SetPins {
+                changes: vec![PinChange {
+                    room,
+                    event,
+                    pinned,
+                }],
+            })
+            .await
     }
 
     /// Tagging stored rooms `add` and untagging them `remove`.

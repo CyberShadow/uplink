@@ -316,10 +316,11 @@ pub enum ClientRequest {
     ListImagePacks {
         room: RoomId,
     },
-    /// Send to the room: a message, a reaction, a redaction or a file.
-    /// `key`, chosen by the client (a UUID), is the send's: asked again
-    /// with it (resent on a new connection, say), it is answered with the
-    /// entry that queued it, and not sent twice.
+    /// Send to the room: a message, a reaction, a redaction, a file, a
+    /// name, a topic or a change to a member. `key`, chosen by the client
+    /// (a UUID), is the send's: asked again with it (resent on a new
+    /// connection, say), it is answered with the entry that queued it, and
+    /// not sent twice.
     SendMatrixMessage {
         room: RoomId,
         key: String,
@@ -458,6 +459,13 @@ pub enum ClientRequest {
     /// space of the same account.
     OrderSpaces {
         changes: Vec<matrix::SpaceOrderChange>,
+    },
+    /// Pin the room's event `event`, or unpin it (`m.room.pinned_events`):
+    /// a stored event not deleted is pinned; any is unpinned.
+    SetPinned {
+        room: RoomId,
+        event: String,
+        pinned: bool,
     },
     /// Tag rooms and untag them (`m.tag`): added tags are `m.favourite`,
     /// `m.lowpriority` or the user's own, `u.` and a name. A favourite

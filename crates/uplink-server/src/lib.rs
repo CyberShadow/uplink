@@ -1312,6 +1312,11 @@ impl Backend for Services {
                 self.matrix.change_membership(room, change).await
             }
             ClientRequest::OrderSpaces { changes } => self.matrix.order_spaces(changes).await,
+            ClientRequest::SetPinned {
+                room,
+                event,
+                pinned,
+            } => self.matrix.set_pinned(room, event, pinned).await,
             ClientRequest::ModifyRoomTags { rooms, add, remove } => {
                 self.matrix.modify_room_tags(rooms, add, remove).await
             }

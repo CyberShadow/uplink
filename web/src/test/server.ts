@@ -58,6 +58,8 @@ import type {
   VerificationPhase,
   Membership,
   PendingRoomTags,
+  PendingPins,
+  PinChange,
   PendingSpaceOrders,
   Room,
   RoomEvent,
@@ -259,6 +261,7 @@ export class FakeServer implements Requester, Subscriber, Blobs {
   /** Spaces reordered, not yet at the homeserver. */
   private spaceOrders: PendingSpaceOrders[] = []
   private roomTags: PendingRoomTags[] = []
+  private pins: PendingPins[] = []
   readonly events = new Map<RoomId, RoomEvent[]>()
   /** Of Matrix accounts, their security: unverified until recovered. */
   readonly security = new Map<string, MatrixSecurity>()
@@ -635,7 +638,12 @@ export class FakeServer implements Requester, Subscriber, Blobs {
   /** The room's pinned events are `events`, as a sync says. */
   pin(room: RoomId, events: readonly string[]) {
     this.rooms.find((r) => r.id === room)!.pinned = [...events]
-    this.observe('mx', [{ type: 'rooms_changed', rooms: [room] }])
+    // The pins asked for, as they are now.
+    this.pins = []
+    this.observe('mx', [
+      { type: 'rooms_changed', rooms: [room] },
+      { type: 'outbox_changed', accounts: ['mx'] },
+    ])
   }
 
   /** A message of the thread whose root is `root` arrives: the root sums
@@ -1276,7 +1284,7 @@ export class FakeServer implements Requester, Subscriber, Blobs {
             op: { id: this.membershipBy.get(r.id)!, description: `${r.pending === 'join' ? 'Joined' : 'Left'} '${r.name}'`, ts: 0 },
             refused: r.membership_error,
           }))
-        const matrixPending = [this.matrixSends, memberships, this.spaceOrders, this.roomTags]
+        const matrixPending = [this.matrixSends, memberships, this.spaceOrders, this.roomTags, this.pins]
         if (matrixPending.some((pending) => pending.length > 0)) {
           accounts.push({
             account: 'mx',
@@ -1287,6 +1295,7 @@ export class FakeServer implements Requester, Subscriber, Blobs {
               memberships,
               space_orders: [...this.spaceOrders].reverse(),
               room_tags: [...this.roomTags].reverse(),
+              pins: [...this.pins].reverse(),
               receipts: [],
             },
           })
@@ -1713,6 +1722,8 @@ export class FakeServer implements Requester, Subscriber, Blobs {
       }
       case 'order_spaces':
         return { type: 'dispatched', tx_log_id: this.orderSpaces(body.changes) }
+      case 'set_pinned':
+        return { type: 'dispatched', tx_log_id: this.setPins([{ room: body.room, event: body.event, pinned: body.pinned }]) }
       case 'modify_room_tags':
         return {
           type: 'dispatched',
@@ -1775,6 +1786,31 @@ export class FakeServer implements Requester, Subscriber, Blobs {
     this.roomTags.push({ op: { id, description, ts: 0 }, changes: done, refused: null })
     this.undoable.set(id, {
       revert: () => this.setRoomTags(done.map((c) => ({ ...c, desired: !c.desired }))),
+      undone: false,
+    })
+    return id
+  }
+
+  /** Pins events, as the server applies `SetPins`: shown at once, as
+   * asked for. */
+  private setPins(changes: PinChange[]): number {
+    const done: PinChange[] = []
+    for (const change of changes) {
+      const room = this.rooms.find((r) => r.id === change.room)!
+      if (room.pinned.includes(change.event) === change.pinned) continue
+      room.pinned = change.pinned ? [...room.pinned, change.event] : room.pinned.filter((e) => e !== change.event)
+      done.push(change)
+    }
+    const pinned = done.filter((c) => c.pinned).length
+    const description =
+      done.length === 0 ? 'Changed nothing' : pinned > 0 ? 'Pinned a message' : 'Unpinned a message'
+    const id = this.commit({ type: 'user' }, description, [
+      { type: 'rooms_changed', rooms: [...new Set(done.map((c) => c.room))] },
+      { type: 'outbox_changed', accounts: ['mx'] },
+    ])
+    this.pins.push({ op: { id, description, ts: 0 }, changes: done, refused: null })
+    this.undoable.set(id, {
+      revert: () => this.setPins(done.map((c) => ({ ...c, pinned: !c.pinned }))),
       undone: false,
     })
     return id

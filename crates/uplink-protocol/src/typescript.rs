@@ -187,6 +187,8 @@ fn declarations() -> String {
         PendingSpaceOrders,
         RoomTagChange,
         PendingRoomTags,
+        PinChange,
+        PendingPins,
         RoomsChanged,
         TimelineAdded,
         TimelineChanged,

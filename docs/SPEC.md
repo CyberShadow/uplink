@@ -631,7 +631,16 @@ CREATE TABLE matrix_room (
   -- generated from it: membership ('joined' | 'invited' | 'left', as had),
   -- desired and membership_by (asked for, and by which op, while pending),
   -- membership_decision (a refusal waiting for the user)
+  pins_known_at INTEGER NOT NULL,    -- of events with no matrix_room_pin row (V0075)
   UNIQUE (account_id, room_id)
+);
+CREATE TABLE matrix_room_pin (  -- an event pinned, or asked about (V0075; §9.5)
+  room         INTEGER NOT NULL REFERENCES matrix_room(id),
+  event        TEXT NOT NULL,        -- its Matrix id; it need not be stored
+  field        TEXT NOT NULL,        -- Field<bool> as JSON (§6.6)
+  pos          INTEGER,              -- its place in m.room.pinned_events, as observed
+  -- generated from it: desired, desired_by (the opinion), decision
+  PRIMARY KEY (room, event)
 );
 CREATE TABLE matrix_event (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1370,7 +1379,7 @@ label (All Mail) and Trash and Spam apart by itself (§8.1).
 Each account runs a reconciler (its sync task) that, after every commit
 touching its state, pushes the differences — Gmail `messages.batchModify`
 and draft `send`; Graph `PATCH`, `move` and draft `send`; Matrix sends,
-joins, leaves, receipts, tags and space orders; Graph `accept`,
+joins, leaves, receipts, tags, pins and space orders; Graph `accept`,
 `tentativelyAccept` and `decline`, and events' `POST`, `PATCH`,
 `DELETE` and `cancel` (the calendar's sync task). The UI shows desired state
 immediately, so actions feel instant and survive a provider outage.
@@ -1679,10 +1688,10 @@ the providers, as last observed, match what the user has done.
 
 **Not yet so.** The crates predate this model, and each reconciles in
 its own way: the model is implemented, and simulated, as
-`uplink_tx_log::reconcile`, and Matrix room tags, space orders (§9.5)
-and memberships (§9.7), calendar answers (§10.3) and mail labels (§8)
-use it, and an IMAP move re-keys its entry (§6.6.5); nothing uses limbo
-yet. Known to fail meanwhile: Matrix pins (built from the SDK's store).
+`uplink_tx_log::reconcile`, and Matrix room tags, pinned events, space
+orders (§9.5) and memberships (§9.7), calendar answers (§10.3) and mail
+labels (§8) use it, and an IMAP move re-keys its entry (§6.6.5); nothing
+uses limbo yet.
 
 ### 6.7 Sends: desired state fulfilled once
 
@@ -3076,11 +3085,6 @@ JSON since V0026) is one of:
 - the room's **name** or **topic** (`m.room.name`, `m.room.topic`; empty
   takes it away), as state events. Setting state is idempotent, so a
   retry is safe;
-- a **pin** or an **unpin** of an event (`m.room.pinned_events`): of the
-  events pinned as the client has them when it is sent, so that others
-  pinned meanwhile stay; the pin goes last. One pinned already, or not
-  pinned, sends nothing. Only a stored event that is not deleted is
-  pinned; any is unpinned;
 - a change to a **member**: inviting, kicking (of one invited, revoking
   the invitation), banning or unbanning a user, with a reason (but an
   invitation), through the membership endpoints. These say no event id:
@@ -3123,8 +3127,7 @@ delay), a send is taken back as nearly as Matrix allows
 (`MatrixContent::retractable`), however long ago it was sent: a message,
 a reply, a file or a reaction is redacted (others may have read it, or
 been notified, and the room shows it deleted); an edit is redacted, which
-shows the message as it was before it; a pin is reversed (and one that
-changed nothing needs nothing). The sending loop does it as it sends,
+shows the message as it was before it. The sending loop does it as it sends,
 after the queued messages: it claims the send (`taking_back`), sends
 what takes it back with transaction id `uplink-<id>-back`, and marks it
 `taken_back`, reconciled. Failing for a passing reason, or interrupted,
@@ -3325,11 +3328,28 @@ which a verified device gives.
   starts, and expires those unknown long enough. A refusal, or a tag not
   kept, waits in the outbox, listed by op, for a decision (undoing the
   op). `Room.tags` lists those shown (as asked), sorted.
-- **Pinned events**: a room records, as its client has them on sync,
-  the events pinned (`m.room.pinned_events`, in its order) and whether
-  the account may pin (by the room's power levels; of a room invited
-  to, the default levels'), V0033: `matrix_room.pinned` (a JSON array),
-  `may_pin`. `Room.pinned` lists them; `ListPinned` gives those stored.
+- **Pinned events**: whether an event is pinned is a field (§6.6.1) of
+  the room's set `m.room.pinned_events`, keyed by the event, V0075:
+  `matrix_room_pin.field`, with its place in the list as last observed
+  (`pos`); an event of no row is as `matrix_room.pins_known_at` says of
+  all those: neither pinned nor asked to be. Observed are the list as
+  the client has it after each sync, and as read back (`GET
+  .../state/m.room.pinned_events`, none being an empty list). Whether
+  the account may pin is the room's power levels' (of a room invited
+  to, the default levels'), V0033: `may_pin`. `SetPinned { room, event,
+  pinned }` applies `SetPins`, a list of `{ room, event, pinned }`,
+  skipping those in effect; only a stored event that is not deleted is
+  pinned, any is unpinned. Matrix writes the list whole, so the sender
+  loop claims the pins wanted and writes, per room, every event's pin
+  as last pushed, else as observed (§6.6.1, sets): those of the
+  homeserver in its order, then those pinned since, in the order
+  asked. So a pin pushed and not yet synced back is not lost to the
+  next, nor another member's pin seen. Each pin pushed records the
+  write's outcome; the room is read back until confirmed. A refusal, or
+  a pin not kept, waits in the outbox, listed by op, for a decision.
+  `Room.pinned` lists those shown (as asked), in that order;
+  `ListPinned` gives those stored. V0075 made the pins and unpins
+  queued as sends (and their recorded ops) opinions of these.
 - A room is recorded when a sync brings state changes too, not only
   timeline events, so that a name, avatar or space's children changed in
   a gappy sync are seen.

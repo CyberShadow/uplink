@@ -927,6 +927,126 @@ mod tests {
         );
     }
 
+    /// Pinned events become fields (V0075): those pinned, observed, in
+    /// their order; pins and unpins sent, not yet reconciled, the pins
+    /// asked for, refused ones waiting for a decision; and the recorded
+    /// ops of pin sends the pins they asked for, undone by pins too.
+    #[test]
+    fn pins_become_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = migrated_to(dir.path(), 74);
+        let pin = |event: &str, pinned: bool| {
+            format!(r#"{{"type":"pin","event":"{event}","pinned":{pinned}}}"#)
+        };
+        let sent = |room: i64, content: &str| format!(r#"{{"room":{room},"content":{content}}}"#);
+        conn.execute_batch(&format!(
+            r#"INSERT INTO account (id, kind) VALUES ('mx', 'matrix');
+               INSERT INTO matrix_room (id, account_id, room_id, name, encrypted,
+                                        membership_field, pinned)
+               VALUES (1, 'mx', '!a:x', 'A', 0,
+                       '{{"desired":"joined","opinion":null,"observed":"joined","known_at":0,
+                          "attempt":null,"straggler":null,"check":null,"not_kept":0,
+                          "decision":null}}',
+                       '["$a","$b","$a"]');
+               INSERT INTO tx_log (id, ts, description, op_type, op_json, inverse_type,
+                                   inverse_json, events_json)
+               VALUES (1, 0, '', 'matrix.send', '{c}', 'matrix.cancel_send', '{{"item":10}}', '[]'),
+                      (2, 0, '', 'matrix.send', '{a}', 'matrix.cancel_send', '{{"item":11}}', '[]'),
+                      (3, 0, '', 'matrix.cancel_send', '{{"item":12}}', 'matrix.send', '{d}', '[]'),
+                      (4, 0, '', 'matrix.send', '{text}', 'matrix.cancel_send', '{{"item":13}}',
+                       '[]'),
+                      (5, 0, '', 'matrix.send', '{e}', 'matrix.cancel_send', '{{"item":14}}', '[]');
+               INSERT INTO matrix_send (id, room, content, queued_at, wanted, desired_by, state,
+                                        error, synced)
+               VALUES (10, 1, '{pin_c}', 0, 1, 1, 'queued', NULL, 0),
+                      (11, 1, '{pin_a}', 0, 1, 2, 'refused', 'no', 0),
+                      (13, 1, '{{"type":"text","body":"hi"}}', 0, 1, 4, 'queued', NULL, 0),
+                      (14, 1, '{pin_e}', 0, 1, 5, 'sent', NULL, 1);"#,
+            c = sent(1, &pin("$c", true)),
+            a = sent(1, &pin("$a", false)),
+            d = sent(1, &pin("$d", true)),
+            e = sent(1, &pin("$e", true)),
+            text = sent(1, r#"{"type":"text","body":"hi"}"#),
+            pin_c = pin("$c", true),
+            pin_a = pin("$a", false),
+            pin_e = pin("$e", true),
+        ))
+        .unwrap();
+        drop(conn);
+
+        let conn = open(dir.path()).unwrap();
+        type Pin = (String, bool, Option<i64>, Option<String>, Option<i64>);
+        let pins: Vec<Pin> = conn
+            .prepare(
+                "SELECT event, desired, desired_by, decision, pos FROM matrix_room_pin
+                 ORDER BY event",
+            )
+            .unwrap()
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            pins,
+            [
+                (
+                    "$a".into(),
+                    false,
+                    Some(2),
+                    Some(r#"{"refused":"no"}"#.into()),
+                    Some(0)
+                ),
+                ("$b".into(), true, None, None, Some(1)),
+                ("$c".into(), true, Some(1), None, None),
+            ]
+        );
+        let sends: Vec<i64> = conn
+            .prepare("SELECT id FROM matrix_send")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(sends, [13]);
+        let set_pins = |event: &str, pinned: bool| {
+            format!(r#"{{"changes":[{{"room":1,"event":"{event}","pinned":{pinned}}}]}}"#)
+        };
+        type Logged = (String, String, String, String);
+        let logged: Vec<Logged> = conn
+            .prepare("SELECT op_type, op_json, inverse_type, inverse_json FROM tx_log ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let pins = |op: String, inverse: String| {
+            (
+                "matrix.set_pins".into(),
+                op,
+                "matrix.set_pins".into(),
+                inverse,
+            )
+        };
+        assert_eq!(
+            logged,
+            [
+                pins(set_pins("$c", true), set_pins("$c", false)),
+                pins(set_pins("$a", false), set_pins("$a", true)),
+                pins(set_pins("$d", false), set_pins("$d", true)),
+                (
+                    "matrix.send".into(),
+                    sent(1, r#"{"type":"text","body":"hi"}"#),
+                    "matrix.cancel_send".into(),
+                    r#"{"item":13}"#.into()
+                ),
+                pins(set_pins("$e", true), set_pins("$e", false)),
+            ]
+        );
+        assert!(conn.prepare("SELECT pinned FROM matrix_room").is_err());
+    }
+
     /// Matrix sends' text becomes their content (V0026), and so do the
     /// recorded ops that send it; ids go on past those deleted.
     #[test]

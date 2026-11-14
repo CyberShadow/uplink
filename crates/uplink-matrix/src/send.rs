@@ -8,7 +8,7 @@
 //! unreachable); after, it makes the send unwanted, settled by the
 //! outcome: not sent or refused takes it back. Sent, the task takes it
 //! back as nearly as Matrix allows ([`MatrixContent::retractable`]):
-//! redacts it, or reverses a pin. What can't be taken back, or what the
+//! redacts it. What can't be taken back, or what the
 //! homeserver refused to, needs a decision, which keeping it sent makes.
 //! Wanted again once taken back (the undo undone), it is sent anew.
 //!
@@ -51,23 +51,16 @@ pub fn take_back_transaction_id(item: MatrixSendId) -> String {
     format!("uplink-{}-back", item.0)
 }
 
-/// What takes back `content`, sent as `event_id`: `None` if nothing
-/// need be, as the pin it sent changed nothing.
-fn take_back(content: &MatrixContent, event_id: Option<&str>) -> Option<MatrixContent> {
+/// What takes back `content`, sent as `event_id`: its redaction.
+fn take_back(content: &MatrixContent, event_id: Option<&str>) -> MatrixContent {
     assert!(
         content.retractable(),
         "only what is retractable is taken back"
     );
-    match content {
-        MatrixContent::Pin { event, pinned } => event_id.map(|_| MatrixContent::Pin {
-            event: event.clone(),
-            pinned: !pinned,
-        }),
-        _ => Some(MatrixContent::Redaction {
-            event: event_id
-                .expect("a message, file or reaction is sent as an event")
-                .to_owned(),
-        }),
+    MatrixContent::Redaction {
+        event: event_id
+            .expect("a message, file or reaction is sent as an event")
+            .to_owned(),
     }
 }
 
@@ -164,25 +157,6 @@ fn set_wanted(tx: &Transaction, item: MatrixSendId, wanted: bool) -> Result<()> 
     Ok(())
 }
 
-/// A sent send no longer wanted that nothing need take back (a pin that
-/// changed nothing) is taken back already.
-fn settle_unwanted(tx: &Transaction, item: MatrixSendId) -> Result<()> {
-    let (sent, event_id): (String, Option<String>) = tx.query_row(
-        "SELECT content, event_id FROM matrix_send
-         WHERE id = ?1 AND state = 'sent' AND NOT wanted",
-        [item.0],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
-    let sent = content(&sent);
-    if sent.retractable() && take_back(&sent, event_id.as_deref()).is_none() {
-        tx.execute(
-            "UPDATE matrix_send SET state = 'taken_back' WHERE id = ?1",
-            [item.0],
-        )?;
-    }
-    Ok(())
-}
-
 /// How a message is named in descriptions.
 fn quote(body: &str) -> String {
     const MAX: usize = 40;
@@ -208,8 +182,6 @@ fn named(content: &MatrixContent) -> String {
         MatrixContent::File { name, .. } => quote(name),
         MatrixContent::Name { name } => format!("the name {}", quote(name)),
         MatrixContent::Topic { topic } => format!("the topic {}", quote(topic)),
-        MatrixContent::Pin { pinned: true, .. } => "a pin".to_owned(),
-        MatrixContent::Pin { pinned: false, .. } => "an unpin".to_owned(),
         MatrixContent::Member { user, action, .. } => format!(
             "the {} of {user}",
             match action {
@@ -267,8 +239,6 @@ fn described(tx: &Transaction, room: RoomId, content: &MatrixContent) -> Result<
             "Took the room's topic away".to_owned()
         }
         MatrixContent::Topic { topic } => format!("Set the topic to {}", quote(topic)),
-        MatrixContent::Pin { pinned: true, .. } => "Pinned a message".to_owned(),
-        MatrixContent::Pin { pinned: false, .. } => "Unpinned a message".to_owned(),
         MatrixContent::Member { user, action, .. } => format!(
             "{} {user}",
             match action {
@@ -370,9 +340,6 @@ impl Op for CancelMessage {
                     (_, true) => format!("Took back {body}"),
                     (_, false) => format!("Cancelled sending {body}, which went out"),
                 };
-                if item.state == MatrixSendState::Sent {
-                    settle_unwanted(tx, self.item)?;
-                }
                 Ok(Applied {
                     description,
                     inverse: Inverse::of(&KeepSent { item: self.item }),
@@ -493,9 +460,7 @@ pub fn take_backs_due(conn: &Connection, account: &str) -> Result<Vec<Due>> {
                 item: MatrixSendId(item),
                 room: RoomId(room),
                 room_id,
-                // Those that need nothing are taken back when cancelled.
-                content: take_back(&sent, event_id.as_deref())
-                    .expect("a send that needs nothing to take it back is taken back"),
+                content: take_back(&sent, event_id.as_deref()),
             })
         })
         .collect())
@@ -576,9 +541,6 @@ impl Observation for SendSucceeded {
             (false, true) => format!("Sent {body} before the cancel; taking it back"),
             (false, false) => format!("Sent {body} before the cancel could take it back"),
         };
-        if !item.wanted {
-            settle_unwanted(tx, self.item)?;
-        }
         Ok(Observed {
             description,
             events: changed(tx, item.room)?,

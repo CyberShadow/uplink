@@ -174,6 +174,9 @@ pub enum Pending {
         /// Rooms being tagged or untagged, by the op that asked, newest
         /// first.
         room_tags: Vec<crate::matrix::PendingRoomTags>,
+        /// Events being pinned or unpinned, by the op that asked, newest
+        /// first.
+        pins: Vec<crate::matrix::PendingPins>,
         /// Rooms read past their latest read receipt.
         receipts: Vec<crate::matrix::RoomId>,
     },

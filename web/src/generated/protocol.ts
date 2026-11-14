@@ -276,7 +276,7 @@ shown: boolean,
 /**
  * Caught up on too: the user is done with it (SPEC §12.15).
  */
-fully: boolean, } | { "type": "mark_room_fully_read", room: RoomId, event: RoomEventId, } | { "type": "set_typing", room: RoomId, typing: boolean, } | { "type": "list_receipts", room: RoomId, } | { "type": "list_members", room: RoomId, } | { "type": "list_pinned", room: RoomId, } | { "type": "list_thread", room: RoomId, root: RoomEventId, } | { "type": "search_room", room: RoomId, query: string, before: RoomEventId | null, limit: number, } | { "type": "preview_url", room: RoomId, event: RoomEventId, url: string, } | { "type": "create_matrix_room", account: string, room: NewRoom, } | { "type": "start_direct_chat", account: string, user: string, } | { "type": "join_matrix_room", account: string, room: string, } | { "type": "resolve_room_alias", account: string, alias: string, } | { "type": "get_matrix_security", account: string, } | { "type": "recover_matrix", account: string, recovery: string, } | { "type": "verify_matrix_device", account: string, device: string | null, } | { "type": "answer_verification", account: string, flow_id: string, answer: VerificationAnswer, } | { "type": "import_room_keys", account: string, blob: BlobId, passphrase: string, } | { "type": "change_membership", room: RoomId, change: MembershipChange, } | { "type": "order_spaces", changes: Array<SpaceOrderChange>, } | { "type": "modify_room_tags", rooms: Array<RoomId>, add: Array<string>, remove: Array<string>, } | { "type": "list_events", from: number, to: number, } | { "type": "get_event", event: EventId, } | { "type": "respond_to_event", event: EventId, response: EventResponse, } | { "type": "create_event", account: string, fields: EventFields, time_zone: string, } | { "type": "update_event", event: EventId, series: boolean, fields: EventFields, edited: Array<EventField>, time_zone: string, } | { "type": "delete_event", event: EventId, series: boolean, } | { "type": "list_todos" } | { "type": "create_todo", title: string, notes: string, due: string | null, message: MessageId | null, } | { "type": "edit_todo", todo: TodoId, edit: TodoEdit, } | { "type": "delete_todo", todo: TodoId, };
+fully: boolean, } | { "type": "mark_room_fully_read", room: RoomId, event: RoomEventId, } | { "type": "set_typing", room: RoomId, typing: boolean, } | { "type": "list_receipts", room: RoomId, } | { "type": "list_members", room: RoomId, } | { "type": "list_pinned", room: RoomId, } | { "type": "list_thread", room: RoomId, root: RoomEventId, } | { "type": "search_room", room: RoomId, query: string, before: RoomEventId | null, limit: number, } | { "type": "preview_url", room: RoomId, event: RoomEventId, url: string, } | { "type": "create_matrix_room", account: string, room: NewRoom, } | { "type": "start_direct_chat", account: string, user: string, } | { "type": "join_matrix_room", account: string, room: string, } | { "type": "resolve_room_alias", account: string, alias: string, } | { "type": "get_matrix_security", account: string, } | { "type": "recover_matrix", account: string, recovery: string, } | { "type": "verify_matrix_device", account: string, device: string | null, } | { "type": "answer_verification", account: string, flow_id: string, answer: VerificationAnswer, } | { "type": "import_room_keys", account: string, blob: BlobId, passphrase: string, } | { "type": "change_membership", room: RoomId, change: MembershipChange, } | { "type": "order_spaces", changes: Array<SpaceOrderChange>, } | { "type": "set_pinned", room: RoomId, event: string, pinned: boolean, } | { "type": "modify_room_tags", rooms: Array<RoomId>, add: Array<string>, remove: Array<string>, } | { "type": "list_events", from: number, to: number, } | { "type": "get_event", event: EventId, } | { "type": "respond_to_event", event: EventId, response: EventResponse, } | { "type": "create_event", account: string, fields: EventFields, time_zone: string, } | { "type": "update_event", event: EventId, series: boolean, fields: EventFields, edited: Array<EventField>, time_zone: string, } | { "type": "delete_event", event: EventId, series: boolean, } | { "type": "list_todos" } | { "type": "create_todo", title: string, notes: string, due: string | null, message: MessageId | null, } | { "type": "edit_todo", todo: TodoId, edit: TodoEdit, } | { "type": "delete_todo", todo: TodoId, };
 
 export type ServerResponse = { "type": "undone", tx_log_id: TxLogId, } | { "type": "dispatched", tx_log_id: TxLogId, } | { "type": "done" } | { "type": "matrix_security", security: MatrixSecurity, } | { "type": "room_keys_imported", imported: number, total: number, } | { "type": "accounts", as_of: TxLogId, accounts: Array<Account>, } | { "type": "conversations", as_of: TxLogId, conversations: Array<Conversation>, 
 /**
@@ -945,6 +945,11 @@ space_orders: Array<PendingSpaceOrders>,
  */
 room_tags: Array<PendingRoomTags>, 
 /**
+ * Events being pinned or unpinned, by the op that asked, newest
+ * first.
+ */
+pins: Array<PendingPins>, 
+/**
  * Rooms read past their latest read receipt.
  */
 receipts: Array<RoomId>, } | { "kind": "calendar", 
@@ -1343,7 +1348,7 @@ replaces: string | null,
  * The root of the thread it is of (`m.thread`); then it replies
  * to the thread's root or one of its messages, if to any.
  */
-thread: string | null, } | { "type": "reaction", event: string, key: string, shortcode: string | null, } | { "type": "redaction", event: string, } | { "type": "file", blob: BlobId, name: string, mime: string, reply_to: string | null, } | { "type": "name", name: string, } | { "type": "topic", topic: string, } | { "type": "pin", event: string, pinned: boolean, } | { "type": "member", user: string, action: MemberAction, reason: string | null, };
+thread: string | null, } | { "type": "reaction", event: string, key: string, shortcode: string | null, } | { "type": "redaction", event: string, } | { "type": "file", blob: BlobId, name: string, mime: string, reply_to: string | null, } | { "type": "name", name: string, } | { "type": "topic", topic: string, } | { "type": "member", user: string, action: MemberAction, reason: string | null, };
 
 /**
  * A message being sent, sent and not yet synced back, or sent though
@@ -1421,6 +1426,33 @@ op: PendingOp,
  * The changes yet to reach the homeserver.
  */
 changes: Array<RoomTagChange>, 
+/**
+ * Why the homeserver refused one, if it did: it needs a decision,
+ * which undoing the op makes.
+ */
+refused: string | null, };
+
+/**
+ * A room's event pinned, or unpinned (`m.room.pinned_events`).
+ */
+export type PinChange = { room: RoomId, 
+/**
+ * The event's Matrix id.
+ */
+event: string, pinned: boolean, };
+
+/**
+ * Events being pinned or unpinned by one op.
+ */
+export type PendingPins = { 
+/**
+ * The op that asked: undoing it puts the pins back.
+ */
+op: PendingOp, 
+/**
+ * The changes yet to reach the homeserver.
+ */
+changes: Array<PinChange>, 
 /**
  * Why the homeserver refused one, if it did: it needs a decision,
  * which undoing the op makes.
@@ -1700,4 +1732,4 @@ export type EventChangeKind = "create" | "update" | "delete";
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "f1464891278e8153"
+export const PROTOCOL_VERSION = "9274faca0e311e76"

@@ -38,7 +38,7 @@ use uplink_tx_log::{Applied, Inverse, Observation, Observed, Op};
 use crate::{
     html, image_packs,
     membership::{self, parse_desired, parse_membership},
-    outbox, room_tags, send,
+    outbox, pins, room_tags, send,
     service::ConfiguredAccount,
     space_order,
 };
@@ -347,12 +347,14 @@ impl Observation for Synced {
                 Some(order) => space_order::observe(tx, id, order.clone(), self.as_of)?,
                 None => false,
             };
+            let pinned = pins::observe(tx, id, &room.pinned, self.as_of)?;
             let changed = set_children(tx, id, &room.children)?
                 || upserted
                 || member
                 || tagged
                 || invited
-                || ordered;
+                || ordered
+                || pinned;
             let positions = synced_positions(tx, id, room.events.len())?;
             let inserted = insert_events(tx, id, &room.events, &positions)?;
             if let (true, Some(Some(first))) = (room.limited, inserted.first()) {
@@ -424,7 +426,7 @@ impl Observation for Synced {
 }
 
 /// The room's id, and whether it is new or its name, encryption, type,
-/// avatar, bridge, topic, address, pinned events, power to pin, member count or
+/// avatar, bridge, topic, address, power to pin, member count or
 /// being a direct chat changed. A new room's membership is as observed by
 /// a request sent after `as_of`; an existing one's is the caller's to
 /// observe.
@@ -442,7 +444,6 @@ fn upsert_room(
         Option<String>,
         Option<String>,
         u64,
-        String,
         bool,
         bool,
         Option<String>,
@@ -454,10 +455,9 @@ fn upsert_room(
         Some(b) => (Some(&b.name), Some(&b.icon)),
         None => (None, None),
     };
-    let pinned = serde_json::to_string(&room.pinned)?;
     let existing: Option<Stored> = tx
         .query_row(
-            "SELECT id, name, encrypted, space, avatar, topic, joined_members, pinned,
+            "SELECT id, name, encrypted, space, avatar, topic, joined_members,
                     may_pin, direct, alias, created, bridge_name, bridge_icon
              FROM matrix_room WHERE account_id = ?1 AND room_id = ?2",
             [account, &room.room_id],
@@ -476,7 +476,6 @@ fn upsert_room(
                     r.get(10)?,
                     r.get(11)?,
                     r.get(12)?,
-                    r.get(13)?,
                 ))
             },
         )
@@ -490,7 +489,6 @@ fn upsert_room(
             avatar,
             topic,
             joined,
-            old_pinned,
             may_pin,
             direct,
             alias,
@@ -504,7 +502,6 @@ fn upsert_room(
                 || avatar != room.avatar
                 || topic != room.topic
                 || joined != room.joined_members
-                || old_pinned != pinned
                 || may_pin != room.may_pin
                 || direct != room.direct
                 || alias != room.alias
@@ -514,9 +511,9 @@ fn upsert_room(
             if changed {
                 tx.execute(
                     "UPDATE matrix_room SET name = ?1, encrypted = ?2,
-                       space = ?3, avatar = ?4, topic = ?5, joined_members = ?6, pinned = ?8,
-                       may_pin = ?9, direct = ?10, alias = ?11, created = ?12,
-                       bridge_name = ?13, bridge_icon = ?14
+                       space = ?3, avatar = ?4, topic = ?5, joined_members = ?6,
+                       may_pin = ?8, direct = ?9, alias = ?10, created = ?11,
+                       bridge_name = ?12, bridge_icon = ?13
                      WHERE id = ?7",
                     params![
                         room.name,
@@ -526,7 +523,6 @@ fn upsert_room(
                         room.topic,
                         room.joined_members,
                         id,
-                        pinned,
                         room.may_pin,
                         room.direct,
                         room.alias,
@@ -542,9 +538,9 @@ fn upsert_room(
             let id = tx.query_row(
                 "INSERT INTO matrix_room
                    (account_id, room_id, name, encrypted, membership_field, space, avatar, topic,
-                    joined_members, pinned, may_pin, direct, alias, created,
+                    joined_members, may_pin, direct, alias, created,
                     bridge_name, bridge_icon)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
                  RETURNING id",
                 params![
                     account,
@@ -556,7 +552,6 @@ fn upsert_room(
                     room.avatar,
                     room.topic,
                     room.joined_members,
-                    pinned,
                     room.may_pin,
                     room.direct,
                     room.alias,
@@ -1298,7 +1293,7 @@ pub fn rooms(
                     (SELECT json_group_array(child) FROM
                        (SELECT child FROM matrix_space_child c WHERE c.space = r.id
                         ORDER BY child_order IS NULL, child_order, child)),
-                    r.topic, r.joined_members, {read_pos}, r.pinned, r.may_pin,
+                    r.topic, r.joined_members, {read_pos}, {shown_pins}, r.may_pin,
                     -- Of threads too, as Element counts them.
                     (SELECT count(*) FROM matrix_event e WHERE {unread} AND e.notify),
                     (SELECT count(*) FROM matrix_event e WHERE {unread} AND e.highlight),
@@ -1336,6 +1331,7 @@ pub fn rooms(
             shown_order = space_order::SHOWN,
             shown_tags = room_tags::SHOWN,
             fetched = fetched_whole("?3"),
+            shown_pins = pins::SHOWN,
         );
     Ok(tx
         .prepare(&sql)?
@@ -2172,10 +2168,12 @@ pub fn pinned(tx: &Transaction, room: RoomId) -> Result<Vec<RoomEvent>> {
         tx,
         room,
         &format!(
-            "SELECT {COLUMNS} FROM matrix_room r, json_each(r.pinned) p
-             JOIN matrix_event e ON e.room = r.id AND e.event_id = p.value
+            "SELECT {COLUMNS} FROM matrix_room r
+             JOIN matrix_room_pin p ON p.room = r.id AND p.desired
+             JOIN matrix_event e ON e.room = r.id AND e.event_id = p.event
              WHERE r.id = ?1 AND {LISTED}
-             ORDER BY p.key"
+             ORDER BY {order}",
+            order = pins::ORDER
         ),
         params![room.0],
     )

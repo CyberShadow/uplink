@@ -326,6 +326,11 @@ export class MatrixStore {
     return this.ops.dispatch({ type: 'order_spaces', changes })
   }
 
+  /** Pins the room's event, or unpins it. */
+  setPinned(room: RoomId, event: string, pinned: boolean) {
+    return this.ops.dispatch({ type: 'set_pinned', room, event, pinned })
+  }
+
   /** Tags the rooms `tag`, or, if each has it already, untags them. */
   toggleTag(rooms: readonly Room[], tag: string) {
     return this.setTag(rooms, tag, !rooms.every((r) => r.tags.includes(tag)))

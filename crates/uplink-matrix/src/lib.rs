@@ -12,6 +12,7 @@ pub mod markdown;
 pub mod media;
 pub mod membership;
 pub mod outbox;
+pub mod pins;
 pub mod preview;
 pub mod query;
 pub mod reconciler;
@@ -43,4 +44,5 @@ pub fn register(registry: &mut Registry) {
     registry.register::<membership::RevertMembership>();
     registry.register::<space_order::OrderSpaces>();
     registry.register::<room_tags::SetRoomTags>();
+    registry.register::<pins::SetPins>();
 }

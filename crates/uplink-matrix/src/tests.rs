@@ -415,35 +415,199 @@ async fn pinned_events_are_listed_in_the_order_pinned() {
     let ids: Vec<_> = events.iter().map(|e| e.event_id.as_str()).collect();
     assert_eq!(ids, ["$2", "$1"]);
 
-    // Pinning one not stored, or not an event id, is refused.
-    let pin = |event: &str| uplink_protocol::matrix::MatrixContent::Pin {
-        event: event.into(),
-        pinned: true,
-    };
-    assert!(db
-        .matrix
-        .send_message(room.id, key(), pin("$gone"))
-        .await
-        .is_err());
-    assert!(db
-        .matrix
-        .send_message(room.id, key(), pin("nope"))
-        .await
-        .is_err());
+    // Pinning one not stored, or not an event id, is refused; unpinning
+    // any is not.
+    let pin = |event: &str| db.matrix.set_pinned(room.id, event.into(), true);
+    assert!(pin("$gone").await.is_err());
+    assert!(pin("nope").await.is_err());
+    pin("$1").await.unwrap();
     db.matrix
-        .send_message(room.id, key(), pin("$1"))
+        .set_pinned(room.id, "$gone".into(), false)
         .await
         .unwrap();
+    assert_eq!(db.room().await.pinned, ["$2", "$1"]);
 }
 
-#[test]
-fn pins_keep_others_pinned_meanwhile() {
-    use crate::sync::pins;
-    let now = ["$a".to_owned(), "$b".to_owned()];
-    assert_eq!(pins(&now, "$c", true).unwrap(), ["$a", "$b", "$c"]);
-    assert_eq!(pins(&now, "$a", false).unwrap(), ["$b"]);
-    assert_eq!(pins(&now, "$a", true), None, "pinned already");
-    assert_eq!(pins(&now, "$c", false), None, "not pinned");
+mod pins {
+    use super::*;
+    use crate::{
+        pins::Pins,
+        reconciler::{Claimed, Kind, Pushed, Read},
+    };
+    use uplink_protocol::matrix::PendingPins;
+    use uplink_tx_log::reconcile::{Ended, Outcome};
+
+    impl Db {
+        async fn pin(&self, event: &str, pinned: bool) -> TxLogId {
+            let room = self.room().await.id;
+            match self
+                .matrix
+                .set_pinned(room, event.into(), pinned)
+                .await
+                .unwrap()
+            {
+                ServerResponse::Dispatched { tx_log_id } => tx_log_id,
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+
+        fn conn(&self) -> uplink_storage::rusqlite::Connection {
+            uplink_storage::open_reader(self._dir.path()).unwrap()
+        }
+
+        /// The reconciler claims the pins wanted, and the requests it
+        /// would send: the room's list, and the events it pushes.
+        async fn claim_pins(&self) -> Vec<(Vec<String>, Vec<String>)> {
+            let wanted: Vec<_> = Pins::reconciling(&self.conn(), "mx")
+                .unwrap()
+                .into_iter()
+                .filter(|p| p.field.wanted().is_some())
+                .map(|p| (p.room, p.key))
+                .collect();
+            self.observe(Claimed::<Pins>::new(wanted)).await.unwrap();
+            let conn = self.conn();
+            let in_flight = Pins::reconciling(&conn, "mx")
+                .unwrap()
+                .into_iter()
+                .filter(|p| {
+                    p.field
+                        .attempt
+                        .as_ref()
+                        .is_some_and(|a| a.outcome == Outcome::InFlight)
+                })
+                .collect();
+            Pins::requests(&conn, in_flight)
+                .unwrap()
+                .into_iter()
+                .map(|(list, fields)| (list, fields.into_iter().map(|f| f.key).collect()))
+                .collect()
+        }
+
+        /// The pushes of `events`, claimed, ended so.
+        async fn pushed(&self, events: &[String], ended: Ended) {
+            let room = self.room().await.id;
+            for event in events {
+                let field = Pins::load(&self.conn(), room, event).unwrap();
+                self.observe(Pushed::<Pins> {
+                    room,
+                    key: event.clone(),
+                    value: field.attempt.unwrap().value,
+                    ended: ended.clone(),
+                })
+                .await
+                .unwrap();
+            }
+        }
+
+        /// The room's pins, read back from the homeserver.
+        async fn read_pins(&self, pinned: &[&str]) {
+            let room = self.room().await.id;
+            self.observe(Read::<Pins> {
+                room,
+                read: pinned.iter().map(|p| p.to_string()).collect(),
+                as_of: self.as_of(),
+            })
+            .await
+            .unwrap();
+        }
+
+        fn pending_pins(&self) -> Vec<PendingPins> {
+            match self.outbox().into_iter().next().map(|a| a.pending) {
+                Some(Pending::Matrix { pins, .. }) => pins,
+                None => vec![],
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    fn strings(events: &[&str]) -> Vec<String> {
+        events.iter().map(|e| e.to_string()).collect()
+    }
+
+    /// Each write of the room's list is of every pin as uplink last
+    /// pushed it, else as seen: a pin pushed, not yet seen, is not lost to
+    /// the next, as it was when the list was built from the SDK's store.
+    #[tokio::test]
+    async fn pins_are_written_whole_from_uplinks_own_state() {
+        let db = Db::new();
+        db.sync(&[("$1", "@bob:x"), ("$2", "@bob:x"), ("$3", "@bob:x")], &[])
+            .await;
+        db.sync_room(vec![], &[], &["$1"], None).await;
+
+        let pinned_2 = db.pin("$2", true).await;
+        assert_eq!(db.room().await.pinned, ["$1", "$2"]);
+        let requests = db.claim_pins().await;
+        assert_eq!(requests, [(strings(&["$1", "$2"]), strings(&["$2"]))]);
+        db.pushed(&strings(&["$2"]), Ended::Applied).await;
+
+        // Pinned before $2 is seen pinned: the list keeps it.
+        db.pin("$3", true).await;
+        assert_eq!(db.room().await.pinned, ["$1", "$2", "$3"]);
+        let requests = db.claim_pins().await;
+        assert_eq!(requests, [(strings(&["$1", "$2", "$3"]), strings(&["$3"]))]);
+        db.pushed(&strings(&["$3"]), Ended::Applied).await;
+        assert_eq!(db.pending_pins().len(), 2);
+
+        // Read back, they are done.
+        db.read_pins(&["$1", "$2", "$3"]).await;
+        assert!(db.pending_pins().is_empty());
+        assert!(Pins::reconciling(&db.conn(), "mx").unwrap().is_empty());
+
+        // Undone, $2 is unpinned; the others stay, in their order.
+        db.dispatcher.undo(pinned_2).await.unwrap();
+        assert_eq!(db.room().await.pinned, ["$1", "$3"]);
+        let requests = db.claim_pins().await;
+        assert_eq!(requests, [(strings(&["$1", "$3"]), strings(&["$2"]))]);
+    }
+
+    /// The homeserver's order is kept: another client's reordering shows,
+    /// and what uplink pins goes after.
+    #[tokio::test]
+    async fn pins_keep_the_homeservers_order() {
+        let db = Db::new();
+        db.sync(&[("$1", "@bob:x"), ("$2", "@bob:x"), ("$3", "@bob:x")], &[])
+            .await;
+        db.sync_room(vec![], &[], &["$1", "$2"], None).await;
+        db.sync_room(vec![], &[], &["$2", "$1"], None).await;
+        assert_eq!(db.room().await.pinned, ["$2", "$1"]);
+        db.pin("$3", true).await;
+        assert_eq!(db.room().await.pinned, ["$2", "$1", "$3"]);
+        assert_eq!(
+            db.claim_pins().await,
+            [(strings(&["$2", "$1", "$3"]), strings(&["$3"]))]
+        );
+        // Unpinned elsewhere meanwhile: gone from the list too.
+        db.sync_room(vec![], &[], &["$2"], None).await;
+        db.pushed(&strings(&["$3"]), Ended::Applied).await;
+        db.read_pins(&["$2", "$3"]).await;
+        assert_eq!(db.room().await.pinned, ["$2", "$3"]);
+    }
+
+    /// A pin the homeserver refuses waits for a decision, in the outbox,
+    /// which undoing it makes.
+    #[tokio::test]
+    async fn a_refused_pin_waits_for_a_decision() {
+        let db = Db::new();
+        db.sync(&[("$1", "@bob:x")], &[]).await;
+        let pinned = db.pin("$1", true).await;
+        db.claim_pins().await;
+        db.pushed(
+            &strings(&["$1"]),
+            Ended::NotApplied {
+                refused: Some("not a moderator".into()),
+            },
+        )
+        .await;
+        let [pending] = &db.pending_pins()[..] else {
+            panic!("{:?}", db.pending_pins())
+        };
+        assert_eq!(pending.op.id, pinned);
+        assert_eq!(pending.refused.as_deref(), Some("not a moderator"));
+        assert!(db.claim_pins().await.is_empty(), "not pushed again");
+        db.dispatcher.undo(pinned).await.unwrap();
+        assert!(db.pending_pins().is_empty());
+        assert!(db.room().await.pinned.is_empty());
+    }
 }
 
 /// What is unseen of a room is each message the query matches as a
@@ -3023,42 +3187,6 @@ async fn sends_cancelled_while_sent_are_taken_back_once_out() {
             }
         )]
     );
-}
-
-/// A pin is taken back by unpinning; one that changed nothing needs
-/// nothing.
-#[tokio::test]
-async fn pins_are_taken_back_by_reversing_them() {
-    let db = Db::new();
-    db.sync(&[("$1", "@bob:x")], &[]).await;
-    let pin = MatrixContent::Pin {
-        event: "$1".into(),
-        pinned: true,
-    };
-    let pinned = db.sent(pin.clone(), Some("$pins")).await;
-    db.dispatcher.undo(pinned).await.unwrap();
-    let item = db.sends().await[0].id;
-    assert_eq!(
-        db.take_backs(),
-        [(
-            item,
-            MatrixContent::Pin {
-                event: "$1".into(),
-                pinned: false
-            }
-        )]
-    );
-
-    db.observe(TakeBackStarted { item }).await.unwrap();
-    db.observe(TakeBackSucceeded { item }).await.unwrap();
-
-    let unchanged = db.sent(pin, None).await;
-    let cancel = db.dispatcher.undo(unchanged).await.unwrap();
-    assert!(db.sends().await.is_empty());
-    assert!(db.take_backs().is_empty());
-    // Redone, it is sent anew.
-    db.dispatcher.undo(cancel).await.unwrap();
-    assert_eq!(db.shown().await, [(MatrixSendState::Queued, true)]);
 }
 
 /// What Matrix can't take back, or uplink does not yet, needs a decision

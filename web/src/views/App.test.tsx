@@ -1821,9 +1821,9 @@ describe('matrix', () => {
     expect(sent()).toEqual([
       { type: 'reaction', event: theirs.event_id, key: '👎', shortcode: null },
       { type: 'reaction', event: theirs.event_id, key: '🎉', shortcode: null },
-      { type: 'pin', event: theirs.event_id, pinned: true },
       { type: 'redaction', event: mine.event_id },
     ])
+    expect(server.requests).toContainEqual({ type: 'set_pinned', room: room.id, event: theirs.event_id, pinned: true })
 
     // Enter shows the message's details, which follow the line j/k move to.
     await user.keyboard('k{Enter}')
@@ -2549,13 +2549,10 @@ describe('room timeline', () => {
 
     await user.click(within(line('Meet at noon')).getByRole('button', { name: 'Options' }))
     await user.click(screen.getByRole('menuitem', { name: 'Pin' }))
-    expect(server.requests).toContainEqual({
-      type: 'send_matrix_message',
-      key: expect.any(String),
-      room: room.id,
-      content: { type: 'pin', event: latest.event_id, pinned: true },
-    })
-    // As the sync brings it back, with one pinned before.
+    expect(server.requests).toContainEqual({ type: 'set_pinned', room: room.id, event: latest.event_id, pinned: true })
+    // Shown at once; then as the sync brings it back, with one pinned
+    // before.
+    await screen.findByRole('button', { name: 'Pinned messages' })
     server.pin(room.id, [old.event_id, latest.event_id])
     const bar = await screen.findByRole('button', { name: 'Pinned messages' })
     await within(bar).findByText(/Meet at noon/)
@@ -2570,12 +2567,7 @@ describe('room timeline', () => {
 
     await user.click(within(line('Rules: be kind')).getByRole('button', { name: 'Options' }))
     await user.click(screen.getByRole('menuitem', { name: 'Unpin' }))
-    expect(server.requests).toContainEqual({
-      type: 'send_matrix_message',
-      key: expect.any(String),
-      room: room.id,
-      content: { type: 'pin', event: old.event_id, pinned: false },
-    })
+    expect(server.requests).toContainEqual({ type: 'set_pinned', room: room.id, event: old.event_id, pinned: false })
   })
 
   it('opens threads beside the timeline, which sum them up, and replies in them', async () => {
