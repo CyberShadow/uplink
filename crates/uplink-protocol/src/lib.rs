@@ -114,14 +114,24 @@ pub enum Notice {
     Arrival(Arrival),
 }
 
-/// What came from others into a badged home bucket (SPEC §12.16): the
-/// client notifies of it, as urgently as the bucket's badge says.
+/// What came from others into a home bucket that notifies (SPEC §12.16):
+/// the client notifies of it, as urgently as the bucket's badge says.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Arrival {
     pub bucket: String,
-    pub badge: Badge,
+    pub urgency: Urgency,
     pub item: Arrived,
+}
+
+/// How a notification calls for the user (SPEC §12.16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum Urgency {
+    /// It stays until dismissed, with the system's sound.
+    Interrupting,
+    /// It goes by, silently.
+    Quiet,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -902,13 +912,30 @@ impl PartialOrd for ItemPosition {
     }
 }
 
-/// How a home bucket shows on the app's icon (SPEC §12.14): by how many
-/// items are in it, or by a dot while any is.
+/// How a home bucket shows on the app's icon and in the nav (SPEC
+/// §12.14), and so how what comes into it notifies (SPEC §12.16).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum Badge {
+    /// A red count of its items; what comes interrupts.
+    Alert,
+    /// A count of its items in the accent colour; what comes notifies
+    /// quietly.
     Count,
+    /// A dot while any of its items is unseen; what comes does not
+    /// notify.
     Dot,
+}
+
+impl Badge {
+    /// How what comes into the bucket notifies, if it does.
+    pub fn urgency(self) -> Option<Urgency> {
+        match self {
+            Badge::Alert => Some(Urgency::Interrupting),
+            Badge::Count => Some(Urgency::Quiet),
+            Badge::Dot => None,
+        }
+    }
 }
 
 /// What the badged home buckets hold: the marks of the nav's places.
@@ -954,12 +981,13 @@ pub struct Marks {
     pub calendar: Mark,
 }
 
-/// Of the badged buckets' items in a place: how many of those of `count`
-/// buckets (a room by its messages that notify, or 1), and whether any of
-/// a `dot` bucket's is.
+/// Of the badged buckets' items in a place: how many of those of `alert`
+/// buckets, and of `count` buckets (a room by its messages that notify,
+/// or 1), and whether any of a `dot` bucket's is.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Mark {
+    pub alert: u32,
     pub count: u32,
     pub dot: bool,
 }
@@ -967,6 +995,7 @@ pub struct Mark {
 impl Mark {
     pub fn add(&mut self, badge: Badge, count: u32) {
         match badge {
+            Badge::Alert => self.alert += count,
             Badge::Count => self.count += count,
             Badge::Dot => self.dot |= count > 0,
         }

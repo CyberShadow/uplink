@@ -316,7 +316,7 @@ function roomsIn(node: RoomNode, seen = new Set<string>()): Room[] {
  * the others a `Badge`'s. */
 type Tone = 'size' | BadgeTone
 
-const marked = (mark: Mark) => mark.count > 0 || mark.dot
+const marked = (mark: Mark) => mark.alert > 0 || mark.count > 0 || mark.dot
 
 /** `open`: shown as a drawer, where the window is narrow. */
 export function Nav(props: { open: boolean }) {
@@ -664,8 +664,9 @@ function Count(props: { count: number; tone: Tone }) {
   }
 }
 
-/** A place's mark (SPEC §12.14): of the count buckets' items in it, in
- * red; else a dot, while a dot bucket's item in it is unseen. */
+/** A place's mark (SPEC §12.14): of the alert buckets' items in it, a
+ * count in red; else of the count buckets', in the accent colour; else a
+ * dot, while a dot bucket's item in it is unseen. */
 export function PlaceMark(props: { mark: Mark }) {
   return (
     <>
@@ -678,13 +679,15 @@ export function PlaceMark(props: { mark: Mark }) {
 /** A mark's dot, before a place's own count: it comes and goes as the
  * place is seen, which would otherwise move the count. */
 function MarkDot(props: { mark: Mark }) {
-  if (props.mark.count > 0 || !props.mark.dot) return null
+  if (props.mark.alert > 0 || props.mark.count > 0 || !props.mark.dot) return null
   return <span class={styles.dot} title="Something new" />
 }
 
-/** A mark's red count, after a place's own. */
+/** A mark's count, after a place's own: red, else in the accent colour. */
 function MarkCount(props: { mark: Mark }) {
-  return <Badge count={props.mark.count} tone="alert" title="Needs your attention" />
+  const { alert, count } = props.mark
+  if (alert > 0) return <Badge count={alert} tone="alert" title="Needs your attention" />
+  return <Badge count={count} tone="notice" title="Something to look at" />
 }
 
 /** The marks of the nav's places, as the server last said. */

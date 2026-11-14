@@ -1,10 +1,10 @@
 // Browser notifications (SPEC §12.16): of what comes from others into
-// the badged home buckets, as urgently as their badges say, which a
+// the home buckets that notify, as urgently as their badges say, which a
 // click opens; and reminders of events (SPEC §10.2), as Outlook's, which
 // a click opens.
 
 import { useEffect, useRef, useState } from 'preact/hooks'
-import type { Arrival, Badge, CalendarEvent, Entry, RoomEvent } from '../generated/protocol'
+import type { Arrival, CalendarEvent, Entry, RoomEvent, Urgency } from '../generated/protocol'
 import { useServices } from '../context'
 import { displayName, shown } from '../matrix'
 import { Icon } from './Icon'
@@ -16,14 +16,14 @@ import { date, time } from '../format'
 import { shows } from './Nav'
 import styles from './Nav.module.css'
 
-/** How a notification calls for the user: of a `count` bucket's, as what
- * needs the user, it stays until dismissed, with the system's sound; of a
- * `dot` bucket's, as what is to be kept up with, it goes by, silently. */
-function urgency(badge: Badge): NotificationOptions {
-  switch (badge) {
-    case 'count':
+/** How a notification calls for the user: interrupting, as what needs
+ * the user, it stays until dismissed, with the system's sound; quiet, as
+ * what is to be kept up with, it goes by, silently. */
+function options(urgency: Urgency): NotificationOptions {
+  switch (urgency) {
+    case 'interrupting':
       return { requireInteraction: true, silent: false }
-    case 'dot':
+    case 'quiet':
       return { requireInteraction: false, silent: true }
   }
 }
@@ -46,7 +46,7 @@ export function useNotifications(path: string, route: (path: string) => void) {
             const sender = entry.from_name ?? entry.from_addr ?? '(unknown sender)'
             const title = `${sender}: ${entry.subject ?? '(no subject)'}`
             const tag = `mail-${entry.account}-${entry.thread_id ?? entry.id}`
-            notify(arrival.badge, title, entry.snippet, tag, () => route(allMailPath(entry.account, entry.id)))
+            notify(arrival.urgency, title, entry.snippet, tag, () => route(allMailPath(entry.account, entry.id)))
             return
           }
           case 'message': {
@@ -55,14 +55,14 @@ export function useNotifications(path: string, route: (path: string) => void) {
             // Redacted since.
             if (event === null) return
             const room = matrix.rooms.value!.find((r) => r.id === item.room)!
-            notify(arrival.badge, room.name, body(event), `room-${item.room}`, () =>
+            notify(arrival.urgency, room.name, body(event), `room-${item.room}`, () =>
               route(roomPath(item.room)),
             )
             return
           }
           case 'invite':
             if (!document.hidden && shows(where.current, roomPath(item.room))) return
-            notify(arrival.badge, item.name, 'Invites you', `room-${item.room}`, () => route(roomPath(item.room)))
+            notify(arrival.urgency, item.name, 'Invites you', `room-${item.room}`, () => route(roomPath(item.room)))
             return
         }
       }),
@@ -86,8 +86,8 @@ function body(event: RoomEvent): string {
 }
 
 /** One per `tag`: a later one replaces it. */
-function notify(badge: Badge, title: string, body: string, tag: string, open: () => void) {
-  const notification = new Notification(title, { body, tag, ...urgency(badge) })
+function notify(urgency: Urgency, title: string, body: string, tag: string, open: () => void) {
+  const notification = new Notification(title, { body, tag, ...options(urgency) })
   notification.onclick = () => {
     window.focus()
     open()
@@ -127,7 +127,7 @@ function notifyOf(event: CalendarEvent, route: (path: string) => void) {
   const when = event.all_day ? `${date(new Date(event.start))}, all day` : `${time(event.start)}–${time(event.end)}`
   const body = [when, minutes > 0 && `in ${minutes} min`, event.location].filter(Boolean).join(' · ')
   // As urgent as what needs the user: it stays until dismissed.
-  const notification = new Notification(event.subject, { body, tag: `event-${event.id}`, ...urgency('count') })
+  const notification = new Notification(event.subject, { body, tag: `event-${event.id}`, ...options('interrupting') })
   notification.onclick = () => {
     window.focus()
     route(calendarPath(defaultView(), date(new Date(event.start)), event.id))

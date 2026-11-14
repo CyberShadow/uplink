@@ -150,12 +150,14 @@ MVP:
 - WebSocket transport with app-level heartbeat and exponential reconnect.
 - Server-arbitrated compare-and-swap edits for sync'd client state (drafts) using `(hash(old_value), edit_operation)`.
 - IndexedDB client-side write-through for draft text resilience.
-- Browser notifications of what comes from others into the badged home
-  buckets (mail, messages, invitations), as urgent as their badges
-  (SPEC §12.16).
+- Browser notifications of what comes from others into the home buckets
+  that notify (mail, messages, invitations), interrupting or quiet as
+  their badges say (SPEC §12.16).
 
 Deferred:
 - Web Push: notifications with no client open (SPEC §12.16 needs one).
+- An item in the first home bucket any of its messages matches, rather
+  than in each its messages match (SPEC §12.13).
 - Cross-device draft sync to non-browser clients.
 
 ## Mobile / Android

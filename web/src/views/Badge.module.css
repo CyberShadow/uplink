@@ -16,6 +16,11 @@
   color: var(--error-fg);
 }
 
+.notice {
+  background: var(--notice-bg);
+  color: var(--notice-fg);
+}
+
 .unread {
   background: var(--badge-bg);
   color: var(--badge-fg);

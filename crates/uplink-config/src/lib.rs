@@ -60,7 +60,8 @@ fn default_send_delay_secs() -> u32 {
 }
 
 /// A bucket of the home view: what `query` matches of every kind; if
-/// `badge`, it shows on the app's icon (SPEC §12.14).
+/// `badge`, it shows on the app's icon and in the nav (SPEC §12.14), and
+/// what comes into it notifies as the badge says (SPEC §12.16).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HomeBucket {
@@ -70,10 +71,15 @@ pub struct HomeBucket {
     pub badge: Option<Badge>,
 }
 
-/// What needs doing now, counted on the icon; what is not yet seen, a
-/// dot there; what is starred or to do; what is in the inbox, read; and
-/// the rest unread. So the inbox can be kept at zero by archiving, or
-/// kept as read, with what is still to do starred.
+/// By how the user is reached (SPEC §12.13): what is addressed to them,
+/// interrupting; what else needs them, or is due, quietly; what is
+/// unread in the inbox, or of favourite rooms, with a dot; what is
+/// starred or to do; what is in the inbox, read, not yet sorted; and the
+/// rest unread, but of low priority rooms. So the inbox can be kept at
+/// zero by archiving, or kept as read, with what is still to do starred.
+/// Mail is told apart by the Inbox and importance alone, which every
+/// protocol has (mail of lists is to be filed past the Inbox), and rooms
+/// by the push rules and tags.
 fn default_home() -> Vec<HomeBucket> {
     let bucket = |name: &str, query: &str, badge| HomeBucket {
         name: name.into(),
@@ -83,23 +89,24 @@ fn default_home() -> Vec<HomeBucket> {
     vec![
         bucket(
             "Urgent",
-            "(is:mention is:new) OR is:invite OR (is:dm is:unread) OR is:overdue OR due:today \
-             OR (in:inbox is:unread is:important)",
+            "(in:inbox is:unread is:important to:me) OR (is:mention is:new) \
+             OR (is:dm is:unread is:notifying) OR is:invite",
+            Some(Badge::Alert),
+        ),
+        bucket(
+            "Important",
+            "(in:inbox is:unread is:important) OR (is:unread is:notifying) \
+             OR is:overdue OR due:today",
             Some(Badge::Count),
         ),
         bucket(
             "Unread",
-            "(is:unread is:notifying -tag:lowpriority) \
-             OR (in:inbox is:unread -category:promotions -category:social)",
+            "(in:inbox is:unread) OR (is:unread tag:favourite)",
             Some(Badge::Dot),
         ),
-        bucket("Starred", "is:starred OR is:todo", None),
-        bucket(
-            "Inbox",
-            "in:inbox -category:promotions -category:social",
-            None,
-        ),
-        bucket("Other", "is:unread", None),
+        bucket("Backlog", "is:starred OR is:todo", None),
+        bucket("Unsorted", "in:inbox", None),
+        bucket("Other", "is:unread -tag:lowpriority", None),
     ]
 }
 

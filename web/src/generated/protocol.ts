@@ -327,10 +327,15 @@ export type HomeBucket = { name: string,
 query: string, };
 
 /**
- * How a home bucket shows on the app's icon (SPEC §12.14): by how many
- * items are in it, or by a dot while any is.
+ * How a home bucket shows on the app's icon and in the nav (SPEC
+ * §12.14), and so how what comes into it notifies (SPEC §12.16).
  */
-export type Badge = "count" | "dot";
+export type Badge = "alert" | "count" | "dot";
+
+/**
+ * How a notification calls for the user (SPEC §12.16).
+ */
+export type Urgency = "interrupting" | "quiet";
 
 /**
  * What the badged home buckets hold: the marks of the nav's places.
@@ -357,11 +362,11 @@ accounts: Array<[string, Mark]>, rooms: Array<[RoomId, Mark]>, todos: Mark, cale
 export type Place = { "kind": "home" } | { "kind": "inboxes" } | { "kind": "label", label: LabelId, } | { "kind": "account", account: string, } | { "kind": "room", room: RoomId, } | { "kind": "todos" } | { "kind": "calendar" };
 
 /**
- * Of the badged buckets' items in a place: how many of those of `count`
- * buckets (a room by its messages that notify, or 1), and whether any of
- * a `dot` bucket's is.
+ * Of the badged buckets' items in a place: how many of those of `alert`
+ * buckets, and of `count` buckets (a room by its messages that notify,
+ * or 1), and whether any of a `dot` bucket's is.
  */
-export type Mark = { count: number, dot: boolean, };
+export type Mark = { alert: number, count: number, dot: boolean, };
 
 /**
  * An item of a list of every kind (SPEC §8.7).
@@ -437,10 +442,10 @@ export type RoomHits = { count: number,
 latest: RoomEvent, };
 
 /**
- * What came from others into a badged home bucket (SPEC §12.16): the
- * client notifies of it, as urgently as the bucket's badge says.
+ * What came from others into a home bucket that notifies (SPEC §12.16):
+ * the client notifies of it, as urgently as the bucket's badge says.
  */
-export type Arrival = { bucket: string, badge: Badge, item: Arrived, };
+export type Arrival = { bucket: string, urgency: Urgency, item: Arrived, };
 
 export type Arrived = { "kind": "mail", entry: EntryId, } | { "kind": "message", room: RoomId, event: RoomEventId, } | { "kind": "invite", room: RoomId, name: string, };
 
@@ -1587,4 +1592,4 @@ export type EventChangeKind = "create" | "update" | "delete";
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "4ba0fb08b164a7b1"
+export const PROTOCOL_VERSION = "1eb13b1915ab2443"

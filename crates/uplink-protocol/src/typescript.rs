@@ -85,6 +85,7 @@ fn declarations() -> String {
         ServerError,
         HomeBucket,
         Badge,
+        Urgency,
         Badges,
         Marks,
         Place,

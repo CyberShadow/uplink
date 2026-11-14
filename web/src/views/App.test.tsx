@@ -40,7 +40,7 @@ async function start(path = '/mail/work/INBOX') {
 
 /** Badges as the server pushes them: of `marks`, no others. */
 function badges(marks: Partial<Marks>): Badges {
-  const none = { count: 0, dot: false }
+  const none = { alert: 0, count: 0, dot: false }
   return { marks: { home: none, labels: [], accounts: [], rooms: [], todos: none, calendar: none, ...marks } }
 }
 
@@ -370,7 +370,7 @@ describe('mail', () => {
     await start('/mail/work/INBOX')
     const icon = () => document.querySelector<HTMLLinkElement>('link[rel=icon]')!.getAttribute('href')
     expect(icon()).toBe('/logo.svg')
-    client.home.badges.value = badges({ home: { count: 1, dot: false } })
+    client.home.badges.value = badges({ home: { alert: 1, count: 0, dot: false } })
     await waitFor(() => expect(decodeURIComponent(icon()!)).toMatch(/>1<\/text><\/svg>$/))
     client.home.badges.value = badges({})
     await waitFor(() => expect(icon()).toBe('/logo.svg'))
@@ -383,10 +383,11 @@ describe('mail', () => {
     const link = (name: RegExp) => within(nav).getByRole('link', { name })
     expect(link(/^Home/).textContent).toBe('Home')
     client.home.badges.value = badges({
-      home: { count: 0, dot: true },
-      labels: [[inbox, { count: 0, dot: true }]],
-      accounts: [['work', { count: 2, dot: true }]],
-      todos: { count: 1, dot: false },
+      home: { alert: 0, count: 0, dot: true },
+      labels: [[inbox, { alert: 0, count: 0, dot: true }]],
+      accounts: [['work', { alert: 2, count: 0, dot: true }]],
+      todos: { alert: 1, count: 0, dot: false },
+      calendar: { alert: 0, count: 4, dot: true },
     })
     await waitFor(() => expect(link(/^Home/).querySelector('[title="Something new"]')).not.toBeNull())
     expect(link(/^Home/).dataset.unread).toBe('true')
@@ -395,6 +396,9 @@ describe('mail', () => {
     expect(link(/^Inbox/).querySelector('[title="Something new"]')).not.toBeNull()
     expect(link(/^All Mail/).textContent).toBe('All Mail2')
     expect(link(/^To-dos/).querySelector('[title="Needs your attention"]')!.textContent).toBe('1')
+    // A count bucket's, in the accent colour, and no dot beside it.
+    expect(link(/^Calendar/).querySelector('[title="Something to look at"]')!.textContent).toBe('4')
+    expect(link(/^Calendar/).querySelector('[title="Something new"]')).toBeNull()
     // A folded account has its All Mail's.
     await user.click(within(nav).getByRole('button', { name: /^work@example.com/ }))
     expect(within(nav).getByRole('button', { name: /^work@example.com/ }).querySelector('[title="Needs your attention"]')!.textContent).toBe('2')
@@ -404,11 +408,11 @@ describe('mail', () => {
     const inbox = server.labelId('work', 'INBOX')
     const user = await start('/mail/work/INBOX')
     // Nothing new: not seen.
-    client.home.badges.value = badges({ labels: [[inbox, { count: 2, dot: false }]] })
+    client.home.badges.value = badges({ labels: [[inbox, { alert: 2, count: 0, dot: false }]] })
     const nav = screen.getByRole('navigation')
     await waitFor(() => expect(within(nav).getByRole('link', { name: /^Inbox/ }).textContent).toBe('Inbox32'))
     expect(server.seen).toEqual([])
-    client.home.badges.value = badges({ home: { count: 0, dot: true }, labels: [[inbox, { count: 0, dot: true }]] })
+    client.home.badges.value = badges({ home: { alert: 0, count: 0, dot: true }, labels: [[inbox, { alert: 0, count: 0, dot: true }]] })
     await waitFor(() => expect(server.seen).toEqual([{ kind: 'label', label: inbox }]))
     // Quietly.
     expect(screen.queryByRole('status')).toBeNull()
@@ -1353,7 +1357,7 @@ describe('matrix', () => {
 
       // Of a dot bucket's: it goes by, silently.
       const lunch = server.receive(lounge.id, { body: 'Lunch?' })
-      server.arrive('Upkeep', 'dot', { kind: 'message', room: lounge.id, event: lunch.id })
+      server.arrive('Upkeep', 'quiet', { kind: 'message', room: lounge.id, event: lunch.id })
       await waitFor(() => expect(shown).toHaveLength(1))
       expect(shown[0].title).toBe('Lounge')
       expect(shown[0].options).toEqual({
@@ -1365,7 +1369,7 @@ describe('matrix', () => {
 
       // Of a count bucket's: it stays until dismissed.
       const rent = server.deliver('a', 'Rent', ['INBOX', 'UNREAD'], 't1')
-      server.arrive('Immediate', 'count', { kind: 'mail', entry: rent.id })
+      server.arrive('Immediate', 'interrupting', { kind: 'mail', entry: rent.id })
       await waitFor(() => expect(shown).toHaveLength(2))
       expect(shown[1].title).toBe('Bob: Rent')
       expect(shown[1].options).toEqual({
@@ -1379,23 +1383,23 @@ describe('matrix', () => {
       shown[1].onclick!()
       await screen.findByRole('heading', { name: 'Rent' })
       const reply = server.deliver('a', 'Re: Rent', ['INBOX', 'UNREAD'], 't1')
-      server.arrive('Immediate', 'count', { kind: 'mail', entry: reply.id })
+      server.arrive('Immediate', 'interrupting', { kind: 'mail', entry: reply.id })
       await new Promise((resolve) => setTimeout(resolve, 50))
       expect(shown).toHaveLength(2)
       // Nor is the room's on show; but the next mail elsewhere is.
       shown[0].onclick!()
       await within(await screen.findByRole('list', { name: 'Timeline' })).findByText('Lunch?')
       const again = server.receive(lounge.id, { body: 'Now?' })
-      server.arrive('Upkeep', 'dot', { kind: 'message', room: lounge.id, event: again.id })
+      server.arrive('Upkeep', 'quiet', { kind: 'message', room: lounge.id, event: again.id })
       const other = server.deliver('a', 'Other', ['INBOX', 'UNREAD'])
-      server.arrive('Upkeep', 'dot', { kind: 'mail', entry: other.id })
+      server.arrive('Upkeep', 'quiet', { kind: 'mail', entry: other.id })
       await waitFor(() => expect(shown).toHaveLength(3))
       expect(shown[2].title).toBe('Bob: Other')
 
       // An invitation, of a room not yet listed, by its name; a click
       // opens it.
       const party = server.addRoom('Party', false, 'invited')
-      server.arrive('Urgent', 'count', { kind: 'invite', room: party.id, name: 'Party' })
+      server.arrive('Urgent', 'interrupting', { kind: 'invite', room: party.id, name: 'Party' })
       await waitFor(() => expect(shown).toHaveLength(4))
       expect(shown[3].title).toBe('Party')
       expect(shown[3].options).toEqual({
@@ -1460,7 +1464,7 @@ describe('matrix', () => {
     expect(within(space).queryByRole('link', { name: /General/ })).toBeNull()
     expect(row.getAttribute('aria-expanded')).toBe('false')
     expect(within(row).getByText('Team').className).toMatch(/bold/)
-    client.home.badges.value = badges({ rooms: [[general.id, { count: 2, dot: false }]] })
+    client.home.badges.value = badges({ rooms: [[general.id, { alert: 2, count: 0, dot: false }]] })
     await waitFor(() => expect(within(space).getByRole('button', { name: 'Team2' })).toBeTruthy())
   })
 

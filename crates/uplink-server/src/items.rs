@@ -21,7 +21,7 @@ use uplink_protocol::{
     matrix::{Membership, RoomEventId, RoomId},
     todos::Todo,
     Arrival, Arrived, Badge, Badges, Changed, ErrorCode, Item, ItemKind, ItemPosition, Mark, Marks,
-    Place, ServerError, ServerResponse, TxLogId, UnknownNames,
+    Place, ServerError, ServerResponse, TxLogId, UnknownNames, Urgency,
 };
 use uplink_query::{Kind, Query, Term};
 use uplink_realtime::Listing;
@@ -534,9 +534,9 @@ impl Items {
 
     /// What the badged buckets hold (SPEC §12.14), as `home` lists them,
     /// item by item; and so the marks of the places their items are in.
-    /// And what came into them from others since `since` (SPEC §12.16),
-    /// of the `ARRIVALS_AMONG` most recently active items of each:
-    /// nothing, at first.
+    /// And what came into those that notify, from others, since `since`
+    /// (SPEC §12.16), of the `ARRIVALS_AMONG` most recently active items
+    /// of each: nothing, at first.
     pub async fn badged(&self, since: Option<Since>) -> Result<(Badged, Derived), ServerError> {
         let now = now();
         let today = uplink_query::today(now);
@@ -559,7 +559,7 @@ impl Items {
                 let mut arrivals = vec![];
                 for (badge, bucket) in buckets {
                     let held = this.hold(&tx, &rooms, &seen, badge, &bucket.query, today, now)?;
-                    if let Some(since) = &since {
+                    if let (Some(since), Some(urgency)) = (&since, badge.urgency()) {
                         let others = others(&tx, &rooms, &bucket.query, today, now)?;
                         let page = this.page(&tx, &bucket.query, others, None, ARRIVALS_AMONG)?;
                         arrivals.extend(this.arrivals(
@@ -567,7 +567,7 @@ impl Items {
                             &rooms,
                             &bucket.name,
                             &bucket.query,
-                            badge,
+                            urgency,
                             &page.items,
                             since,
                             now,
@@ -594,7 +594,7 @@ impl Items {
     }
 
     /// `badged` kept: what `changed` names checked again, and of it what
-    /// came since `since`. What the log does not name item by item,
+    /// came, into those that notify, since `since`. What the log does not name item by item,
     /// everything is derived anew for.
     pub async fn rebadged(
         &self,
@@ -650,7 +650,7 @@ impl Items {
                         ..Default::default()
                     };
                     let limit = (came.entries.len() + came.rooms.len()) as u32;
-                    if limit > 0 {
+                    if let (true, Some(urgency)) = (limit > 0, bucket.badge.urgency()) {
                         let query = bucket.query.clone().among(came);
                         let others = others(&tx, &rooms, &query, today, now)?;
                         let page = this.page(&tx, &query, others, None, limit)?;
@@ -659,7 +659,7 @@ impl Items {
                             &rooms,
                             &bucket.name,
                             &bucket.query,
-                            bucket.badge,
+                            urgency,
                             &page.items,
                             &since,
                             now,
@@ -725,7 +725,7 @@ impl Items {
         rooms: &Rooms,
         bucket: &str,
         query: &Query,
-        badge: Badge,
+        urgency: Urgency,
         items: &[Item],
         since: &Since,
         now: i64,
@@ -744,7 +744,7 @@ impl Items {
             .into_iter()
             .map(|item| Arrival {
                 bucket: bucket.to_owned(),
-                badge,
+                urgency,
                 item,
             })
             .collect())
@@ -951,7 +951,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use uplink_matrix::rooms::{ObservedRoom, Synced};
-    use uplink_protocol::matrix::Membership;
+    use uplink_protocol::{matrix::Membership, Urgency};
     use uplink_realtime::Hub;
     use uplink_tx_log::{Dispatcher, Registry};
 
@@ -1093,7 +1093,7 @@ mod tests {
             bucket(
                 "Urgent",
                 "is:starred OR is:mention OR is:invite",
-                Badge::Count,
+                Badge::Alert,
             ),
             bucket("Unread", "is:unread", Badge::Dot),
             bucket("Later", "is:todo OR label:Label_1", Badge::Count),
@@ -1370,7 +1370,7 @@ mod tests {
                             Arrived::Invite { .. } => "invite",
                             Arrived::Mail { .. } => "mail",
                         };
-                        (a.bucket, a.badge, item)
+                        (a.bucket, a.urgency, item)
                     })
                     .collect();
                 (arrived, derived.since)
@@ -1378,8 +1378,8 @@ mod tests {
         };
         let (arrived, _) = arrivals(
             vec![
-                bucket("is:invite", Some(Badge::Count)),
-                bucket("is:unread", Some(Badge::Dot)),
+                bucket("is:invite", Some(Badge::Alert)),
+                bucket("is:unread", Some(Badge::Count)),
             ],
             &first.since,
         )
@@ -1387,22 +1387,25 @@ mod tests {
         assert_eq!(
             arrived,
             [
-                ("is:invite".into(), Badge::Count, "invite"),
-                ("is:unread".into(), Badge::Dot, "message"),
+                ("is:invite".into(), Urgency::Interrupting, "invite"),
+                ("is:unread".into(), Urgency::Quiet, "message"),
             ]
         );
         // The message is no news to a bucket of what notifies; nothing is
-        // to an unbadged one.
+        // to a bucket with a dot, or none.
         let (arrived, _) = arrivals(
-            vec![bucket("is:unread is:notifying", Some(Badge::Dot))],
+            vec![bucket("is:unread is:notifying", Some(Badge::Count))],
             &first.since,
         )
         .await;
         assert!(arrived.is_empty(), "{arrived:?}");
+        let (arrived, _) =
+            arrivals(vec![bucket("is:unread", Some(Badge::Dot))], &first.since).await;
+        assert!(arrived.is_empty(), "{arrived:?}");
         let (arrived, now) = arrivals(vec![bucket("is:invite", None)], &first.since).await;
         assert!(arrived.is_empty(), "{arrived:?}");
         // Once told of, the invitation is not news again.
-        let (arrived, _) = arrivals(vec![bucket("is:invite", Some(Badge::Count))], &now).await;
+        let (arrived, _) = arrivals(vec![bucket("is:invite", Some(Badge::Alert))], &now).await;
         assert!(arrived.is_empty(), "{arrived:?}");
     }
 
@@ -1555,8 +1558,8 @@ mod tests {
             badge,
         };
         items.configure_home(vec![
-            bucket("Now", "is:invite", Some(Badge::Count)),
-            bucket("Rent", "rent", None),
+            bucket("Now", "is:invite", Some(Badge::Alert)),
+            bucket("Rent", "rent", Some(Badge::Count)),
             bucket("Else", "tag:nowhere OR is:todo", Some(Badge::Dot)),
         ]);
         let ServerResponse::Home { buckets } = items.home().unwrap() else {
@@ -1616,27 +1619,31 @@ mod tests {
             "no label or tag nowhere"
         );
 
-        // The badged ones' marks.
+        // The badged ones' marks, each kind apart.
         let Item::Room { room, .. } = &windows[0].1.items[0] else {
             panic!()
         };
         let room = room.id;
+        let alert = Mark {
+            alert: 1,
+            ..Mark::default()
+        };
+        let count = Mark {
+            count: 1,
+            ..Mark::default()
+        };
         assert_eq!(
             items.badged(None).await.unwrap().1.badges,
             Badges {
                 // An invitation counts as one.
                 marks: Marks {
                     home: Mark {
+                        alert: 1,
                         count: 1,
                         dot: false
                     },
-                    rooms: vec![(
-                        room,
-                        Mark {
-                            count: 1,
-                            dot: false
-                        }
-                    )],
+                    rooms: vec![(room, alert)],
+                    todos: count,
                     ..Marks::default()
                 },
             }

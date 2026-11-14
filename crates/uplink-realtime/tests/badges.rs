@@ -41,7 +41,10 @@ impl Backend for Idle {
 fn badges(count: u32) -> Badges {
     Badges {
         marks: Marks {
-            home: Mark { count, dot: false },
+            home: Mark {
+                count,
+                ..Mark::default()
+            },
             ..Marks::default()
         },
     }

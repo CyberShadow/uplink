@@ -8,7 +8,7 @@ import { RequestError } from '../connection'
 import type {
   Arrived,
   Attachment,
-  Badge,
+  Urgency,
   RoomPreview,
   Place,
   Account,
@@ -667,10 +667,10 @@ export class FakeServer implements Requester, Subscriber, Blobs {
     this.observe('mx', this.matrixSendsChanged(sent.room))
   }
 
-  /** Something came from others into the badged bucket, as the server
-   * tells when it derives the badges (SPEC §12.16). */
-  arrive(bucket: string, badge: Badge, item: Arrived) {
-    this.client.notice({ type: 'arrival', bucket, badge, item })
+  /** Something came from others into the bucket that notifies, as the
+   * server tells when it derives the badges (SPEC §12.16). */
+  arrive(bucket: string, urgency: Urgency, item: Arrived) {
+    this.client.notice({ type: 'arrival', bucket, urgency, item })
   }
 
   /** Members are typing in the room, as sync says. */

@@ -243,22 +243,28 @@ send_delay_secs: 10
 
 # The home view's buckets (§12.13), top to bottom, each a query (§8.7):
 # an item is in the first that matches it; `badge` shows it on the app's
-# icon (§12.14), by `count` or by a `dot`. Without `home`, these.
+# icon and in the nav (§12.14), and says how what comes into it notifies
+# (§12.16): `alert`, a red count, interrupting; `count`, a count in the
+# accent colour, quietly; `dot`, a dot while any is unseen, not at all.
+# Without `home`, these.
 home:
   - name: Urgent
-    query: (is:mention is:new) OR is:invite OR (is:dm is:unread) OR is:overdue
-      OR due:today OR (in:inbox is:unread is:important)
+    query: (in:inbox is:unread is:important to:me) OR (is:mention is:new)
+      OR (is:dm is:unread is:notifying) OR is:invite
+    badge: alert
+  - name: Important
+    query: (in:inbox is:unread is:important) OR (is:unread is:notifying)
+      OR is:overdue OR due:today
     badge: count
   - name: Unread
-    query: (is:unread is:notifying -tag:lowpriority)
-      OR (in:inbox is:unread -category:promotions -category:social)
+    query: (in:inbox is:unread) OR (is:unread tag:favourite)
     badge: dot
-  - name: Starred
+  - name: Backlog
     query: is:starred OR is:todo
-  - name: Inbox
-    query: in:inbox -category:promotions -category:social
+  - name: Unsorted
+    query: in:inbox
   - name: Other
-    query: is:unread
+    query: is:unread -tag:lowpriority
 
 # The calendar (§10.2): its week's hours also in these time zones (IANA
 # names), in columns left of the browser's own. None, without it.
@@ -2832,10 +2838,14 @@ which a verified device gives.
   Element does: a room is bold while unread, and its mark (§12.14)
   counts its messages that notify only while it is in a `count`
   bucket.
-- **Browser notifications** are of the badged home buckets (§12.16): a
-  room's message is news if the bucket's query matches it, as a message
-  (`is:notifying` by the push rules, `is:dm is:unread` whatever they
-  say), and an invitation if its room is in the bucket.
+- **Browser notifications** are of the home buckets that notify
+  (§12.16): a room's message is news if the bucket's query matches it,
+  as a message, and an invitation if its room is in the bucket. The
+  default buckets ask the push rules (`is:notifying`) of every message
+  but mentions, so what the push rules mute does not notify, and what
+  they notify of is in a bucket that notifies: a bridged DM, which they
+  take for a group chat (the bridge bot, its puppet and the user), is
+  to be told to notify by a room rule, for every client alike.
 - The read marker is desired state (§6.6). Showing a room, in a visible
   tab, marks it read up to the latest message from others wholly on
   screen (`MarkRoomRead`, quietly: no notice, and as shown, §12.15). The
@@ -3859,25 +3869,47 @@ on show or not, so home shows at once, as it is; `HomeChanged` says they
 were configured anew, and they are subscribed to anew if they changed.
 The agenda is listed then, as home shows, and as calendars change.
 
+The default buckets (§3.2) go by how the user is reached, not by kind,
+mail and rooms alike: Urgent is what is addressed to the user (important
+mail to them, mentions, direct messages that notify, invitations);
+Important what else needs them (important mail they are not addressed
+in, as a list's or a service's to a group; rooms the push rules notify
+of, which for a group chat is the user's own choice; to-dos and events
+due, to be done through the day); Unread what is unread in the inbox or
+of favourite rooms, to keep up with; Backlog what is starred or to do;
+Unsorted what is read in the inbox, but not yet starred or archived, so
+the inbox can be kept at zero; Other the rest unread, but of low
+priority rooms. They tell mail apart by what every protocol has, the
+Inbox and importance (§8.10, §8.13: `$Important`): mail of lists is to
+be filed past the Inbox, by the server's filters, rather than told
+apart by categories that only Gmail has. Rooms are told apart by the
+push rules (`is:notifying`), which the user keeps for every client, and
+by Element's tags, `m.favourite` and `m.lowpriority`.
+
 ### 12.14 Badges and marks
 
 A bucket of home (§3.2) with a `badge` shows on the app's icon, as
 Gmail's, Element's and Discord's do, without their calling for the user
-at whatever is unread: by default, Urgent's are counted, and Unread's
-make a dot; Starred, Inbox and Other are left for the user to come to. A
-count is of all a bucket holds, until its items leave it (read, done,
-archived), as Slack's and Discord's counts of mentions stay until read;
-a dot is of what a bucket holds that is unseen (§12.15), as what is
-merely to be kept up with is news only until looked at. The icon counts
-the items of the buckets badged `count`, up to `99+`, in red at its
-bottom right; else, while a bucket badged `dot` holds anything unseen,
-it has a dot; else it is the logo alone (`src/favicon.ts`, an SVG of
-the logo with the mark over it). The window's title says what is on
+at whatever is unread: by default, Urgent's are counted in red
+(`alert`), Important's in the accent colour (`count`), and Unread's
+make a dot; Backlog, Unsorted and Other are left for the user to come
+to. A count is of all a bucket holds, until its items leave it (read,
+done, archived), as Slack's and Discord's counts of mentions stay until
+read; a dot is of what a bucket holds that is unseen (§12.15), as what
+is merely to be kept up with is news only until looked at. The badge
+also says how what comes into the bucket notifies (§12.16), so a bucket
+notifies of all it holds, or of none of it. The icon counts the items
+of the buckets badged `alert`, up to `99+`, in red at its bottom right;
+else those of the buckets badged `count`, in the accent colour; else,
+while a bucket badged `dot` holds anything unseen, it has a dot; else
+it is the logo alone (`src/favicon.ts`, an SVG of the logo with the
+mark over it). The window's title says what is on
 show (§12.4), so it counts nothing of the rest.
 
 Every place of the nav has a mark the same way, of the badged buckets'
-items in it: a red count of those of `count` buckets, else a dot (in
-the accent colour) while one of a `dot` bucket in it is unseen, else
+items in it: a red count of those of `alert` buckets, else a count in
+the accent colour of those of `count` buckets, else a dot (in the
+accent colour) while one of a `dot` bucket in it is unseen, else
 nothing. Home's is the icon's. A place is where the nav links to an
 item: a mail conversation is in each of its labels (Inbox and the
 others listed, All Mail, and All inboxes for Inbox), a room in its own
@@ -3885,7 +3917,7 @@ link, a to-do in To-dos, an event in Calendar. A label counts its
 conversations; a room counts its messages that notify, or 1 if none
 does (an invitation, say). A folded space, label or account has the
 strongest mark of what it folds: the sum of their counts, else a dot if
-any has one.
+any has one, each kind apart.
 
 Besides its mark, a place says what is unread, as it always has, more
 quietly: a label its unread conversations, as a grey count (Gmail's);
@@ -3895,7 +3927,9 @@ now). The place on show has its background only, not bold, so that it
 is not taken for unread.
 
 Counts look alike wherever they are (`Badge`): of what needs the user
-(a mark's, mentions), a red pill; of what is unread, a grey pill (a
+(an `alert` mark's, mentions), a red pill; of what notifies quietly (a
+`count` mark's), a pill in the accent colour; of what is unread, a grey
+pill (a
 label's, a folded section's, All inboxes'); of how many there are (a
 conversation's messages, Drafts, To-dos, a bucket's items), a plain
 grey number. A row of mail, at home or in a list, has its messages'
@@ -4003,14 +4037,15 @@ user's own.
 
 ### 12.16 Notifications
 
-What comes from others into a badged bucket is notified of, as
-urgently as the bucket's badge says, as freedesktop's urgencies and
-Android's channels' importance tell apart what interrupts from what goes
-by: of a `count` bucket's, as what needs the user, the notification
-stays until dismissed, with the system's sound (`requireInteraction`);
-of a `dot` bucket's, as what is to be kept up with, it goes by, silently
-(`silent`). An unbadged bucket's (Starred, Inbox, Other) are not
-notified of. Reminders of events (§10.2) are as urgent as a `count` bucket's.
+What comes from others into a bucket is notified of as its badge says
+(`Urgency`), as freedesktop's urgencies and Android's channels'
+importance tell apart what interrupts from what goes by: of an `alert`
+bucket's, as what needs the user, the notification interrupts: it stays
+until dismissed, with the system's sound (`requireInteraction`); of a
+`count` bucket's, quietly: it goes by, silently (`silent`). A `dot`
+bucket's (Unread), as what is to be kept up with when the user comes to
+it, and an unbadged one's (Backlog, Unsorted, Other) are not notified
+of. Reminders of events (§10.2) interrupt.
 
 What comes is mail, messages and invitations; to-dos and events are
 the user's own (a meeting request comes as mail):
@@ -4021,10 +4056,9 @@ the user's own (a meeting request comes as mail):
 - of a room, its newest message stored since, sent within the hour, not
   the user's own, that the bucket's query matches as a message (§8.7: as
   a room's search finds it, its room's terms holding of it), of its main
-  timeline or its threads: so a bridged DM's message is news to a bucket
-  of `is:dm is:unread`, though the push rules (§9.5) take a room of a
-  bridge bot, its puppet and the user for a group chat, while chatter in
-  a room with a mention is not to one of `is:mention`;
+  timeline or its threads: so `is:notifying` defers to the push rules
+  (§9.5), while chatter in a room with a mention is no news to a bucket
+  of `is:mention`;
 - an invitation to a room invited to now but not then, by the room's
   name, which the client may not have listed yet. It has no message, nor
   time: an account's first sync tells of those pending.
@@ -4032,12 +4066,12 @@ the user's own (a meeting request comes as mail):
 Within the hour, so that what is only newly stored (an account's first
 sync, a room's history) is not news. The server finds them as it
 derives the badges (§12.14), of the same read: of the items each
-badged bucket holds of those checked again (derived anew, of its 100
+notifying bucket holds of those checked again (derived anew, of its 100
 most recently active items), those whose news is after the watermark
 (the latest ids of each kind, as `seen` has them, §12.15) of the
 previous derivation, and the invitations not among those then; none at
 first. It tells every
-session of each (`Notice::Arrival { bucket, badge, item }`, §5.5): live
+session of each (`Notice::Arrival { bucket, urgency, item }`, §5.5): live
 only, so a client not connected then, as while the computer slept, is
 not told; the badges are what remains of it.
 

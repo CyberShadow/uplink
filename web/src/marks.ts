@@ -7,18 +7,20 @@ import { useServices } from './context'
 import type { Account, Badges, Mark, Place } from './generated/protocol'
 import { allMailPath, inboxPath, mailPath } from './views/App'
 
-export const NONE: Mark = { count: 0, dot: false }
+export const NONE: Mark = { alert: 0, count: 0, dot: false }
 
 /** The strongest of `marks`, as a fold shows what it folds: their counts
  * summed, else a dot if any has one. */
 export function strongest(marks: Iterable<Mark>): Mark {
+  let alert = 0
   let count = 0
   let dot = false
   for (const mark of marks) {
+    alert += mark.alert
     count += mark.count
     dot ||= mark.dot
   }
-  return { count, dot }
+  return { alert, count, dot }
 }
 
 /** The mark of `place`: All inboxes has its Inboxes'. */
