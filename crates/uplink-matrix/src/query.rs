@@ -365,12 +365,38 @@ struct Search {
 }
 
 impl Search {
-    /// SQL from `FROM` of its messages, `e` of room `r`: room by room,
-    /// those after a marker by the index of their positions, if the
-    /// condition holds only of those.
+    /// SQL from `FROM` of its messages, `e`: those of the messages it
+    /// finds by their ids, if it finds them apart (`apart`), else as one.
     fn from(&mut self) -> String {
-        let matches = self.sql.render(&self.condition);
-        let after = match self.condition.markers() {
+        let condition = self.condition.clone();
+        match condition.apart() {
+            Some(_) => format!(
+                "FROM matrix_event e WHERE e.id IN ({})",
+                self.ids(&condition)
+            ),
+            None => self.scan(&condition),
+        }
+    }
+
+    /// SQL of the ids of the messages `condition` holds of: those of each
+    /// of its alternatives, if they are bounded apart.
+    fn ids(&mut self, condition: &Cond) -> String {
+        match condition.apart() {
+            Some(any) => any
+                .iter()
+                .map(|c| self.ids(c))
+                .collect::<Vec<_>>()
+                .join(" UNION ALL "),
+            None => format!("SELECT e.id {}", self.scan(condition)),
+        }
+    }
+
+    /// SQL from `FROM` of the messages, `e` of room `r`, `condition`
+    /// holds of: room by room, those after a marker by the index of their
+    /// positions, if it holds only of those.
+    fn scan(&mut self, condition: &Cond) -> String {
+        let matches = self.sql.render(condition);
+        let after = match condition.markers() {
             None => "1".to_owned(),
             Some(markers) => {
                 let positions: Vec<String> = markers.into_iter().map(Marker::pos).collect();
@@ -518,6 +544,18 @@ impl Cond {
             | Term::Overdue
             | Term::HasDue
             | Term::Done => Cond::Const(false),
+        }
+    }
+
+    /// Of alternatives, those bounded otherwise one than another (by
+    /// other markers, or some by none): searched as one, all would be
+    /// after the least bound of any, so each is searched by its own
+    /// (`is:mention is:new` of a room without a fully-read marker, by the
+    /// index of its mentions, not of all its messages).
+    fn apart(&self) -> Option<&[Cond]> {
+        match self {
+            Cond::Or(any) if any.iter().any(|c| c.markers() != any[0].markers()) => Some(any),
+            _ => None,
         }
     }
 

@@ -2140,6 +2140,19 @@ mod query {
         assert_eq!(matching("ship is:new"), ["$9", "$8"]);
         assert_eq!(matching("ship (is:new OR is:unread)"), ["$9", "$8"]);
         assert_eq!(matching("ship -is:unread"), ["$8", "$7"]);
+        // Alternatives bounded apart, each by its own bound or by none.
+        assert_eq!(
+            matching("(ship is:new) OR (deploy is:dm)"),
+            ["$9", "$8", "$4"]
+        );
+        assert_eq!(
+            matching("(ship is:unread) OR from:bob"),
+            ["$9", "$4", "$3", "$2"]
+        );
+        assert_eq!(
+            matching("(ship is:unread) OR (ship is:new) OR deploy is:dm"),
+            ["$9", "$8", "$4"]
+        );
         // A room its name matches is found as a room, not by its messages.
         assert_eq!(matching("ops"), Vec::<String>::new());
 
