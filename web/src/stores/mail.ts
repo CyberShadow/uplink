@@ -25,15 +25,37 @@ import type {
   MessageId,
   Room,
   RoomId,
-  WindowChange,
 } from '../generated/protocol'
-import type { Requester, Subscriber, Subscription } from '../connection'
+import type { Requester, Subscriber } from '../connection'
 import { before, compare, keyOf, rowOf, type Row } from '../items'
 import { FAVOURITE } from '../roomTags'
 import type { Ops } from './ops'
 import { Loader, query } from './query'
+import { LiveWindow, type Shown } from './window'
 
 export const PAGE = 100
+
+/** How long a list left is kept current, to show at once, where it was,
+ * if gone back to. */
+export const KEEP_FOR = 5 * 60_000
+/** Lists left that are kept so at most, the latest left. */
+export const KEEP_AT_MOST = 5
+
+/** Where a list is scrolled: its row of `key` is `offset` pixels below
+ * the top of what it scrolls in. */
+export interface Scrolled {
+  key: string
+  offset: number
+}
+
+/** A list left, kept current. */
+interface Kept {
+  window: LiveWindow
+  /** As it was left. */
+  focus: string | null
+  scrolled: Scrolled | null
+  timer: ReturnType<typeof setTimeout>
+}
 
 export type View =
   | { kind: 'label'; account: string; label: string }
@@ -207,15 +229,17 @@ export class MailStore {
   private accountsStale = false
   /** The window of the list's query; `null` of a message's entries, and
    * until the labels are in, which its rows show. */
-  private window: Subscription | null = null
-  /** Its items, as the server last said, by key. */
-  private windowed = new Map<string, Listed>()
-  /** How many items the window was asked for. */
-  private asked = PAGE
+  private window: LiveWindow | null = null
+  /** The windows of lists left lately, by query, the longest left first. */
+  private kept = new Map<string, Kept>()
   /** The conversation open, as last listed, once its window no longer
    * has it: it stays listed until closed, as Gmail keeps one read in a
    * search of the unread. */
   private held: Listed | null = null
+  /** Where the list on show was scrolled, as its view last said: to
+   * scroll back to as it shows again, from a conversation, or as a list
+   * kept. */
+  scrolled: Scrolled | null = null
   /** Bumped when the view changes, so responses for an old one are dropped. */
   private generation = 0
   /** Likewise, for the conversation open. */
@@ -380,10 +404,10 @@ export class MailStore {
   show(view: View) {
     if (this.list.value && sameView(this.list.value.view, view)) return
     this.generation++
-    this.window?.close()
+    if (this.window) this.keep(this.window)
     this.window = null
-    this.windowed = new Map()
     this.held = null
+    this.scrolled = null
     batch(() => {
       this.list.value = { view, loaded: false, conversations: [], others: [], more: false, scope: null, partialRooms: [] }
       this.focus.value = null
@@ -394,17 +418,30 @@ export class MailStore {
   }
 
   loadMore() {
-    const list = this.list.value
-    // While it has more, the window has as many as asked for once its
-    // widening is in.
-    if (!list?.more || this.windowed.size < this.asked) return
-    this.asked += PAGE
-    this.window!.extend(PAGE)
+    // A message's list, or a label's gone, lists all it has.
+    this.window?.extend()
+  }
+
+  /** Keeps the window of the list left current a while, unless the most
+   * kept already are of lists left since. */
+  private keep(window: LiveWindow) {
+    window.listener = null
+    const timer = setTimeout(() => this.forget(window.query), KEEP_FOR)
+    this.kept.set(window.query, { window, focus: this.focus.value, scrolled: this.scrolled, timer })
+    if (this.kept.size > KEEP_AT_MOST) this.forget(this.kept.keys().next().value!)
+  }
+
+  private forget(query: string) {
+    const kept = this.kept.get(query)!
+    clearTimeout(kept.timer)
+    kept.window.close()
+    this.kept.delete(query)
   }
 
   /** Subscribes to the list's query once the labels are in, which its
    * rows show (and a label's list names), unless subscribed already or
-   * the list is a message's. */
+   * the list is a message's; or takes the window kept of it, to show at
+   * once where it was. */
   private openWindow() {
     const list = this.list.value
     if (!list || list.view.kind === 'message' || this.window || !this.accounts.value) return
@@ -413,35 +450,40 @@ export class MailStore {
       this.list.value = { ...list, loaded: true }
       return
     }
-    this.asked = PAGE
-    this.window = this.server.subscribe(query, PAGE, {
-      reset: (change, scope) => {
-        this.asked = PAGE
-        this.takeWindow(new Map(), change, scope)
-      },
-      change: (change) => this.takeWindow(this.windowed, change, this.list.value!.scope!),
-      failed: (error) => {
-        this.error.value = error.message
-      },
-    })
+    const kept = this.kept.get(query)
+    if (kept) {
+      clearTimeout(kept.timer)
+      this.kept.delete(query)
+      this.focus.value = kept.focus
+      this.scrolled = kept.scrolled
+    }
+    const window =
+      kept?.window ??
+      new LiveWindow(this.server, query, 'invalid', PAGE, (error) => {
+        // Kept, it is no longer: the list subscribes anew if gone back to.
+        if (this.kept.get(query)?.window === window) this.forget(query)
+        else this.error.value = error.message
+      })
+    this.window = window
+    window.listener = (was) => this.takeWindow(was)
+    // Kept, it is listed already.
+    if (window.shown) this.showWindow()
   }
 
-  /** What the window lists now: what it had, `items`, with `change`. */
-  private takeWindow(items: Map<string, Listed>, change: WindowChange, scope: ListScope) {
+  /** What the window lists changed, from `was`. */
+  private takeWindow(was: Shown | null) {
     const open = this.list.value!.conversations.find((c) => this.isOpen(c))
     const key = open && conversationKey(open)
-    const was = key === undefined ? undefined : (this.windowed.get(key) ?? this.held)
-    for (const key of change.removed) items.delete(key)
-    for (const listed of change.upserted) items.set(listed.key, listed)
-    this.windowed = items
+    const items = this.window!.shown!.items
     // The conversation open stays, though it left.
-    this.held = key !== undefined && !items.has(key) ? was! : null
-    this.showWindow(change.more, scope, change.partial_rooms)
+    this.held = key !== undefined && !items.has(key) ? (was?.items.get(key) ?? this.held)! : null
+    this.showWindow()
   }
 
   /** Lists the window's items, and the conversation held open. */
-  private showWindow(more: boolean, scope: ListScope, partialRooms: RoomId[]) {
-    const listed = [...this.windowed.values(), ...(this.held ? [this.held] : [])].sort((a, b) =>
+  private showWindow() {
+    const { items, more, scope, partialRooms } = this.window!.shown!
+    const listed = [...items.values(), ...(this.held ? [this.held] : [])].sort((a, b) =>
       before(a.position, b.position),
     )
     const current = this.list.value!
@@ -544,8 +586,7 @@ export class MailStore {
     // The conversation that was open leaves, if its window no longer has it.
     if (this.held) {
       this.held = null
-      const { more, scope, partialRooms } = this.list.value!
-      this.showWindow(more, scope!, partialRooms)
+      this.showWindow()
     }
     this.loadOpen()
   }

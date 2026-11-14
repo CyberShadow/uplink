@@ -1,9 +1,10 @@
 //! Subscriptions' windows (SPEC §5.7): what the client has of each, so
 //! that only what changed of it is sent.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{hash_map::Entry, HashMap, HashSet, VecDeque};
 use uplink_protocol::{
-    mail::ListScope, matrix::RoomId, Item, ItemKey, Listed, TxLogId, WindowChange,
+    mail::ListScope, matrix::RoomId, Item, ItemKey, Listed, SubscriptionId, TxLogId, UnknownNames,
+    WindowChange,
 };
 
 /// What a window lists, as of a log position.
@@ -19,10 +20,69 @@ pub struct Listing {
     pub partial_rooms: Vec<RoomId>,
 }
 
+/// A session's windows, by subscription, and those due to be listed
+/// again, in turn.
+#[derive(Default)]
+pub struct Windows {
+    windows: HashMap<SubscriptionId, Window>,
+    /// Of `windows`, those that may have changed since last listed, the
+    /// longest due first: each once.
+    due: VecDeque<SubscriptionId>,
+}
+
+impl Windows {
+    /// Adds a window under a name new to it.
+    pub fn insert(&mut self, subscription: SubscriptionId, window: Window) {
+        match self.windows.entry(subscription) {
+            Entry::Vacant(vacant) => vacant.insert(window),
+            Entry::Occupied(_) => panic!("subscription {} exists", subscription.0),
+        };
+    }
+
+    pub fn contains(&self, subscription: SubscriptionId) -> bool {
+        self.windows.contains_key(&subscription)
+    }
+
+    pub fn get_mut(&mut self, subscription: SubscriptionId) -> Option<&mut Window> {
+        self.windows.get_mut(&subscription)
+    }
+
+    pub fn remove(&mut self, subscription: SubscriptionId) -> Option<Window> {
+        self.due.retain(|&due| due != subscription);
+        self.windows.remove(&subscription)
+    }
+
+    /// What every window lists may have changed: each is due, after those
+    /// due already.
+    pub fn all_due(&mut self) {
+        for &subscription in self.windows.keys() {
+            if !self.due.contains(&subscription) {
+                self.due.push_back(subscription);
+            }
+        }
+    }
+
+    pub fn any_due(&self) -> bool {
+        !self.due.is_empty()
+    }
+
+    /// The window due the longest, no longer due.
+    pub fn next_due(&mut self) -> Option<(SubscriptionId, &mut Window)> {
+        let subscription = self.due.pop_front()?;
+        Some((
+            subscription,
+            self.windows
+                .get_mut(&subscription)
+                .expect("due windows are"),
+        ))
+    }
+}
+
 /// A subscription's window: its query's first `limit` items, as the
 /// client was last sent them.
 pub struct Window {
     pub query: String,
+    pub unknown: UnknownNames,
     pub limit: u32,
     items: HashMap<ItemKey, Item>,
     more: bool,
@@ -31,9 +91,10 @@ pub struct Window {
 
 impl Window {
     /// Of nothing, as the client has it before its first change.
-    pub fn new(query: String, limit: u32) -> Self {
+    pub fn new(query: String, unknown: UnknownNames, limit: u32) -> Self {
         Self {
             query,
+            unknown,
             limit,
             items: HashMap::new(),
             more: false,
@@ -123,7 +184,7 @@ mod tests {
 
     #[test]
     fn only_what_changed_is_sent() {
-        let mut window = Window::new("q".into(), 2);
+        let mut window = Window::new("q".into(), UnknownNames::Invalid, 2);
         let first = window.update(vec![todo(1, 20, "a"), todo(2, 10, "b")], true, vec![]);
         assert_eq!(keys(&first.upserted), ["todo:1", "todo:2"]);
         assert!(first.removed.is_empty() && first.more);
@@ -147,5 +208,34 @@ mod tests {
             .changed(vec![todo(2, 30, "b!"), todo(3, 5, "c")], true, vec![])
             .unwrap();
         assert!(change.upserted.is_empty() && change.removed.is_empty() && change.more);
+    }
+
+    #[test]
+    fn windows_are_listed_in_turn() {
+        let mut windows = Windows::default();
+        for id in 1..=3 {
+            windows.insert(
+                SubscriptionId(id),
+                Window::new("q".into(), UnknownNames::Invalid, 1),
+            );
+        }
+        let next = |windows: &mut Windows| windows.next_due().map(|(id, _)| id.0);
+        assert_eq!(next(&mut windows), None);
+        windows.all_due();
+        let first = next(&mut windows).unwrap();
+        // Due again before the others are listed, it is listed after them.
+        windows.all_due();
+        let mut rest = vec![next(&mut windows).unwrap(), next(&mut windows).unwrap()];
+        assert!(!rest.contains(&first));
+        assert_eq!(next(&mut windows), Some(first));
+        assert_eq!(next(&mut windows), None);
+        // Gone, it is due no more.
+        windows.all_due();
+        windows.remove(SubscriptionId(first));
+        rest.sort();
+        let mut listed = vec![next(&mut windows).unwrap(), next(&mut windows).unwrap()];
+        listed.sort();
+        assert_eq!(listed, rest);
+        assert!(!windows.any_due());
     }
 }

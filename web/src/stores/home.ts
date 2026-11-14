@@ -1,55 +1,34 @@
 // The home view (SPEC §12.13): the configured buckets' items, and the
-// agenda, of now through tomorrow; queried while on show, and again when
-// a log entry may change what they list.
+// agenda, of now through tomorrow. The buckets are windows the server
+// keeps current from the first connection, so home shows at once, as it
+// is; the agenda is queried then, as home shows, and as the calendar
+// changes.
 
 import { batch, computed, signal } from '@preact/signals'
-import type { Arrival, Badges, CalendarEvent, HomeBucket, LogEntry, ServerEvent } from '../generated/protocol'
-import type { Requester } from '../connection'
+import type { Arrival, Badges, CalendarEvent, HomeBucket, LogEntry } from '../generated/protocol'
+import type { Requester, Subscriber } from '../connection'
 import { rowOf, type Row } from '../items'
 import { Loader, query } from './query'
+import { LiveWindow } from './window'
 
 /** Rows a bucket shows at most; the rest are a search away. */
 export const BUCKET_LIMIT = 20
-
-/** What may move an item into a bucket or out of it, or change the agenda. */
-const CHANGING: ReadonlySet<ServerEvent['type']> = new Set([
-  'entries_added',
-  'entries_removed',
-  'labels_changed',
-  'label_list_changed',
-  'rooms_changed',
-  'timeline_added',
-  'todos_changed',
-  'calendar_changed',
-  // Of `is:new`.
-  'seen_changed',
-])
-
-export interface Home {
-  buckets: HomeBucket[]
-  /** Of now through tomorrow, by start. */
-  agenda: CalendarEvent[]
-}
 
 export interface Bucket {
   bucket: HomeBucket
   /** Its items, as listed, the most recently active first. */
   rows: Row[]
-}
-
-function bucketsOf(home: Home | null): Bucket[] {
-  return (home?.buckets ?? []).map((bucket) => ({
-    bucket,
-    rows: bucket.items.map((item) => rowOf(item, bucket.query)),
-  }))
+  /** Whether it lists more than these. */
+  more: boolean
 }
 
 export class HomeStore {
-  /** `null` until loaded. */
-  readonly home = signal<Home | null>(null)
-  readonly buckets = computed(() => bucketsOf(this.home.value))
+  /** The buckets, once each is listed; `null` until then. */
+  readonly buckets = signal<Bucket[] | null>(null)
+  /** Of now through tomorrow, by start; `null` until loaded. */
+  readonly agenda = signal<CalendarEvent[] | null>(null)
   /** The rows shown, of every bucket, in order. */
-  readonly rows = computed(() => this.buckets.value.flatMap((b) => b.rows))
+  readonly rows = computed(() => (this.buckets.value ?? []).flatMap((b) => b.rows))
   /** The key of the row the keys act on. It stays while home is not on
    * show; a row that leaves gives it to the next one still shown. */
   readonly focus = signal<string | null>(null)
@@ -57,53 +36,67 @@ export class HomeStore {
   /** What the badged buckets hold, as the server last said (SPEC
    * §12.14); `null` until it first has. */
   readonly badges = signal<Badges | null>(null)
-  /** Views showing it: while none is, it goes stale unqueried, and is
-   * queried afresh once one is. */
-  private shown = 0
+  /** The buckets' windows, in order, as last configured. */
+  private windows: { bucket: HomeBucket; window: LiveWindow }[] = []
   /** Those told of what comes into the badged buckets. */
   private listeners = new Set<(arrival: Arrival) => void>()
 
-  private loader = new Loader(async () => {
+  /** The buckets as configured, subscribed to anew if they changed. */
+  private configuration = new Loader(async () => {
+    let buckets: HomeBucket[]
+    try {
+      buckets = (await query(this.server, { type: 'list_home' }, 'home')).buckets
+    } catch (error) {
+      this.error.value = (error as Error).message
+      return
+    }
+    // As they were, their windows are current: the connection keeps them.
+    if (JSON.stringify(buckets) === JSON.stringify(this.windows.map((w) => w.bucket))) return
+    this.windows.forEach(({ window }) => window.close())
+    this.windows = buckets.map((bucket) => {
+      const window = new LiveWindow(this.server, bucket.query, 'false', BUCKET_LIMIT, (error) => {
+        this.error.value = error.message
+      })
+      window.listener = () => this.showBuckets()
+      return { bucket, window }
+    })
+    this.showBuckets()
+    // Of the configuration, not the log: a change to it may come while
+    // it is read.
+  }, false)
+
+  private agendaLoader = new Loader(async () => {
     const now = new Date()
     // The day after tomorrow's midnight, local.
     const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2).getTime()
     try {
-      const [home, events] = await Promise.all([
-        query(this.server, { type: 'list_home', limit: BUCKET_LIMIT }, 'home'),
-        query(this.server, { type: 'list_events', from: now.getTime(), to: end }, 'events'),
-      ])
-      const before = this.rows.value
-      batch(() => {
-        this.home.value = { buckets: home.buckets, agenda: events.events }
-        this.keepFocus(before, this.rows.value)
-      })
+      this.agenda.value = (await query(this.server, { type: 'list_events', from: now.getTime(), to: end }, 'events')).events
     } catch (error) {
       this.error.value = (error as Error).message
     }
   })
 
-  constructor(private readonly server: Requester) {}
+  constructor(private readonly server: Requester & Subscriber) {}
 
-  /** Keeps it current until the returned function is called. */
-  show(): () => void {
-    this.shown++
-    this.loader.invalidate()
-    return () => {
-      this.shown--
-    }
+  /** As home shows: the agenda, of now. */
+  show() {
+    this.agendaLoader.invalidate()
   }
 
+  /** Everything is void, as at first: the buckets may be configured
+   * otherwise. */
   reset() {
-    this.invalidate()
+    this.configuration.invalidate()
+    this.agendaLoader.invalidate()
   }
 
   apply(entry: LogEntry) {
-    if (entry.events.some((event) => CHANGING.has(event.type))) this.invalidate()
+    if (entry.events.some((event) => event.type === 'calendar_changed')) this.agendaLoader.invalidate()
   }
 
   /** The buckets were configured anew. */
   changed() {
-    this.invalidate()
+    this.configuration.invalidate()
   }
 
   /** Tells `listener` of what comes from others into the badged buckets
@@ -125,6 +118,20 @@ export class HomeStore {
     this.focus.value = rows[Math.min(Math.max(index + by, 0), rows.length - 1)].key
   }
 
+  /** Shows the buckets once each is listed. */
+  private showBuckets() {
+    if (this.windows.some(({ window }) => window.shown === null)) return
+    const before = this.rows.value
+    batch(() => {
+      this.buckets.value = this.windows.map(({ bucket, window }) => ({
+        bucket,
+        rows: window.listed().map(({ item }) => rowOf(item, bucket.query)),
+        more: window.shown!.more,
+      }))
+      this.keepFocus(before, this.rows.value)
+    })
+  }
+
   private keepFocus(before: Row[], after: Row[]) {
     const keys = new Set(after.map((r) => r.key))
     const focus = this.focus.value
@@ -136,9 +143,5 @@ export class HomeStore {
       const next = before.slice(index + 1).find((r) => keys.has(r.key))
       this.focus.value = (next ?? after.at(-1))?.key ?? null
     }
-  }
-
-  private invalidate() {
-    if (this.shown > 0) this.loader.invalidate()
   }
 }

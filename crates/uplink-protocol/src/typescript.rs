@@ -94,6 +94,7 @@ fn declarations() -> String {
         ItemPosition,
         ItemKey,
         SubscriptionId,
+        UnknownNames,
         WindowChange,
         Listed,
         RoomHits,

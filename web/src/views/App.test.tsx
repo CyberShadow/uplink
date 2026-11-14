@@ -2859,6 +2859,18 @@ describe('home', () => {
     expect(subject()).toBe(second)
   })
 
+  it('is kept current while elsewhere, to show at once', async () => {
+    const user = await start('/mail/work/INBOX')
+    await vi.waitFor(() => expect(client.home.rows.value).toHaveLength(3))
+    await client.todos.create('Pay rent')
+    // Not on show, it is told of the to-do.
+    await vi.waitFor(() => expect(client.home.rows.value).toHaveLength(4))
+    const subscribed = server.requests.filter((r) => r.type === 'subscribe').length
+    await user.keyboard('gh')
+    expect(bucketRows('Now')).toEqual(['Pay rent'])
+    expect(server.requests.filter((r) => r.type === 'subscribe')).toHaveLength(subscribed)
+  })
+
   it('shows the agenda of today and tomorrow', async () => {
     const now = new Date()
     const at = (days: number, hour: number) =>

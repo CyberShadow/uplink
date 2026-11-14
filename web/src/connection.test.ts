@@ -202,10 +202,10 @@ describe('Connection', () => {
     const { connection } = connect()
     const listener = { reset: vi.fn(), change: vi.fn(), failed: vi.fn() }
     // Subscribed to before the connection is welcomed: once it is.
-    const subscription = connection.subscribe('is:starred', 100, listener)
+    const subscription = connection.subscribe('is:starred', 'invalid', 100, listener)
     const first = await accept({ cursor: 1, resumed: false })
     const subscribe = await first.peer.next('request')
-    expect(subscribe.body).toEqual({ type: 'subscribe', subscription: 1, query: 'is:starred', limit: 100 })
+    expect(subscribe.body).toEqual({ type: 'subscribe', subscription: 1, query: 'is:starred', unknown: 'invalid', limit: 100 })
     const scope: ListScope = { type: 'except', labels: [] }
     first.peer.send({ type: 'response', request_id: subscribe.request_id, body: window(1, [todo(1)], true, scope) })
     await vi.waitFor(() => expect(listener.reset).toHaveBeenCalledWith(change([todo(1)], true), scope))
@@ -222,7 +222,7 @@ describe('Connection', () => {
     first.peer.socket.close()
     const second = await accept({ cursor: 3, resumed: true })
     const again = await second.peer.next('request')
-    expect(again.body).toEqual({ type: 'subscribe', subscription: 1, query: 'is:starred', limit: 100 })
+    expect(again.body).toEqual({ type: 'subscribe', subscription: 1, query: 'is:starred', unknown: 'invalid', limit: 100 })
     second.peer.send({ type: 'response', request_id: again.request_id, body: window(3, [todo(3)], false, scope) })
     await vi.waitFor(() => expect(listener.reset).toHaveBeenLastCalledWith(change([todo(3)], false), scope))
     expect(listener.change).toHaveBeenCalledOnce()
@@ -245,7 +245,7 @@ describe('Connection', () => {
     const { connection } = connect()
     const listener = { reset: vi.fn(), change: vi.fn(), failed: vi.fn() }
     const first = await accept({ cursor: 1, resumed: false })
-    const subscription = connection.subscribe('label:nope', 100, listener)
+    const subscription = connection.subscribe('label:nope', 'invalid', 100, listener)
     const subscribe = await first.peer.next('request')
     first.peer.send({
       type: 'request_failed',

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio_tungstenite::tungstenite::Message;
 use uplink_protocol::{
-    ClientRequest, ServerError, ServerResponse, TxLogId, WsClientMsg, WsServerMsg,
+    ClientRequest, ServerError, ServerResponse, TxLogId, UnknownNames, WsClientMsg, WsServerMsg,
 };
 use uplink_realtime::{run_session, Answer, Backend, Hub, Listing, Replay};
 
@@ -37,7 +37,12 @@ impl Backend for Slow {
         })
     }
 
-    async fn window(&self, _query: String, _limit: u32) -> Result<Listing, ServerError> {
+    async fn window(
+        &self,
+        _query: String,
+        _unknown: UnknownNames,
+        _limit: u32,
+    ) -> Result<Listing, ServerError> {
         unreachable!("nothing is subscribed to")
     }
 }

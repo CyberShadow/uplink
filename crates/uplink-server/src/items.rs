@@ -18,7 +18,7 @@ use uplink_protocol::{
     matrix::RoomEventId,
     todos::Todo,
     Arrival, Arrived, Badge, Badges, ErrorCode, Item, ItemKind, ItemPosition, Mark, Marks, Place,
-    ServerError, ServerResponse, TxLogId,
+    ServerError, ServerResponse, TxLogId, UnknownNames,
 };
 use uplink_query::{Query, Term};
 use uplink_realtime::Listing;
@@ -256,7 +256,9 @@ impl Items {
 
     pub async fn list(&self, query: String, after: Option<ItemPosition>, limit: u32) -> Response {
         checked(limit)?;
-        let (as_of, page, partial_rooms) = self.read_page(query, after, limit).await?;
+        let (as_of, page, partial_rooms) = self
+            .read_page(query, UnknownNames::Invalid, after, limit)
+            .await?;
         Ok(ServerResponse::Items {
             as_of,
             items: page.items,
@@ -268,8 +270,13 @@ impl Items {
 
     /// A subscription's window (SPEC §5.7): the first `limit` items of
     /// what `query` matches, as `list` lists them, however many.
-    pub async fn window(&self, query: String, limit: u32) -> Result<Listing, ServerError> {
-        let (as_of, page, partial_rooms) = self.read_page(query, None, limit).await?;
+    pub async fn window(
+        &self,
+        query: String,
+        unknown: UnknownNames,
+        limit: u32,
+    ) -> Result<Listing, ServerError> {
+        let (as_of, page, partial_rooms) = self.read_page(query, unknown, None, limit).await?;
         Ok(Listing {
             as_of,
             items: page.items,
@@ -282,6 +289,7 @@ impl Items {
     async fn read_page(
         &self,
         query: String,
+        unknown: UnknownNames,
         after: Option<ItemPosition>,
         limit: u32,
     ) -> Result<(TxLogId, Page, Vec<uplink_protocol::matrix::RoomId>), ServerError> {
@@ -292,7 +300,10 @@ impl Items {
         self.reader
             .read(move |conn| {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
-                this.check_names(&tx, &query)?;
+                match unknown {
+                    UnknownNames::Invalid => this.check_names(&tx, &query)?,
+                    UnknownNames::False => {}
+                }
                 let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
                 let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
                 let others = others(&tx, &rooms, &query, today, now)?;
@@ -306,36 +317,20 @@ impl Items {
             .await
     }
 
-    /// Each bucket lists what its query matches, less what those before it
-    /// list. A name no kind has is false, not an error: the default
-    /// buckets name Gmail's labels and Element's tags, which an account
-    /// may lack.
-    pub async fn home(&self, limit: u32) -> Response {
-        let (today, now) = checked(limit)?;
-        let buckets = self.buckets(now);
-        let this = self.clone();
-        self.reader
-            .read(move |conn| {
-                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
-                let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
-                // Read once, for every bucket.
-                let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
-                let buckets = buckets
-                    .into_iter()
-                    .map(|bucket| {
-                        let others = others(&tx, &rooms, &bucket.query, today, now)?;
-                        let page = this.page(&tx, &bucket.query, others, None, limit)?;
-                        Ok(uplink_protocol::HomeBucket {
-                            name: bucket.name,
-                            query: bucket.text,
-                            items: page.items,
-                            more: page.next.is_some(),
-                        })
-                    })
-                    .collect::<Result<_, ServerError>>()?;
-                Ok(ServerResponse::Home { as_of, buckets })
+    /// The buckets, as configured, each with the query that lists what it
+    /// matches, less what those before it list. A name no kind has is
+    /// false in it, not an error: the default buckets name Gmail's labels
+    /// and Element's tags, which an account may lack.
+    pub fn home(&self) -> Response {
+        let buckets = self
+            .buckets(now())
+            .into_iter()
+            .map(|bucket| uplink_protocol::HomeBucket {
+                name: bucket.name,
+                query: bucket.text,
             })
-            .await
+            .collect();
+        Ok(ServerResponse::Home { buckets })
     }
 
     /// What the badged buckets hold (SPEC §12.14), as `home` lists them:
@@ -855,17 +850,20 @@ mod tests {
             bucket("Rent", "rent", None),
             bucket("Else", "tag:nowhere OR is:todo", Some(Badge::Dot)),
         ]);
-        let ServerResponse::Home { buckets, .. } = items.home(10).await.unwrap() else {
+        let ServerResponse::Home { buckets } = items.home().unwrap() else {
             panic!()
         };
-        let listed: Vec<_> = buckets
+        let mut windows = vec![];
+        for bucket in &buckets {
+            let window = items
+                .window(bucket.query.clone(), UnknownNames::False, 10)
+                .await
+                .unwrap();
+            windows.push((bucket.name.as_str(), window));
+        }
+        let listed: Vec<_> = windows
             .iter()
-            .map(|b| {
-                (
-                    b.name.as_str(),
-                    b.items.iter().map(name).collect::<Vec<_>>(),
-                )
-            })
+            .map(|(name_of, w)| (*name_of, w.items.iter().map(name).collect::<Vec<_>>()))
             .collect();
         assert_eq!(
             listed,
@@ -879,10 +877,20 @@ mod tests {
             buckets[2].query,
             "(tag:nowhere OR is:todo) -(is:invite) -(rent)"
         );
-        assert!(!buckets[0].more);
+        assert!(!windows[0].1.more);
+        // As a search's, the name is refused.
+        assert_eq!(
+            items
+                .window(buckets[2].query.clone(), UnknownNames::Invalid, 10)
+                .await
+                .err()
+                .unwrap()
+                .message,
+            "no label or tag nowhere"
+        );
 
         // The badged ones' marks.
-        let Item::Room { room, .. } = &buckets[0].items[0] else {
+        let Item::Room { room, .. } = &windows[0].1.items[0] else {
             panic!()
         };
         let room = room.id;

@@ -11,6 +11,7 @@ import type {
   ServerError,
   ServerResponse,
   TxLogId,
+  UnknownNames,
   WindowChange,
   WsClientMsg,
   WsServerMsg,
@@ -85,7 +86,7 @@ export interface Subscription {
 export interface Subscriber {
   /** Keeps `listener` told of the first `limit` items of what `query`
    * matches, and more as it widens, until closed (SPEC §5.7). */
-  subscribe(query: string, limit: number, listener: WindowListener): Subscription
+  subscribe(query: string, unknown: UnknownNames, limit: number, listener: WindowListener): Subscription
 }
 
 interface Pending {
@@ -176,6 +177,7 @@ function isResendable(body: ClientRequest): boolean {
 /** A subscription, as the connection keeps it across sockets. */
 interface Window {
   query: string
+  unknown: UnknownNames
   /** Of its first page, which a new socket subscribes to. */
   limit: number
   listener: WindowListener
@@ -228,9 +230,9 @@ export class Connection implements Requester, Subscriber {
     })
   }
 
-  subscribe(query: string, limit: number, listener: WindowListener): Subscription {
+  subscribe(query: string, unknown: UnknownNames, limit: number, listener: WindowListener): Subscription {
     const id = this.nextSubscription++
-    const window = { query, limit, listener }
+    const window = { query, unknown, limit, listener }
     this.windows.set(id, window)
     if (this.welcomed) this.open(id, window)
     return {
@@ -245,9 +247,9 @@ export class Connection implements Requester, Subscriber {
     }
   }
 
-  private open(id: number, { query, limit, listener }: Window) {
+  private open(id: number, { query, unknown, limit, listener }: Window) {
     this.forSocket(
-      { type: 'subscribe', subscription: id, query, limit },
+      { type: 'subscribe', subscription: id, query, unknown, limit },
       (response) => {
         if (response.type !== 'window') throw new Error(`expected window in response to subscribe, got ${response.type}`)
         listener.reset(response.change, response.scope)

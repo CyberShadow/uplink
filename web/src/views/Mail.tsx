@@ -34,6 +34,7 @@ import { Icon, type IconName } from './Icon'
 import { inboxUnread, labelName } from './Nav'
 import { useTitle } from '../title'
 import { useLoadInView } from './loadInView'
+import { useListPlace } from './listPlace'
 import { FAVOURITE } from '../roomTags'
 
 // Route params; preact-iso's own `query` prop is the URL's query string.
@@ -613,7 +614,7 @@ function MessageList(props: {
   openOther: (row: OtherItemRow) => void
 }) {
   const { mail } = props
-  const { todos } = useServices()
+  const { todos, matrix } = useServices()
   const list = mail.list.value
   const focused = useRef<HTMLLIElement>(null)
   useEffect(() => {
@@ -621,7 +622,10 @@ function MessageList(props: {
   }, [mail.focus.value])
 
   const rows = mail.rows.value
-  if (!list?.loaded) return <p class={styles.placeholder}>Loading…</p>
+  const listed = useRef<HTMLUListElement>(null)
+  useListPlace(listed, rows.map((row) => row.key), list?.view, mail)
+  // A search's rooms show their accounts'.
+  if (!list?.loaded || !matrix.accounts.value) return <p class={styles.placeholder}>Loading…</p>
   if (rows.length === 0)
     return (
       <>
@@ -637,6 +641,7 @@ function MessageList(props: {
   return (
     <>
       <ul
+        ref={listed}
         class={styles.list}
         aria-label="Messages"
       >

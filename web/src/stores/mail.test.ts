@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { FakeServer } from '../test/server'
 import { Client } from './client'
 import type { MailStore } from './mail'
-import { PAGE, conversationKey, threadOf } from './mail'
+import { KEEP_AT_MOST, KEEP_FOR, PAGE, conversationKey, threadOf } from './mail'
 
 let server: FakeServer
 let client: Client
@@ -137,7 +137,9 @@ describe('MailStore', () => {
   it('subscribes to lists as queries of mail', async () => {
     server.addAccount('a "b"')
     mail.reset()
-    const queries = () => server.requests.flatMap((r) => (r.type === 'subscribe' ? [r.query] : []))
+    // Of mail's lists, not home's buckets.
+    const queries = () =>
+      server.requests.flatMap((r) => (r.type === 'subscribe' && r.unknown === 'invalid' ? [r.query] : []))
     for (const view of [
       { kind: 'label', account: 'work', label: 'Label_1' },
       { kind: 'all', account: 'a "b"' },
@@ -147,8 +149,52 @@ describe('MailStore', () => {
       await vi.waitFor(() => expect(mail.list.value?.loaded).toBe(true))
     }
     expect(queries()).toEqual(['is:mail account:"work" label:"Projects"', 'is:mail account:"a \\"b\\""', 'is:mail in:inbox'])
-    // Each, left, is unsubscribed from.
-    expect(server.requests.filter((r) => r.type === 'unsubscribe')).toHaveLength(2)
+  })
+
+  it('keeps a list left current a while, to show at once where it was', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      server.deliver('work', 'Older')
+      server.deliver('work', 'Newer')
+      await showInbox()
+      mail.moveFocus(1)
+      mail.scrolled = { key: mail.focus.value!, offset: 12 }
+      const subscribed = () => server.requests.filter((r) => r.type === 'subscribe' && r.unknown === 'invalid').length
+      const unsubscribed = () => server.requests.filter((r) => r.type === 'unsubscribe').length
+
+      mail.show({ kind: 'label', account: 'work', label: 'Label_1' })
+      await vi.waitFor(() => expect(mail.list.value?.loaded).toBe(true))
+      expect(mail.scrolled).toBe(null)
+      const newest = server.deliver('work', 'Newest')
+      server.observe('work', [{ type: 'entries_added', entries: [newest.id] }])
+      // Back, it shows as it was left, and as it is.
+      mail.show({ kind: 'label', account: 'work', label: 'INBOX' })
+      expect(mail.list.value!.loaded).toBe(true)
+      expect(focused()).toBe('Older')
+      expect(mail.scrolled).toEqual({ key: mail.focus.value, offset: 12 })
+      await vi.waitFor(() => expect(subjects()).toEqual(['Newest', 'Newer', 'Older']))
+      expect(subscribed()).toBe(2)
+      expect(unsubscribed()).toBe(0)
+
+      // Left long enough, it is unsubscribed from, and subscribed to anew.
+      mail.show({ kind: 'label', account: 'work', label: 'Label_1' })
+      vi.advanceTimersByTime(KEEP_FOR)
+      expect(unsubscribed()).toBe(1)
+      mail.show({ kind: 'label', account: 'work', label: 'INBOX' })
+      expect(mail.list.value!.loaded).toBe(false)
+      expect(subscribed()).toBe(3)
+      await vi.waitFor(() => expect(mail.list.value?.loaded).toBe(true))
+
+      // Of more left, the longest left go.
+      for (let i = 0; i < KEEP_AT_MOST + 1; i++) {
+        mail.show({ kind: 'search', query: `search ${i}` })
+        await vi.waitFor(() => expect(mail.list.value?.loaded).toBe(true))
+      }
+      const gone = server.requests.flatMap((r) => (r.type === 'unsubscribe' ? [r.subscription] : []))
+      expect(gone).toHaveLength(3)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('follows a search as labels change, in the scope the server lists', async () => {

@@ -1075,11 +1075,14 @@ positioned in the log as one answered at once (§5.4).
 ### 5.7 Subscriptions
 
 A list the client shows — a search, a label's, the Inboxes', an
-account's All Mail (`is:mail …`) — is a subscription to its query, which
-the server keeps current, sending only what changed of it.
-`Subscribe { subscription, query, limit }` opens it: its window, the
-first `limit` items of what the query matches, as `ListItems` lists
-them (§8.7), answered `Window { as_of, change, scope }`;
+account's All Mail (`is:mail …`), a bucket of home (§12.13) — is a
+subscription to its query, which the server keeps current, sending only
+what changed of it. `Subscribe { subscription, query, unknown, limit }`
+opens it: its window, the first `limit` items of what the query matches,
+as `ListItems` lists them (§8.7), answered `Window { as_of, change,
+scope }`; `unknown` says what a label, tag or account no kind has means
+in it: `invalid`, as in a search, where it is misspelt, or `false`, as
+in home's buckets;
 `Extend { subscription, limit }` widens the window by `limit` items, as
 the client pages on, answered `Window` too; `Unsubscribe` closes it, as
 does the connection's end. The id is the client's, new on its
@@ -1101,7 +1104,9 @@ their timelines, to-dos, calendars and what is seen, not a draft's
 keystrokes), once the entries that came meanwhile are sent, and each
 minute (time alone moves items, into `due:today`), it lists each window
 again as of then, and sends `WindowChanged { subscription, change }`
-for those that changed, after the entries it reflects. So the client
+for those that changed, after the entries it reflects. It lists them one
+at a time, in turn, those due longest first, each due once however many
+entries came: a request waits for one listing at most. So the client
 needs no reloads, and neither judges what a query matches, nor
 truncates what it has paged through: a window has exactly the first
 items it was widened to, whatever comes and goes before them; an item
@@ -3489,7 +3494,15 @@ show: the server's changes apply to it, focus and selection staying on
 their rows, and focus moving to the next one if its own left (or the
 last). The conversation open stays listed where it was while it leaves
 the window (reading it takes it out of an unread search, unstarring out
-of the starred), as Gmail keeps it, and leaves once closed. A
+of the starred), as Gmail keeps it, and leaves once closed. A list left
+stays subscribed to for five minutes, the five left last at most, with
+its focus and where it was scrolled: gone back to (from the toolbar, a
+key, or the browser's Back), it shows at once, as it is now, where it
+was. Where a list is scrolled is kept as its row at the top and how far
+below the top that is (`views/listPlace.ts`), so rows that came or went
+above it meanwhile do not move it; a conversation closed scrolls its
+list back so too. Home's buckets are subscribed to from the first
+connection, for the tab's life (§12.13). A
 `connection.ts` subscription outlives its sockets: on a new one it is
 subscribed to anew, and its listener reset. A query in flight when the
 socket drops is sent again on the next connection; an op is failed,
@@ -3769,13 +3782,13 @@ account's security is loaded for it.
 (and `g z` to the history, §6.3). `g i` still goes to the Inbox. Above, the agenda: the events of now through tomorrow, from
 `ListEvents`, each a link to its day. Below, a row of the buckets'
 names and counts, which scroll to them, and the buckets, configured in
-`home` (§3.2), in order. `ListHome { limit }` lists them, in one
-read: each bucket's query, less every earlier bucket's
-(`(q₃) -(q₁) -(q₂)`), as `ListItems` lists it (§8.7): its first page of
-up to `limit` items, and whether there are more; so an item is in the
-first bucket that matches it. Unlike a search, a label or tag no kind
-has is false rather than an error, since the default buckets name
-Gmail's labels and Element's tags, which some accounts lack. A bucket's
+`home` (§3.2), in order. `ListHome` says what they are: each bucket's
+name, and its query less every earlier bucket's (`(q₃) -(q₁) -(q₂)`),
+so an item is in the first bucket that matches it. The client
+subscribes to each (§5.7), a window of 20, with `unknown: false`:
+unlike a search, a label or tag no kind has is false rather than an
+error, since the default buckets name Gmail's labels and Element's tags,
+which some accounts lack. A bucket's
 rows are its items as a search lists them, the most recently active
 first (a room's row says, as mail's its subject and snippet, what is
 new — `3 new`, `2 mentioning you` — and its latest message, `Bob:
@@ -3793,10 +3806,10 @@ back (a row that goes gives it to the next one shown, or else the last), `o`/Ent
 read up to its latest event, `Room.latest`, or finishes a to-do), `s`
 stars mail or favourites a room, and `l` labels mail or tags a room.
 Rooms show what is unread, mentions, or an invitation; to-dos past due
-show it. Home is listed while on show, again when a log entry may move
-an item (mail's entries and labels, rooms, timelines, to-dos and
-calendars changed), and when `HomeChanged` says the buckets were
-configured anew; hidden, it is not kept current.
+show it. The buckets are subscribed to from the first connection,
+on show or not, so home shows at once, as it is; `HomeChanged` says they
+were configured anew, and they are subscribed to anew if they changed.
+The agenda is listed then, as home shows, and as calendars change.
 
 ### 12.14 Badges and marks
 
@@ -3846,7 +3859,7 @@ end of its latest message, its mentions (`@2`, red), then how many are
 unread.
 
 The server derives and pushes them (`Badges`, §5.5), as home lists the
-buckets (`ListHome`): the marks of the places, of all of each badged
+buckets (§12.13): the marks of the places, of all of each badged
 bucket's items, unlimited: in one read per bucket, as the labels of the conversations it holds
 (distinct, not each conversation), its rooms, and whether it holds any
 to-do and any event, with, for its `dot`, those of what is unseen. It

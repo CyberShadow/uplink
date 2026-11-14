@@ -10,7 +10,7 @@ use uplink_protocol::{
     mail::ListScope,
     todos::{Todo, TodoId, TodosChanged},
     ClientRequest, ErrorCode, Item, LogEntry, ServerError, ServerEvent, ServerResponse, Source,
-    SubscriptionId, TxLogId, WindowChange, WsClientMsg, WsServerMsg,
+    SubscriptionId, TxLogId, UnknownNames, WindowChange, WsClientMsg, WsServerMsg,
 };
 use uplink_realtime::{run_session, Answer, Backend, Hub, Listing, Replay};
 
@@ -36,7 +36,12 @@ impl Backend for Lists {
         })
     }
 
-    async fn window(&self, _query: String, limit: u32) -> Result<Listing, ServerError> {
+    async fn window(
+        &self,
+        _query: String,
+        _unknown: UnknownNames,
+        limit: u32,
+    ) -> Result<Listing, ServerError> {
         let state = self.0.lock().unwrap();
         Ok(Listing {
             as_of: TxLogId(state.head),
@@ -132,6 +137,7 @@ async fn windows_are_sent_what_changed_of_them() {
         body: ClientRequest::Subscribe {
             subscription: one,
             query: "q".into(),
+            unknown: UnknownNames::Invalid,
             limit: 2,
         },
     })
@@ -216,6 +222,7 @@ async fn windows_are_sent_what_changed_of_them() {
         body: ClientRequest::Subscribe {
             subscription: one,
             query: "q".into(),
+            unknown: UnknownNames::Invalid,
             limit: 2,
         },
     })

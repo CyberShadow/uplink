@@ -245,7 +245,7 @@ export type SasEmoji = { symbol: string, description: string, };
  */
 export type VerificationAnswer = "accept" | "confirm" | "mismatch" | "cancel";
 
-export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": "list_history", before: TxLogId | null, limit: number, } | { "type": "list_accounts" } | { "type": "list_entries", query: string, after: ListPosition | null, limit: number, } | { "type": "list_items", query: string, after: ItemPosition | null, limit: number, } | { "type": "subscribe", subscription: SubscriptionId, query: string, limit: number, } | { "type": "extend", subscription: SubscriptionId, limit: number, } | { "type": "unsubscribe", subscription: SubscriptionId, } | { "type": "list_home", limit: number, } | { "type": "list_conversation", entry: EntryId, } | { "type": "list_message_entries", message: MessageId, } | { "type": "load_message", message: MessageId, } | { "type": "always_show_images", rule: ImageRule, always: boolean, } | { "type": "modify_labels", entries: Array<EntryId>, add: Array<LabelId>, remove: Array<LabelId>, } | { "type": "act_on_conversations", conversations: ConversationSet, action: ConversationAction, 
+export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": "list_history", before: TxLogId | null, limit: number, } | { "type": "list_accounts" } | { "type": "list_entries", query: string, after: ListPosition | null, limit: number, } | { "type": "list_items", query: string, after: ItemPosition | null, limit: number, } | { "type": "subscribe", subscription: SubscriptionId, query: string, unknown: UnknownNames, limit: number, } | { "type": "extend", subscription: SubscriptionId, limit: number, } | { "type": "unsubscribe", subscription: SubscriptionId, } | { "type": "list_home" } | { "type": "list_conversation", entry: EntryId, } | { "type": "list_message_entries", message: MessageId, } | { "type": "load_message", message: MessageId, } | { "type": "always_show_images", rule: ImageRule, always: boolean, } | { "type": "modify_labels", entries: Array<EntryId>, add: Array<LabelId>, remove: Array<LabelId>, } | { "type": "act_on_conversations", conversations: ConversationSet, action: ConversationAction, 
 /**
  * Done by a view being shown (opening a conversation reads it).
  */
@@ -268,7 +268,7 @@ next: ListPosition | null,
  * The entries the list's conversations are made of, as label
  * changes move entries into and out of them.
  */
-scope: ListScope, } | { "type": "entries", as_of: TxLogId, entries: Array<Entry>, } | { "type": "conversation_count", count: number, } | { "type": "home", as_of: TxLogId, buckets: Array<HomeBucket>, } | { "type": "items", as_of: TxLogId, 
+scope: ListScope, } | { "type": "entries", as_of: TxLogId, entries: Array<Entry>, } | { "type": "conversation_count", count: number, } | { "type": "home", buckets: Array<HomeBucket>, } | { "type": "items", as_of: TxLogId, 
 /**
  * The most recently active first.
  */
@@ -316,21 +316,15 @@ more: boolean, };
 export type ServerError = { code: ErrorCode, message: string, };
 
 /**
- * A bucket of the home view, as configured, and what is in it.
+ * A bucket of the home view, as configured.
  */
 export type HomeBucket = { name: string, 
 /**
- * What it lists: its query, less what earlier buckets list.
+ * What it lists, of names no kind has as false
+ * ([`UnknownNames::False`]): its query, less what earlier buckets
+ * list.
  */
-query: string, 
-/**
- * The most recently active first.
- */
-items: Array<Item>, 
-/**
- * Whether it lists more than these.
- */
-more: boolean, };
+query: string, };
 
 /**
  * How a home bucket shows on the app's icon (SPEC §12.14): by how many
@@ -397,6 +391,12 @@ export type ItemKey = string;
  * The client's name for a subscription (SPEC §5.7).
  */
 export type SubscriptionId = number;
+
+/**
+ * What a query's names of labels, tags or accounts that no kind has
+ * mean.
+ */
+export type UnknownNames = "invalid" | "false";
 
 /**
  * What changed of a subscription's window (SPEC §5.7): applied to the
@@ -1587,4 +1587,4 @@ export type EventChangeKind = "create" | "update" | "delete";
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "b599be38abbc5533"
+export const PROTOCOL_VERSION = "ef21415e1c227ec5"

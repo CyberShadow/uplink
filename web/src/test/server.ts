@@ -36,7 +36,6 @@ import type {
   LabelKind,
   LabelId,
   LabelState,
-  HomeBucket,
   Item,
   ItemPosition,
   ListPosition,
@@ -76,6 +75,7 @@ import type {
   UploadedBlob,
   MessageId,
   UrlPreview,
+  UnknownNames,
 } from '../generated/protocol'
 import type { Client } from '../stores/client'
 import { ruleKey } from '../stores/mail'
@@ -126,6 +126,7 @@ function preview(event: RoomEvent | undefined): RoomPreview | null {
 /** A subscription's window, as the client was last told of it. */
 interface FakeWindow {
   query: string
+  unknown: UnknownNames
   limit: number
   listener: WindowListener
   items: Map<string, Listed>
@@ -821,10 +822,10 @@ export class FakeServer implements Requester, Subscriber, Blobs {
   private readonly windows = new Map<number, FakeWindow>()
   private nextSubscription = 1
 
-  subscribe(query: string, limit: number, listener: WindowListener): Subscription {
+  subscribe(query: string, unknown: UnknownNames, limit: number, listener: WindowListener): Subscription {
     const id = this.nextSubscription++
-    this.requests.push({ type: 'subscribe', subscription: id, query, limit })
-    const window: FakeWindow = { query, limit, listener, items: new Map(), more: false, partialRooms: [] }
+    this.requests.push({ type: 'subscribe', subscription: id, query, unknown, limit })
+    const window: FakeWindow = { query, unknown, limit, listener, items: new Map(), more: false, partialRooms: [] }
     let closed = false
     this.inTurn(() => {
       const first = this.windowChange(window)
@@ -853,7 +854,8 @@ export class FakeServer implements Requester, Subscriber, Blobs {
   /** What changed of the window, as the server says it, which it then
    * has. */
   private windowChange(window: FakeWindow): { change: WindowChange; scope: ListScope } {
-    const response = this.listItems(window.query, null, window.limit)
+    const response =
+      window.unknown === 'false' ? this.listBucket(window.query, window.limit) : this.listItems(window.query, null, window.limit)
     if (response.type !== 'items') throw new Error('items are listed as items')
     const listed = response.items.map((item): Listed => ({ key: keyOf(item), position: positionOf(item), item }))
     const now = new Set(listed.map((l) => l.key))
@@ -979,38 +981,8 @@ export class FakeServer implements Requester, Subscriber, Blobs {
       case 'extend':
       case 'unsubscribe':
         throw new Error(`${body.type} is the connection's own (\`subscribe\`)`)
-      case 'list_home': {
-        // Its own buckets, not the language: rooms with unread messages
-        // and open to-dos, then the Inboxes' mail.
-        const inboxes = this.accounts.map((a) => this.labelId(a.id, 'INBOX'))
-        const hiding = this.accounts.flatMap((a) => a.labels).filter((l) => HIDING.includes(l.external_id))
-        const conversations = this.conversations(
-          (e) => !e.labels.some((l) => hiding.some((h) => h.id === l)),
-          (e) => e.labels.some((l) => inboxes.includes(l)),
-        )
-        const bucket = (name: string, query: string, items: Item[]): HomeBucket => {
-          const { items: first, next } = page(items, null, body.limit)
-          return { name, query, items: first, more: next !== null }
-        }
-        return {
-          type: 'home',
-          as_of: this.head(),
-          buckets: [
-            bucket('Now', 'is:unread is:room OR is:todo', [
-              ...this.matrixRooms()
-                .filter((r) => !r.space && r.unread > 0)
-                .map((room): Item => ({ kind: 'room', room, hits: null })),
-              ...this.todos.filter((t) => t.done_at === null).map((todo): Item => ({ kind: 'todo', todo })),
-            ]),
-            bucket(
-              'Inbox',
-              'in:inbox',
-              conversations.map((conversation): Item => ({ kind: 'mail', conversation })),
-            ),
-            bucket('Later', 'is:starred', []),
-          ],
-        }
-      }
+      case 'list_home':
+        return { type: 'home', buckets: this.homeBuckets().map(({ name, query }) => ({ name, query })) }
       case 'list_entries':
         return this.listEntries(body.query, body.after, body.limit)
       case 'list_conversation': {
@@ -1741,6 +1713,51 @@ export class FakeServer implements Requester, Subscriber, Blobs {
 
   /** Mail as `listEntries` lists it; of other kinds, those whose text has
    * the query's words: a room by its name, else by its messages. */
+  /** Its own buckets, not the language: rooms with unread messages and
+   * open to-dos, then the Inboxes' mail. */
+  private homeBuckets(): { name: string; query: string; items: () => Item[] }[] {
+    return [
+      {
+        name: 'Now',
+        query: 'is:unread is:room OR is:todo',
+        items: () => [
+          ...this.matrixRooms()
+            .filter((r) => !r.space && r.unread > 0)
+            .map((room): Item => ({ kind: 'room', room, hits: null })),
+          ...this.todos.filter((t) => t.done_at === null).map((todo): Item => ({ kind: 'todo', todo })),
+        ],
+      },
+      {
+        name: 'Inbox',
+        query: 'in:inbox',
+        items: () => {
+          const inboxes = this.accounts.map((a) => this.labelId(a.id, 'INBOX'))
+          const hiding = this.accounts.flatMap((a) => a.labels).filter((l) => HIDING.includes(l.external_id))
+          return this.conversations(
+            (e) => !e.labels.some((l) => hiding.some((h) => h.id === l)),
+            (e) => e.labels.some((l) => inboxes.includes(l)),
+          ).map((conversation): Item => ({ kind: 'mail', conversation }))
+        },
+      },
+      { name: 'Later', query: 'is:starred', items: () => [] },
+    ]
+  }
+
+  /** What a bucket's window lists, by its query. */
+  private listBucket(query: string, limit: number): ServerResponse {
+    const bucket = this.homeBuckets().find((b) => b.query === query)!
+    return {
+      type: 'items',
+      as_of: this.head(),
+      ...page(bucket.items(), null, limit),
+      scope: {
+        type: 'except',
+        labels: this.accounts.flatMap((a) => a.labels).filter((l) => HIDING.includes(l.external_id)).map((l) => l.id),
+      },
+      partial_rooms: [],
+    }
+  }
+
   private listItems(query: string, after: ItemPosition | null, limit: number): ServerResponse {
     const { conversations, scope } = this.listEntries(query, null, Infinity)
     const words = query.split(/\s+/).filter((w) => w !== '' && !w.includes(':')).map((w) => w.toLowerCase())

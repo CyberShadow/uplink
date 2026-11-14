@@ -12,6 +12,7 @@ import { useTitle } from '../title'
 import { lines, useKeymap } from '../keymap'
 import type { Row } from '../items'
 import { conversationKey, threadOf } from '../stores/mail'
+import type { Bucket } from '../stores/home'
 import { date, time } from '../format'
 import { homeMailPath, searchPath } from './App'
 import { calendarPath } from './Calendar'
@@ -22,8 +23,8 @@ import { FAVOURITE } from '../roomTags'
 import styles from './Home.module.css'
 
 /** How many a bucket lists: `20+` if it has more. */
-function count(bucket: HomeBucket, rows: number): string {
-  return `${rows}${bucket.more ? '+' : ''}`
+function count({ rows, more }: Bucket): string {
+  return `${rows.length}${more ? '+' : ''}`
 }
 
 export function Home() {
@@ -38,7 +39,7 @@ export function Home() {
     focused.current?.scrollIntoView({ block: 'nearest' })
   }, [focus])
 
-  const shown = home.home.value
+  const agenda = home.agenda.value
   const buckets = home.buckets.value
   const current = home.rows.value.find((row) => row.key === focus)
 
@@ -87,29 +88,33 @@ export function Home() {
     label: () => current && (current.kind === 'mail' || current.kind === 'room') && setPicking(current),
   })
 
-  if (!shown || !mail.accounts.value) return <p class={styles.placeholder}>Loading…</p>
+  // Rows show their accounts'.
+  if (!buckets || !agenda || !mail.accounts.value || !matrix.accounts.value)
+    return <p class={styles.placeholder}>Loading…</p>
   const id = (bucket: HomeBucket) => `bucket-${buckets.findIndex((b) => b.bucket === bucket)}`
   return (
     <section class={styles.home} aria-label="Home">
-      <Agenda events={shown.agenda} />
+      <Agenda events={agenda} />
       <nav class={styles.jump} aria-label="Buckets">
-        {buckets.map(({ bucket, rows }) => (
+        {buckets.map((shown) => (
           <button
-            key={bucket.name}
+            key={shown.bucket.name}
             type="button"
-            onClick={() => document.getElementById(id(bucket))?.scrollIntoView({ block: 'start' })}
+            onClick={() => document.getElementById(id(shown.bucket))?.scrollIntoView({ block: 'start' })}
           >
-            {bucket.name} <span class={styles.count}>{count(bucket, rows.length)}</span>
+            {shown.bucket.name} <span class={styles.count}>{count(shown)}</span>
           </button>
         ))}
       </nav>
       <div class={styles.buckets}>
-        {buckets.map(({ bucket, rows }) => (
+        {buckets.map((shown) => {
+          const { bucket, rows } = shown
+          return (
           <section key={bucket.name} id={id(bucket)} class={styles.bucket} aria-label={bucket.name}>
             {/* The bucket as a list of its own, to work through. */}
             <h2>
               <a href={searchPath(bucket.query)}>
-                {bucket.name} <span class={styles.count}>{count(bucket, rows.length)}</span>
+                {bucket.name} <span class={styles.count}>{count(shown)}</span>
               </a>
             </h2>
             {rows.length === 0 ? (
@@ -135,13 +140,14 @@ export function Home() {
                 })}
               </ul>
             )}
-            {bucket.more && (
+            {shown.more && (
               <a class={styles.all} href={searchPath(bucket.query)}>
-                Show all {count(bucket, rows.length)}
+                Show all {count(shown)}
               </a>
             )}
           </section>
-        ))}
+          )
+        })}
       </div>
       {picking?.kind === 'mail' && (
         <LabelPicker

@@ -174,6 +174,7 @@ pub enum ClientRequest {
     Subscribe {
         subscription: SubscriptionId,
         query: String,
+        unknown: UnknownNames,
         limit: u32,
     },
     /// Widens the subscription's window by `limit` items, answered
@@ -185,12 +186,11 @@ pub enum ClientRequest {
     Unsubscribe {
         subscription: SubscriptionId,
     },
-    /// The home view (SPEC §12.13): each configured bucket's first page
-    /// of `limit` items, as `ListItems` lists them; an item is in the
-    /// first bucket that matches it.
-    ListHome {
-        limit: u32,
-    },
+    /// The home view's buckets (SPEC §12.13), as configured, each with
+    /// the query that lists it, to subscribe to: its own, less every
+    /// earlier bucket's, so an item is in the first bucket that matches
+    /// it. `HomeChanged` says they changed.
+    ListHome,
     /// The entries of the entry's conversation, in Trash and Spam too,
     /// oldest first.
     ListConversation {
@@ -558,8 +558,8 @@ pub enum ServerResponse {
     ConversationCount {
         count: u64,
     },
+    /// Of `ListHome`: of the configuration, not the log.
     Home {
-        as_of: TxLogId,
         buckets: Vec<HomeBucket>,
     },
     Items {
@@ -704,7 +704,6 @@ impl ServerResponse {
             | Self::Entries { as_of, .. }
             | Self::Items { as_of, .. }
             | Self::Window { as_of, .. }
-            | Self::Home { as_of, .. }
             | Self::Drafts { as_of, .. }
             | Self::Outbox { as_of, .. }
             | Self::Rooms { as_of, .. }
@@ -719,8 +718,10 @@ impl ServerResponse {
             | Self::Event { as_of, .. }
             | Self::History { as_of, .. } => Some(*as_of),
             // Message content does not change; a count is of the moment;
-            // the rest is not logged.
+            // home's buckets are of the configuration; the rest is not
+            // logged.
             Self::Message { .. }
+            | Self::Home { .. }
             | Self::ConversationCount { .. }
             | Self::Done
             | Self::Receipts { .. }
@@ -734,17 +735,27 @@ impl ServerResponse {
     }
 }
 
-/// A bucket of the home view, as configured, and what is in it.
+/// A bucket of the home view, as configured.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct HomeBucket {
     pub name: String,
-    /// What it lists: its query, less what earlier buckets list.
+    /// What it lists, of names no kind has as false
+    /// ([`UnknownNames::False`]): its query, less what earlier buckets
+    /// list.
     pub query: String,
-    /// The most recently active first.
-    pub items: Vec<Item>,
-    /// Whether it lists more than these.
-    pub more: bool,
+}
+
+/// What a query's names of labels, tags or accounts that no kind has
+/// mean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum UnknownNames {
+    /// The query is `Invalid`, as a search's is: the name is misspelt.
+    Invalid,
+    /// They match nothing, as in home's buckets, which name Gmail's
+    /// labels and Element's tags that some accounts lack.
+    False,
 }
 
 /// An item of a list of every kind (SPEC §8.7).
