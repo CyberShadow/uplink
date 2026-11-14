@@ -3168,7 +3168,9 @@ an edit asks for the fields as they were; undoing a deletion
 (`calendar.restore_event`) takes it back if not yet given, and else
 creates the event anew (an occurrence comes back as a single event).
 
-The calendar's sync task gives them to Graph, then lists the calendar
+The calendar's sync task gives them to Graph, reading each event
+written back (Graph answers a write with its times in the zones they
+were given in, not in UTC as asked, §15.12), then lists the calendar
 again to see what Graph made of them: a creation `POST /me/events`
 (attendees told by Graph), an edit `PATCH /me/events/{id}` of the
 fields edited, a deletion `DELETE`, or, of a meeting with attendees,
@@ -4610,7 +4612,9 @@ request).
   event created), and `cancel`; `0015`, calendar view delta sending a
   series whole, as a test tenant showed Graph's does (§15.12): its master
   and exceptions in full, its occurrences sparse, an occurrence gone left
-  out, a series deleted its master `@removed`.
+  out, a series deleted its master `@removed`; `0016`, a write of an
+  event answering with the times written, in their zones (as Graph
+  does, §15.12).
 - **IMAP, POP3, SMTP and JMAP:** Stalwart (single-binary Rust mail
   server, from nixpkgs; IMAP, POP3, SMTP and JMAP), a real server rather
   than a fake. The Rust tests (`tests/imap_sync.rs`, `tests/pop3_sync.rs`,
@@ -4705,9 +4709,7 @@ From of another address (§8.4), what `send` answers for a
 draft already sent or being sent, and the
 throttling of polling every folder every 30 s; for the calendar, that
 calendar view delta expands series and reports exceptions and cancelled
-occurrences as the emulator does, how long its delta links last, and
-that `outlook.timezone="UTC"` gives UTC times (all-day events
-included). What a test tenant showed (2026-11-14) of calendar view
+occurrences as the emulator does, and how long its delta links last. What a test tenant showed (2026-11-14) of calendar view
 delta, with a weekly series and probes that tag what they make and
 delete it after: a series is sent whole whenever any of it changes,
 the series itself, one occurrence of it, or one deleted (its master,
@@ -4718,8 +4720,19 @@ of the series sent again, with no `@removed` (none came in a further
 round either); a series deleted has its master alone `@removed`; and
 `/instances` gives every occurrence its master's `lastModifiedDateTime`,
 an exception its own (the master's moving with it). The emulator does
-as much (patches `0013`, `0015`). uplink's sync of it has not yet run
-against the tenant. The provider tests are written against endpoints passed in,
+as much (patches `0013`, `0015`). uplink's calendar, run against the
+tenant (creating a timed event, an all-day one and a weekly series,
+editing the event, an occurrence and the series, deleting an
+occurrence, undoing that and deleting all), had Graph as it asked,
+once a write was read back: Graph gives UTC times (all-day events'
+included) as `outlook.timezone="UTC"` asks only in reads, answering a
+POST or PATCH with the times written in the zones they were given in
+(patch `0016`). A POST retried with its `transactionId` made no second
+event. An event created outside the window is `@removed` by the next
+delta, and so off uplink's calendar though at the provider. Not run
+there: attendees, cancelling, answering (the tenant has one user), and
+Teams meetings (its calendar's `allowedOnlineMeetingProviders` is
+empty, and Graph then ignores `isOnlineMeeting` without an error). The provider tests are written against endpoints passed in,
 so pointing them at a real account is meant to be a configuration step;
 unlike Gmail's, they have no switch for one yet.
 

@@ -1,0 +1,130 @@
+From 61c68f7f8cade9bf52d496523d7e355fd992d442 Mon Sep 17 00:00:00 2001
+From: Vladimir Panteleev <git@cy.md>
+Date: Sat, 14 Nov 2026 17:11:43 +0000
+Subject: [PATCH] feat(microsoft): a calendar write answers with the times as
+ written, in their zones
+
+Graph heeds Prefer: outlook.timezone only in reads: POST and PATCH of an
+event answer with the start and end given, in the zones given (as a real
+tenant shows).
+---
+ packages/@emulators/microsoft/README.md       |  2 +-
+ .../microsoft/src/__tests__/calendar.test.ts  | 20 ++++++++++++++--
+ .../microsoft/src/routes/calendar.ts          | 24 +++++++++++++++----
+ 3 files changed, 38 insertions(+), 8 deletions(-)
+
+diff --git a/packages/@emulators/microsoft/README.md b/packages/@emulators/microsoft/README.md
+index 8b1ba9c..9f129ce 100644
+--- a/packages/@emulators/microsoft/README.md
++++ b/packages/@emulators/microsoft/README.md
+@@ -62,7 +62,7 @@ Each user's mailbox starts with the well-known folders (Inbox, Drafts, Sent Item
+ 
+ ## Microsoft Graph calendar
+ 
+-Events live in the user's one calendar. Requests give times in any `timeZone` Graph takes, a Windows time zone's name or an IANA one's (CLDR maps the one to the other), UTC if none; an event keeps them as `originalStartTimeZone` and `originalEndTimeZone`. Responses give times in UTC, as with `Prefer: outlook.timezone="UTC"`; an all-day event's are its dates, wherever one is. A series' `recurrence` may follow a `daily`, `weekly`, `absoluteMonthly`, `absoluteYearly`, `relativeMonthly` or `relativeYearly` pattern, over an `endDate`, `numbered` or `noEnd` range (expanded three years ahead), its occurrences at the time of day its start has in its time zone, across daylight saving time. Changing or deleting one of its occurrences, by the occurrence's id, makes an exception of it. A `transactionId` given in creating an event is kept, and creating one with it again gives the event already created.
++Events live in the user's one calendar. Requests give times in any `timeZone` Graph takes, a Windows time zone's name or an IANA one's (CLDR maps the one to the other), UTC if none; an event keeps them as `originalStartTimeZone` and `originalEndTimeZone`. Responses give times in UTC, as with `Prefer: outlook.timezone="UTC"`, except that a POST or PATCH answers with the `start` and `end` it was given, in their zones, as Graph does; an all-day event's are its dates, wherever one is. A series' `recurrence` may follow a `daily`, `weekly`, `absoluteMonthly`, `absoluteYearly`, `relativeMonthly` or `relativeYearly` pattern, over an `endDate`, `numbered` or `noEnd` range (expanded three years ahead), its occurrences at the time of day its start has in its time zone, across daylight saving time. Changing or deleting one of its occurrences, by the occurrence's id, makes an exception of it. A `transactionId` given in creating an event is kept, and creating one with it again gives the event already created.
+ 
+ An event keeps its `body` (`text` or `html`), `showAs`, `attendees` (each of a `type`, `required` unless given, and with a `status`, `none` unless given) and reminder (`isReminderOn`, `reminderMinutesBeforeStart`; 15 minutes by default) as given; `isOnlineMeeting: true` gives it an `onlineMeeting.joinUrl` at the emulator. What Graph sets itself of a meeting someone else organizes, the emulator takes too, to seed one: its `organizer`, the user's `responseStatus` (`notResponded` by default, `organizer` for the user's own) and `isCancelled`.
+ 
+diff --git a/packages/@emulators/microsoft/src/__tests__/calendar.test.ts b/packages/@emulators/microsoft/src/__tests__/calendar.test.ts
+index 2c94bb2..6afbafb 100644
+--- a/packages/@emulators/microsoft/src/__tests__/calendar.test.ts
++++ b/packages/@emulators/microsoft/src/__tests__/calendar.test.ts
+@@ -194,8 +194,24 @@ describe("Microsoft Graph calendar", () => {
+       start: { dateTime: "2026-11-10T14:00:00", timeZone: "America/Los_Angeles" },
+       end: { dateTime: "2026-11-10T15:00:00", timeZone: "Pacific Standard Time" },
+     });
+-    expect([event.start.dateTime, event.end.dateTime]).toEqual(["2026-11-10T22:00:00.0000000", "2026-11-10T23:00:00.0000000"]);
+-    expect([event.originalStartTimeZone, event.originalEndTimeZone]).toEqual(["America/Los_Angeles", "Pacific Standard Time"]);
++    // Answered as written; read, in UTC.
++    expect([event.start, event.end]).toEqual([
++      { dateTime: "2026-11-10T14:00:00.0000000", timeZone: "America/Los_Angeles" },
++      { dateTime: "2026-11-10T15:00:00.0000000", timeZone: "Pacific Standard Time" },
++    ]);
++    const read = await json(`/v1.0/me/events/${event.id}`);
++    expect([read.start, read.end]).toEqual([utc("2026-11-10T22:00:00.0000000"), utc("2026-11-10T23:00:00.0000000")]);
++    expect([read.originalStartTimeZone, read.originalEndTimeZone]).toEqual(["America/Los_Angeles", "Pacific Standard Time"]);
++    const moved = await json(`/v1.0/me/events/${event.id}`, {
++      method: "PATCH",
++      body: JSON.stringify({ start: { dateTime: "2026-11-10T15:00:00", timeZone: "Pacific Standard Time" } }),
++    });
++    expect([moved.start, moved.end]).toEqual([
++      { dateTime: "2026-11-10T15:00:00.0000000", timeZone: "Pacific Standard Time" },
++      utc("2026-11-10T23:00:00.0000000"),
++    ]);
++    const renamed = await json(`/v1.0/me/events/${event.id}`, { method: "PATCH", body: JSON.stringify({ subject: "Still elsewhere" }) });
++    expect(renamed.start).toEqual(utc("2026-11-10T23:00:00.0000000"));
+     // 10:00 in Berlin, before daylight saving time ends and after.
+     await create({
+       subject: "Weekly",
+diff --git a/packages/@emulators/microsoft/src/routes/calendar.ts b/packages/@emulators/microsoft/src/routes/calendar.ts
+index 19c4155..378ee31 100644
+--- a/packages/@emulators/microsoft/src/routes/calendar.ts
++++ b/packages/@emulators/microsoft/src/routes/calendar.ts
+@@ -37,7 +37,9 @@ const encode = (state: object) => Buffer.from(JSON.stringify(state)).toString("b
+  * calendar, calendar views of them (series expanded into occurrences),
+  * and delta queries of those views. Times are taken in any time zone
+  * Graph takes (Windows' names, IANA's), series expanded in theirs, and
+- * given in UTC, as with `Prefer: outlook.timezone="UTC"`. */
++ * given in UTC, as with `Prefer: outlook.timezone="UTC"`; but a write
++ * answers with the times written as they were given, in their zones,
++ * as Graph does. */
+ export function calendarRoutes({ app, store, baseUrl }: RouteContext): void {
+   const ms = getMicrosoftStore(store);
+ 
+@@ -67,6 +69,18 @@ export function calendarRoutes({ app, store, baseUrl }: RouteContext): void {
+     return { start, end };
+   };
+ 
++  /** What a write of `body` answers of the event `json`: Graph gives
++   * the times written in the zones they were given in, heeding
++   * `Prefer: outlook.timezone` only in reads. */
++  const asWritten = (json: Record<string, unknown>, body: Record<string, unknown>) => {
++    const out = { ...json };
++    for (const key of ["start", "end"]) {
++      const time = body[key] as { dateTime: string; timeZone: string } | undefined;
++      if (time) out[key] = { dateTime: `${time.dateTime.slice(0, 19)}.0000000`, timeZone: time.timeZone };
++    }
++    return out;
++  };
++
+   // ---------- Events ----------
+ 
+   app.post("/v1.0/me/events", async (c) => {
+@@ -89,7 +103,7 @@ export function calendarRoutes({ app, store, baseUrl }: RouteContext): void {
+     if (transactionId !== null && typeof transactionId !== "string") return invalid(c, "transactionId is a string.");
+     // Created already, by a POST the client retries.
+     const created = transactionId !== null && ms.events.findBy("user_email", email).find((e) => e.transaction_id === transactionId);
+-    if (created) return c.json(formatEvent(created), 201);
++    if (created) return c.json(asWritten(formatEvent(created), body), 201);
+     const eventId = generateGraphId("AAMkEvent");
+     const event = ms.events.insert({
+       event_id: eventId,
+@@ -119,7 +133,7 @@ export function calendarRoutes({ app, store, baseUrl }: RouteContext): void {
+       exceptions: {},
+     });
+     resync(event);
+-    return c.json(formatEvent(event), 201);
++    return c.json(asWritten(formatEvent(event), body), 201);
+   });
+ 
+   app.get("/v1.0/me/events/:event", (c) => {
+@@ -173,13 +187,13 @@ export function calendarRoutes({ app, store, baseUrl }: RouteContext): void {
+       }
+       const updated = ms.events.update(event.id, update)!;
+       resync(updated);
+-      return c.json(formatEvent(updated));
++      return c.json(asWritten(formatEvent(updated), body));
+     }
+     const instance = instanceOf(email, id);
+     const master = instance && eventOf(email, instance.event_id);
+     if (!instance || !master || instance.instance_id === master.event_id) return notFound(c);
+     changeOccurrence(master, instance.instance_id, fields);
+-    return c.json(JSON.parse(instanceOf(email, id)!.json));
++    return c.json(asWritten(JSON.parse(instanceOf(email, id)!.json), body));
+   });
+ 
+   app.delete("/v1.0/me/events/:event", (c) => {
+-- 
+2.55.0
+

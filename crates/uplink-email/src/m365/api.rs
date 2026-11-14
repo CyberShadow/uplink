@@ -348,18 +348,42 @@ impl Graph {
         changed(self.send(Method::POST, &self.url(path), Some(body)).await?).await
     }
 
-    /// POSTs `body` to `path` below `/me`, creating what it says.
+    /// POSTs `body` to `path` below `/me`, creating what it says, and
+    /// reads it back (as [`Self::patch`]).
     pub async fn create<B: Serialize>(&self, path: &str, body: &B) -> Result<Written> {
-        written(self.send(Method::POST, &self.url(path), Some(body)).await?).await
+        match written(self.send(Method::POST, &self.url(path), Some(body)).await?).await? {
+            Written::Done(created) => {
+                let id = created["id"]
+                    .as_str()
+                    .context("Graph created something without an id")?;
+                self.read(&format!("{path}/{id}")).await
+            }
+            other => Ok(other),
+        }
     }
 
-    /// PATCHes what is at `path` below `/me` with `body`.
+    /// PATCHes what is at `path` below `/me` with `body`, and reads it
+    /// back: Graph answers a write with the times written in the zones
+    /// they were given in, not in UTC as `Prefer` asks, which only reads
+    /// heed.
     pub async fn patch<B: Serialize>(&self, path: &str, body: &B) -> Result<Written> {
-        written(
+        match written(
             self.send(Method::PATCH, &self.url(path), Some(body))
                 .await?,
         )
-        .await
+        .await?
+        {
+            Written::Done(_) => self.read(path).await,
+            other => Ok(other),
+        }
+    }
+
+    /// What is at `path` below `/me`, as a write answers it.
+    async fn read(&self, path: &str) -> Result<Written> {
+        Ok(match self.get(&self.url(path)).await? {
+            Some(json) => Written::Done(json),
+            None => Written::Gone,
+        })
     }
 
     /// DELETEs what is at `path` below `/me`.
@@ -484,7 +508,7 @@ pub enum Changed {
 /// What Graph made of a write that answers with what it wrote.
 #[derive(Debug, PartialEq)]
 pub enum Written {
-    /// Done: what is there now, as Graph has it.
+    /// Done: what is there now, as Graph lists it.
     Done(serde_json::Value),
     /// What it was of no longer exists.
     Gone,
