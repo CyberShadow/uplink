@@ -220,6 +220,9 @@ async fn resyncs_fully_once_history_expired() {
     let sync = start_sync(&uplink, &provider);
     let kept_entry = uplink.arrived("kept").await;
     uplink.arrived("deleted").await;
+    // Mail shows as the listing goes: once it is done, the history id
+    // changes are recorded from is kept.
+    eventually("the first sync", || async { uplink.synced().then_some(()) }).await;
     sync.abort();
     let _ = sync.await;
 
@@ -266,6 +269,7 @@ async fn resumes_an_interrupted_listing() {
     let sync = start_sync(&uplink, &provider);
     let first_entry = uplink.arrived("first").await;
     uplink.arrived("second").await;
+    eventually("the first sync", || async { uplink.synced().then_some(()) }).await;
     sync.abort();
     let _ = sync.await;
 
@@ -295,7 +299,8 @@ async fn resumes_an_interrupted_listing() {
             .then_some(())
     })
     .await;
-    assert!(synced());
+    // The polls, which go on while it lists, may have observed them first.
+    eventually("the listing to end", || async { synced().then_some(()) }).await;
     let state: String = db
         .query_row("SELECT sync_state FROM account", [], |r| r.get(0))
         .unwrap();
