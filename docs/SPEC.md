@@ -2025,8 +2025,11 @@ fit uplink better (§8.1, §8.3).
   user did to it, and its undo, stay with it. That holds for moves by
   uplink (§6.6) and by other clients, and for a folder renamed.
 - **A step** checks every folder's `STATUS` (messages, UIDNEXT,
-  UIDVALIDITY, and with CONDSTORE, RFC 7162, HIGHESTMODSEQ); with
-  CONDSTORE, a folder as recorded has not changed and is skipped. A
+  UIDVALIDITY, and with CONDSTORE, RFC 7162, HIGHESTMODSEQ), after a
+  `NOOP`: of the folder the connection has selected, a server may answer
+  as the connection last saw it (Dovecot does; RFC 9051 asks clients not
+  to ask), and the NOOP brings that up to date. With CONDSTORE, a
+  folder as recorded has not changed and is skipped. A
   folder that changed is selected; `UID SEARCH UNDELETED` lists what it
   holds, against which the entries recorded in it are gone or kept, and
   the rest is new; flags are fetched for all, or with CONDSTORE those
@@ -2047,16 +2050,28 @@ fit uplink better (§8.1, §8.3).
   `{"listing": …, "folders": {<name>: {uidvalidity, uidnext, messages,
   highestmodseq}}}`); a step that changes nothing records nothing.
   Polled every 30 s.
-- **IDLE** (RFC 2177): a server that has it tells of changes in the
-  Inbox as they happen, on a second connection that does nothing else
-  (IDLE holds its connection, and tells of the selected folder only;
-  other folders wait for the poll). What it tells wakes the sync task
-  (`Provider::changed`), which takes a step as for a poll; so does the
-  watch's (re)beginning, as changes may have been missed meanwhile. The
-  IDLE is renewed every 10 minutes (RFC 2177's limit is 29), which also
-  finds a connection lost without a word; a watch that fails begins
-  anew 30 s later, polling going on meanwhile. The watch begins as the
-  task first waits.
+- **Watches** tell of changes as they happen, on connections that do
+  nothing else, waiting by IDLE (RFC 2177; a server without it is only
+  polled). A server with NOTIFY (RFC 5465, e.g. Dovecot) tells of every
+  folder, on one connection: `NOTIFY SET (personal (MessageNew
+  MessageExpunge FlagChange MailboxName))`, after `ENABLE CONDSTORE`, as
+  NOTIFY tells of a folder not selected by STATUS, in which a flag
+  changed shows only as a new HIGHESTMODSEQ; folders made since are told
+  of too. Elsewhere IDLE tells of the selected folder only: the Inbox is
+  watched, and the folders the account names (`watch`, by their path,
+  `/` between levels), each on a connection of its own; the others wait
+  for the poll. Other clients do alike (Thunderbird checks the folders
+  the user ticks, K-9 pushes the folders of the classes the user picks),
+  as servers limit a user's connections (Dovecot to 10 an address, by
+  default; Gmail to 15), so what a folder watched costs is the user's to
+  weigh; with NOTIFY, `watch` is not needed, and the log says so. What a
+  watch tells wakes the sync task (`Provider::changed`), which takes a
+  step as for a poll; so does a watch's (re)beginning, as changes may
+  have been missed meanwhile. An IDLE is renewed every 10 minutes (RFC
+  2177's limit is 29), which also finds a connection lost without a
+  word; a watch that fails (a folder named that the server lacks
+  included) begins anew 30 s later, polling going on meanwhile. The
+  watches begin as the task first waits.
 - **Threading**: IMAP servers give no thread ids, so they are the
   headers': the first message a message's `References` names, else the
   one it replies to (`In-Reply-To`), else itself. Unlike Gmail's, such

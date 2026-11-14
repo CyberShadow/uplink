@@ -206,6 +206,7 @@ enable = true
             imap: self.server(self.imap, Security::Tls),
             smtp: self.server(self.smtp, Security::Tls),
             oauth: None,
+            watch: vec![],
             password_file: self.dir.join(format!("{user}.password")),
         };
         self.seal_password(account.login());

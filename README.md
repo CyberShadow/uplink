@@ -306,6 +306,13 @@ give the account an `oauth` block of your own OAuth client (`client_id`,
 the provider documents them; the scope must yield a refresh token) and
 run `uplink oauth init --account alice-mail`.
 
+New mail and other changes show as they happen in every folder if the
+server has NOTIFY (Dovecot does), else in the Inbox only, other folders
+being checked every 30 s. To have more folders watched on such a server,
+name them in `watch` (e.g. `watch: [Alerts, Lists/rust]`, by their path
+on the server). Each takes a connection of its own, of the few a server
+allows a user at once.
+
 Folders are labels of which a message has one; the server's Sent,
 Drafts, Trash, Junk and Archive folders are uplink's, and an Archive is
 made if there is none. Read and starred are the `\Seen` and `\Flagged`

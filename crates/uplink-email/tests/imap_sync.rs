@@ -5,8 +5,8 @@
 mod common;
 
 use common::{
-    eventually, message,
     dovecot::Dovecot,
+    eventually, message,
     stalwart::{append, find, store, Directory, Stalwart, ALICE, BOB},
     uplink::{label_set, Uplink},
 };
@@ -213,6 +213,43 @@ async fn the_inbox_is_watched_by_idle() {
     sync.abort();
 }
 
+/// On a server without NOTIFY, a folder the account names is watched by
+/// IDLE too, on a connection of its own; one it does not name waits for
+/// the poll.
+#[tokio::test(flavor = "multi_thread")]
+async fn named_folders_are_watched_by_idle() {
+    let uplink = Uplink::new(MailProvider::Imap);
+    let stalwart = Stalwart::start(uplink.dir.path()).await;
+    let mut other = stalwart.client("alice").await;
+    for folder in ["Alerts", "Lists"] {
+        other.session.create(folder).await.unwrap();
+    }
+    let account = ImapAccountConfig {
+        watch: vec!["Alerts".into()],
+        ..stalwart.account("alice")
+    };
+    let sign_in = stalwart.sign_in(account.login());
+    let provider = ImapSync::new(account, sign_in, stalwart.tls.clone());
+    let sync = uplink.start_polling(provider, ALICE, Duration::from_secs(3600));
+    eventually("the first sync", || async { uplink.synced().then_some(()) }).await;
+
+    // Mail to a folder unwatched, then to the one watched: the wake for the
+    // latter finds both.
+    append(&mut other, "Lists", &message("unwatched", "")).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(uplink.entry("unwatched"), None, "Lists is not watched");
+    append(&mut other, "Alerts", &message("alert", "")).await;
+    let alert = uplink.arrived("alert").await;
+    uplink.arrived("unwatched").await;
+    let (uid, _) = find(&mut other, "Alerts", "alert").await.unwrap();
+    store(&mut other, "Alerts", uid, "+FLAGS (\\Seen)").await;
+    eventually("the read to be observed", || async {
+        (label_set(&uplink.labels(alert)) == ["mailbox:Alerts"]).then_some(())
+    })
+    .await;
+    sync.abort();
+}
+
 /// Polled, a change in the folder the sync last selected is seen: of it, a
 /// STATUS may answer as the connection last saw it (Dovecot does).
 #[tokio::test(flavor = "multi_thread")]
@@ -241,6 +278,37 @@ async fn a_change_in_the_folder_left_selected_is_seen() {
         })
         .await;
     }
+    sync.abort();
+}
+
+/// On a server with NOTIFY, every folder is watched, on one connection.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_folder_is_watched_by_notify() {
+    let uplink = Uplink::new(MailProvider::Imap);
+    let dovecot = Dovecot::start(uplink.dir.path()).await;
+    let account = dovecot.account();
+    let provider = ImapSync::new(
+        account.clone(),
+        dovecot.sign_in(&account),
+        dovecot.tls.clone(),
+    );
+    let sync = uplink.start_polling(provider, ALICE, Duration::from_secs(3600));
+    eventually("the first sync", || async { uplink.synced().then_some(()) }).await;
+
+    let mut other = dovecot.client().await;
+    assert!(other.notify, "Dovecot has NOTIFY");
+    append(&mut other, "Alerts", &message("alert", "")).await;
+    let alert = uplink.arrived("alert").await;
+    let (uid, _) = find(&mut other, "Alerts", "alert").await.unwrap();
+    store(&mut other, "Alerts", uid, "+FLAGS (\\Flagged)").await;
+    eventually("the star to be observed", || async {
+        (label_set(&uplink.labels(alert)) == ["STARRED", "UNREAD", "mailbox:Alerts"]).then_some(())
+    })
+    .await;
+    // A folder made since, as well.
+    other.session.create("Later").await.unwrap();
+    append(&mut other, "Later", &message("later", "")).await;
+    uplink.arrived("later").await;
     sync.abort();
 }
 

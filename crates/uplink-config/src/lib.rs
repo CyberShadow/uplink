@@ -300,6 +300,11 @@ pub struct ImapAccountConfig {
     /// the password `uplink password --account <id>` sealed.
     #[serde(default)]
     pub oauth: Option<OAuthConfig>,
+    /// Folders watched by IDLE besides the Inbox, each on a connection of
+    /// its own, on a server without NOTIFY (which tells of every folder);
+    /// by their path on the server, `/` between levels (SPEC §8.10).
+    #[serde(default)]
+    pub watch: Vec<String>,
     /// `<data_dir>/accounts/<id>.password`.
     #[serde(skip)]
     pub password_file: PathBuf,
@@ -1080,6 +1085,7 @@ accounts:
       auth_url: https://auth.example.org/authorize
       token_url: https://auth.example.org/token
       scope: mail offline_access
+    watch: [Alerts, Lists/rust]
 "#;
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(yaml.as_bytes()).unwrap();
@@ -1089,6 +1095,7 @@ accounts:
         };
         assert_eq!(i.login().user, "alice");
         assert_eq!((i.imap_port(), i.smtp.smtp_port()), (143, 2525));
+        assert_eq!(i.watch, ["Alerts", "Lists/rust"]);
         let oauth = i.oauth.as_ref().unwrap();
         assert_eq!(oauth.client_secret, None);
         assert_eq!(

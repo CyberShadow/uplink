@@ -142,6 +142,7 @@ service anvil {{
             imap: server.clone(),
             smtp: server,
             oauth: None,
+            watch: vec![],
             password_file: self.dir.join("alice.password"),
         };
         sign_in::store_password(&self.key, account.login(), "alice-secret").unwrap();

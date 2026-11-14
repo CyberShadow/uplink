@@ -41,6 +41,9 @@ pub struct Connection {
     pub uidplus: bool,
     /// IDLE (RFC 2177): changes told as they happen.
     pub idle: bool,
+    /// NOTIFY (RFC 5465): changes told of every folder, not only the one
+    /// selected.
+    pub notify: bool,
 }
 
 /// Connects to `account`'s IMAP server and signs in.
@@ -98,6 +101,7 @@ pub async fn connect(
         moves: capabilities.has_str("MOVE"),
         uidplus: capabilities.has_str("UIDPLUS"),
         idle: capabilities.has_str("IDLE"),
+        notify: capabilities.has_str("NOTIFY"),
         session,
     })
 }

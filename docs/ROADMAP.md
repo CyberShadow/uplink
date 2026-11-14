@@ -74,7 +74,8 @@ MVP:
   besides (see SPEC §8.1).
 - M365 via Graph (mail) with delta-link polling every 30 s (no push;
   see SPEC §8.3 and §15.11 — EWS Streaming deferred).
-- Any IMAP server, polled every 30 s, its Inbox watched by IDLE (SPEC
+- Any IMAP server, polled every 30 s; with NOTIFY, every folder watched,
+  else its Inbox and the folders the account names, by IDLE (SPEC
   §8.10).
 - Any POP3 server, polled every 60 s: mail downloaded, labels kept in
   uplink only; deleting from the server after download opt-in per
@@ -91,8 +92,6 @@ Deferred:
   stays in place as the always-available fallback.
 - Labels of the user's own for POP3 accounts (which have only the
   system ones, as uplink makes no labels yet).
-- IMAP push for all folders, not the Inbox only: NOTIFY (RFC 5465), or
-  IDLE on a connection per folder.
 - Deciding an SMTP send of unknown outcome in the outbox ("send again",
   "it went out"; SPEC §8.11).
 - Server-side filters/rules.

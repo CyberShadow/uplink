@@ -263,7 +263,8 @@ impl Provider for ImapSync {
         Ok(SentCopy::OurMessageId)
     }
 
-    /// What IDLE tells of the Inbox, watched from the first wait on.
+    /// What the server tells of its folders, watched from the first wait
+    /// on.
     async fn changed(&self) {
         self.watcher
             .get_or_init(|| {

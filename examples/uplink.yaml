@@ -103,6 +103,10 @@ accounts: []
   #     host: imap.example.org
   #   smtp:
   #     host: smtp.example.org
+  #   # Folders other than the Inbox whose mail is told of as it arrives,
+  #   # each on a connection of its own, if the server lacks NOTIFY (which
+  #   # tells of them all); the rest are checked every 30 s.
+  #   watch: [Alerts]
 
   # — A mail account read by POP3 — as the IMAP one, but ports 995 and 110.
   # Mail is downloaded and left on the server, unless
