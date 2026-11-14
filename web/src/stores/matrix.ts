@@ -320,9 +320,13 @@ export class MatrixStore {
 
   /** Tags the rooms `tag`, or, if each has it already, untags them. */
   toggleTag(rooms: readonly Room[], tag: string) {
-    const each = rooms.every((r) => r.tags.includes(tag))
+    return this.setTag(rooms, tag, !rooms.every((r) => r.tags.includes(tag)))
+  }
+
+  /** Tags the rooms `tag`, or untags them. */
+  setTag(rooms: readonly Room[], tag: string, on: boolean) {
     const ids = rooms.map((r) => r.id)
-    return this.ops.dispatch({ type: 'modify_room_tags', rooms: ids, add: each ? [] : [tag], remove: each ? [tag] : [] })
+    return this.ops.dispatch({ type: 'modify_room_tags', rooms: ids, add: on ? [tag] : [], remove: on ? [] : [tag] })
   }
 
   /** Quietly: reading a room is not news. `shown`: by the room being

@@ -1,7 +1,7 @@
 import type { Ref } from 'preact'
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
-import type { ClientRequest, Conversation, Entry, EntryId, ImageRule, Label, MessageContent, RemoteHost } from '../generated/protocol'
+import type { ClientRequest, Conversation, Entry, EntryId, ImageRule, Label, MessageContent, RemoteHost, Room } from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus, lines, useKeymap } from '../keymap'
 import {
@@ -32,6 +32,7 @@ import { Icon, type IconName } from './Icon'
 import { inboxUnread, labelName } from './Nav'
 import { useTitle } from '../title'
 import { useLoadInView } from './loadInView'
+import { FAVOURITE } from '../roomTags'
 
 // Route params; preact-iso's own `query` prop is the URL's query string.
 interface Props {
@@ -47,7 +48,7 @@ interface Props {
 /** A label's or a search's list, or one of its conversations; or a
  * message's conversation, as a to-do links to it. */
 export function Mail(props: Props) {
-  const { mail, todos } = useServices()
+  const { mail, matrix, todos } = useServices()
   const { route } = useLocation()
   const [picking, setPicking] = useState<'label' | 'move' | null>(null)
 
@@ -189,10 +190,27 @@ export function Mail(props: Props) {
       }),
     }),
   }
+  // With rooms among the targets, only what applies to rooms and mail
+  // alike: rooms are read up to their latest event, as home's `e` does,
+  // and starred as Favourite, as home's `s`.
+  const rooms = openId === null ? mail.roomTargets.value : []
+  const shared: SharedActions = {
+    markRead: () => {
+      if (targets.length > 0) mail.markRead(targets, true)
+      for (const room of rooms) {
+        if (room.latest !== null && room.unread > 0) matrix.markRead(room.id, room.latest, false, true)
+      }
+    },
+    star: () => {
+      const on = !(targets.every((t) => mail.having(t, 'STARRED')) && rooms.every((r) => r.tags.includes(FAVOURITE)))
+      if (targets.length > 0) mail.setStar(targets, on)
+      matrix.setTag(rooms, FAVOURITE, on)
+    },
+  }
   useKeymap(
     openId === null
       ? {
-          ...common,
+          ...(rooms.length > 0 ? shared : common),
           ...lines(
             () => mail.moveFocus(1),
             () => mail.moveFocus(-1),
@@ -204,8 +222,10 @@ export function Mail(props: Props) {
               else route(pathOf(focused))
             }
           },
+          // To-dos and events are not selected.
           select: () => {
-            if (mail.focus.value !== null) mail.toggleSelected(mail.focus.value)
+            const focus = mail.focus.value
+            if (focus !== null && mail.selectable.value.includes(focus)) mail.toggleSelected(focus)
           },
           selectAll: () => mail.selectAll(),
           selectNone: () => mail.selectNone(),
@@ -231,7 +251,7 @@ export function Mail(props: Props) {
     <>
       {openId === null ? (
         <>
-          {conversations.length > 0 && <ListToolbar mail={mail} actions={common} />}
+          {mail.selectable.value.length > 0 && <ListToolbar mail={mail} actions={common} shared={shared} />}
           <MessageList mail={mail} open={open} openOther={(row) => route(pathOf(row))} />
         </>
       ) : openThread ? (
@@ -379,17 +399,38 @@ function ThreadActions(props: { mail: MailStore; actions: Actions; threads: Thre
   )
 }
 
+/** What the keys, and the toolbar, do to targets with rooms among them:
+ * what applies to rooms and mail alike. */
+type SharedActions = Pick<Actions, 'markRead' | 'star'>
+
+/** What a toolbar does to rooms, and any threads with them. */
+function RoomAndThreadActions(props: { mail: MailStore; actions: SharedActions; threads: Thread[]; rooms: Room[] }) {
+  const { mail, actions, threads, rooms } = props
+  const unread = threads.some((t) => mail.having(t, 'UNREAD')) || rooms.some((r) => r.unread > 0)
+  const starred =
+    threads.every((t) => mail.having(t, 'STARRED')) && rooms.every((r) => r.tags.includes(FAVOURITE))
+  return (
+    <span class={styles.group}>
+      <ToolButton label="Mark as read" icon="mail-open" action={unread ? actions.markRead : null} />
+      <ToolButton label={starred ? 'Remove star' : 'Add star'} icon="star" action={actions.star} />
+    </span>
+  )
+}
+
 /** Gmail's bar above the list: a box selecting all or none, with a menu
  * of which to select, and, while some are, what to do to them. */
-function ListToolbar(props: { mail: MailStore; actions: Actions }) {
-  const { mail, actions } = props
+function ListToolbar(props: { mail: MailStore; actions: Actions; shared: SharedActions }) {
+  const { mail, actions, shared } = props
   const list = mail.list.value!
   const { conversations } = list
-  const chosen = conversations.filter((c) => mail.selected.value.has(conversationKey(c))).map(threadOf)
+  const selected = mail.selected.value
+  const chosen = conversations.filter((c) => selected.has(conversationKey(c))).map(threadOf)
+  const rooms = selected.size > 0 ? mail.roomTargets.value : []
+  const selectable = mail.selectable.value.length
   const matching = mail.matching.value
   // With all those loaded selected, and more to load, Gmail's offer to
-  // select every match; and once they are, a way back.
-  const offer = !matching && chosen.length === conversations.length && list.more !== null
+  // select every match (of mail alone); and once they are, a way back.
+  const offer = !matching && rooms.length === 0 && chosen.length === conversations.length && list.more !== null
   const count = useCount(mail, list.view, offer || matching)
   const all = count === null ? 'all' : `all ${count.toLocaleString()}`
   return (
@@ -398,10 +439,10 @@ function ListToolbar(props: { mail: MailStore; actions: Actions }) {
         <input
           type="checkbox"
           aria-label="Select all"
-          checked={chosen.length === conversations.length}
-          indeterminate={chosen.length > 0 && chosen.length < conversations.length}
+          checked={selected.size === selectable}
+          indeterminate={selected.size > 0 && selected.size < selectable}
           onMouseDown={keepFocus}
-          onClick={() => (chosen.length > 0 ? mail.selectNone() : mail.selectAll())}
+          onClick={() => (selected.size > 0 ? mail.selectNone() : mail.selectAll())}
         />
         <MenuButton
           label="Select"
@@ -419,11 +460,15 @@ function ListToolbar(props: { mail: MailStore; actions: Actions }) {
           ]}
         />
       </span>
-      {chosen.length > 0 && (
+      {selected.size > 0 && (
         <>
-          <ThreadActions mail={mail} actions={actions} threads={chosen} />
+          {rooms.length > 0 ? (
+            <RoomAndThreadActions mail={mail} actions={shared} threads={chosen} rooms={rooms} />
+          ) : (
+            <ThreadActions mail={mail} actions={actions} threads={chosen} />
+          )}
           <span class={styles.chosen}>
-            {matching ? (count === null ? 'All' : count.toLocaleString()) : chosen.length} selected
+            {matching ? (count === null ? 'All' : count.toLocaleString()) : selected.size} selected
           </span>
         </>
       )}
@@ -502,15 +547,40 @@ function ConversationToolbar(props: {
 /** A row of a search's item other than mail, in a mail list's columns:
  * its icon where a conversation's box and star are, its title where its
  * senders are, what it says where its subject is. */
-function OtherRow(props: { row: OtherItemRow; focused: Ref<HTMLLIElement> | null; open: () => void }) {
-  const parts = useParts(props.row)
+function OtherRow(props: {
+  mail: MailStore
+  row: OtherItemRow
+  focused: Ref<HTMLLIElement> | null
+  open: () => void
+}) {
+  const { mail, row } = props
+  const parts = useParts(row)
+  const isSelected = mail.selected.value.has(row.key)
   return (
     <li
       ref={props.focused ?? undefined}
-      class={[styles.row, props.focused && styles.focused, parts.unread && styles.unread].filter(Boolean).join(' ')}
+      class={[styles.row, props.focused && styles.focused, isSelected && styles.selected, parts.unread && styles.unread]
+        .filter(Boolean)
+        .join(' ')}
       aria-current={props.focused !== null || undefined}
+      aria-selected={row.kind === 'room' ? isSelected : undefined}
       onClick={props.open}
     >
+      {/* A room is selected as mail is, with what applies to both. */}
+      {row.kind === 'room' ? (
+        <input
+          type="checkbox"
+          aria-label="Select"
+          checked={isSelected}
+          onMouseDown={keepFocus}
+          onClick={(event) => {
+            event.stopPropagation()
+            mail.toggleSelected(row.key)
+          }}
+        />
+      ) : (
+        <span class={styles.box} />
+      )}
       <span class={styles.kind}>{parts.icon}</span>
       <span class={styles.from}>{parts.title}</span>
       <span class={styles.summary}>
@@ -557,6 +627,7 @@ function MessageList(props: {
           return (
             <OtherRow
               key={row.key}
+              mail={mail}
               row={row}
               focused={isFocused ? focused : null}
               open={() => {

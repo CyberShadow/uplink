@@ -22,9 +22,11 @@ import type {
   ImageRule,
   MessageContent,
   MessageId,
+  Room,
 } from '../generated/protocol'
 import type { Requester } from '../connection'
-import { compare, rowOf, type Row } from '../items'
+import { compare, keyOf, rowOf, type Row } from '../items'
+import { FAVOURITE } from '../roomTags'
 import type { Ops } from './ops'
 import { query } from './query'
 
@@ -178,10 +180,27 @@ export class MailStore {
    * focused one. */
   readonly targets = computed((): Conversation[] => {
     const conversations = this.list.value?.conversations ?? []
-    const selected = this.selected.value
-    if (selected.size > 0) return conversations.filter((c) => selected.has(conversationKey(c)))
-    return conversations.filter((c) => conversationKey(c) === this.focus.value)
+    return conversations.filter((c) => this.isTarget(conversationKey(c)))
   })
+
+  /** A search's rooms actions apply to, as `targets`: those that, being
+   * selected with mail, limit the actions to what applies to both. */
+  readonly roomTargets = computed((): Room[] =>
+    (this.list.value?.others ?? []).flatMap((item) =>
+      item.kind === 'room' && this.isTarget(keyOf(item)) ? [item.room] : [],
+    ),
+  )
+
+  /** The keys of the rows that can be selected: of conversations, and of
+   * a search's rooms. */
+  readonly selectable = computed(() =>
+    this.rows.value.filter((row) => row.kind === 'mail' || row.kind === 'room').map((row) => row.key),
+  )
+
+  private isTarget(key: string): boolean {
+    const selected = this.selected.value
+    return selected.size > 0 ? selected.has(key) : key === this.focus.value
+  }
 
   private accountsLoading = false
   private accountsStale = false
@@ -336,8 +355,8 @@ export class MailStore {
   }
 
   /** Keeps focus on the row it is on, or the next one still listed, and
-   * the selection on the conversations still listed, as the list changes
-   * from `before`. */
+   * the selection on the rows still listed, as the list changes from
+   * `before`. */
   private keepFocus(before: List) {
     const [was, rows] = [rowsOf(before), this.rows.value]
     const shown = new Set(rows.map((row) => row.key))
@@ -349,13 +368,14 @@ export class MailStore {
       const next = was.slice(index + 1).find((row) => shown.has(row.key))
       this.focus.value = (next ?? rows.at(-1))?.key ?? null
     }
-    const keys = new Set(this.list.value!.conversations.map(conversationKey))
-    // Every match is selected, as more are loaded too.
+    // Every match is selected, as more are loaded too: of mail alone.
     if (this.matching.value) {
+      const keys = new Set(this.list.value!.conversations.map(conversationKey))
       this.selected.value = keys
       this.matching.value = keys.size > 0
       return
     }
+    const keys = new Set(this.selectable.value)
     const selected = this.selected.value
     if ([...selected].some((key) => !keys.has(key))) {
       this.selected.value = new Set([...selected].filter((key) => keys.has(key)))
@@ -630,15 +650,17 @@ export class MailStore {
     this.select(selected)
   }
 
-  /** Selects the loaded conversations. */
+  /** Selects the loaded rows that can be. */
   selectAll() {
-    this.select(new Set((this.list.value?.conversations ?? []).map(conversationKey)))
+    this.select(new Set(this.selectable.value))
   }
 
-  /** Selects every conversation the list's query lists, loaded or not. */
+  /** Selects every conversation the list's query lists, loaded or not:
+   * of a list without rooms selected, since the server's ops on every
+   * match are of mail. */
   selectMatching() {
     batch(() => {
-      this.selectAll()
+      this.select(new Set((this.list.value?.conversations ?? []).map(conversationKey)))
       this.matching.value = true
     })
   }
@@ -648,15 +670,26 @@ export class MailStore {
   }
 
   /** Selects the loaded conversations with an entry that has the system
-   * label `externalId`, or with `having` false, those without. */
-  selectHaving(externalId: string, having: boolean) {
-    this.select(
-      new Set(
-        (this.list.value?.conversations ?? [])
-          .filter((c) => this.having(threadOf(c), externalId) === having)
-          .map(conversationKey),
-      ),
-    )
+   * label `externalId`, and the rooms that are so (unread, or Favourite
+   * as starred); or with `having` false, those not. */
+  selectHaving(externalId: 'UNREAD' | 'STARRED', having: boolean) {
+    const has = (item: ListedItem): boolean => {
+      switch (item.kind) {
+        case 'mail':
+          return this.having(threadOf(item.conversation), externalId)
+        case 'room':
+          return externalId === 'UNREAD' ? item.room.unread > 0 : item.room.tags.includes(FAVOURITE)
+        case 'todo':
+        case 'event':
+          throw new Error(`a ${item.kind} is not selected`)
+      }
+    }
+    const list = this.list.value
+    const items: ListedItem[] = [
+      ...(list?.conversations ?? []).map((conversation): ListedItem => ({ kind: 'mail', conversation })),
+      ...(list?.others ?? []).filter((item) => item.kind === 'room'),
+    ]
+    this.select(new Set(items.filter((item) => has(item) === having).map(keyOf)))
   }
 
   /** Selects the conversations, and so no longer every match. */

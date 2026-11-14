@@ -3035,7 +3035,13 @@ it offers, as Gmail does, to select every one the list's query lists,
 counted (`CountConversations`) when offered. Actions then apply to all
 of them, as the server finds them when it does them (but flagging, which
 adds a to-do each, is disabled), and leave
-none selected. Above a conversation, a toolbar does the same to it, after
+none selected. A search's rooms (§8.7) have boxes too, and are selected
+with the rest (`*r`/`*u` by unread messages, `*s`/`*t` as Favourite);
+to-dos and events have none. With rooms among the targets, the keys and
+the toolbar do only what applies to rooms and mail alike: mark read (a
+room up to its latest event, as home's `e`) and star (a room as
+Favourite, as home's `s`); every match is not offered, since the
+server's ops on every match are of mail. Above a conversation, a toolbar does the same to it, after
 a button back to the list, and says where it is in the list (`3 of 50`,
 or `of many` while more are to load), with buttons to the newer and the
 older one (not on a phone, as Gmail's app has none).

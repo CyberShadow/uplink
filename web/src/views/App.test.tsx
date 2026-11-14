@@ -2792,6 +2792,38 @@ describe('search', () => {
     await user.click(row('Lunch club'))
     expect(location.pathname).toBe(`/rooms/${club.id}`)
   })
+
+  it('selects rooms with mail, to do to them only what applies to both', async () => {
+    server.addMatrixAccount()
+    const kitchen = server.addRoom('Kitchen')
+    server.receive(kitchen.id, { body: 'Lunch at noon?' })
+    server.deliver('work', 'Lunch plans')
+    const user = await start()
+    await client.todos.create('Book lunch')
+    await user.keyboard('/')
+    await user.keyboard('lunch{Enter}')
+    await waitFor(() => expect(rows()).toHaveLength(3))
+    // Mail and rooms have boxes; to-dos and events do not.
+    expect(rows().map((r) => r.querySelector('input[type=checkbox]') !== null).sort()).toEqual([false, true, true])
+    const toolbar = screen.getByRole('toolbar', { name: 'Selection' })
+    await user.click(within(toolbar).getByRole('checkbox', { name: 'Select all' }))
+    expect(within(toolbar).getByText('2 selected')).toBeTruthy()
+    expect(within(toolbar).queryByRole('button', { name: 'Archive' })).toBeNull()
+
+    await user.click(within(toolbar).getByRole('button', { name: 'Mark as read' }))
+    await waitFor(() => expect(server.requests.some((r) => r.type === 'mark_room_read' && r.room === kitchen.id)).toBe(true))
+    expect(server.requests.some((r) => r.type === 'act_on_conversations' && r.action.type === 'read')).toBe(true)
+
+    await user.click(within(toolbar).getByRole('button', { name: 'Add star' }))
+    await waitFor(() =>
+      expect(server.requests.find((r) => r.type === 'modify_room_tags')).toMatchObject({ rooms: [kitchen.id], add: ['m.favourite'] }),
+    )
+    expect(server.requests.some((r) => r.type === 'act_on_conversations' && r.action.type === 'star')).toBe(true)
+
+    // Of mail alone, every action again.
+    await user.click(within(rows().find((r) => r.textContent!.includes('Kitchen'))!).getByRole('checkbox'))
+    expect(within(toolbar).getByRole('button', { name: 'Archive' })).toBeTruthy()
+  })
 })
 
 describe('to-dos', () => {
