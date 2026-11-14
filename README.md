@@ -421,6 +421,10 @@ cargo test --workspace      # Rust tests (against emulated Gmail and Microsoft 3
 cd web && pnpm install && pnpm test   # web tests
 ```
 
+In `nix flake check`, each Rust test is a check of its own
+(`backend-test-<crate>-<binary>-<test>`), run from test binaries built
+once, so a retry reruns only the tests that failed.
+
 For working on the UI, run `uplink serve` (on the example's
 `127.0.0.1:8443`, or another at `UPLINK_DEV_SERVER=host:port`) and
 `cd web && UPLINK_DEV_AUTH=alice:uplink pnpm dev`, then open

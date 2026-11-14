@@ -105,8 +105,61 @@
             cp -r ${uplinkWeb}/. crates/uplink-server/static/
           '';
           cargoExtraArgs = "--bin uplink";
+          # The tests are the checks', each its own derivation (below).
+          doCheck = false;
           meta.mainProgram = "uplink";
         });
+
+        # ── backend tests ──────────────────────────────────────────────────
+        # The workspace's test binaries, built once, and tests.json: each
+        # test (not ignored) with the binary and package directory it runs
+        # from. Each test is then a check of its own (backendTestChecks), so
+        # that retrying `nix flake check` reruns only what failed, without
+        # rebuilding anything.
+        backendTests = craneLib.mkCargoDerivation (commonArgs // {
+          inherit cargoArtifacts;
+          pnameSuffix = "-tests";
+          nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.jq ];
+          doInstallCargoArtifacts = false;
+          buildPhaseCargoCommand = ''
+            cargoWithProfile test --workspace --locked --no-run \
+              --message-format json-render-diagnostics > build.json
+          '';
+          installPhaseCommand = ''
+            mkdir -p $out/bin
+            jq -r 'select(.reason == "compiler-artifact" and .profile.test)
+              | [.executable, (.manifest_path | rtrimstr("/Cargo.toml")),
+                 (if .target.kind == ["test"] then .target.name
+                  elif .target.kind == ["lib"] then "lib"
+                  else .target.kind[0] + "-" + .target.name end)]
+              | @tsv' build.json |
+            while IFS=$'\t' read -r exe manifest_dir target; do
+              package=''${manifest_dir#"$PWD/"}
+              binary=$(basename "$package")-$target
+              cp "$exe" "$out/bin/$binary"
+              comm -23 \
+                <("$exe" --list --format terse | sed -n 's/: test$//p' | sort) \
+                <("$exe" --list --format terse --ignored | sed -n 's/: test$//p' | sort) |
+              jq -R --arg binary "$binary" --arg package "$package" \
+                '{ $binary, $package, test: . }'
+            done | jq -s . > $out/tests.json
+          '';
+        });
+
+        backendTestChecks = pkgs.lib.listToAttrs (map (t:
+          let
+            name = "backend-test-${t.binary}-${builtins.replaceStrings [ "::" ] [ "-" ] t.test}";
+          in pkgs.lib.nameValuePair name (pkgs.runCommand name (testEnv // {
+            # The sandbox has no system trust store, without which
+            # reqwest's platform verifier refuses to build a client.
+            nativeBuildInputs = [ pkgs.cacert ];
+          }) ''
+            # Where cargo runs tests from: their package's directory.
+            cd ${cargoSrc}/${t.package}
+            ${backendTests}/bin/${t.binary} --exact ${pkgs.lib.escapeShellArg t.test} --nocapture
+            touch $out
+          ''))
+          (builtins.fromJSON (builtins.readFile "${backendTests}/tests.json")));
 
         # ── user service ───────────────────────────────────────────────────
         # The unit, with ExecStart already pointing into the store: `nix build`
@@ -210,50 +263,13 @@
           UPLINK_STALWART = "${pkgs.stalwart}/bin/stalwart";
         };
 
-      in {
-        # ── packages ───────────────────────────────────────────────────────
-        packages = {
-          inherit emulate service;
-          default = uplinkBin;
-          uplink = uplinkBin;
-          uplinkWeb = uplinkWeb;
-          uplinkWebDeps = uplinkWebDeps;
-        } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-          # The README's, in docs/screenshots/ (a NixOS VM, so Linux only).
-          screenshots = import ./nix/screenshots {
-            inherit pkgs emulate;
-            uplinkModule = self.nixosModules.default;
-          };
-        };
-
-        # ── dev shell ──────────────────────────────────────────────────────
-        devShells.default = craneLib.devShell (testEnv // {
-          checks = self.checks.${system};
-          packages = [
-            pkgs.nodejs
-            pkgs.pnpm_11
-            pkgs.openssl
-            pkgs.sqlite
-            pkgs.pkg-config
-            pkgs.rust-analyzer
-          ];
-          shellHook = ''
-            echo "uplink dev — rustc $(rustc --version), node $(node --version)"
-          '';
-        });
-
         # ── checks (nix flake check) ───────────────────────────────────────
-        checks = {
+        # Those not listed by building something (backendTestChecks), which
+        # the dev shell takes its inputs from.
+        staticChecks = {
           # What the user service deploys, so that a passing check leaves
           # it built.
-          inherit service;
-
-          backend-test = craneLib.cargoTest (commonArgs // testEnv // {
-            inherit cargoArtifacts;
-            # The sandbox has no system trust store, without which
-            # reqwest's platform verifier refuses to build a client.
-            nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.cacert ];
-          });
+          inherit service backendTests;
 
           backend-lint = craneLib.cargoClippy (commonArgs // {
             inherit cargoArtifacts;
@@ -302,6 +318,40 @@
             uplinkModule = self.nixosModules.default;
           };
         };
+      in {
+        # ── packages ───────────────────────────────────────────────────────
+        packages = {
+          inherit emulate service;
+          default = uplinkBin;
+          uplink = uplinkBin;
+          uplinkWeb = uplinkWeb;
+          uplinkWebDeps = uplinkWebDeps;
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          # The README's, in docs/screenshots/ (a NixOS VM, so Linux only).
+          screenshots = import ./nix/screenshots {
+            inherit pkgs emulate;
+            uplinkModule = self.nixosModules.default;
+          };
+        };
+
+        # ── dev shell ──────────────────────────────────────────────────────
+        devShells.default = craneLib.devShell (testEnv // {
+          checks = staticChecks;
+          packages = [
+            pkgs.nodejs
+            pkgs.pnpm_11
+            pkgs.openssl
+            pkgs.sqlite
+            pkgs.pkg-config
+            pkgs.rust-analyzer
+          ];
+          shellHook = ''
+            echo "uplink dev — rustc $(rustc --version), node $(node --version)"
+          '';
+        });
+
+        # ── checks (nix flake check) ───────────────────────────────────────
+        checks = staticChecks // backendTestChecks;
       }) // {
         nixosModules.default = import ./nix/module.nix {
           defaultPackage = pkgs: self.packages.${pkgs.stdenv.hostPlatform.system}.default;

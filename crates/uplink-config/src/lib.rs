@@ -798,20 +798,22 @@ mod tests {
 
     #[test]
     fn example_config_parses() {
-        let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/uplink.yaml");
-        let config = Config::load(&example).unwrap();
+        // Embedded, as `uplink init` embeds it: test binaries do not run
+        // in the source tree.
+        let example = include_str!("../../../examples/uplink.yaml");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("uplink.yaml");
+        std::fs::write(&path, example).unwrap();
+        let config = Config::load(&path).unwrap();
         assert!(config.accounts.is_empty());
-        assert_eq!(config.data_dir, example.parent().unwrap().join("./data"));
+        assert_eq!(config.data_dir, dir.path().join("./data"));
         assert_eq!(config.home, default_home());
         // Its commented accounts, and TLS, are right once uncommented.
-        let uncommented = std::fs::read_to_string(&example)
-            .unwrap()
+        let uncommented = example
             .replace("accounts: []", "accounts:")
             .replace("  # tls:", "  tls:")
             .replace("  #   ", "    ")
             .replace("  # - ", "  - ");
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("uplink.yaml");
         std::fs::write(&path, uncommented).unwrap();
         let config = Config::load(&path).unwrap();
         assert_eq!(
