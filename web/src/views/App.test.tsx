@@ -2743,8 +2743,8 @@ describe('home', () => {
     expect(decodeURIComponent(within(inbox).getByRole('link', { name: /^Inbox/ }).getAttribute('href')!)).toBe(
       '/search/in:inbox',
     )
-    // Opening mail opens it in a list of the bucket's; back home, the
-    // cursor is where it was.
+    // Opening mail opens it in a list of the bucket's, whose list is home:
+    // back (u) is home, where the cursor is where it was.
     const subject = () =>
       screen.getByRole('region', { name: 'Home' }).querySelector('[aria-current=true] [class*=subject]')!.textContent
     const [first, second] = [...inbox.querySelectorAll('[class*=subject]')].map((s) => s.textContent)
@@ -2755,16 +2755,22 @@ describe('home', () => {
     await user.keyboard('{Enter}')
     expect(decodeURIComponent(location.pathname)).toMatch(/^\/search\/in:inbox\/\d+$/)
     await screen.findByRole('heading', { name: new RegExp(second!) })
-    await user.keyboard('gh')
+    // j and k go through the bucket's mail, still of home.
+    await user.keyboard('k')
+    await screen.findByRole('heading', { name: new RegExp(first!) })
+    await user.keyboard('j')
+    await screen.findByRole('heading', { name: new RegExp(second!) })
+    await user.keyboard('u')
     await screen.findByRole('region', { name: 'Home' })
+    expect(location.pathname).toBe('/')
     expect(subject()).toBe(second)
     // Its row gone, the cursor goes to the next, or else the last.
     await user.keyboard('k')
     expect(subject()).toBe(first)
     await user.keyboard('{Enter}')
     await screen.findByRole('heading', { name: new RegExp(first!) })
+    // Archived, it goes back home too.
     await user.keyboard('e')
-    await user.keyboard('gh')
     await screen.findByRole('region', { name: 'Home' })
     await waitFor(() => expect(bucketRows('Inbox')).toHaveLength(1))
     expect(subject()).toBe(second)

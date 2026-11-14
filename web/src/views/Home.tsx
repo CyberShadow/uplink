@@ -13,7 +13,7 @@ import { lines, useKeymap } from '../keymap'
 import type { Row } from '../items'
 import { conversationKey, threadOf } from '../stores/mail'
 import { date, time } from '../format'
-import { searchPath } from './App'
+import { homeMailPath, searchPath } from './App'
 import { calendarPath } from './Calendar'
 import { LabelPicker } from './LabelPicker'
 import { ItemCells, ROW, pathOf } from './ItemRow'
@@ -45,7 +45,7 @@ export function Home() {
   const open = (row: Row) => {
     if (row.kind !== 'mail') return route(pathOf(row))
     mail.focus.value = conversationKey(row.conversation)
-    route(searchPath(row.query, row.conversation.latest.id))
+    route(homeMailPath(row.query, row.conversation.latest.id))
   }
   const done = (row: Row) => {
     switch (row.kind) {

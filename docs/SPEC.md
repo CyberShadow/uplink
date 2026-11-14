@@ -3537,7 +3537,9 @@ many, and the latest of them, as a search of particular messages has them); it s
 `limit`), its count saying `20+` when there are more, with a link "Show all"
 to the bucket's query as a search; its heading links there too, however
 many it shows, to work through the bucket as a list. Mail opens within that search, so `j`
-and `k` go through the bucket's mail; a room opens itself (found by particular messages, with that search of it), a to-do its
+and `k` go through the bucket's mail, and its list is home: back to the
+list (`u`, Esc, or once archived) goes home (the search's path marks it
+`?from=home`); a room opens itself (found by particular messages, with that search of it), a to-do its
 message or the to-dos, an event its day. The keys act on any row: `j`/`k`
 move the cursor, which stays on its row while home is left and comes
 back (a row that goes gives it to the next one shown, or else the last), `o`/Enter open, `e` is done with it (archives mail, marks a room

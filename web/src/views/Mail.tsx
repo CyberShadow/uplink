@@ -16,7 +16,7 @@ import {
   type View,
 } from '../stores/mail'
 import { respond, type Response } from '../compose/reply'
-import { allMailPath, inboxPath, mailPath, searchPath } from './App'
+import { allMailPath, homeMailPath, inboxPath, mailPath, searchPath } from './App'
 import { HtmlBody, QuoteToggle } from './HtmlBody'
 import { MenuButton } from './Menu'
 import { forwards, splitText } from './quote'
@@ -49,7 +49,7 @@ interface Props {
  * message's conversation, as a to-do links to it. */
 export function Mail(props: Props) {
   const { mail, matrix, todos } = useServices()
-  const { route } = useLocation()
+  const { route, query } = useLocation()
   const [picking, setPicking] = useState<'label' | 'move' | null>(null)
 
   const { inbox, account, label, terms, message } = props
@@ -67,6 +67,8 @@ export function Mail(props: Props) {
     [inbox, account, label, terms, message],
   )
   useEffect(() => mail.show(view), [mail, view])
+  // A home bucket's conversation, opened from Home: its list is Home.
+  const fromHome = view.kind === 'search' && query.from === 'home'
 
   const pathFor = (entry?: number) => {
     switch (view.kind) {
@@ -77,7 +79,7 @@ export function Mail(props: Props) {
       case 'inbox':
         return inboxPath(entry)
       case 'search':
-        return searchPath(view.query, entry)
+        return fromHome && entry !== undefined ? homeMailPath(view.query, entry) : searchPath(view.query, entry)
       case 'message':
         return messagePath(view.message)
     }
@@ -141,7 +143,8 @@ export function Mail(props: Props) {
     else if (matching) mail.selectNone()
   }
   // A message by itself has no list: back is where it was opened from.
-  const backToList = view.kind === 'message' ? () => history.back() : () => route(pathFor())
+  const backToList =
+    view.kind === 'message' ? () => history.back() : fromHome ? () => route('/') : () => route(pathFor())
 
   const common: Actions = {
     archive: ifTargets(() => {

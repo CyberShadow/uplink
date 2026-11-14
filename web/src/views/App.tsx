@@ -215,3 +215,9 @@ export function searchPath(query: string, entry?: number): string {
   const base = `/search/${encodeURIComponent(query)}`
   return entry === undefined ? base : `${base}/${entry}`
 }
+
+/** A conversation of a home bucket, opened within the bucket's search
+ * (`searchPath`) whose list is Home: back from it goes home. */
+export function homeMailPath(query: string, entry: number): string {
+  return `${searchPath(query, entry)}?from=home`
+}
