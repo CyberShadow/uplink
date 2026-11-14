@@ -1086,7 +1086,10 @@ describe('compose', () => {
     const [draft] = server.drafts.values()
     expect(draft.in_reply_to).toBe(client.mail.list.value!.conversations[0].latest.message)
     expect(draft.content.body).toContain('<blockquote><p>Body of First</p></blockquote>')
+    // Escape goes back, which the window does later: until it has, the
+    // compose window is open, and its going back would be the next test's.
     await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Subject' })).toBeNull())
     await screen.findByText('Body of First')
   })
 
