@@ -3517,7 +3517,12 @@ the order things come; what was stored before is seen, as Home's, by
 V0045); an item's activity is seen if any place it is
 in (§12.14; Home holds whatever its buckets do) was
 seen after it was recorded. So a conversation seen in the Inbox is
-seen under its other labels too, and a reply to it is news again. The
+seen under its other labels too, and a reply to it is news again. Mail
+is news only if it reached the provider (its `received_at`) after
+uplink began to sync its account (V0053 `account.news_since`): a
+listing of the mailbox, which may take days, stores the account's
+history with ids as new as any, and that is not news, however late it
+is stored. The
 client dispatches `MarkSeen { place }` on showing a place whose mark
 has a dot, and on new activity in it while it shows; not otherwise, so
 that the log is not filled with visits.

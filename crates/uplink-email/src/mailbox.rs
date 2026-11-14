@@ -173,7 +173,10 @@ impl Observation for MailboxObserved {
 
     fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
         tx.execute(
-            "INSERT INTO account (id, kind) VALUES (?1, ?2) ON CONFLICT (id) DO NOTHING",
+            // Its mail is news from now on (SPEC §12.15).
+            "INSERT INTO account (id, kind, news_since)
+             VALUES (?1, ?2, CAST(unixepoch('subsec') * 1000 AS INTEGER))
+             ON CONFLICT (id) DO NOTHING",
             [account, self.account_kind],
         )?;
         let kind: String =

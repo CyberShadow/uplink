@@ -543,7 +543,9 @@ pub fn count(
 /// (SPEC §12.14): how many have an entry with each label (in scope), and
 /// how many are of each account. If `unseen`, only those whose latest
 /// entry came after each of their places was last seen (§12.15: the
-/// `seen` table's, of Home, their account's All Mail and their labels).
+/// `seen` table's, of Home, their account's All Mail and their labels),
+/// and is news: reached the provider after uplink began to sync its
+/// account (`account.news_since`), not stored by a listing however late.
 #[derive(Debug, Default, PartialEq)]
 pub struct Places {
     pub labels: Vec<(LabelId, u64)>,
@@ -573,8 +575,10 @@ pub fn places(
                 [],
                 |r| r.get::<_, i64>(0),
             )?,
-            // After their account's All Mail and each of their labels.
-            "n.id > max(
+            // News, after their account's All Mail and each of their
+            // labels.
+            "n.received_at >= (SELECT a.news_since FROM account a WHERE a.id = n.account_id)
+             AND n.id > max(
                coalesce((SELECT s.mail FROM seen s WHERE s.place = 'account:' || n.account_id), 0),
                coalesce((SELECT ls.mark FROM label_seen ls WHERE ls.conversation = n.id), 0))"
                 .to_owned(),
@@ -585,7 +589,7 @@ pub fn places(
     let mut places = Places::default();
     let mut stmt = tx.prepare(&format!(
         "WITH newest AS MATERIALIZED (
-           SELECT e.id, e.account_id, e.thread_id FROM {from}
+           SELECT e.id, e.account_id, e.thread_id, e.received_at FROM {from}
            WHERE e.id > {after} AND ({condition})),
          members (conversation, entry) AS (
            SELECT id, id FROM newest WHERE thread_id IS NULL

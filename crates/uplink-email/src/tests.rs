@@ -1556,6 +1556,16 @@ pub(crate) mod service {
                 crate::query::places(&tx, &accounts, &query, unknown, unseen).unwrap()
             };
             let all = places(false);
+            // Mail that reached the provider before uplink began to sync
+            // the account is history, not news, however late it is stored.
+            assert_eq!(places(true), crate::query::Places::default());
+            let news_since = |at: i64| {
+                uplink_storage::open(db.dir.path())
+                    .unwrap()
+                    .execute("UPDATE account SET news_since = ?1 WHERE id = 'a'", [at])
+                    .unwrap();
+            };
+            news_since(0);
             assert_eq!(places(true), all);
             let inbox = db.label("a", "INBOX");
             uplink_storage::open(db.dir.path())
