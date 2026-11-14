@@ -4,8 +4,8 @@
 use anyhow::{Context, Result};
 use uplink_protocol::{
     mail::{
-        Conversation, Entry, EntryId, Label, LabelId, ListPosition, ListScope, ListingProgress,
-        MailProvider, Member, MessageId, Sender,
+        Conversation, Entry, EntryId, Identity, Label, LabelId, ListPosition, ListScope,
+        ListingProgress, MailProvider, Member, MessageId, Sender,
     },
     TxLogId,
 };
@@ -18,6 +18,8 @@ use uplink_tx_log::as_of;
 pub struct ConfiguredAccount {
     pub id: String,
     pub address: String,
+    /// `address`'s first (SPEC §3.2).
+    pub identities: Vec<Identity>,
     pub provider: MailProvider,
 }
 
@@ -72,6 +74,7 @@ pub fn accounts(
         accounts.push(uplink_protocol::mail::Account {
             id: account.id.clone(),
             address: account.address.clone(),
+            identities: account.identities.clone(),
             provider: account.provider,
             synced,
             listing,
@@ -292,25 +295,25 @@ impl Compiler<'_> {
         match term {
             Term::Text { .. } => unreachable!("text is FTS"),
             Term::Me(fields) => {
-                let addresses: Vec<(String, String)> = self
+                let accounts: Vec<(String, Vec<Identity>)> = self
                     .accounts
                     .iter()
-                    .map(|a| (literal(&a.id), literal(&a.address)))
+                    .map(|a| (literal(&a.id), a.identities.clone()))
                     .collect();
                 let field = *fields;
                 sql(Box::new(move |x| {
-                    let of = |address: &str| match field {
-                        Fields::From => format!("mm.from_addr = {address} COLLATE NOCASE"),
+                    let of = |identities: &[Identity]| match field {
+                        Fields::From => mine(identities, "mm.from_addr"),
                         Fields::To => {
-                            format!("{} OR {}", among("to", address), among("cc", address))
+                            format!("{} OR {}", among("to", identities), among("cc", identities))
                         }
-                        Fields::Cc => among("cc", address),
+                        Fields::Cc => among("cc", identities),
                         Fields::Subject | Fields::Body => unreachable!("no me: in {field:?}"),
                     };
-                    let accounts: Vec<String> = addresses
+                    let accounts: Vec<String> = accounts
                         .iter()
-                        .map(|(id, address)| {
-                            format!("({x}.account_id = {id} AND ({}))", of(address))
+                        .map(|(id, identities)| {
+                            format!("({x}.account_id = {id} AND ({}))", of(identities))
                         })
                         .collect();
                     match accounts.is_empty() {
@@ -400,11 +403,31 @@ impl Compiler<'_> {
     }
 }
 
-/// SQL: whether `address` is among message `mm`'s `field` (`to`, `cc`).
-fn among(field: &str, address: &str) -> String {
+/// SQL: whether an address of message `mm`'s `field` (`to`, `cc`) is of
+/// `identities`.
+fn among(field: &str, identities: &[Identity]) -> String {
     format!(
-        "EXISTS (SELECT 1 FROM json_each(mm.{field}_addrs) WHERE value = {address} COLLATE NOCASE)"
+        "EXISTS (SELECT 1 FROM json_each(mm.{field}_addrs) WHERE {})",
+        mine(identities, "value")
     )
+}
+
+/// SQL: whether the address `value` is of `identities` (as
+/// [`crate::identity::of`] has it): one of them, or at a domain of one.
+fn mine(identities: &[Identity], value: &str) -> String {
+    identities
+        .iter()
+        .map(|identity| match identity {
+            Identity::Address { address, .. } => {
+                format!("{value} = {} COLLATE NOCASE", literal(address))
+            }
+            Identity::Domain { domain, .. } => format!(
+                "substr({value}, instr({value}, '@') + 1) = {} COLLATE NOCASE",
+                literal(domain)
+            ),
+        })
+        .collect::<Vec<_>>()
+        .join(" OR ")
 }
 
 /// SQL: the size of entry `x`'s copy of its message.

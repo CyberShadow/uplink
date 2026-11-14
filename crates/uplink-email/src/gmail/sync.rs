@@ -96,7 +96,7 @@ pub fn task(
             UNWATCHED_POLL,
         ),
         config.id.clone(),
-        config.address.clone(),
+        config.identities(),
         dispatcher,
         uplink_storage::open_reader(data_root)?,
         data_root,

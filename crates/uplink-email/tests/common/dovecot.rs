@@ -138,6 +138,8 @@ service anvil {{
         let account = ImapAccountConfig {
             id: "test-alice".into(),
             address: "alice@example.com".into(),
+            name: None,
+            identities: vec![],
             user: Some("alice".into()),
             imap: server.clone(),
             smtp: server,

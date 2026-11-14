@@ -455,7 +455,12 @@ export type EntryId = number;
 
 export type LabelId = number;
 
-export type Account = { id: string, address: string, provider: MailProvider, 
+export type Account = { id: string, address: string, 
+/**
+ * The addresses its mail is sent from, and that are the user's in its
+ * mail (SPEC §3.2): `address` first, the default.
+ */
+identities: Array<Identity>, provider: MailProvider, 
 /**
  * Whether the first full sync has completed.
  */
@@ -465,6 +470,12 @@ synced: boolean,
  * goes.
  */
 listing: ListingProgress | null, labels: Array<Label>, };
+
+/**
+ * An address a mail account sends from (SPEC §3.2): one, or any at a
+ * domain; with the name mail from it is sent under.
+ */
+export type Identity = { address: string, name: string | null, } | { domain: string, name: string | null, };
 
 /**
  * Who keeps a mail account.
@@ -1493,4 +1504,4 @@ export type EventChangeKind = "create" | "update" | "delete";
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "330ef43a326c6cd8"
+export const PROTOCOL_VERSION = "744228d7d0290602"

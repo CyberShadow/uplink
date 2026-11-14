@@ -5,6 +5,7 @@ pub mod account;
 pub mod actions;
 pub mod compose;
 pub mod gmail;
+pub mod identity;
 pub mod image_rules;
 pub mod imap;
 pub mod jmap;

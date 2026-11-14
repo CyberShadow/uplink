@@ -31,6 +31,7 @@ import type {
   ImageRule,
   MessageContent,
   EntryId,
+  Identity,
   Label,
   LabelKind,
   LabelId,
@@ -123,7 +124,7 @@ function preview(event: RoomEvent | undefined): RoomPreview | null {
 export class FakeServer implements Requester, Blobs {
   readonly requests: ClientRequest[] = []
   private client!: Client
-  private accounts: { id: string; address: string; provider: MailProvider; labels: Label[] }[] = []
+  private accounts: { id: string; address: string; identities: Identity[]; provider: MailProvider; labels: Label[] }[] = []
   private entries: Entry[] = []
   private log: LogEntry[] = []
   private undoable = new Map<number, Undoable>()
@@ -191,12 +192,15 @@ export class FakeServer implements Requester, Blobs {
     this.editDraft(draft, this.drafts.get(draft)!.revision, splice)
   }
 
-  addAccount(id: string, userLabels: string[] = []) {
+  /** A Gmail account, of address `<id>@example.com` and the `identities`
+   * after it. */
+  addAccount(id: string, userLabels: string[] = [], identities: Identity[] = []) {
     const labels = [
       ...SYSTEM.map((external) => this.label(external, external, true)),
       ...userLabels.map((name, i) => this.label(`Label_${i + 1}`, name, false)),
     ]
-    this.accounts.push({ id, address: `${id}@example.com`, provider: 'gmail', labels })
+    const address = `${id}@example.com`
+    this.accounts.push({ id, address, identities: [{ address, name: null }, ...identities], provider: 'gmail', labels })
   }
 
   /** A Microsoft 365 account: folders, of which an entry is in one, and
@@ -208,7 +212,8 @@ export class FakeServer implements Requester, Blobs {
       ...folders.map((name, i) => this.label(`Folder_${i + 1}`, name, false, 'folder')),
       ...categories.map((name) => this.label(`cat:${name}`, name, false)),
     ]
-    this.accounts.push({ id, address: `${id}@example.com`, provider: 'm365', labels })
+    const address = `${id}@example.com`
+    this.accounts.push({ id, address, identities: [{ address, name: null }], provider: 'm365', labels })
   }
 
   private label(external_id: string, name: string, system: boolean, kind: LabelKind = 'tag'): Label {
@@ -1818,6 +1823,7 @@ export class FakeServer implements Requester, Blobs {
       return {
         id: account.id,
         address: account.address,
+        identities: account.identities,
         provider: account.provider,
         synced: !this.syncing.has(account.id),
         listing: this.syncing.get(account.id) ?? null,

@@ -202,6 +202,8 @@ enable = true
         let account = ImapAccountConfig {
             id: format!("test-{user}"),
             address: format!("{user}@example.com"),
+            name: None,
+            identities: vec![],
             user: Some(user.into()),
             imap: self.server(self.imap, Security::Tls),
             smtp: self.server(self.smtp, Security::Tls),
@@ -218,6 +220,8 @@ enable = true
         let account = Pop3AccountConfig {
             id: format!("test-{user}"),
             address: format!("{user}@example.com"),
+            name: None,
+            identities: vec![],
             user: Some(user.into()),
             pop3: self.server(self.pop3, Security::Starttls),
             smtp: self.server(self.smtp, Security::Tls),
@@ -234,6 +238,8 @@ enable = true
         let account = JmapAccountConfig {
             id: format!("test-{user}"),
             address: format!("{user}@example.com"),
+            name: None,
+            identities: vec![],
             user: Some(user.into()),
             session_url: format!("https://localhost:{}/.well-known/jmap", self.https)
                 .try_into()

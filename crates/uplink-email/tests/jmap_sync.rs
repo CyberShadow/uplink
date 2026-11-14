@@ -489,7 +489,7 @@ async fn a_draft_submitted_is_not_submitted_again() {
     let task = uplink_email::account::SyncTask::new(
         jmap,
         "test".into(),
-        account.address.clone(),
+        account.identities(),
         uplink.dispatcher.clone(),
         uplink.reader(),
         uplink.dir.path(),

@@ -24,7 +24,7 @@ const SECTIONS: { title: string; rows: Row[] }[] = [
       ['from:"Alice Smith"', 'The exact name'],
       ['to:bob@example.com', 'To or Cc'],
       ['cc:carol', 'Cc'],
-      ['from:me', 'Sent from the account’s own address (to:me and cc:me too)'],
+      ['from:me', 'Sent from one of the account’s own addresses (to:me and cc:me too)'],
     ],
   },
   {

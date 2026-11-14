@@ -149,7 +149,7 @@ pub fn task(
     Ok(SyncTask::new(
         JmapSync::new(config.id.clone(), jmap),
         config.id.clone(),
-        config.address.clone(),
+        config.identities(),
         dispatcher,
         uplink_storage::open_reader(data_root)?,
         data_root,
@@ -431,7 +431,8 @@ impl Provider for JmapSync {
                 draft
             }
         };
-        self.submit(&account.address, &draft).await?;
+        self.submit(crate::identity::default(&account.identities), &draft)
+            .await?;
         Ok(SentCopy::Id(draft))
     }
 

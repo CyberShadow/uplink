@@ -11,12 +11,20 @@ use uplink_email::{
 };
 use uplink_protocol::{
     compose::{DraftContent, DraftId, Pending, SendState},
-    mail::{EntryId, LabelId, MailProvider, MessageId},
+    mail::{EntryId, Identity, LabelId, MailProvider, MessageId},
     ServerResponse,
 };
 use uplink_realtime::Hub;
 use uplink_storage::rusqlite::{Connection, OptionalExtension};
 use uplink_tx_log::{Dispatcher, Registry};
+
+/// The identities of an account of `address` alone, unnamed.
+pub fn own(address: &str) -> Vec<Identity> {
+    vec![Identity::Address {
+        address: address.into(),
+        name: None,
+    }]
+}
 
 pub const SEND_DELAY: Duration = Duration::from_millis(500);
 
@@ -45,6 +53,7 @@ impl Uplink {
             vec![ConfiguredAccount {
                 id: "test".into(),
                 address: "alice@example.com".into(),
+                identities: own("alice@example.com"),
                 provider,
             }],
             SEND_DELAY,
@@ -86,7 +95,7 @@ impl Uplink {
         SyncTask::new(
             provider,
             "test".into(),
-            address.into(),
+            own(address),
             self.dispatcher.clone(),
             self.reader(),
             self.dir.path(),

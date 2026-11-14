@@ -28,7 +28,7 @@ use std::{
 use tokio::sync::broadcast::{self, error::RecvError};
 use uplink_protocol::{
     compose::OutboxId,
-    mail::{EntryId, LabelId, LabelKind},
+    mail::{EntryId, Identity, LabelId, LabelKind},
     LogEntry, Source,
 };
 use uplink_storage::rusqlite::{params, Connection, OptionalExtension};
@@ -120,8 +120,9 @@ pub enum SendError {
 /// The account as its provider's sync sees it: uplink's side.
 pub struct Account {
     pub id: String,
-    /// The address mail is sent from.
-    pub address: String,
+    /// The addresses mail is sent from, the account's own first (SPEC
+    /// §3.2).
+    pub identities: Vec<Identity>,
     dispatcher: Dispatcher,
     reader: Arc<Mutex<Connection>>,
     /// Raw messages.
@@ -294,12 +295,12 @@ pub struct SyncTask<P> {
 }
 
 impl<P: Provider> SyncTask<P> {
-    /// The task of account `id`, sending from `address`, keeping its mail
+    /// The task of account `id`, sending from `identities`, keeping its mail
     /// under `data_root`; `reader` is a reader connection of its own.
     pub fn new(
         provider: P,
         id: String,
-        address: String,
+        identities: Vec<Identity>,
         dispatcher: Dispatcher,
         reader: Connection,
         data_root: &Path,
@@ -309,7 +310,7 @@ impl<P: Provider> SyncTask<P> {
             provider,
             account: Account {
                 id,
-                address,
+                identities,
                 dispatcher,
                 reader: Arc::new(Mutex::new(reader)),
                 store: Store::mail(data_root),
@@ -551,7 +552,7 @@ impl<P: Provider> SyncTask<P> {
             .await
             .map_err(|e| SendError::Rejected(format!("{e:#}")))?;
         let raw = build_message(
-            &self.account.address,
+            crate::identity::default(&self.account.identities),
             &due.draft.content,
             files,
             &due.message_id,

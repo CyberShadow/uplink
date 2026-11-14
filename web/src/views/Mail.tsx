@@ -618,7 +618,7 @@ function MessageList(props: {
   const accounts = mail.accounts.value ?? []
   const address = (account: string) =>
     accounts.length > 1 ? accounts.find((a) => a.id === account)!.address : null
-  const own = (account: string) => accounts.find((a) => a.id === account)?.address ?? ''
+  const own = (account: string) => accounts.find((a) => a.id === account)?.identities ?? []
   return (
     <ul
       class={styles.list}
@@ -739,7 +739,7 @@ function ConversationView(props: {
   const responder = (kind: Response, entry: Entry) => async () => {
     const content = await mail.loadMessage(entry.message)
     if (!content) return
-    const own = mail.accounts.value?.find((a) => a.id === entry.account)?.address ?? ''
+    const own = mail.accounts.value?.find((a) => a.id === entry.account)?.identities ?? []
     const draft = respond(kind, content, own)
     const id = await drafts.create(entry.account, draft.content, draft.inReplyTo)
     if (!id) return

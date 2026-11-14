@@ -48,6 +48,8 @@ impl Microsoft {
         let account = M365AccountConfig {
             id: "test".into(),
             address: ALICE.into(),
+            name: None,
+            identities: vec![],
             oauth: M365OAuthConfig {
                 client_id: "uplink-test".into(),
                 redirect_uri: "http://127.0.0.1/redirect".into(),

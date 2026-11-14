@@ -274,6 +274,13 @@ accounts:
   - id: alice-gmail
     kind: gmail
     address: alice@gmail.com
+    # Any mail account: the name its mail is sent under (none, without
+    # it), and the addresses it is also sent from, its identities: exact
+    # ones, and domains, any address at which is one; each under `name`
+    # unless it has its own. Gmail sends from its send-as aliases only.
+    name: Alice Liddell
+    identities:
+      - address: alice.liddell@gmail.com
     oauth:
       client_id:     "1234.apps.googleusercontent.com"
       client_secret: "GOCSPX-xxxxxxxxxx"
@@ -314,6 +321,11 @@ accounts:
     kind: jmap
     address: alice@example.com
     session_url: "https://mail.example.com/.well-known/jmap"
+    name: Alice Liddell
+    identities:
+      - domain: example.com          # any address @example.com
+      - address: alice@example.org
+        name: "Alice (Example.org)"
 
   # — Matrix — the device is created once by `uplink matrix pair` (§9.4).
   # No password in YAML.
@@ -325,6 +337,19 @@ accounts:
     # fetched in the background, to be searched (§9.2); 0: of none.
     history_members: 100             # default
 ```
+
+A mail account's **identities** are the addresses it sends from: its
+`address`, the default, then `identities`, each an `address`, or a
+`domain` any address at which is one (for those who give each
+correspondent an address of their own). An address is of the identity
+of that address, else of its domain's, without regard to case. They are
+all the user's in the account's mail: `me` in its searches (§8.7) and
+conversations' senders (§12.8), and left out of reply-all (§8.5); a
+reply is from the identity the original was sent to (§8.5), and the
+server refuses to send from any other address (§8.5). Each provider
+sends from them as it can (§8.2, §8.4, §8.11, §8.13). An identity not
+an address (`bob`), or a domain with an `@`, is refused. Identities are
+of the accounts section, so changing them needs a restart (§3.3).
 
 An empty or missing file is refused with a pointer to `uplink init`;
 buckets without a name or a query, of a name another has, or whose query
@@ -1692,7 +1717,7 @@ IMAP's per-folder copies, and a REST fake is practical to test against
   `<random@account.uplink>`; the Date when it is sent.
 - **Replies and forwards** are prefilled by the client from the loaded
   message: `Re:`/`Fwd:` subject, recipients (reply-all drops the
-  account's own address), and the body quoted. A forward takes the
+  account's identities, §3.2), and the body quoted. A forward takes the
   original's files along (§7.4).
 
 ### 8.6 Persistence of sent mail
@@ -1732,7 +1757,7 @@ FTS5 does: `alice@x.org` is the phrase `alice x org`). Terms side by side
 (or with `AND`) must all match; `OR`, `NOT` or a leading `-`, and
 parentheses combine them, uppercase so that "or" is a word. Operators:
 `from:`, `to:` (To or Cc), `cc:`, `subject:`, `body:`, of which `from:me`,
-`to:me` and `cc:me` are the entry's own account's address;
+`to:me` and `cc:me` are the entry's own account's identities (§3.2);
 `label:`/`tag:` (by name, in any account, ignoring case), `in:` (a label,
 `drafts`, or `anywhere`), `is:unread|read|starred|important`,
 `category:` (Gmail's), `has:attachment`, `account:` (id or address),
@@ -3307,7 +3332,7 @@ client has loaded a page, is the same; which way a toggle goes is the
 client's, as its button says: star if not each has one, else unstar;
 report spam unless each entry is spam, else not spam. Each message
 in the view has a star of its own. A row is unread if any entry is,
-names its senders (`me` for the account's own address; by first names
+names its senders (`me` for the account's identities, §3.2; by first names
 if several), counts its messages, and shows the user's labels of any.
 The view lists the messages oldest first, the unread ones and the
 latest expanded (a header toggles one); opening it reads them all, and

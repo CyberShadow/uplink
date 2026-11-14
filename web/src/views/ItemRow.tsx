@@ -4,9 +4,10 @@
 // a grid of those, or a mail list's own) and what it does.
 
 import type { ComponentChildren } from 'preact'
-import type { CalendarEvent, Conversation, Room, RoomEvent, RoomHits, Sender, Todo } from '../generated/protocol'
+import type { CalendarEvent, Conversation, Identity, Room, RoomEvent, RoomHits, Sender, Todo } from '../generated/protocol'
 import { useServices } from '../context'
 import { brief, date } from '../format'
+import { isOwn } from '../identities'
 import type { Row } from '../items'
 import { gist, shown } from '../matrix'
 import { Badge } from './Badge'
@@ -152,7 +153,7 @@ export function ConversationCells(props: { conversation: Conversation }) {
   const { mail } = useServices()
   const { conversation } = props
   const { latest } = conversation
-  const own = mail.accounts.value?.find((a) => a.id === latest.account)?.address ?? ''
+  const own = mail.accounts.value?.find((a) => a.id === latest.account)?.identities ?? []
   const unreadLabel = mail.systemLabel(latest.account, 'UNREAD').id
   const members = [latest, ...conversation.earlier]
   const unread = members.filter((m) => m.labels.includes(unreadLabel)).length
@@ -192,11 +193,11 @@ export function UnreadOf(props: { unread: number; one: boolean; class: string })
 }
 
 /** A conversation's senders, as Gmail's rows name them: the one by name;
- * several by first names, `me` for the account's own address, the first
+ * several by first names, `me` for the account's identities, the first
  * and the last two if there are many. */
-export function senders(list: Sender[], own: string): string {
+export function senders(list: Sender[], own: readonly Identity[]): string {
   const name = (s: Sender, brief: boolean) => {
-    if (s.addr && s.addr.toLowerCase() === own.toLowerCase()) return 'me'
+    if (s.addr && isOwn(own, s.addr)) return 'me'
     const full = s.name ?? s.addr ?? '(unknown sender)'
     return brief && s.name ? s.name.split(/\s+/)[0] : full
   }

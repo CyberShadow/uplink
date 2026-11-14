@@ -73,7 +73,7 @@ pub fn task(
     Ok(SyncTask::new(
         M365Sync { graph },
         config.id.clone(),
-        config.address.clone(),
+        config.identities(),
         dispatcher,
         uplink_storage::open_reader(data_root)?,
         data_root,

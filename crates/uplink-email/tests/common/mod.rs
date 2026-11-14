@@ -97,6 +97,8 @@ impl Provider {
             let account = GmailAccountConfig {
                 id: "test".into(),
                 address: "alice@example.com".into(),
+                name: None,
+                identities: vec![],
                 oauth: GmailOAuthConfig {
                     client_id: "uplink-test".into(),
                     client_secret: "uplink-test-secret".into(),

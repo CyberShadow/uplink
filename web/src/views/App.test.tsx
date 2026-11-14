@@ -121,6 +121,18 @@ describe('mail', () => {
       expect(rows()[1].querySelector('[title$=unread]')).toBeNull()
     })
 
+    it('names the user me by any of the account\'s identities', async () => {
+      server.addAccount('home', [], [{ domain: 'example.net', name: null }])
+      const first = server.deliver('home', 'Order', ['INBOX'], 't2')
+      first.from_addr = 'shop@example.org'
+      first.from_name = 'Shop'
+      const reply = server.deliver('home', 'Re: Order', ['SENT'], 't2')
+      reply.from_name = 'Someone'
+      reply.from_addr = 'shop-one@Example.NET'
+      await start('/mail/home/INBOX')
+      expect(rows()[0].querySelector('[class*=from]')!.textContent).toBe('Shop, me 2')
+    })
+
     it('stars the latest message, and unstars every one', async () => {
       const [first, reply, last] = thread()
       const starred = server.labelId('work', 'STARRED')

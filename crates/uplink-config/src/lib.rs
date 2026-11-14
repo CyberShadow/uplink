@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
-pub use uplink_protocol::{calendar::TimeZone, Badge};
+pub use uplink_protocol::{calendar::TimeZone, mail::Identity, Badge};
 
 // ── Config schema (SPEC §3.2) ─────────────────────────────────────────────────
 
@@ -157,6 +157,39 @@ impl AccountConfig {
         }
     }
 
+    /// A mail account's identities (SPEC §3.2); none for Matrix.
+    pub fn identities(&self) -> Vec<Identity> {
+        match self {
+            AccountConfig::Gmail(account) => account.identities(),
+            AccountConfig::M365(account) => account.identities(),
+            AccountConfig::Imap(account) => account.identities(),
+            AccountConfig::Pop3(account) => account.identities(),
+            AccountConfig::Jmap(account) => account.identities(),
+            AccountConfig::Matrix(_) => vec![],
+        }
+    }
+
+    /// Fails on an identity of no address, or of no domain.
+    fn check_identities(&self) -> Result<()> {
+        for identity in self.identities() {
+            match identity {
+                Identity::Address { address, .. } => anyhow::ensure!(
+                    address.split_once('@').is_some_and(|(local, domain)| {
+                        !local.is_empty()
+                            && !local.contains(char::is_whitespace)
+                            && is_domain(domain)
+                    }),
+                    "identity {address:?} is not an address"
+                ),
+                Identity::Domain { domain, .. } => anyhow::ensure!(
+                    is_domain(&domain),
+                    "identity's domain {domain:?} is not a domain"
+                ),
+            }
+        }
+        Ok(())
+    }
+
     /// Sets the paths under `data_dir` that are the account's.
     fn place(&mut self, data_dir: &Path) {
         let token_file = |id: &str| data_dir.join("accounts").join(format!("{id}.token"));
@@ -198,10 +231,25 @@ impl AccountConfig {
 pub struct GmailAccountConfig {
     pub id: String,
     pub address: String,
+    /// The name mail is sent under, from `address` and from the
+    /// identities that name none of their own.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The addresses mail is also sent from, and that are the user's in
+    /// the account's mail (SPEC §3.2): exact ones, and domains, any address
+    /// at which is.
+    #[serde(default)]
+    pub identities: Vec<Identity>,
     pub oauth: GmailOAuthConfig,
     /// Where Google's services are; tests point these at a fake.
     #[serde(default)]
     pub endpoints: GoogleEndpoints,
+}
+
+impl GmailAccountConfig {
+    pub fn identities(&self) -> Vec<Identity> {
+        identities(&self.address, &self.name, &self.identities)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -247,7 +295,22 @@ pub struct GmailOAuthConfig {
 pub struct M365AccountConfig {
     pub id: String,
     pub address: String,
+    /// The name mail is sent under, from `address` and from the
+    /// identities that name none of their own.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The addresses mail is also sent from, and that are the user's in
+    /// the account's mail (SPEC §3.2): exact ones, and domains, any address
+    /// at which is.
+    #[serde(default)]
+    pub identities: Vec<Identity>,
     pub oauth: M365OAuthConfig,
+}
+
+impl M365AccountConfig {
+    pub fn identities(&self) -> Vec<Identity> {
+        identities(&self.address, &self.name, &self.identities)
+    }
 }
 
 /// How uplink signs in to Microsoft 365 (SPEC §13.3): as a public client
@@ -291,6 +354,15 @@ impl M365OAuthConfig {
 pub struct ImapAccountConfig {
     pub id: String,
     pub address: String,
+    /// The name mail is sent under, from `address` and from the
+    /// identities that name none of their own.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The addresses mail is also sent from, and that are the user's in
+    /// the account's mail (SPEC §3.2): exact ones, and domains, any address
+    /// at which is.
+    #[serde(default)]
+    pub identities: Vec<Identity>,
     /// The name the servers know the account by, if not its address.
     #[serde(default)]
     pub user: Option<String>,
@@ -311,6 +383,10 @@ pub struct ImapAccountConfig {
 }
 
 impl ImapAccountConfig {
+    pub fn identities(&self) -> Vec<Identity> {
+        identities(&self.address, &self.name, &self.identities)
+    }
+
     pub fn login(&self) -> Login<'_> {
         Login {
             id: &self.id,
@@ -334,6 +410,15 @@ impl ImapAccountConfig {
 pub struct Pop3AccountConfig {
     pub id: String,
     pub address: String,
+    /// The name mail is sent under, from `address` and from the
+    /// identities that name none of their own.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The addresses mail is also sent from, and that are the user's in
+    /// the account's mail (SPEC §3.2): exact ones, and domains, any address
+    /// at which is.
+    #[serde(default)]
+    pub identities: Vec<Identity>,
     /// The name the servers know the account by, if not its address.
     #[serde(default)]
     pub user: Option<String>,
@@ -352,6 +437,10 @@ pub struct Pop3AccountConfig {
 }
 
 impl Pop3AccountConfig {
+    pub fn identities(&self) -> Vec<Identity> {
+        identities(&self.address, &self.name, &self.identities)
+    }
+
     pub fn login(&self) -> Login<'_> {
         Login {
             id: &self.id,
@@ -366,6 +455,33 @@ impl Pop3AccountConfig {
     pub fn pop3_port(&self) -> u16 {
         self.pop3.port_or(995, 110)
     }
+}
+
+/// Whether `domain` is a domain's name, as an identity names it.
+fn is_domain(domain: &str) -> bool {
+    !domain.is_empty() && !domain.contains(|c: char| c == '@' || c.is_whitespace())
+}
+
+/// A mail account's identities: its address first, then `others`, each
+/// named `name` unless it names another.
+fn identities(address: &str, name: &Option<String>, others: &[Identity]) -> Vec<Identity> {
+    let own = Identity::Address {
+        address: address.to_owned(),
+        name: name.clone(),
+    };
+    let named = |own: &Option<String>| own.clone().or_else(|| name.clone());
+    std::iter::once(own)
+        .chain(others.iter().map(|identity| match identity {
+            Identity::Address { address, name } => Identity::Address {
+                address: address.clone(),
+                name: named(name),
+            },
+            Identity::Domain { domain, name } => Identity::Domain {
+                domain: domain.clone(),
+                name: named(name),
+            },
+        }))
+        .collect()
 }
 
 /// How an account at a mail server, IMAP, POP3 or JMAP, signs in.
@@ -388,6 +504,15 @@ pub struct Login<'a> {
 pub struct JmapAccountConfig {
     pub id: String,
     pub address: String,
+    /// The name mail is sent under, from `address` and from the
+    /// identities that name none of their own.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The addresses mail is also sent from, and that are the user's in
+    /// the account's mail (SPEC §3.2): exact ones, and domains, any address
+    /// at which is.
+    #[serde(default)]
+    pub identities: Vec<Identity>,
     /// The name the server knows the account by, if not its address.
     #[serde(default)]
     pub user: Option<String>,
@@ -405,6 +530,10 @@ pub struct JmapAccountConfig {
 }
 
 impl JmapAccountConfig {
+    pub fn identities(&self) -> Vec<Identity> {
+        identities(&self.address, &self.name, &self.identities)
+    }
+
     pub fn login(&self) -> Login<'_> {
         Login {
             id: &self.id,
@@ -545,6 +674,11 @@ impl Config {
         }
         for account in &mut config.accounts {
             account.place(&config.data_dir);
+        }
+        for account in &config.accounts {
+            account
+                .check_identities()
+                .with_context(|| format!("in account {}", account.id()))?;
         }
         config.check_home().context("in home")?;
         config.check_calendar().context("in calendar")?;
@@ -1063,6 +1197,76 @@ data_dir: /tmp/uplink
         let f = tempfile::NamedTempFile::new().unwrap();
         let err = Config::load(f.path()).unwrap_err();
         assert!(format!("{err:#}").contains("uplink init"), "{err:#}");
+    }
+
+    #[test]
+    fn mail_accounts_send_from_their_identities() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = |account: &str| {
+            let path = dir.path().join("uplink.yaml");
+            std::fs::write(
+                &path,
+                format!(
+                    "server: {{ basic_auth: {{ user: a, password_bcrypt: x }} }}\n\
+                     data_dir: data\naccounts:\n  - id: mail\n    kind: jmap\n    \
+                     session_url: https://mail.example.org/.well-known/jmap\n{account}"
+                ),
+            )
+            .unwrap();
+            Config::load(&path)
+        };
+        let ok = config(
+            "    address: alice@example.org\n    name: Alice\n    identities:\n      \
+             - address: shop@example.org\n      \
+             - address: Alice@Example.NET\n        name: A. Liddell\n      \
+             - domain: example.com\n",
+        )
+        .unwrap();
+        let named = |name: &str| Some(name.to_owned());
+        assert_eq!(
+            ok.accounts[0].identities(),
+            [
+                Identity::Address {
+                    address: "alice@example.org".into(),
+                    name: named("Alice")
+                },
+                Identity::Address {
+                    address: "shop@example.org".into(),
+                    name: named("Alice")
+                },
+                Identity::Address {
+                    address: "Alice@Example.NET".into(),
+                    name: named("A. Liddell")
+                },
+                Identity::Domain {
+                    domain: "example.com".into(),
+                    name: named("Alice")
+                },
+            ]
+        );
+        // Without them, the address, unnamed.
+        let bare = config("    address: alice@example.org\n").unwrap();
+        assert_eq!(
+            bare.accounts[0].identities(),
+            [Identity::Address {
+                address: "alice@example.org".into(),
+                name: None
+            }]
+        );
+        for wrong in [
+            "      - address: shop\n",
+            "      - address: \"@example.org\"\n",
+            "      - domain: \"@example.org\"\n",
+            "      - domain: \"\"\n",
+            "      - address: shop@example.org\n        domain: example.org\n",
+            "      - address: shop@example.org\n        nmae: Shop\n",
+        ] {
+            let err = config(&format!(
+                "    address: alice@example.org\n    identities:\n{wrong}"
+            ))
+            .unwrap_err();
+            assert!(!format!("{err:#}").is_empty(), "{wrong}");
+        }
     }
 
     #[test]

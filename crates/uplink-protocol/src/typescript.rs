@@ -106,6 +106,7 @@ fn declarations() -> String {
         EntryId,
         LabelId,
         Account,
+        Identity,
         MailProvider,
         Label,
         LabelKind,

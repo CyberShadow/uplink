@@ -16,6 +16,14 @@ use uplink_storage::rusqlite::{params, Connection};
 use uplink_storage::store::Store;
 use uplink_tx_log::{push::PushFailing, Conflict, Dispatcher, Registry, UndoError};
 
+/// The identities of an account of `address` alone, unnamed.
+pub(crate) fn own(address: &str) -> Vec<uplink_protocol::mail::Identity> {
+    vec![uplink_protocol::mail::Identity::Address {
+        address: address.into(),
+        name: None,
+    }]
+}
+
 pub(crate) struct Db {
     pub dir: TempDir,
     pub dispatcher: Dispatcher,
@@ -1172,11 +1180,13 @@ pub(crate) mod service {
                 ConfiguredAccount {
                     id: "a".into(),
                     address: "a@x".into(),
+                    identities: own("a@x"),
                     provider: uplink_protocol::mail::MailProvider::Gmail,
                 },
                 ConfiguredAccount {
                     id: "b".into(),
                     address: "b@x".into(),
+                    identities: own("b@x"),
                     provider: uplink_protocol::mail::MailProvider::Gmail,
                 },
             ],
@@ -1485,6 +1495,7 @@ pub(crate) mod service {
             let accounts = [ConfiguredAccount {
                 id: "a".into(),
                 address: "a@x".into(),
+                identities: own("a@x"),
                 provider: uplink_protocol::mail::MailProvider::Gmail,
             }];
             let mut conn = db.reader();
@@ -1547,6 +1558,7 @@ pub(crate) mod service {
             let accounts = [ConfiguredAccount {
                 id: "a".into(),
                 address: "a@x".into(),
+                identities: own("a@x"),
                 provider: uplink_protocol::mail::MailProvider::Gmail,
             }];
             let places = |unseen| {
@@ -1919,6 +1931,75 @@ pub(crate) mod service {
             (error.code, error.message.as_str()),
             (ErrorCode::Invalid, "no label CATEGORY_SOCIAL")
         );
+    }
+
+    /// `me` is every identity of the entry's account (SPEC §3.2): its
+    /// address, its others, and any address at a domain of one.
+    #[tokio::test]
+    async fn me_is_every_identity() {
+        let db = Db::new();
+        let store = db.store();
+        let message = |id: &str, from: &str, to: &str, cc: &str| {
+            let raw = format!(
+                "Message-ID: <{id}@x>\r\nFrom: {from}\r\nTo: {to}\r\nCc: {cc}\r\n\
+                 Date: {DATE}\r\nSubject: {id}\r\n\r\nhi\r\n"
+            );
+            new_entry(&store, id, &["INBOX"], raw.as_bytes())
+        };
+        let entries = vec![
+            message("own", "a@x", "bob@z", "carol@z"),
+            message("alias", "bob@z", "Shop <SHOP@x>", "carol@z"),
+            message("domain", "bob@z", "carol@z", "anything@Example.ORG"),
+            message("sub", "bob@z", "anything@sub.example.org", "carol@z"),
+            message("sent", "Me <someone@example.org>", "bob@z", ""),
+            message("theirs", "bob@z", "carol@z", "dave@x"),
+        ];
+        db.observe("a", observed(labels(&["INBOX"]), entries, vec![], &[]))
+            .await;
+        let accounts = [crate::query::ConfiguredAccount {
+            id: "a".into(),
+            address: "a@x".into(),
+            identities: vec![
+                uplink_protocol::mail::Identity::Address {
+                    address: "a@x".into(),
+                    name: None,
+                },
+                uplink_protocol::mail::Identity::Address {
+                    address: "shop@x".into(),
+                    name: None,
+                },
+                uplink_protocol::mail::Identity::Domain {
+                    domain: "example.org".into(),
+                    name: None,
+                },
+            ],
+            provider: uplink_protocol::mail::MailProvider::Gmail,
+        }];
+        let mut conn = db.reader();
+        for (query, expected) in [
+            ("from:me", &["own", "sent"][..]),
+            ("to:me", &["alias", "domain"]),
+            ("cc:me", &["domain"]),
+        ] {
+            let query = uplink_query::parse(query, 0).unwrap();
+            let tx = conn.transaction().unwrap();
+            let page = crate::query::conversations(
+                &tx,
+                &accounts,
+                &query,
+                crate::query::Unknown::Refuse,
+                None,
+                10,
+            )
+            .unwrap();
+            let mut subjects: Vec<_> = page
+                .conversations
+                .iter()
+                .map(|c| c.latest.subject.clone().unwrap())
+                .collect();
+            subjects.sort();
+            assert_eq!(subjects, expected, "{query:?}");
+        }
     }
 
     #[tokio::test]
@@ -2457,6 +2538,7 @@ fn list(
     let accounts = ["a", "b"].map(|id| crate::query::ConfiguredAccount {
         id: id.into(),
         address: format!("{id}@x"),
+        identities: own(&format!("{id}@x")),
         provider: uplink_protocol::mail::MailProvider::Gmail,
     });
     let query = uplink_query::parse(query, 0).unwrap();
@@ -2843,6 +2925,7 @@ fn speed_of_search_and_listing() {
             &[query::ConfiguredAccount {
                 id: "a".into(),
                 address: "a@x".into(),
+                identities: own("a@x"),
                 provider: uplink_protocol::mail::MailProvider::Gmail,
             }],
         )
@@ -2956,7 +3039,7 @@ async fn pushes_go_between_the_steps_of_a_long_sync() {
             calls: calls.clone(),
         },
         "a".into(),
-        "a@x".into(),
+        own("a@x"),
         db.dispatcher.clone(),
         db.reader(),
         db.dir.path(),
@@ -3023,7 +3106,7 @@ async fn the_task_records_failing_as_it_starts_and_stops() {
     let task = crate::account::SyncTask::new(
         Failing { failures: 3.into() },
         "a".into(),
-        "a@x".into(),
+        own("a@x"),
         db.dispatcher.clone(),
         db.reader(),
         db.dir.path(),

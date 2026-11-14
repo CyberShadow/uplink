@@ -25,6 +25,9 @@ pub struct LabelId(pub i64);
 pub struct Account {
     pub id: String,
     pub address: String,
+    /// The addresses its mail is sent from, and that are the user's in its
+    /// mail (SPEC §3.2): `address` first, the default.
+    pub identities: Vec<Identity>,
     pub provider: MailProvider,
     /// Whether the first full sync has completed.
     pub synced: bool,
@@ -32,6 +35,22 @@ pub struct Account {
     /// goes.
     pub listing: Option<ListingProgress>,
     pub labels: Vec<Label>,
+}
+
+/// An address a mail account sends from (SPEC §3.2): one, or any at a
+/// domain; with the name mail from it is sent under.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum Identity {
+    Address {
+        address: String,
+        name: Option<String>,
+    },
+    /// Any address at `domain` (any local part).
+    Domain {
+        domain: String,
+        name: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -248,26 +248,31 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
             AccountConfig::Gmail(gmail) => Some(ConfiguredAccount {
                 id: gmail.id.clone(),
                 address: gmail.address.clone(),
+                identities: gmail.identities(),
                 provider: MailProvider::Gmail,
             }),
             AccountConfig::M365(m365) => Some(ConfiguredAccount {
                 id: m365.id.clone(),
                 address: m365.address.clone(),
+                identities: m365.identities(),
                 provider: MailProvider::M365,
             }),
             AccountConfig::Imap(imap) => Some(ConfiguredAccount {
                 id: imap.id.clone(),
                 address: imap.address.clone(),
+                identities: imap.identities(),
                 provider: MailProvider::Imap,
             }),
             AccountConfig::Pop3(pop3) => Some(ConfiguredAccount {
                 id: pop3.id.clone(),
                 address: pop3.address.clone(),
+                identities: pop3.identities(),
                 provider: MailProvider::Pop3,
             }),
             AccountConfig::Jmap(jmap) => Some(ConfiguredAccount {
                 id: jmap.id.clone(),
                 address: jmap.address.clone(),
+                identities: jmap.identities(),
                 provider: MailProvider::Jmap,
             }),
             AccountConfig::Matrix(_) => None,

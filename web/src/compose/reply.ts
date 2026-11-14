@@ -1,7 +1,8 @@
 // Drafts replying to or forwarding a message.
 
-import type { DraftContent, MessageContent, MessageId } from '../generated/protocol'
+import type { DraftContent, Identity, MessageContent, MessageId } from '../generated/protocol'
 import { dateTime } from '../format'
+import { isOwn } from '../identities'
 
 export type Response = 'reply' | 'replyAll' | 'forward'
 
@@ -12,8 +13,9 @@ export interface NewDraft {
 
 export const EMPTY: DraftContent = { to: '', cc: '', bcc: '', subject: '', body: '' }
 
-/** A draft responding to `message`, sent from `own` (an address). */
-export function respond(kind: Response, message: MessageContent, own: string): NewDraft {
+/** A draft responding to `message`, from the account of identities
+ * `own`. */
+export function respond(kind: Response, message: MessageContent, own: readonly Identity[]): NewDraft {
   const subject = message.subject ?? ''
   const sender = message.from_addr ? mailbox(message.from_name, message.from_addr) : ''
   const date = dateTime((message.date_sent ?? 0) * 1000)
@@ -34,11 +36,10 @@ export function respond(kind: Response, message: MessageContent, own: string): N
       inReplyTo: null,
     }
   }
-  const isOwn = (addr: string) => addr.toLowerCase() === own.toLowerCase()
   const others =
     kind === 'replyAll'
       ? [...message.to_addrs, ...message.cc_addrs].filter(
-          (addr, i, all) => !isOwn(addr) && addr !== message.from_addr && all.indexOf(addr) === i,
+          (addr, i, all) => !isOwn(own, addr) && addr !== message.from_addr && all.indexOf(addr) === i,
         )
       : []
   return {
