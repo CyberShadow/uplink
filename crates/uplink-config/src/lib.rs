@@ -320,9 +320,6 @@ impl M365AccountConfig {
 pub struct M365OAuthConfig {
     /// The registration's application (client) id.
     pub client_id: String,
-    /// One of the registration's redirect URIs.
-    #[serde(default = "M365OAuthConfig::native_client")]
-    pub redirect_uri: String,
     #[serde(default = "M365OAuthConfig::common_authority")]
     pub authority: String,
     #[serde(default = "M365OAuthConfig::graph")]
@@ -333,11 +330,6 @@ pub struct M365OAuthConfig {
 }
 
 impl M365OAuthConfig {
-    /// The redirect URI Entra ID offers desktop applications.
-    fn native_client() -> String {
-        "https://login.microsoftonline.com/common/oauth2/nativeclient".into()
-    }
-
     fn common_authority() -> String {
         "https://login.microsoftonline.com/common".into()
     }
@@ -1100,7 +1092,6 @@ accounts:
             m.oauth,
             M365OAuthConfig {
                 client_id: "11111111-2222-3333-4444-555555555555".into(),
-                redirect_uri: "https://login.microsoftonline.com/common/oauth2/nativeclient".into(),
                 authority: "https://login.microsoftonline.com/common".into(),
                 resource: "https://graph.microsoft.com".into(),
                 token_file: PathBuf::from("/var/lib/uplink/accounts/alice-m365.token"),

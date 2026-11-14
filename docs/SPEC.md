@@ -288,9 +288,8 @@ accounts:
 
   # — Microsoft 365 (work) — with an Entra ID app registration of the
   # user's (or their organization's), a public client; v1 endpoint with
-  # `resource=` (§13.3). `redirect_uri`, `authority` and `resource`
-  # default to Entra ID's desktop redirect, the multi-tenant authority
-  # and Graph; tests point them at a fake.
+  # `resource=` (§13.3). `authority` and `resource` default to the
+  # multi-tenant authority and Graph; tests point them at a fake.
   - id: alice-m365
     kind: m365
     address: alice@example.com
@@ -4043,33 +4042,33 @@ operator and `fail2ban` on the system handles brute-force concerns.
 uplink signs in as a public client (no `client_secret`) of an Entra ID
 app registration that the user, or their organization's administrator,
 makes (README): as with Gmail (§15.2), uplink ships no client of its
-own. The flow is **not** the same shape as Gmail's: it uses the v1
-(classic) endpoint with a `resource=` parameter rather than v2 OIDC
-with `scope=`, so the permissions are those configured on the
-registration (Graph `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite`)
-rather than requested per sign-in:
+own. The flow is Gmail's (§13.2: PKCE, a loopback redirect, the URL
+pasted from a browser on another machine), but at the v1 (classic)
+endpoint with a `resource=` parameter rather than v2 OIDC with
+`scope=`, so the permissions are those configured on the registration
+(Graph `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite`) rather
+than requested per sign-in:
 
 - `oauth.client_id`: the registration's application id. Required.
 - `oauth.authority`: default `https://login.microsoftonline.com/common`;
   a single-tenant registration names its tenant instead.
 - Endpoints **v1**: `/oauth2/authorize`, `/oauth2/token` (NOT
   `/oauth2/v2.0/…`).
-- `oauth.redirect_uri`: one the registration lists; default
-  `https://login.microsoftonline.com/common/oauth2/nativeclient`, which
-  Entra ID offers desktop applications. Nothing of uplink's listens
-  there: the browser lands on a blank page whose URL carries the code.
-  The CLI pairing step (`uplink oauth init --account <id>`, which serves
-  both providers) says so and accepts the URL, a "…code=…" string, or
-  the bare code, pasted on standard input.
-- Authorize parameters: `response_type=code`,
-  `redirect_uri=<redirect_uri>`, `response_mode=query`,
-  `login_hint=<email>`, `resource=https://graph.microsoft.com` (or
+- Redirect: `http://127.0.0.1:<port>/`, a listener of `uplink oauth
+  init`'s on a port of its choosing; the registration lists
+  `http://127.0.0.1` as a *Mobile and desktop applications* redirect URI,
+  and Entra ID ignores a loopback redirect's port (RFC 8252 §7.3). Not
+  `https://login.microsoftonline.com/common/oauth2/nativeclient`, the
+  redirect Entra ID offers desktop applications: that page shows the
+  code for about a second, warning that the URL is a password, and then
+  replaces itself (§15.12).
+- Authorize parameters: `response_type=code`, `redirect_uri`,
+  `code_challenge` (S256), `state`, `login_hint=<email>`,
+  `resource=https://graph.microsoft.com` (or
   `https://outlook.office365.com` for the EWS resource when we need it).
-  No PKCE: the v1 endpoint accepts the public-client form without.
-  (Open: adding it, as defence in depth.)
 - Token exchange parameters: `grant_type=authorization_code`, `code`,
-  `redirect_uri`, `client_id`. No `scope`, no `resource`, no
-  `code_verifier`.
+  `redirect_uri`, `client_id`, `code_verifier`. No `scope`, no
+  `resource`.
 - Cross-resource refresh: at the v1 endpoint, a refresh token issued
   against one resource can be redeemed for an access token against
   another by re-stating `resource=<target>` on the refresh POST. We
@@ -4224,8 +4223,8 @@ which account each message is from; the delta-link survives restart.
 **State:** done against the emulator; not yet against a real tenant
 (§15.12). `crates/uplink-email/src/m365/` syncs as §8.3 has it; its
 tests (`tests/m365_sync.rs`) and the `integration-m365` VM test run
-against emulate's Graph (§15.10): pairing with the real CLI and a pasted
-code, first sync, new mail, archive and undo as moves, a move and a
+against emulate's Graph (§15.10): pairing with the real CLI, the
+browser's redirect followed back to it, first sync, new mail, archive and undo as moves, a move and a
 category made in Outlook, an expired delta link, sending, and a restart
 that records nothing. With more than one mail account, `/` is every
 account's Inbox as one list (`All inboxes`), each row naming its
@@ -4419,8 +4418,8 @@ The user brings the Entra ID app registration (§13.3), as they bring
 Gmail's OAuth client (§15.2). Many organizations let users consent to
 an application's delegated mail permissions; others reserve consent to
 administrators, and there the user asks one to grant it. **Decision**:
-BYO only; everything about the client (`client_id`, `redirect_uri`,
-`authority`, `resource`) is configuration, and nothing but the OAuth
+BYO only; everything about the client (`client_id`, `authority`,
+`resource`) is configuration, and nothing but the OAuth
 module depends on it.
 
 ### 15.4 Refresh-token rotation
@@ -4687,10 +4686,13 @@ reason and is the always-available baseline.
 The M365 side is verified against the emulator (§15.10), and against a
 real tenant only as far as the sign-in (§13.3: the authorize URL, the
 code's redemption, the registration's permissions) and a first sync of
-mail folders and messages. The `nativeclient` page the browser lands on
-shows the code in its URL for about a second, warning of phishing, and
-then replaces itself with "This is not the right page", so the code has
-to be copied before then. Open until it runs against a real tenant: the
+mail folders and messages. That sign-in redirected to `nativeclient`,
+whose page shows the code in its URL for about a second, warning of
+phishing, and then replaces itself with "This is not the right page";
+hence the loopback redirect, which is open: that Entra ID matches
+`http://127.0.0.1:<port>/` to the registered `http://127.0.0.1` and
+checks PKCE at the v1 endpoint. Open until it runs against a real
+tenant: the
 immutable-id `Prefer` header
 together with `odata.maxpagesize`, `$select` on delta queries, whether
 Graph's real delta pages report a move as a removal from one folder and

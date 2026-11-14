@@ -181,12 +181,12 @@ pub struct LoopbackFlow<'a> {
     pub token_url: &'a str,
     pub client_id: &'a str,
     pub client_secret: Option<&'a str>,
-    pub scope: &'a str,
     /// The account's address, for the provider to sign in as.
     pub login_hint: &'a str,
-    /// Further parameters of the authorization request, as the provider
-    /// asks for them.
-    pub extra: &'a [(&'a str, &'a str)],
+    /// The provider's own parameters of the authorization request: what
+    /// access is asked for (e.g. `scope`, or Entra ID v1's `resource`),
+    /// and anything else it wants.
+    pub params: &'a [(&'a str, &'a str)],
 }
 
 /// Runs `flow`; returns the refresh token it yields, if the provider
@@ -211,12 +211,11 @@ pub async fn authorize_loopback(
         .append_pair("client_id", flow.client_id)
         .append_pair("redirect_uri", &redirect_uri)
         .append_pair("response_type", "code")
-        .append_pair("scope", flow.scope)
         .append_pair("code_challenge", &challenge(&verifier))
         .append_pair("code_challenge_method", "S256")
         .append_pair("state", &state)
         .append_pair("login_hint", flow.login_hint)
-        .extend_pairs(flow.extra);
+        .extend_pairs(flow.params);
     present(&url);
 
     let redirected = tokio::select! {
@@ -226,7 +225,8 @@ pub async fn authorize_loopback(
     let params: std::collections::HashMap<String, String> =
         redirected.query_pairs().into_owned().collect();
     if let Some(error) = params.get("error") {
-        bail!("authorization failed: {error}");
+        let description = params.get("error_description").map_or("", |d| d.as_str());
+        bail!("authorization failed: {error} {description}");
     }
     ensure!(
         params.get("state") == Some(&state),

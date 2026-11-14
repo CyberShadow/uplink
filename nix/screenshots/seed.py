@@ -51,7 +51,9 @@ def ms_sign_in(authorize_url):
     page = machine.succeed(f"curl -sf -o /dev/null -w '%{{redirect_url}}' {shlex.quote(authorize_url)}").strip()
     params = {k: v[0] for k, v in parse_qs(urlparse(page).query).items()}
     form = " ".join(
-        f"--data-urlencode {k}={shlex.quote(params[k])}" for k in ["redirect_uri", "scope", "client_id", "response_mode"]
+        f"--data-urlencode {k}={shlex.quote(params[k])}"
+        for k in ["redirect_uri", "scope", "client_id", "state", "code_challenge", "code_challenge_method"]
+        if k in params
     )
     return machine.succeed(
         f"curl -sf -o /dev/null -w '%{{redirect_url}}' -X POST {MICROSOFT}/oauth2/v2.0/authorize/callback "
@@ -62,13 +64,12 @@ def ms_sign_in(authorize_url):
 def authorize_work():
     machine.wait_for_unit("emulate-microsoft.service")
     machine.wait_for_open_port(4003)
-    machine.succeed("touch /tmp/pasted")
     machine.succeed(
-        "(tail -f /tmp/pasted | runuser -u uplink -- uplink --config /etc/uplink/uplink.yaml "
-        "oauth init --account alice-work >/tmp/oauth-work.log 2>&1) >/dev/null 2>&1 &"
+        "runuser -u uplink -- sh -c 'uplink --config /etc/uplink/uplink.yaml "
+        "oauth init --account alice-work </dev/null >/tmp/oauth-work.log 2>&1 &'"
     )
     url = machine.wait_until_succeeds(f"grep -o '{MICROSOFT}/common/oauth2/authorize?[^ ]*' /tmp/oauth-work.log").strip()
-    machine.succeed(f"echo {shlex.quote(ms_sign_in(url))} >> /tmp/pasted")
+    machine.succeed(f"curl -sf {shlex.quote(ms_sign_in(url))}")
     machine.wait_until_succeeds("grep -q Authorized /tmp/oauth-work.log")
 
 

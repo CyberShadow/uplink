@@ -1,5 +1,5 @@
-//! Microsoft 365 sync against emulate's Microsoft Graph. There is no real
-//! account to run these against yet (SPEC §15.10).
+//! Microsoft 365 sync against emulate's Microsoft Graph; not yet against
+//! a real account (SPEC §15.10).
 
 mod common;
 
@@ -52,17 +52,13 @@ impl Microsoft {
             identities: vec![],
             oauth: M365OAuthConfig {
                 client_id: "uplink-test".into(),
-                redirect_uri: "http://127.0.0.1/redirect".into(),
                 authority: format!("{base}/common"),
                 resource: base.clone(),
                 token_file: dir.join("accounts/test.token"),
             },
         };
         let http = reqwest::Client::new();
-        // `uplink oauth init`'s flow, with the URL redirected to pasted.
-        let redirected = sign_in(&account, ALICE).await;
-        let code = oauth::pasted_code(&redirected).unwrap();
-        oauth::redeem(&http, &account, &key, &code).await.unwrap();
+        authorize(&http, &account, &key).await;
         Self {
             alice: Credentials::new(http.clone(), oauth::grant(&account), key.clone()),
             account,
@@ -87,16 +83,25 @@ impl Microsoft {
 
     /// An access token for another of the tenant's users.
     async fn token_of(&self, user: &str) -> String {
-        let redirected = sign_in(&self.account, user).await;
-        let code = oauth::pasted_code(&redirected).unwrap();
+        let authority = &self.account.oauth.authority;
+        let client_id = &self.account.oauth.client_id;
+        let redirect_uri = "http://127.0.0.1/redirect";
+        let mut url = url::Url::parse(&format!("{authority}/oauth2/authorize")).unwrap();
+        url.query_pairs_mut()
+            .append_pair("client_id", client_id)
+            .append_pair("response_type", "code")
+            .append_pair("redirect_uri", redirect_uri)
+            .append_pair("resource", &self.account.oauth.resource);
+        let redirected = url::Url::parse(&sign_in(&self.base, url, user).await).unwrap();
+        let (_, code) = redirected.query_pairs().find(|(k, _)| k == "code").unwrap();
         let response: Value = self
             .http
             .post(format!("{}/oauth2/token", self.account.oauth.authority))
             .form(&[
                 ("grant_type", "authorization_code"),
                 ("code", &code),
-                ("redirect_uri", &self.account.oauth.redirect_uri),
-                ("client_id", &self.account.oauth.client_id),
+                ("redirect_uri", redirect_uri),
+                ("client_id", client_id),
             ])
             .send()
             .await
@@ -184,42 +189,72 @@ impl Microsoft {
     }
 }
 
-/// Signs `user` in on emulate's page, as a browser would; returns where
-/// Azure AD redirected to.
-async fn sign_in(account: &M365AccountConfig, user: &str) -> String {
+/// Signs `user` in on emulate's page, where the authorization `url`
+/// leads, as a browser would; returns where Entra ID redirected to.
+async fn sign_in(base: &str, url: url::Url, user: &str) -> String {
     let browser = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
-    let authorize = oauth::authorize_url(account).unwrap();
-    let page = browser.get(authorize).send().await.unwrap();
+    let page = browser.get(url).send().await.unwrap();
     assert_eq!(page.status(), 302);
-    let page = url::Url::parse(&account.oauth.resource)
+    let page = url::Url::parse(base)
         .unwrap()
         .join(page.headers()["location"].to_str().unwrap())
         .unwrap();
     let params: HashMap<String, String> = page.query_pairs().into_owned().collect();
-    let mut form: Vec<(&str, &str)> = ["redirect_uri", "scope", "client_id", "response_mode"]
-        .iter()
-        .map(|k| (*k, params[*k].as_str()))
-        .collect();
+    let mut form: Vec<(&str, &str)> = [
+        "redirect_uri",
+        "scope",
+        "client_id",
+        "state",
+        "code_challenge",
+        "code_challenge_method",
+    ]
+    .iter()
+    .filter_map(|k| Some((*k, params.get(*k)?.as_str())))
+    .collect();
     form.push(("email", user));
     let signed_in = browser
-        .post(format!(
-            "{}/oauth2/v2.0/authorize/callback",
-            account.oauth.resource
-        ))
+        .post(format!("{base}/oauth2/v2.0/authorize/callback"))
         .form(&form)
         .send()
         .await
         .unwrap();
     assert_eq!(signed_in.status(), 302);
     let location = signed_in.headers()["location"].to_str().unwrap().to_owned();
-    assert!(
-        location.starts_with(&account.oauth.redirect_uri),
-        "{location}"
-    );
+    assert!(location.starts_with(&params["redirect_uri"]), "{location}");
     location
+}
+
+/// Runs `uplink oauth init`'s flow for `account`, signing Alice in as a
+/// browser would: the redirect followed back to the flow's listener.
+async fn authorize(http: &reqwest::Client, account: &M365AccountConfig, key: &MasterKey) {
+    let (url_tx, url_rx) = tokio::sync::oneshot::channel();
+    let (authorized, ()) = tokio::join!(
+        oauth::authorize(
+            account,
+            key,
+            |url| url_tx.send(url.clone()).unwrap(),
+            std::future::pending(),
+        ),
+        async {
+            let location = sign_in(
+                &account.oauth.resource,
+                url_rx.await.unwrap(),
+                &account.address,
+            )
+            .await;
+            assert!(http
+                .get(location)
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .is_success());
+        },
+    );
+    authorized.unwrap();
 }
 
 fn dispatched(response: ServerResponse) -> uplink_protocol::TxLogId {

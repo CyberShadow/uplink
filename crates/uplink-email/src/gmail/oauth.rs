@@ -25,10 +25,13 @@ pub async fn authorize(
         token_url: &account.endpoints.token,
         client_id: &account.oauth.client_id,
         client_secret: Some(&account.oauth.client_secret),
-        scope: SCOPE,
         login_hint: &account.address,
-        // For a refresh token, every time.
-        extra: &[("access_type", "offline"), ("prompt", "consent")],
+        params: &[
+            ("scope", SCOPE),
+            // For a refresh token, every time.
+            ("access_type", "offline"),
+            ("prompt", "consent"),
+        ],
     };
     let refresh_token = oauth::authorize_loopback(&flow, present, pasted)
         .await?

@@ -260,8 +260,7 @@ ID that you (or your organization's administrator) create.
    under App registrations, register a new application (any name), for
    accounts in your organization's directory.
 2. Under Authentication, add the platform *Mobile and desktop
-   applications* with the redirect URI
-   `https://login.microsoftonline.com/common/oauth2/nativeclient`.
+   applications* with the custom redirect URI `http://127.0.0.1`.
 3. Under API permissions, add the Microsoft Graph delegated permissions
    `Mail.ReadWrite`, `Mail.Send` and `Calendars.ReadWrite` (to answer
    meeting requests, and to create and edit events). If your
@@ -278,9 +277,10 @@ Then run:
 ./result/bin/uplink oauth init --account alice-m365
 ```
 
-Open the URL it prints and sign in. The browser then lands on a blank
-page at `…/oauth2/nativeclient?code=…`: copy that address, or the code
-alone, and paste it into `uplink oauth init`. A running uplink picks
+Open the URL it prints and sign in; `uplink oauth init` receives the
+browser's redirect itself. If the browser is on another machine (uplink
+on a server), the redirect to `http://127.0.0.1:…` fails to load there:
+paste that page's address into `uplink oauth init`. A running uplink picks
 the account up once restarted; changes made in Outlook arrive within
 30 s. Folders are labels of which a message has one; categories are
 labels too. The account's calendar, from a month ago to a year ahead,

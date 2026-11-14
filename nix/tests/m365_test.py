@@ -28,38 +28,38 @@ def eventually(what, f, timeout=2 * POLL):
 
 def sign_in(authorize_url, user="alice@example.com"):
     """Signs in on the emulator's page, as a browser would; returns the
-    URL Entra ID redirects to, where nothing listens."""
+    URL Entra ID redirects to."""
     page = machine.succeed(f"curl -sf -o /dev/null -w '%{{redirect_url}}' {shlex.quote(authorize_url)}").strip()
     params = {k: v[0] for k, v in parse_qs(urlparse(urljoin(MICROSOFT, page)).query).items()}
     form = " ".join(
         f"--data-urlencode {k}={shlex.quote(params[k])}"
-        for k in ["redirect_uri", "scope", "client_id", "response_mode"]
+        for k in ["redirect_uri", "scope", "client_id", "state", "code_challenge", "code_challenge_method"]
+        if k in params
     )
     redirect = machine.succeed(
         f"curl -sf -o /dev/null -w '%{{redirect_url}}' -X POST {MICROSOFT}/oauth2/v2.0/authorize/callback "
         f"--data-urlencode email={user} {form}"
     ).strip()
-    assert redirect.startswith(REDIRECT_URI + "?code="), redirect
+    assert redirect.startswith(params["redirect_uri"]), redirect
     return redirect
 
 
 def authorize_uplink():
-    """Runs `uplink oauth init`, pasting what the sign-in redirected to;
-    the master key is made on the way."""
+    """Runs `uplink oauth init`, the browser's redirect followed back to
+    it; the master key is made on the way."""
     machine.wait_for_unit("emulate.service")
     machine.wait_for_open_port(4003)
     machine.succeed(f"install -d -m 0700 -o uplink -g uplink {STATE}")
-    machine.succeed("touch /tmp/pasted")
     machine.succeed(
-        "(tail -f /tmp/pasted | runuser -u uplink -- uplink --config /etc/uplink/uplink.yaml "
-        "oauth init --account alice-m365 >/tmp/oauth.log 2>&1) >/dev/null 2>&1 &"
+        "runuser -u uplink -- sh -c 'uplink --config /etc/uplink/uplink.yaml "
+        "oauth init --account alice-m365 </dev/null >/tmp/oauth.log 2>&1 &'"
     )
     url = machine.wait_until_succeeds(f"grep -o '{MICROSOFT}/common/oauth2/authorize?[^ ]*' /tmp/oauth.log").strip()
     params = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
     assert params["resource"] == MICROSOFT, params
-    assert params["redirect_uri"] == REDIRECT_URI, params
-    redirect = sign_in(url)
-    machine.succeed(f"echo {shlex.quote(redirect)} >> /tmp/pasted")
+    assert params["redirect_uri"].startswith("http://127.0.0.1:"), params
+    assert params["code_challenge_method"] == "S256", params
+    machine.succeed(f"curl -sf {shlex.quote(sign_in(url))}")
     machine.wait_until_succeeds("grep -q Authorized /tmp/oauth.log")
     machine.succeed(f"test -s {STATE}/accounts/alice-m365.token")
 

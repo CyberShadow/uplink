@@ -139,9 +139,8 @@ pub async fn authorize(
         token_url: &oauth.token_url,
         client_id: &oauth.client_id,
         client_secret: oauth.client_secret.as_deref(),
-        scope: &oauth.scope,
         login_hint: account.address,
-        extra: &[],
+        params: &[("scope", &oauth.scope)],
     };
     let refresh_token = oauth::authorize_loopback(&flow, present, pasted)
         .await?

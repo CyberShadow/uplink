@@ -1,8 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
-use tokio::io::{AsyncBufReadExt, BufReader};
-use uplink_config::{AccountConfig, Config, Login, M365AccountConfig};
+use uplink_config::{AccountConfig, Config, Login};
 use uplink_email::{
     gmail::oauth as gmail_oauth, m365::oauth as m365_oauth, mail_server::sign_in, oauth,
 };
@@ -300,15 +299,7 @@ async fn oauth_init(config_path: &std::path::Path, id: &str) -> Result<()> {
             gmail_oauth::authorize(
                 account,
                 &key,
-                |url| {
-                    println!(
-                        "Open this URL in a browser and sign in as {}:\n\n{url}\n",
-                        account.address
-                    );
-                    println!(
-                        "If the browser is on another machine, paste the URL it is redirected to here."
-                    );
-                },
+                present_authorization(&account.address),
                 oauth::read_pasted_url(),
             )
             .await?;
@@ -318,7 +309,13 @@ async fn oauth_init(config_path: &std::path::Path, id: &str) -> Result<()> {
         AccountConfig::Pop3(account) => mail_server_init(account.login(), &key).await?,
         AccountConfig::Jmap(account) => mail_server_init(account.login(), &key).await?,
         AccountConfig::M365(account) => {
-            m365_init(account, &key).await?;
+            m365_oauth::authorize(
+                account,
+                &key,
+                present_authorization(&account.address),
+                oauth::read_pasted_url(),
+            )
+            .await?;
             &account.oauth.token_file
         }
         AccountConfig::Matrix(_) => {
@@ -337,15 +334,7 @@ async fn mail_server_init<'a>(account: Login<'a>, key: &MasterKey) -> Result<&'a
     sign_in::authorize(
         account,
         key,
-        |url| {
-            println!(
-                "Open this URL in a browser and sign in as {}:\n\n{url}\n",
-                account.address
-            );
-            println!(
-                "If the browser is on another machine, paste the URL it is redirected to here."
-            );
-        },
+        present_authorization(account.address),
         oauth::read_pasted_url(),
     )
     .await?;
@@ -355,31 +344,17 @@ async fn mail_server_init<'a>(account: Login<'a>, key: &MasterKey) -> Result<&'a
         .token_file)
 }
 
-/// Nothing listens at a public client's redirect URI, so the user copies
-/// the code out of where the browser was sent (SPEC §13.3).
-async fn m365_init(account: &M365AccountConfig, key: &MasterKey) -> Result<()> {
-    println!(
-        "Open this URL in a browser and sign in as {}:\n\n{}\n",
-        account.address,
-        m365_oauth::authorize_url(account)?
-    );
-    println!(
-        "The browser is then sent to {}?code=…; paste that URL, or the code\n\
-         itself, here.",
-        account.oauth.redirect_uri
-    );
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    let code = loop {
-        let line = lines
-            .next_line()
-            .await?
-            .context("standard input closed before a code was pasted")?;
-        match m365_oauth::pasted_code(&line) {
-            Ok(code) => break code,
-            Err(e) => eprintln!("{e:#}; try again."),
-        }
-    };
-    m365_oauth::redeem(&reqwest::Client::new(), account, key, &code).await
+/// Shows the user where to sign in as `address`; the browser is then
+/// redirected to a listener of the flow's, or, from another machine, to
+/// a page that does not load, whose URL the user pastes.
+fn present_authorization(address: &str) -> impl FnOnce(&reqwest::Url) + '_ {
+    move |url| {
+        println!("Open this URL in a browser and sign in as {address}:\n\n{url}\n");
+        println!(
+            "If the browser is on another machine, it then fails to load a page at\n\
+             http://127.0.0.1:…; paste that page's address here."
+        );
+    }
 }
 
 #[cfg(test)]

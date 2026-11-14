@@ -80,7 +80,6 @@ pkgs.testers.nixosTest {
         address = "alice@example.org";
         oauth = {
           client_id = "uplink-demo";
-          redirect_uri = "http://127.0.0.1/redirect";
           authority = "${microsoft}/common";
           resource = microsoft;
         };
