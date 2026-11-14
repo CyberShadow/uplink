@@ -7,7 +7,6 @@ history and the outbox have something in them.
 
 import os
 from datetime import datetime, time as dtime, timedelta
-from urllib.parse import quote
 
 from playwright.sync_api import expect, sync_playwright
 
@@ -106,8 +105,10 @@ def views(page, theme):
     expect(reply(page)).to_be_visible()
     shoot(page, "conversation", theme)
 
-    page.goto(URL + "/search/" + quote("has:attachment OR label:travel", safe=""))
-    expect(rows(page)).to_have_count(3, timeout=10000)
+    # Of every kind: the mail, the chat (by its messages), the to-do and
+    # the event about the hike.
+    page.goto(URL + "/search/trail")
+    expect(rows(page)).to_have_count(4, timeout=10000)
     shoot(page, "search", theme)
 
     inbox(page)

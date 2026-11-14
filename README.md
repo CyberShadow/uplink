@@ -77,17 +77,25 @@ It is built for people who live in their inbox and want it fast:
   </picture>
 </p>
 
+- **One search for everything.**
+  A search finds your mail, your chats, your to-dos and your calendar's
+  events, in one list, the most recently active first. A chat shows up
+  once, with how many of its messages match and the latest of them, and
+  opens on those messages. Select mail and chats together to mark them
+  all read or star them at once.
+
 - **Search that speaks Gmail.**
   `from:`, `to:`, `subject:`, `label:`, `is:unread`, `has:attachment`,
   `after:`, `older_than:`, `OR`, `-` and parentheses, across all your
-  accounts at once, over a full-text index on your server. Every list is
-  a search, so any search can be bookmarked like a label.
+  accounts at once, over a full-text index on your server, and of chats
+  too (`from:`, `is:unread`, `is:mention`). Every list is a search, so
+  any search can be bookmarked like a label.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://files.cy.md/uplink/docs/screenshots/search-dark.png">
     <source media="(prefers-color-scheme: light)" srcset="https://files.cy.md/uplink/docs/screenshots/search-light.png">
-    <img alt="Searching across accounts" src="https://files.cy.md/uplink/docs/screenshots/search-light.png" width="800">
+    <img alt="A search for &quot;trail&quot;: an email thread, a chat, a to-do and a calendar event, in one list" src="https://files.cy.md/uplink/docs/screenshots/search-light.png" width="800">
   </picture>
 </p>
 

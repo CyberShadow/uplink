@@ -251,6 +251,7 @@ event("Team lunch", monday + timedelta(days=4, hours=12, minutes=30), 60, locati
 event("Canceled: Incident review", monday + timedelta(days=2, hours=16), 45,
       organizer=person("Incident Bot", "incidents@example.org"), isCancelled=True,
       responseStatus={"response": "accepted"})
+event("Ridge trail hike", monday + timedelta(days=5, hours=8), 240, location="North trailhead", showAs="free")
 event("Vendor demo", monday + timedelta(days=3, hours=10), 60, organizer=person("Sam Lee", "sam@vendor.example"),
       responseStatus={"response": "declined"})
 
@@ -378,7 +379,7 @@ def count(query):
 
 
 eventually("the mail to be synced", lambda: count("SELECT count(*) FROM message") >= 12, timeout=120)
-eventually("the calendar to be synced", lambda: count("SELECT count(*) FROM calendar_event") >= 11, timeout=120)
+eventually("the calendar to be synced", lambda: count("SELECT count(*) FROM calendar_event") >= 12, timeout=120)
 eventually("the rooms to be synced", lambda: count("SELECT count(*) FROM matrix_room") >= 12, timeout=120)
 
 machine.succeed("uplink-shots >&2")
