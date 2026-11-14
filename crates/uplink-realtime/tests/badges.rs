@@ -6,8 +6,7 @@ use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use tokio_tungstenite::tungstenite::Message;
 use uplink_protocol::{
-    todos::TodoId, Activity, Badge, BadgedBucket, Badges, ClientRequest, ServerResponse, TxLogId,
-    WsClientMsg, WsServerMsg,
+    Badges, ClientRequest, Mark, Marks, ServerResponse, TxLogId, WsClientMsg, WsServerMsg,
 };
 use uplink_realtime::{run_session, Answer, Backend, Hub, Replay};
 
@@ -26,24 +25,20 @@ impl Backend for Idle {
     }
 }
 
-fn badges(todos: &[i64]) -> Badges {
+/// Of `count` items in a `count` bucket.
+fn badges(count: u32) -> Badges {
     Badges {
-        buckets: vec![BadgedBucket {
-            name: "Now".into(),
-            badge: Badge::Count,
-            items: todos
-                .iter()
-                .map(|&t| Activity::Todo { todo: TodoId(t) })
-                .collect(),
-        }],
-        marks: Default::default(),
+        marks: Marks {
+            home: Mark { count, dot: false },
+            ..Marks::default()
+        },
     }
 }
 
 #[tokio::test]
 async fn badges_are_sent_at_once_and_as_they_change() {
     let hub = Arc::new(Hub::new(16));
-    hub.set_badges(badges(&[1]));
+    hub.set_badges(badges(1));
     let serving = hub.clone();
     let app = Router::new().route(
         "/ws",
@@ -70,12 +65,12 @@ async fn badges_are_sent_at_once_and_as_they_change() {
         other => panic!("expected a text frame, got {other:?}"),
     };
     assert!(matches!(recv().await, WsServerMsg::Welcome { .. }));
-    let sent = |todos: &[i64]| WsServerMsg::Badges {
-        badges: badges(todos),
+    let sent = |count| WsServerMsg::Badges {
+        badges: badges(count),
     };
-    assert_eq!(recv().await, sent(&[1]));
+    assert_eq!(recv().await, sent(1));
     // As they were: not sent again.
-    hub.set_badges(badges(&[1]));
-    hub.set_badges(badges(&[1, 2]));
-    assert_eq!(recv().await, sent(&[1, 2]));
+    hub.set_badges(badges(1));
+    hub.set_badges(badges(2));
+    assert_eq!(recv().await, sent(2));
 }

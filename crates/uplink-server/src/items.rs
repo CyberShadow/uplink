@@ -17,8 +17,8 @@ use uplink_protocol::{
     mail::{EntryId, ListPosition, ListScope},
     matrix::RoomEventId,
     todos::Todo,
-    Activity, Arrival, Arrived, Badge, BadgedBucket, Badges, ErrorCode, Item, ItemKind,
-    ItemPosition, Mark, Marks, Place, ServerError, ServerResponse, BADGE_LIMIT,
+    Arrival, Arrived, Badge, Badges, ErrorCode, Item, ItemKind, ItemPosition, Mark, Marks, Place,
+    ServerError, ServerResponse,
 };
 use uplink_query::{Query, Term};
 use uplink_storage::rusqlite::{Connection, Transaction};
@@ -26,6 +26,10 @@ use uplink_tx_log::answer::{error, internal, Reader, Response};
 
 /// The most items a page may ask for, as a list of mail.
 const MAX_LIMIT: u32 = uplink_email::service::MAX_LIMIT;
+
+/// Of how many of a badged bucket's most recently active items what came
+/// is looked for: more than come at once.
+const ARRIVALS_AMONG: u32 = 100;
 
 /// How recent what came must be to be news: mail received or a message
 /// sent before, however newly it is stored (an account's first sync, a
@@ -327,10 +331,10 @@ impl Items {
     }
 
     /// What the badged buckets hold (SPEC §12.14), as `home` lists them:
-    /// up to `BADGE_LIMIT` items each; and the marks of the places their
-    /// items are in, of them all. And what came into them from others
-    /// since the watermark `since` (SPEC §12.16), of the latest
-    /// `BADGE_LIMIT` conversations of each: nothing, at first.
+    /// the marks of the places their items are in. And what came into
+    /// them from others since the watermark `since` (SPEC §12.16), of the
+    /// `ARRIVALS_AMONG` most recently active items of each: nothing, at
+    /// first.
     pub async fn badges(&self, since: Option<Watermark>) -> Result<Derived, ServerError> {
         let now = now();
         let today = uplink_query::today(now);
@@ -348,58 +352,37 @@ impl Items {
                 let seen = Seen::load(&tx).map_err(internal)?;
                 let watermark = crate::seen::latest(&tx).map_err(internal)?;
                 let mut arrivals = vec![];
-                let buckets = badged
-                    .into_iter()
-                    .map(|(badge, bucket)| {
-                        let others = others(&tx, &rooms, &bucket.query, today, now)?;
-                        // A dot is of what is unseen (SPEC §12.15).
-                        let unseen = badge == Badge::Dot;
-                        let places = mail::places(
-                            &tx,
-                            &this.mail_accounts,
-                            &bucket.query,
-                            Unknown::False,
-                            unseen,
-                        )
-                        .map_err(list_error)?;
-                        match unseen {
-                            true => marks.add(badge, &places, &seen.unseen(&others)),
-                            false => marks.add(badge, &places, &others),
-                        }
-                        let page =
-                            this.page(&tx, &bucket.query, others, None, BADGE_LIMIT as u32)?;
-                        if let Some(since) = &since {
-                            let arrived = this
-                                .arrived(&tx, &page.items, since, now - RECENT)?
-                                .into_iter()
-                                .map(|item| Arrival {
-                                    bucket: bucket.name.clone(),
-                                    badge,
-                                    item,
-                                });
-                            arrivals.extend(arrived);
-                        }
-                        let items = page.items.iter().map(|item| match item {
-                            Item::Mail { conversation } => Activity::Mail {
-                                entry: conversation.latest.id,
-                            },
-                            Item::Room { room, .. } => Activity::Room {
-                                room: room.id,
-                                event: room.latest,
-                            },
-                            Item::Todo { todo } => Activity::Todo { todo: todo.id },
-                            Item::Event { event } => Activity::Event { event: event.id },
-                        });
-                        Ok(BadgedBucket {
-                            name: bucket.name,
-                            badge,
-                            items: items.collect(),
-                        })
-                    })
-                    .collect::<Result<_, ServerError>>()?;
+                for (badge, bucket) in badged {
+                    let others = others(&tx, &rooms, &bucket.query, today, now)?;
+                    // A dot is of what is unseen (SPEC §12.15).
+                    let unseen = badge == Badge::Dot;
+                    let places = mail::places(
+                        &tx,
+                        &this.mail_accounts,
+                        &bucket.query,
+                        Unknown::False,
+                        unseen,
+                    )
+                    .map_err(list_error)?;
+                    match unseen {
+                        true => marks.add(badge, &places, &seen.unseen(&others)),
+                        false => marks.add(badge, &places, &others),
+                    }
+                    if let Some(since) = &since {
+                        let page = this.page(&tx, &bucket.query, others, None, ARRIVALS_AMONG)?;
+                        let arrived = this
+                            .arrived(&tx, &page.items, since, now - RECENT)?
+                            .into_iter()
+                            .map(|item| Arrival {
+                                bucket: bucket.name.clone(),
+                                badge,
+                                item,
+                            });
+                        arrivals.extend(arrived);
+                    }
+                }
                 Ok(Derived {
                     badges: Badges {
-                        buckets,
                         marks: marks.into(),
                     },
                     arrivals,
@@ -886,7 +869,7 @@ mod tests {
         );
         assert!(!buckets[0].more);
 
-        // The badged ones, by their items' latest activity.
+        // The badged ones' marks.
         let Item::Room { room, .. } = &buckets[0].items[0] else {
             panic!()
         };
@@ -894,18 +877,6 @@ mod tests {
         assert_eq!(
             items.badges(None).await.unwrap().badges,
             Badges {
-                buckets: vec![
-                    BadgedBucket {
-                        name: "Now".into(),
-                        badge: Badge::Count,
-                        items: vec![Activity::Room { room, event: None }],
-                    },
-                    BadgedBucket {
-                        name: "Else".into(),
-                        badge: Badge::Dot,
-                        items: vec![],
-                    },
-                ],
                 // An invitation counts as one.
                 marks: Marks {
                     home: Mark {

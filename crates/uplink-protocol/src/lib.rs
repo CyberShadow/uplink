@@ -749,12 +749,10 @@ pub enum Badge {
     Dot,
 }
 
-/// The badged home buckets, in order, and what is in each; and the
-/// marks of the nav's places.
+/// What the badged home buckets hold: the marks of the nav's places.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Badges {
-    pub buckets: Vec<BadgedBucket>,
     pub marks: Marks,
 }
 
@@ -815,41 +813,6 @@ impl Mark {
     pub fn is_none(&self) -> bool {
         *self == Mark::default()
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct BadgedBucket {
-    pub name: String,
-    pub badge: Badge,
-    /// Its items, each by its latest activity: up to `BADGE_LIMIT`, more
-    /// than an icon counts (`99+`).
-    pub items: Vec<Activity>,
-}
-
-/// The most items a badged bucket names.
-pub const BADGE_LIMIT: usize = 100;
-
-/// An item of a bucket, by its latest activity: what comes of it anew
-/// (a reply, a message) is another.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Activity {
-    /// A conversation, by its latest entry.
-    Mail {
-        entry: EntryId,
-    },
-    /// A room, by its latest event, if any.
-    Room {
-        room: RoomId,
-        event: Option<RoomEventId>,
-    },
-    Todo {
-        todo: TodoId,
-    },
-    Event {
-        event: calendar::EventId,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]

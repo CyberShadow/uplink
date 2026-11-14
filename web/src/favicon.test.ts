@@ -4,7 +4,6 @@ import { iconOf, markOf } from './favicon'
 
 const NONE = { count: 0, dot: false }
 const badges = (count: number, dot: boolean): Badges => ({
-  buckets: [],
   marks: { home: { count, dot }, labels: [], accounts: [], rooms: [], todos: NONE, calendar: NONE },
 })
 

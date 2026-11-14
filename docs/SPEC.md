@@ -3506,12 +3506,8 @@ end of its latest message, its mentions (`@2`, red), then how many are
 unread.
 
 The server derives and pushes them (`Badges`, §5.5), as home lists the
-buckets (`ListHome`): of each badged bucket, its items, up to
-`BADGE_LIMIT` (100), each by its latest activity (`Activity`: mail by
-its conversation's latest entry, a room by its latest event, a to-do,
-an event), so that what comes of an item anew (a reply, a message) is
-another; and the marks of the places, of all its items, unlimited: in
-one read per bucket, as the labels of the conversations it holds
+buckets (`ListHome`): the marks of the places, of all of each badged
+bucket's items, unlimited: in one read per bucket, as the labels of the conversations it holds
 (distinct, not each conversation), its rooms, and whether it holds any
 to-do and any event, with, for its `dot`, those of what is unseen. It
 derives them anew after log entries (as many as came while it did, at
@@ -3618,7 +3614,7 @@ What comes is mail and messages; to-dos and events are the user's own
 Within the hour, so that what is only newly stored (an account's first
 sync, a room's history) is not news. The server finds them as it
 derives the badges (§12.14), of the same read: in each badged bucket's
-latest `BADGE_LIMIT` conversations and its rooms, those whose news is
+100 most recently active items, those whose news is
 after the watermark (the latest ids of each kind, as `seen` has them,
 §12.15) of the previous derivation; none at first. It tells every
 session of each (`Notice::Arrival { bucket, badge, item }`, §5.5): live

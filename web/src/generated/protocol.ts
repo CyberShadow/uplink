@@ -324,10 +324,9 @@ more: boolean, };
 export type Badge = "count" | "dot";
 
 /**
- * The badged home buckets, in order, and what is in each; and the
- * marks of the nav's places.
+ * What the badged home buckets hold: the marks of the nav's places.
  */
-export type Badges = { buckets: Array<BadgedBucket>, marks: Marks, };
+export type Badges = { marks: Marks, };
 
 /**
  * Of each place of the nav that has a mark (SPEC §12.14), the mark:
@@ -354,19 +353,6 @@ export type Place = { "kind": "home" } | { "kind": "inboxes" } | { "kind": "labe
  * a `dot` bucket's is.
  */
 export type Mark = { count: number, dot: boolean, };
-
-export type BadgedBucket = { name: string, badge: Badge, 
-/**
- * Its items, each by its latest activity: up to `BADGE_LIMIT`, more
- * than an icon counts (`99+`).
- */
-items: Array<Activity>, };
-
-/**
- * An item of a bucket, by its latest activity: what comes of it anew
- * (a reply, a message) is another.
- */
-export type Activity = { "kind": "mail", entry: EntryId, } | { "kind": "room", room: RoomId, event: RoomEventId | null, } | { "kind": "todo", todo: TodoId, } | { "kind": "event", event: EventId, };
 
 /**
  * An item of a list of every kind (SPEC §8.7).
@@ -1412,4 +1398,4 @@ refused: string | null, };
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "cd13520e169e814d"
+export const PROTOCOL_VERSION = "f90661600d01bb1b"

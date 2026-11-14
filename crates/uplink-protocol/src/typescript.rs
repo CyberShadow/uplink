@@ -88,8 +88,6 @@ fn declarations() -> String {
         Marks,
         Place,
         Mark,
-        BadgedBucket,
-        Activity,
         Item,
         ItemKind,
         ItemPosition,

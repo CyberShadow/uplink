@@ -41,7 +41,7 @@ async function start(path = '/mail/work/INBOX') {
 /** Badges as the server pushes them: of `marks`, no others. */
 function badges(marks: Partial<Marks>): Badges {
   const none = { count: 0, dot: false }
-  return { buckets: [], marks: { home: none, labels: [], accounts: [], rooms: [], todos: none, calendar: none, ...marks } }
+  return { marks: { home: none, labels: [], accounts: [], rooms: [], todos: none, calendar: none, ...marks } }
 }
 
 /** The list's conversations, without the end saying more are loading. */
