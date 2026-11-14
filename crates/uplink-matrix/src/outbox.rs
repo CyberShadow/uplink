@@ -7,7 +7,7 @@ use crate::{
     membership::parse_desired,
     room_tags,
     rooms::{ACCOUNT_KIND, UNSENT_RECEIPT},
-    send,
+    send, space_order,
 };
 use anyhow::Result;
 use std::collections::BTreeMap;
@@ -100,9 +100,9 @@ pub fn outbox(tx: &Transaction) -> Result<Vec<AccountOutbox>> {
 /// The spaces being reordered, by the op that asked, newest first, with
 /// their accounts.
 fn space_orders(conn: &Connection) -> Result<Vec<(String, PendingSpaceOrders)>> {
-    let rows: Vec<(String, i64, i64, String, i64, Option<String>)> = conn
+    let rows: Vec<(String, i64, i64, String, i64, String)> = conn
         .prepare(
-            "SELECT r.account_id, r.id, t.id, t.description, t.ts, r.space_order_error
+            "SELECT r.account_id, r.id, t.id, t.description, t.ts, r.space_order_field
              FROM matrix_room r JOIN tx_log t ON t.id = r.space_order_by
              ORDER BY r.account_id, t.id DESC, r.id",
         )?
@@ -118,7 +118,9 @@ fn space_orders(conn: &Connection) -> Result<Vec<(String, PendingSpaceOrders)>> 
         })?
         .collect::<Result<_, _>>()?;
     let mut orders: Vec<(String, PendingSpaceOrders)> = vec![];
-    for (account, room, op, description, ts, refused) in rows {
+    for (account, room, op, description, ts, field) in rows {
+        let field = space_order::parse_field(&field)?;
+        let refused = field.decision.as_ref().map(|d| d.reason().to_owned());
         let same = orders.last().is_some_and(|(_, last)| last.op.id.0 == op);
         if !same {
             orders.push((
@@ -225,7 +227,7 @@ pub(crate) fn pending_rooms(conn: &Connection, account: &str) -> Result<PendingR
         conn.prepare(&format!(
             "SELECT r.id, r.desired, r.membership_error,
                     r.membership = 'joined' AND {UNSENT_RECEIPT} AS receipt,
-                    r.space_order_by, r.space_order_error
+                    r.space_order_by, r.space_order_decision
              FROM matrix_room r
              WHERE r.account_id = ?1
                AND (r.desired IS NOT NULL OR receipt OR r.space_order_by IS NOT NULL)

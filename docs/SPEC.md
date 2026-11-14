@@ -1662,13 +1662,13 @@ the providers, as last observed, match what the user has done.
 
 **Not yet so.** The crates predate this model, and each reconciles in
 its own way: the model is implemented, and simulated, as
-`uplink_tx_log::reconcile`, and Matrix room tags use it (§9.5); nothing
-uses limbo yet. Known to fail meanwhile: Matrix space orders and
+`uplink_tx_log::reconcile`, and Matrix room tags and space orders use
+it (§9.5); nothing uses limbo yet. Known to fail meanwhile: Matrix
 membership (stale syncs overwrite pushes; undo during a push lost);
-calendar answers (an undo during the push lost); mail
-(a step's failure loses the outcomes of its earlier pushes, so an undo
-then is lost); IMAP (a push after a move goes to the old UID); Matrix
-pins (built from the SDK's store).
+calendar answers (an undo during the push lost); mail (a step's failure
+loses the outcomes of its earlier pushes, so an undo then is lost); IMAP
+(a push after a move goes to the old UID); Matrix pins (built from the
+SDK's store).
 
 ### 6.7 Sends: desired state fulfilled once
 
@@ -3237,10 +3237,12 @@ which a verified device gives.
   padded with spaces), and those before it without one take one too;
   where none fits between, its neighbours move as well. A space whose
   order is no longer `from` makes it a conflict; its inverse swaps `from`
-  and `to`. The sender loop sets each order asked for (no order is empty
-  content), and records it, or the homeserver's refusal, which waits in
-  the outbox for a decision (undoing the op); sync settles an order asked
-  for once it sees the homeserver has it, however it came about.
+  and `to`. Each space's order is a field (§6.6.1), V0070:
+  `matrix_room.space_order_field`, reconciled as tags are (below): seen
+  as a sync response's account data has it, or read back (`GET
+  .../account_data/org.matrix.msc3230.space_order`, none if not found);
+  set by the sender loop (no order is empty content), a refusal waiting
+  in the outbox for a decision (undoing the op).
 - Avatars: a room's `m.room.avatar`, or of a direct chat without one, the
   other user's, as the SDK's store has them when the room is synced (so a
   change to `m.direct` shows when the room next changes). The server

@@ -1,20 +1,32 @@
 //! Where the user puts each space among the top-level spaces (MSC3230,
 //! SPEC §9.5): the `order` of the space's `org.matrix.msc3230.space_order`
-//! room account data, as Element keeps it. It is desired state (§6.6):
-//! reordering records the orders asked for, and the account's sync task
-//! sets them on the homeserver. Undoing puts back the orders replaced,
-//! unless they changed since.
+//! room account data, as Element keeps it. It is desired state (§6.6), a
+//! field of each room: reordering records the orders asked for, and the
+//! account's sync task sets them on the homeserver. Undoing puts back the
+//! orders replaced, unless they changed since.
 
 use anyhow::{bail, ensure, Context, Result};
+use matrix_sdk::ruma::{
+    api::{client::config::get_room_account_data, error::ErrorKind},
+    events::{AnyRoomAccountDataEventContent, RoomAccountDataEventType},
+    serde::Raw,
+};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use uplink_protocol::{
     matrix::{RoomId, RoomsChanged, SpaceOrderChange},
-    ServerEvent,
+    ServerEvent, TxLogId,
 };
 use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Transaction};
-use uplink_tx_log::{this_entry, Applied, Conflict, Inverse, Observation, Observed, Op};
+use uplink_tx_log::{
+    reconcile::{Ended, Field},
+    this_entry, Applied, Conflict, Inverse, Op,
+};
 
-use crate::outbox;
+use crate::{
+    outbox,
+    reconciler::{Kind, Stored},
+};
 
 /// The room account data's event type, as Element names it.
 pub const EVENT_TYPE: &str = "org.matrix.msc3230.space_order";
@@ -33,10 +45,50 @@ pub fn parse(content: &serde_json::Value) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The room's order as shown: as asked for while being changed, else as
-/// the homeserver has it. Of `matrix_room r`.
-pub(crate) const SHOWN: &str =
-    "CASE WHEN r.space_order_by IS NULL THEN r.space_order ELSE r.space_order_desired END";
+/// The room's order as shown: as asked for. Of `matrix_room r`.
+pub(crate) const SHOWN: &str = "r.space_order_desired";
+
+/// A space's order (SPEC §6.6): had (`observed`) or asked for
+/// (`desired`), `None` for none.
+pub type Order = Field<Option<String>>;
+
+pub(crate) fn parse_field(json: &str) -> Result<Order> {
+    serde_json::from_str(json).with_context(|| format!("a space's order field: {json}"))
+}
+
+fn load(conn: &Connection, room: RoomId) -> Result<Order> {
+    let json: String = conn
+        .query_row(
+            "SELECT space_order_field FROM matrix_room WHERE id = ?1",
+            [room.0],
+            |r| r.get(0),
+        )
+        .with_context(|| format!("no room {}", room.0))?;
+    parse_field(&json)
+}
+
+fn store(tx: &Transaction, room: RoomId, field: &Order) -> Result<()> {
+    tx.execute(
+        "UPDATE matrix_room SET space_order_field = ?2 WHERE id = ?1",
+        params![room.0, serde_json::to_string(field)?],
+    )?;
+    Ok(())
+}
+
+/// Records the room's order as observed by a request sent after `as_of`
+/// (SPEC §6.6.2); returns whether the order shown changed.
+pub(crate) fn observe(
+    tx: &Transaction,
+    room: RoomId,
+    order: Option<String>,
+    as_of: TxLogId,
+) -> Result<bool> {
+    let mut field = load(tx, room)?;
+    let shown = field.desired.clone();
+    field.observe(order, as_of, this_entry(tx)?)?;
+    store(tx, room, &field)?;
+    Ok(field.desired != shown)
+}
 
 /// Reorders spaces: each from its order as it is to another.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -50,7 +102,7 @@ impl Op for OrderSpaces {
 
     fn apply(self, tx: &Transaction) -> Result<Applied> {
         ensure!(!self.changes.is_empty(), "no spaces to reorder");
-        let by = this_entry(tx)?.0;
+        let by = this_entry(tx)?;
         let mut account = None;
         let mut names = vec![];
         for change in &self.changes {
@@ -81,12 +133,9 @@ impl Op for OrderSpaces {
         let account = account.expect("there are changes");
         let pending = outbox::pending_rooms(tx, &account)?;
         for change in &self.changes {
-            tx.execute(
-                "UPDATE matrix_room
-                 SET space_order_desired = ?1, space_order_by = ?2, space_order_error = NULL
-                 WHERE id = ?3",
-                params![change.to, by, change.space.0],
-            )?;
+            let mut field = load(tx, change.space)?;
+            field.want(change.to.clone(), by);
+            store(tx, change.space, &field)?;
         }
         let mut events = vec![ServerEvent::RoomsChanged(RoomsChanged {
             rooms: self.changes.iter().map(|c| c.space).collect(),
@@ -115,83 +164,109 @@ impl Op for OrderSpaces {
     }
 }
 
-/// An order to set on the homeserver.
-#[derive(Debug, Clone)]
-pub struct Wanted {
-    pub room: RoomId,
-    pub room_id: String,
-    pub order: Option<String>,
-}
+/// Spaces' orders, a field of each room.
+pub struct Orders;
 
-/// The orders of the account's spaces still to set, but those refused.
-pub fn wanted(conn: &Connection, account: &str) -> Result<Vec<Wanted>> {
-    Ok(conn
-        .prepare(
-            "SELECT id, room_id, space_order_desired FROM matrix_room
-             WHERE account_id = ?1 AND space_order_by IS NOT NULL AND space_order_error IS NULL
+impl Kind for Orders {
+    type Value = Option<String>;
+    /// The room's order.
+    type Read = Option<String>;
+
+    const CLAIMED: &'static str = "matrix.space_orders_claimed";
+    const PUSHED: &'static str = "matrix.space_order_set";
+    const READ: &'static str = "matrix.space_order_read";
+    const SETTLED: &'static str = "matrix.space_order_pushes_settled";
+    const WHAT: &'static str = "space orders";
+
+    fn load(conn: &Connection, room: RoomId, _key: &str) -> Result<Order> {
+        load(conn, room)
+    }
+
+    fn store(tx: &Transaction, room: RoomId, _key: &str, field: &Order) -> Result<()> {
+        store(tx, room, field)
+    }
+
+    fn reconciling(conn: &Connection, account: &str) -> Result<Vec<Stored<Option<String>>>> {
+        conn.prepare(
+            "SELECT id, room_id, space_order_field FROM matrix_room
+             WHERE account_id = ?1
+               AND (space_order_by IS NOT NULL
+                    OR json_extract(space_order_field, '$.check') IS NOT NULL)
              ORDER BY id",
         )?
         .query_map([account], |r| {
-            Ok(Wanted {
-                room: RoomId(r.get(0)?),
-                room_id: r.get(1)?,
-                order: r.get(2)?,
-            })
+            Ok((RoomId(r.get(0)?), r.get(1)?, r.get::<_, String>(2)?))
         })?
-        .collect::<Result<_, _>>()?)
-}
-
-/// The homeserver has the space's order set to `order`; or refused,
-/// saying why.
-#[derive(Debug, Serialize)]
-pub struct SpaceOrderSet {
-    pub room: RoomId,
-    pub order: Option<String>,
-    pub refused: Option<String>,
-}
-
-impl Observation for SpaceOrderSet {
-    const KIND: &'static str = "matrix.space_order_set";
-
-    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
-        let pending = outbox::pending_rooms(tx, account)?;
-        let name: String = tx
-            .query_row(
-                "SELECT name FROM matrix_room WHERE id = ?1",
-                [self.room.0],
-                |r| r.get(0),
-            )
-            .with_context(|| format!("no room {}", self.room.0))?;
-        // Unless asked for another meanwhile (that is the sync task's next
-        // step), done, or still asked for, refused, until the user decides.
-        let asked = "space_order_by IS NOT NULL AND space_order_desired IS ?1";
-        match &self.refused {
-            None => tx.execute(
-                &format!(
-                    "UPDATE matrix_room SET space_order = ?1,
-                       space_order_by = CASE WHEN {asked} THEN NULL ELSE space_order_by END,
-                       space_order_desired = CASE WHEN {asked} THEN NULL ELSE space_order_desired END
-                     WHERE id = ?2"
-                ),
-                params![self.order, self.room.0],
-            )?,
-            Some(error) => tx.execute(
-                &format!("UPDATE matrix_room SET space_order_error = ?3 WHERE id = ?2 AND {asked}"),
-                params![self.order, self.room.0, error],
-            )?,
-        };
-        // The order shown, as asked for, is as it was.
-        let events = if outbox::pending_rooms(tx, account)? == pending {
-            vec![]
-        } else {
-            vec![outbox::outbox_changed(account)]
-        };
-        Ok(Observed {
-            description: match &self.refused {
-                None => format!("Ordered '{name}' on the homeserver"),
-                Some(error) => format!("The homeserver refused to order '{name}': {error}"),
-            },
-            events,
+        .map(|row| {
+            let (room, room_id, json) = row?;
+            Ok(Stored {
+                room,
+                room_id,
+                key: String::new(),
+                field: parse_field(&json)?,
+            })
         })
+        .collect()
+    }
+
+    fn observe(
+        tx: &Transaction,
+        room: RoomId,
+        order: &Option<String>,
+        as_of: TxLogId,
+    ) -> Result<bool> {
+        observe(tx, room, order.clone(), as_of)
+    }
+
+    fn pushed(room: &str, _key: &str, _order: &Option<String>, ended: &Ended) -> String {
+        match ended {
+            Ended::Applied => format!("Ordered '{room}' on the homeserver"),
+            Ended::NotApplied {
+                refused: Some(error),
+            } => format!("The homeserver refused to order '{room}': {error}"),
+            Ended::NotApplied { refused: None } => {
+                format!("Could not order '{room}' on the homeserver")
+            }
+            Ended::Unknown { .. } => {
+                format!("Whether the homeserver ordered '{room}' is unknown")
+            }
+        }
+    }
+
+    async fn push(
+        room: &matrix_sdk::Room,
+        _key: &str,
+        order: &Option<String>,
+    ) -> matrix_sdk::Result<()> {
+        // No order is none in the content, as Element sets it.
+        let content = match order {
+            Some(order) => json!({ "order": order }),
+            None => json!({}),
+        };
+        let content = serde_json::value::to_raw_value(&content).expect("JSON serializes");
+        room.set_account_data_raw(
+            RoomAccountDataEventType::from(EVENT_TYPE),
+            Raw::<AnyRoomAccountDataEventContent>::from_json(content),
+        )
+        .await
+        .map(drop)
+    }
+
+    async fn read(room: &matrix_sdk::Room) -> Result<Option<String>> {
+        let request = get_room_account_data::v3::Request::new(
+            room.own_user_id().to_owned(),
+            room.room_id().to_owned(),
+            RoomAccountDataEventType::from(EVENT_TYPE),
+        );
+        match room.client().send(request).await {
+            Ok(response) => {
+                let content: serde_json::Value =
+                    serde_json::from_str(response.account_data.json().get())?;
+                Ok(parse(&content))
+            }
+            // Never set.
+            Err(e) if e.client_api_error_kind() == Some(&ErrorKind::NotFound) => Ok(None),
+            Err(e) => Err(e).context("reading a space's order"),
+        }
     }
 }

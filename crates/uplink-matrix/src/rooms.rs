@@ -94,8 +94,9 @@ pub struct ObservedRoom {
     pub bridge: Option<Bridge>,
     /// Of a space, the rooms it lists.
     pub children: Vec<SpaceChild>,
-    /// Its MSC3230 order among the top-level spaces, if valid.
-    pub space_order: Option<String>,
+    /// Its MSC3230 order among the top-level spaces (`None` if none or
+    /// invalid), if the response told it.
+    pub space_order: Option<Option<String>>,
     /// Its tags (`m.tag`), as the homeserver has them, if the response
     /// told them.
     pub tags: Option<Vec<String>>,
@@ -347,7 +348,12 @@ impl Observation for Synced {
             };
             image_packs::observe_room(tx, account, id, &room.image_packs)?;
             let invited = observe_invitation(tx, id, room.invitation.as_ref(), !first)?;
-            let changed = set_children(tx, id, &room.children)? || upserted || tagged || invited;
+            let ordered = match &room.space_order {
+                Some(order) => space_order::observe(tx, id, order.clone(), self.as_of)?,
+                None => false,
+            };
+            let changed =
+                set_children(tx, id, &room.children)? || upserted || tagged || invited || ordered;
             let positions = synced_positions(tx, id, room.events.len())?;
             let inserted = insert_events(tx, id, &room.events, &positions)?;
             if let (true, Some(Some(first))) = (room.limited, inserted.first()) {
@@ -434,7 +440,6 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
         u64,
         String,
         bool,
-        Option<String>,
         bool,
         Option<String>,
         Option<i64>,
@@ -449,7 +454,7 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
     let existing: Option<Stored> = tx
         .query_row(
             "SELECT id, name, encrypted, membership, space, avatar, topic, joined_members, pinned,
-                    may_pin, space_order, direct, alias, created, bridge_name, bridge_icon
+                    may_pin, direct, alias, created, bridge_name, bridge_icon
              FROM matrix_room WHERE account_id = ?1 AND room_id = ?2",
             [account, &room.room_id],
             |r| {
@@ -469,7 +474,6 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                     r.get(12)?,
                     r.get(13)?,
                     r.get(14)?,
-                    r.get(15)?,
                 ))
             },
         )
@@ -486,7 +490,6 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
             joined,
             old_pinned,
             may_pin,
-            order,
             direct,
             alias,
             created,
@@ -502,34 +505,23 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                 || joined != room.joined_members
                 || old_pinned != pinned
                 || may_pin != room.may_pin
-                || order != room.space_order
                 || direct != room.direct
                 || alias != room.alias
                 || created != room.created
                 || old_bridge_name.as_ref() != bridge_name
                 || old_bridge_icon.as_ref() != bridge_icon;
             if changed {
-                // A membership or space order asked for is had, however it
-                // came about.
+                // A membership asked for is had, however it came about.
                 tx.execute(
-                    &format!(
-                        "UPDATE matrix_room SET name = ?1, encrypted = ?2, membership = ?3,
-                           space = ?4, avatar = ?5, topic = ?6, joined_members = ?7, pinned = ?9,
-                           may_pin = ?10, direct = ?12, alias = ?13, created = ?14,
-                           bridge_name = ?15, bridge_icon = ?16,
-                           membership_by = CASE WHEN desired = ?3 THEN NULL ELSE membership_by END,
-                           membership_error =
-                             CASE WHEN desired = ?3 THEN NULL ELSE membership_error END,
-                           desired = CASE WHEN desired = ?3 THEN NULL ELSE desired END,
-                           space_order = ?11,
-                           space_order_error =
-                             CASE WHEN {had} THEN NULL ELSE space_order_error END,
-                           space_order_desired =
-                             CASE WHEN {had} THEN NULL ELSE space_order_desired END,
-                           space_order_by = CASE WHEN {had} THEN NULL ELSE space_order_by END
-                         WHERE id = ?8",
-                        had = "space_order_by IS NOT NULL AND space_order_desired IS ?11",
-                    ),
+                    "UPDATE matrix_room SET name = ?1, encrypted = ?2, membership = ?3,
+                       space = ?4, avatar = ?5, topic = ?6, joined_members = ?7, pinned = ?9,
+                       may_pin = ?10, direct = ?11, alias = ?12, created = ?13,
+                       bridge_name = ?14, bridge_icon = ?15,
+                       membership_by = CASE WHEN desired = ?3 THEN NULL ELSE membership_by END,
+                       membership_error =
+                         CASE WHEN desired = ?3 THEN NULL ELSE membership_error END,
+                       desired = CASE WHEN desired = ?3 THEN NULL ELSE desired END
+                     WHERE id = ?8",
                     params![
                         room.name,
                         room.encrypted,
@@ -541,7 +533,6 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                         id,
                         pinned,
                         room.may_pin,
-                        room.space_order,
                         room.direct,
                         room.alias,
                         room.created,
@@ -556,9 +547,9 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
             let id = tx.query_row(
                 "INSERT INTO matrix_room
                    (account_id, room_id, name, encrypted, membership, space, avatar, topic,
-                    joined_members, pinned, may_pin, space_order, direct, alias, created,
+                    joined_members, pinned, may_pin, direct, alias, created,
                     bridge_name, bridge_icon)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
                  RETURNING id",
                 params![
                     account,
@@ -572,7 +563,6 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                     room.joined_members,
                     pinned,
                     room.may_pin,
-                    room.space_order,
                     room.direct,
                     room.alias,
                     room.created,

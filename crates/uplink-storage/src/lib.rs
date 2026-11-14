@@ -695,6 +695,52 @@ mod tests {
         assert_eq!(known, 1);
     }
 
+    /// Spaces' orders become reconciled fields (V0070): pending while
+    /// they differ from what was had, refused as they were.
+    #[test]
+    fn space_orders_become_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = migrated_to(dir.path(), 69);
+        conn.execute_batch(
+            r#"INSERT INTO account (id, kind) VALUES ('mx', 'matrix');
+               INSERT INTO tx_log (id, ts, description, op_type, op_json, inverse_type,
+                                   inverse_json, events_json)
+               VALUES (1, 0, '', 'matrix.order_spaces', '{}', 'matrix.order_spaces', '{}', '[]');
+               INSERT INTO matrix_room (id, account_id, room_id, name, encrypted, membership,
+                                        space_order, space_order_desired, space_order_by,
+                                        space_order_error)
+               VALUES (1, 'mx', '!a:x', 'A', 0, 'joined', 'a', NULL, NULL, NULL),
+                      (2, 'mx', '!b:x', 'B', 0, 'joined', 'a', 'b', 1, NULL),
+                      (3, 'mx', '!c:x', 'C', 0, 'joined', NULL, 'c', 1, 'M_FORBIDDEN'),
+                      (4, 'mx', '!d:x', 'D', 0, 'joined', 'd', 'd', 1, NULL);"#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open(dir.path()).unwrap();
+        type Order = (Option<String>, Option<i64>, Option<String>);
+        let orders: Vec<Order> = conn
+            .prepare(
+                "SELECT space_order_desired, space_order_by, space_order_decision
+                 FROM matrix_room ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let refused = Some(r#"{"refused":"M_FORBIDDEN"}"#.into());
+        assert_eq!(
+            orders,
+            [
+                (Some("a".into()), None, None),
+                (Some("b".into()), Some(1), None),
+                (Some("c".into()), Some(1), refused),
+                (Some("d".into()), None, None),
+            ]
+        );
+    }
+
     /// Matrix sends' text becomes their content (V0026), and so do the
     /// recorded ops that send it; ids go on past those deleted.
     #[test]

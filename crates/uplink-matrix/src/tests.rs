@@ -1300,11 +1300,15 @@ mod room_tags {
 
 mod space_order {
     use super::*;
-    use crate::space_order::SpaceOrderSet;
+    use crate::{
+        reconciler::{Claimed, Kind, Pushed},
+        space_order::Orders,
+    };
     use uplink_protocol::{
         matrix::{PendingSpaceOrders, SpaceOrderChange},
         ErrorCode, ServerError,
     };
+    use uplink_tx_log::reconcile::Ended;
 
     impl Db {
         /// Syncs the room as a joined space, its order as the homeserver
@@ -1330,7 +1334,7 @@ mod space_order {
                     avatar: None,
                     bridge: None,
                     children: vec![],
-                    space_order: order.map(Into::into),
+                    space_order: Some(order.map(Into::into)),
                     tags: None,
                     topic: None,
                     alias: None,
@@ -1362,25 +1366,44 @@ mod space_order {
             }
         }
 
-        /// The homeserver set the order, or refused.
-        async fn pushed(&self, order: Option<&str>, refused: Option<&str>) {
+        /// The reconciler claims the order wanted.
+        async fn claim(&self) {
             let room = self.room().await.id;
-            self.observe(SpaceOrderSet {
+            self.observe(Claimed::<Orders>::new(vec![(room, String::new())]))
+                .await
+                .unwrap();
+        }
+
+        /// The push claimed ended so.
+        async fn ended(&self, ended: Ended) {
+            let room = self.room().await.id;
+            let conn = uplink_storage::open_reader(self._dir.path()).unwrap();
+            let [stored] = &Orders::reconciling(&conn, "mx").unwrap()[..] else {
+                panic!("one space")
+            };
+            let value = stored.field.attempt.clone().unwrap().value;
+            self.observe(Pushed::<Orders> {
                 room,
-                order: order.map(Into::into),
-                refused: refused.map(Into::into),
+                key: String::new(),
+                value,
+                ended,
             })
             .await
             .unwrap();
         }
 
+        async fn push_order(&self, ended: Ended) {
+            self.claim().await;
+            self.ended(ended).await;
+        }
+
         /// The orders still to set.
         fn wanted(&self) -> Vec<Option<String>> {
             let conn = uplink_storage::open_reader(self._dir.path()).unwrap();
-            crate::space_order::wanted(&conn, "mx")
+            Orders::reconciling(&conn, "mx")
                 .unwrap()
                 .into_iter()
-                .map(|w| w.order)
+                .filter_map(|o| o.field.wanted().cloned())
                 .collect()
         }
 
@@ -1418,11 +1441,10 @@ mod space_order {
             (moved, "Moved 'Space'", &[db.room().await.id][..], &None)
         );
 
-        db.pushed(Some("a"), None).await;
+        db.push_order(Ended::Applied).await;
         assert!(db.wanted().is_empty());
-        assert!(db.pending_orders().is_empty());
         assert_eq!(db.order().await.as_deref(), Some("a"));
-        // The echo changes nothing.
+        // The echo, or a read back, confirms it.
         db.sync_space(Some("a")).await;
         assert!(db.pending_orders().is_empty());
 
@@ -1440,10 +1462,11 @@ mod space_order {
         let db = Db::new();
         db.sync_space(None).await;
         let ordered = db.reorder(None, Some("m")).await.unwrap();
-        db.pushed(Some("m"), None).await;
+        db.push_order(Ended::Applied).await;
         db.dispatcher.undo(ordered).await.unwrap();
         assert_eq!((db.order().await, db.wanted()), (None, vec![None]));
-        db.pushed(None, None).await;
+        db.push_order(Ended::Applied).await;
+        db.sync_space(None).await;
         assert!(db.pending_orders().is_empty());
     }
 
@@ -1464,8 +1487,10 @@ mod space_order {
         let undo = db.dispatcher.undo(moved).await;
         assert!(undo.is_err(), "{undo:?}");
         // A push of an order no longer asked for leaves the one asked.
-        db.pushed(Some("a"), None).await;
-        assert_eq!(db.wanted(), [Some("c".to_owned())]);
+        db.claim().await;
+        db.reorder(Some("c"), Some("d")).await.unwrap();
+        db.ended(Ended::Applied).await;
+        assert_eq!(db.wanted(), [Some("d".to_owned())]);
     }
 
     #[tokio::test]
@@ -1473,18 +1498,21 @@ mod space_order {
         let db = Db::new();
         db.sync_space(Some("b")).await;
         let moved = db.reorder(Some("b"), Some("a")).await.unwrap();
-        db.pushed(Some("a"), Some("M_FORBIDDEN")).await;
+        db.push_order(Ended::NotApplied {
+            refused: Some("M_FORBIDDEN".into()),
+        })
+        .await;
         assert!(db.wanted().is_empty(), "not asked again");
         assert_eq!(
             db.pending_orders()[0].refused.as_deref(),
             Some("M_FORBIDDEN")
         );
         assert_eq!(db.order().await.as_deref(), Some("a"));
-        // Undoing decides: the order as the homeserver has it, which is
-        // set again, harmlessly.
+        // Undoing decides: the order as the homeserver has it, so nothing
+        // is left to set.
         db.dispatcher.undo(moved).await.unwrap();
-        assert_eq!(db.wanted(), [Some("b".to_owned())]);
-        assert_eq!(db.pending_orders()[0].refused, None);
+        assert!(db.wanted().is_empty());
+        assert!(db.pending_orders().is_empty());
     }
 
     #[tokio::test]
