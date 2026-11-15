@@ -20,8 +20,8 @@ pub fn db_path(data_root: &Path) -> PathBuf {
 }
 
 /// Opens the main database under `data_root`, creating it if needed,
-/// applies the connection settings of SPEC §4.2, and runs pending
-/// migrations.
+/// applies the connection settings of SPEC §4.2, runs pending
+/// migrations, and gathers the statistics the planner lacks.
 ///
 /// Fails if the migrations already applied to the database differ from the
 /// embedded set (an applied migration was edited or removed).
@@ -50,6 +50,10 @@ pub fn open(data_root: &Path) -> Result<Connection> {
     embedded::migrations::runner()
         .run(&mut conn)
         .with_context(|| format!("migrating {}", path.display()))?;
+    // Statistics of the tables, for the planner: of those without, or
+    // grown since (SPEC §4.2).
+    conn.pragma_update(None, "analysis_limit", 1000)?;
+    conn.pragma_update(None, "optimize", 0x10002)?;
 
     Ok(conn)
 }

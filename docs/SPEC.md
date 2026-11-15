@@ -423,6 +423,11 @@ level. With `~1 M` messages that's ~4 K files per dir, fine for ext4/btrfs.
 - `foreign_keys = ON`.
 - `temp_store = MEMORY`.
 - `cache_size = -64000` (64 MiB).
+- On open, after the migrations, `PRAGMA optimize = 0x10002` (with
+  `analysis_limit = 1000`): statistics of the tables that have none, or
+  have grown much since, so that the planner chooses indexes by how
+  selective they are rather than by guesses (an index that orders a whole
+  room's events over one that finds an event's few relations).
 - One write connection, owned by the op dispatcher and used from the tokio
   blocking pool; read connections added as queries need them.
 - All writes serialized through the op dispatcher; read connections run in
