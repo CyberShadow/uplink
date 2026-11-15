@@ -233,7 +233,9 @@ impl Condition {
     }
 }
 
-/// SQL: the entries of the conversations of `entries`.
+/// SQL: the entries of the conversations of `entries`: each, and those
+/// of its thread. Apart, as each is found by its index: joined by either,
+/// the index of threads would be searched by account alone.
 fn of_conversations(entries: &[i64]) -> String {
     let entries = entries
         .iter()
@@ -241,9 +243,10 @@ fn of_conversations(entries: &[i64]) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "SELECT m.id FROM mail_entry t
-         JOIN mail_entry m ON m.account_id = t.account_id
-                          AND (m.id = t.id OR m.thread_id = t.thread_id)
+        "SELECT id FROM mail_entry WHERE id IN ({entries})
+         UNION ALL
+         SELECT m.id FROM mail_entry t
+         JOIN mail_entry m ON m.account_id = t.account_id AND m.thread_id = t.thread_id
          WHERE t.id IN ({entries})"
     )
 }
