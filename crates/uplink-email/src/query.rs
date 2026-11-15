@@ -158,13 +158,16 @@ enum Condition {
 }
 
 impl Condition {
-    /// All of `all`, constants folded away.
+    /// All of `all`, constants folded away, and those of an `And` among
+    /// them: each a conjunct a page may be found by (`newest`), not one
+    /// within another.
     fn and(all: Vec<Condition>) -> Condition {
         let mut kept = vec![];
         for c in all {
             match c {
                 Condition::Const(true) => {}
                 Condition::Const(false) => return Condition::Const(false),
+                Condition::And(all) => kept.extend(all),
                 c => kept.push(c),
             }
         }
