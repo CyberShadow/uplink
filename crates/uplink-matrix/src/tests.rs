@@ -34,15 +34,23 @@ struct Db {
 }
 
 impl Db {
+    /// What is sent after the Unix epoch is news.
     fn new() -> Self {
+        Self::news_since(0)
+    }
+
+    /// What is sent from `news_since` (ms since the Unix epoch) is news.
+    fn news_since(news_since: i64) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let mut registry = Registry::new();
         crate::register(&mut registry);
-        let dispatcher = Dispatcher::new(
-            uplink_storage::open(dir.path()).unwrap(),
-            registry,
-            Arc::new(Hub::new(64)),
-        );
+        let db = uplink_storage::open(dir.path()).unwrap();
+        db.execute(
+            "INSERT INTO account (id, kind, news_since) VALUES ('mx', 'matrix', ?1)",
+            [news_since],
+        )
+        .unwrap();
+        let dispatcher = Dispatcher::new(db, registry, Arc::new(Hub::new(64)));
         let matrix = Matrix::new(
             dispatcher.clone(),
             uplink_storage::open_reader(dir.path()).unwrap(),
@@ -321,7 +329,9 @@ async fn events_are_stored_once_and_counted_unread() {
 
 #[tokio::test]
 async fn unread_messages_that_notify_or_highlight_are_counted() {
-    let db = Db::new();
+    // Synced since `message`s are sent.
+    let sent = 1_700_000_000_000;
+    let db = Db::news_since(sent);
     let pushed = |id: &str, sender: &str, notify: bool, highlight: bool| ObservedEvent {
         push: crate::rooms::Push { notify, highlight },
         ..message(id, sender)
@@ -333,12 +343,18 @@ async fn unread_messages_that_notify_or_highlight_are_counted() {
             pushed("$3", "@bob:x", true, true),
             // Never one's own.
             pushed("$4", ME, true, true),
+            // Nor history, sent before uplink began to sync the account,
+            // which the push rules evaluate as any.
+            ObservedEvent {
+                ts: sent - 1,
+                ..pushed("$5", "@bob:x", true, true)
+            },
         ],
         &[],
     )
     .await;
     let room = db.room().await;
-    assert_eq!((room.unread, room.notifying, room.highlighted), (3, 2, 1));
+    assert_eq!((room.unread, room.notifying, room.highlighted), (4, 2, 1));
     let events = db.timeline().await;
     db.matrix
         .mark_read(room.id, events[2].id, false, false)

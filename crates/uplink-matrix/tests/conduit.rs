@@ -1804,9 +1804,15 @@ async fn small_rooms_history_is_fetched_by_itself() {
     carol.join_room_by_id(large.room_id()).await.unwrap();
     for i in 0..120 {
         for room in [&small, &large] {
-            room.send(RoomMessageEventContent::text_plain(format!("message {i}")))
-                .await
-                .unwrap();
+            let mut message = RoomMessageEventContent::text_plain(format!("message {i}"));
+            if i == 0 {
+                // A mention of Alice's, as the push rules see it.
+                message =
+                    message.add_mentions(matrix_sdk::ruma::events::Mentions::with_user_ids([
+                        alice_phone.user_id().unwrap().to_owned(),
+                    ]));
+            }
+            room.send(message).await.unwrap();
         }
     }
 
@@ -1847,10 +1853,11 @@ async fn small_rooms_history_is_fetched_by_itself() {
     assert_eq!(gaps.len(), 1);
     // As the rooms say.
     use uplink_protocol::matrix::RoomHistory;
-    assert_eq!(
-        uplink.room(small.room_id()).await.unwrap().history,
-        RoomHistory::Whole
-    );
+    let small_room = uplink.room(small.room_id()).await.unwrap();
+    assert_eq!(small_room.history, RoomHistory::Whole);
+    // Sent before uplink began to sync the account, the mention is
+    // history, not news: it neither notifies nor highlights.
+    assert_eq!((small_room.notifying, small_room.highlighted), (0, 0));
     let first = events
         .iter()
         .find(|e| e.id == gaps[0].before.unwrap())

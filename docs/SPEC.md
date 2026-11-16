@@ -2838,8 +2838,12 @@ which a verified device gives.
   (`highlighted`: mention the account, or a keyword), by the account's
   push rules as its client evaluates them on sync (the SDK's push
   actions, of an encrypted event once decrypted, also late; V0032:
-  `matrix_event.notify`, `highlight`; events stored before, and
-  backfilled ones, are neither). The nav does not count them as
+  `matrix_event.notify`, `highlight`; events stored before are
+  neither). Only news notifies or highlights: what was sent once uplink
+  began to sync the account (`account.news_since`, §12.15). The
+  history a first sync, a gap's filling or decryption stores, however
+  late, is neither, though the push rules evaluate it as any; V0060
+  cleared it of what was stored before. The nav does not count them as
   Element does: a room is bold while unread, and its mark (§12.14)
   counts its messages that notify only while it is in a `count`
   bucket.
@@ -3991,7 +3995,9 @@ is news only if it reached the provider (its `received_at`) after
 uplink began to sync its account (V0053 `account.news_since`): a
 listing of the mailbox, which may take days, stores the account's
 history with ids as new as any, and that is not news, however late it
-is stored. The
+is stored. So with a room's messages: those sent (`ts`) before uplink
+began to sync the Matrix account, which a first sync and the filling of
+gaps store, neither notify nor highlight (§9.5). The
 client dispatches `MarkSeen { place }` on showing a place whose mark
 has a dot, and on new activity in it while it shows; not otherwise, so
 that the log is not filled with visits.

@@ -262,7 +262,10 @@ impl Observation for Synced {
 
     fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
         tx.execute(
-            "INSERT INTO account (id, kind) VALUES (?1, ?2) ON CONFLICT (id) DO NOTHING",
+            // What is sent from now on is news (SPEC §12.15).
+            "INSERT INTO account (id, kind, news_since)
+             VALUES (?1, ?2, CAST(unixepoch('subsec') * 1000 AS INTEGER))
+             ON CONFLICT (id) DO NOTHING",
             [account, ACCOUNT_KIND],
         )?;
         let kind: String =
@@ -538,6 +541,18 @@ fn synced_positions(tx: &Transaction, room: RoomId, n: usize) -> Result<Vec<i64>
     Ok((1..=n as i64).map(|i| last + i * SPACING).collect())
 }
 
+/// Of an event of room `?1` sent at `ts` (SQL), whether it is news: sent
+/// once uplink began to sync the room's account (`account.news_since`,
+/// SPEC §12.15). Only news notifies or highlights: the history a first
+/// sync or filling a gap stores, however late, is not, though the push
+/// rules evaluate it as any.
+fn news(ts: &str) -> String {
+    format!(
+        "({ts} >= (SELECT a.news_since FROM matrix_room r JOIN account a ON a.id = r.account_id
+                   WHERE r.id = ?1))"
+    )
+}
+
 /// Stores the events not stored yet, at `positions`; returns, of each,
 /// its id if it was stored now.
 fn insert_events(
@@ -547,14 +562,16 @@ fn insert_events(
     positions: &[i64],
 ) -> Result<Vec<Option<RoomEventId>>> {
     assert_eq!(events.len(), positions.len());
-    let mut insert = tx.prepare(
+    let mut insert = tx.prepare(&format!(
         "INSERT INTO matrix_event
            (room, event_id, sender, sender_name, ts, type, msgtype, body, raw_json, encryption,
             rel_type, relates_to, reply_to, redacts, redacted, pos, notify, highlight)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                 ?17 AND {news}, ?18 AND {news})
          ON CONFLICT (room, event_id) DO NOTHING
          RETURNING id",
-    )?;
+        news = news("?5"),
+    ))?;
     let mut added = vec![];
     for (e, pos) in events.iter().zip(positions) {
         let r = &e.relation;
@@ -800,14 +817,15 @@ impl Observation for Decrypted {
             )
             .with_context(|| format!("no room {} of {account}", self.room_id))?;
         // Those redacted meanwhile have no content left to show.
-        let mut update = tx.prepare(
+        let mut update = tx.prepare(&format!(
             "UPDATE matrix_event
              SET type = ?3, msgtype = ?4, body = ?5, raw_json = ?6, encryption = 'decrypted',
                  rel_type = ?7, relates_to = ?8, reply_to = ?9, redacts = ?10,
-                 notify = ?11, highlight = ?12
+                 notify = ?11 AND {news}, highlight = ?12 AND {news}
              WHERE room = ?1 AND event_id = ?2 AND encryption = 'undecryptable' AND NOT redacted
              RETURNING id",
-        )?;
+            news = news("ts"),
+        ))?;
         let mut decrypted = vec![];
         for e in &self.events {
             let r = &e.relation;
