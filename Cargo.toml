@@ -22,3 +22,11 @@ license = "Apache-2.0"
 
 [workspace.metadata.crane]
 name = "uplink"
+
+# Dependencies optimized, though the workspace is not: the tests, in the
+# dev shell, spend most of their time in matrix-sdk's cryptography
+# (its store's passphrase, Olm, key exports), which unoptimized is many
+# times slower (a Conduit test taking a minute rather than seconds).
+# `nix flake check` builds with the release profile, which this leaves be.
+[profile.dev.package."*"]
+opt-level = 2
