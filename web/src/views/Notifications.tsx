@@ -17,6 +17,11 @@ import { date, time } from '../format'
 import { shows } from './Nav'
 import styles from './Nav.module.css'
 
+/** Uplink's icon, on each notification: the title and body are only the
+ * sender's and subject or the room's, so it is what tells them as uplink's
+ * (in a desktop's notifications, with nothing else to tell their page). */
+const ICON = '/logo-192.png'
+
 /** How a notification calls for the user: interrupting, as what needs
  * the user, it stays until dismissed, with the system's sound; quiet, as
  * what is to be kept up with, it goes by, silently. */
@@ -135,7 +140,7 @@ function body(event: RoomEvent): string {
 
 /** One per `tag`: a later one replaces it. */
 function notify(urgency: Urgency, title: string, body: string, tag: string, open: () => void): Notification {
-  const notification = new Notification(title, { body, tag, ...options(urgency) })
+  const notification = new Notification(title, { body, tag, icon: ICON, ...options(urgency) })
   notification.onclick = () => {
     window.focus()
     open()
@@ -176,7 +181,12 @@ function notifyOf(event: CalendarEvent, route: (path: string) => void) {
   const when = event.all_day ? `${date(new Date(event.start))}, all day` : `${time(event.start)}–${time(event.end)}`
   const body = [when, minutes > 0 && `in ${minutes} min`, event.location].filter(Boolean).join(' · ')
   // As urgent as what needs the user: it stays until dismissed.
-  const notification = new Notification(event.subject, { body, tag: `event-${event.id}`, ...options('interrupting') })
+  const notification = new Notification(event.subject, {
+    body,
+    tag: `event-${event.id}`,
+    icon: ICON,
+    ...options('interrupting'),
+  })
   notification.onclick = () => {
     window.focus()
     route(calendarPath(defaultView(), date(new Date(event.start)), event.id))

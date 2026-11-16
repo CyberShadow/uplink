@@ -289,6 +289,7 @@ describe('calendar', () => {
       expect(shown[0].options).toEqual({
         body: '10:00–10:15 · in 8 min',
         tag: 'event-1',
+        icon: '/logo-192.png',
         requireInteraction: true,
         silent: false,
       })

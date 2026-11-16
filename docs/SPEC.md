@@ -4136,7 +4136,10 @@ and shows it (the conversation opened by any of its entries, the room):
 the sender and subject of mail, with its snippet, the room's name and
 the message's sender and text, or the room's name and that it invites
 the user; one per conversation or room, a
-later replacing it (`tag`). A click opens it: the conversation in its
+later replacing it (`tag`). Each, and each reminder, carries uplink's
+icon (`logo-192.png`), as the browser passes on to a desktop's
+notifications no more than the title, body and image: it is what tells
+them as uplink's. A click opens it: the conversation in its
 account's All Mail, or the room. A recall closes it, if it is still
 of what was recalled (not replaced). Only while a client is open: the
 server does not notify (the Android app, ROADMAP, would).

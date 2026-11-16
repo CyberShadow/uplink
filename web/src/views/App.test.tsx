@@ -1367,6 +1367,7 @@ describe('matrix', () => {
       expect(shown[0].options).toEqual({
         body: 'Bob: Lunch?',
         tag: `room-${lounge.id}`,
+        icon: '/logo-192.png',
         requireInteraction: false,
         silent: true,
       })
@@ -1379,6 +1380,7 @@ describe('matrix', () => {
       expect(shown[1].options).toEqual({
         body: 'About rent',
         tag: 'mail-a-t1',
+        icon: '/logo-192.png',
         requireInteraction: true,
         silent: false,
       })
@@ -1416,6 +1418,7 @@ describe('matrix', () => {
       expect(shown[3].options).toEqual({
         body: 'Invites you',
         tag: `room-${party.id}`,
+        icon: '/logo-192.png',
         requireInteraction: true,
         silent: false,
       })
