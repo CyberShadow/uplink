@@ -266,6 +266,16 @@ button.sender:hover .name {
   padding-left: 2em;
 }
 
+/* Tables ruled, as Element's, their columns otherwise running together. */
+.html table {
+  border-collapse: collapse;
+}
+
+.html :is(th, td) {
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+}
+
 .html :is(h1, h2, h3, h4, h5, h6) {
   font-size: 1.1em;
 }
