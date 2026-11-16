@@ -522,6 +522,9 @@ function useFollow(room: Room, openMember: (user: string) => void): (link: Perma
   }
 }
 
+/** A link to a user with nothing in it. */
+const EMPTY_USER_PILL = /<a\b[^>]*\bhref="https:\/\/matrix\.to\/#\/(?:@|%40)[^"]*"[^>]*>\s*<\/a>/i
+
 /** A message's HTML, as the server sanitized it (SPEC §9.2). Its colours
  * are applied, as the Matrix spec has them (`data-mx-color`), its
  * spoilers revealed on click, and its links to `matrix.to` are pills,
@@ -531,10 +534,18 @@ function Html(props: { room: Room; html: string; openMember: (user: string) => v
   const { matrix } = useServices()
   const follow = useFollow(props.room, props.openMember)
   const html = useMemo(() => linkifyMessage(props.html), [props.html])
+  // A pill of a user with no text (as a bridge writes one for a user it
+  // has not named yet) shows their name, as Element's pills do, or else
+  // their address; the members are loaded only for such a pill.
+  const unnamed = useMemo(() => EMPTY_USER_PILL.test(props.html), [props.html])
+  const members = unnamed ? matrix.members(props.room.id).state.value?.members : undefined
   useLayoutEffect(() => {
     for (const anchor of root.current!.querySelectorAll('a[href]')) {
       const link = permalink(anchor.getAttribute('href')!)
       if (!link) continue
+      if (link.type === 'user' && anchor.textContent!.trim() === '') {
+        anchor.textContent = members?.find((m) => m.user === link.id)?.name ?? link.id
+      }
       anchor.classList.add(styles.pill)
       // Its address resolved, for a click to follow.
       if (link.type === 'room') linkedRoom(matrix, props.room, link.id)
@@ -545,7 +556,7 @@ function Html(props: { room: Room; html: string; openMember: (user: string) => v
       if (color && COLOR.test(color)) element.style.color = color
       if (background && COLOR.test(background)) element.style.backgroundColor = background
     }
-  }, [html, matrix, props.room])
+  }, [html, matrix, props.room, members])
   // Each code block with a button copying it, as Element's, beside it
   // rather than in it, so that it stays as the block scrolls. Of the HTML
   // only: moving a block resets its scrolling.
