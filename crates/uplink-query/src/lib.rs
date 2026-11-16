@@ -9,6 +9,14 @@
 //! changes what a query already meant. A term a kind of item does not
 //! have (`from:` of a room, `due:` of mail) is false of it, and so its
 //! negation true.
+//!
+//! A query is of an item's messages (a conversation's entries, a room's
+//! messages; a to-do or event is its own one): the item matches if one
+//! of them does, as in Gmail. `has:(…)` is of the item: true of each of
+//! its messages if one of them matches what it holds, as that query alone
+//! would find them. So `is:unread -is:notifying` is of an unread message
+//! that does not notify, and `has:(is:unread) -has:(is:notifying)` of an
+//! item with one unread and none that ever notified.
 
 use std::fmt;
 
@@ -75,6 +83,10 @@ pub enum Term {
     /// of the server, which checks again only what changed, by the query
     /// that lists it (the badges, SPEC §12.14).
     Among(Box<Among>),
+    /// `has:(…)`: the item has a message the query matches, as it alone
+    /// would find them (its own Trash, Spam and done to-dos). Of the
+    /// item, so the same of each of its messages.
+    Has(Box<Query>),
 }
 
 /// Items by kind, by their ids.
@@ -227,6 +239,8 @@ fn invalid(message: impl Into<String>) -> Invalid {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Token {
     Open,
+    /// `has:(`, opening a group of the item.
+    HasOpen,
     Close,
     Or,
     And,
@@ -296,6 +310,12 @@ fn tokens(query: &str) -> Result<Vec<Token>, Invalid> {
                         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
                 });
                 tokens.push(match operator {
+                    Some((name, ""))
+                        if name.eq_ignore_ascii_case("has") && chars.peek() == Some(&'(') =>
+                    {
+                        chars.next();
+                        Token::HasOpen
+                    }
                     Some((name, value)) => {
                         let (value, quoted) = match (value.is_empty(), chars.peek()) {
                             (true, Some('"')) => {
@@ -402,6 +422,18 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// The rest of a group, after its `(`.
+    fn group(&mut self) -> Result<Query, Invalid> {
+        let group = self.or()?;
+        if self.next() != Some(&Token::Close) {
+            return Err(invalid("unmatched ("));
+        }
+        if group == Query::And(vec![]) {
+            return Err(invalid("() is empty"));
+        }
+        Ok(group)
+    }
+
     fn unary(&mut self) -> Result<Query, Invalid> {
         match self.next() {
             Some(Token::Not | Token::Minus) => {
@@ -413,16 +445,8 @@ impl<'a> Parser<'a> {
                 }
                 Ok(Query::Not(Box::new(self.unary()?)))
             }
-            Some(Token::Open) => {
-                let group = self.or()?;
-                if self.next() != Some(&Token::Close) {
-                    return Err(invalid("unmatched ("));
-                }
-                if group == Query::And(vec![]) {
-                    return Err(invalid("() is empty"));
-                }
-                Ok(group)
-            }
+            Some(Token::Open) => self.group(),
+            Some(Token::HasOpen) => Ok(Query::Term(Term::Has(Box::new(self.group()?)))),
             Some(Token::Word(word)) => Ok(Query::Term(Term::Text {
                 fields: None,
                 text: word.clone(),
@@ -503,7 +527,7 @@ fn operator(name: &str, value: &str, quoted: bool, now: i64) -> Result<Query, In
             "attachment" => term(Term::HasAttachment),
             "due" => term(Term::HasDue),
             _ => Err(invalid(format!(
-                "has:{value}: has: takes attachment or due"
+                "has:{value}: has: takes attachment, due or (a query)"
             ))),
         },
         "account" => term(Term::Account(value.to_owned())),
@@ -563,18 +587,19 @@ pub fn decides(query: &Query, term: &impl Fn(&Term) -> Option<bool>) -> Option<b
     }
 }
 
-/// The terms of `query`, negated or not.
+/// The terms of `query`, negated or not, and those `has:(…)` holds.
 pub fn terms(query: &Query) -> Vec<&Term> {
     match query {
         Query::And(all) | Query::Or(all) => all.iter().flat_map(terms).collect(),
         Query::Not(q) => terms(q),
+        Query::Term(Term::Has(q)) => terms(q),
         Query::Term(t) => vec![t],
     }
 }
 
 /// Whether `query` names a term `term` holds of, outside a negation: as
 /// `in:trash` lists Trash, which is otherwise left out, and `is:done`
-/// to-dos done.
+/// to-dos done. What `has:(…)` holds is its own query's, not this one's.
 pub fn names(query: &Query, term: &impl Fn(&Term) -> bool) -> bool {
     fn within(query: &Query, term: &impl Fn(&Term) -> bool, positive: bool) -> bool {
         match query {
@@ -801,6 +826,38 @@ mod tests {
     }
 
     #[test]
+    fn has_groups_a_query_of_the_item() {
+        let has = |q| Query::Term(Term::Has(Box::new(q)));
+        assert_eq!(ok("has:(a)"), has(text("a")));
+        assert_eq!(
+            ok("a -has:(b c) HAS:(d OR has:(e))"),
+            Query::And(vec![
+                text("a"),
+                not(has(Query::And(vec![text("b"), text("c")]))),
+                has(Query::Or(vec![text("d"), has(text("e"))])),
+            ])
+        );
+        assert_eq!(ok("has:attachment"), Query::Term(Term::HasAttachment));
+        assert_eq!(err("has:()"), "() is empty");
+        assert_eq!(err("has:(a"), "unmatched (");
+        assert_eq!(err("from:(a)"), "from: needs a value");
+        // Its terms are checked, not named outside it.
+        let query = ok("has:(tag:x) -y");
+        assert_eq!(
+            terms(&query),
+            vec![
+                &Term::Label("x".into()),
+                &Term::Text {
+                    fields: None,
+                    text: "y".into(),
+                    exact: false,
+                }
+            ]
+        );
+        assert!(!names(&query, &|t| matches!(t, Term::Label(_))));
+    }
+
+    #[test]
     fn phrases_are_exact() {
         assert_eq!(
             ok(r#""a b" -"c\"d\\""#),
@@ -877,7 +934,10 @@ mod tests {
         assert_eq!(err("from:"), "from: needs a value");
         assert_eq!(err("from: alice"), "from: needs a value");
         assert!(err("is:muted").starts_with("is:muted: is: takes unread, read,"));
-        assert_eq!(err("has:drive"), "has:drive: has: takes attachment or due");
+        assert_eq!(
+            err("has:drive"),
+            "has:drive: has: takes attachment, due or (a query)"
+        );
     }
 
     #[test]

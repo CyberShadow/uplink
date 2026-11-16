@@ -583,7 +583,7 @@ impl Items {
                     items,
                     more,
                     scope,
-                    partial_rooms: rooms.partly_searched(&query),
+                    partial_rooms: rooms.partly_searched(&tx, &query).map_err(internal)?,
                 })
             })
             .await
@@ -610,7 +610,7 @@ impl Items {
                 let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
                 let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
                 let others = others(&tx, &rooms, &query, today, now)?;
-                let partial_rooms = rooms.partly_searched(&query);
+                let partial_rooms = rooms.partly_searched(&tx, &query).map_err(internal)?;
                 Ok((
                     as_of,
                     this.page(&tx, &query, others, after, limit)?,
@@ -880,14 +880,16 @@ impl Items {
         Ok(arrived)
     }
 
-    /// The buckets, each with its query less those before it: so an item
-    /// is in the first that matches it.
+    /// The buckets, each with its query less the items of those before
+    /// it (`-has:(…)`, not `-(…)`, which is of each message: a room with
+    /// a message of an earlier bucket and one not would be in both): so an
+    /// item is in the first that matches it.
     fn buckets(&self, now: i64) -> Vec<Bucket> {
         let mut before: Vec<String> = vec![];
         let mut buckets = vec![];
         for bucket in self.home.load_full().iter() {
             let text = std::iter::once(format!("({})", bucket.query))
-                .chain(before.iter().map(|q| format!("-({q})")))
+                .chain(before.iter().map(|q| format!("-has:({q})")))
                 .collect::<Vec<_>>()
                 .join(" ");
             let query = uplink_query::parse(&text, now)
@@ -1898,7 +1900,7 @@ mod tests {
         );
         assert_eq!(
             buckets[2].query,
-            "(tag:nowhere OR is:todo) -(is:invite) -(rent)"
+            "(tag:nowhere OR is:todo) -has:(is:invite) -has:(rent)"
         );
         assert!(!windows[0].1.more);
         // As a search's, the name is refused.

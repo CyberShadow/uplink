@@ -1938,6 +1938,15 @@ parentheses combine them, uppercase so that "or" is a word. Operators:
 `after:`/`before:` (a date, `2026-11-09` or `2026/11/9`, UTC),
 `newer_than:`/`older_than:` (`3d`, `2w`, `6m` of 30 days, `1y` of 365),
 `larger:`/`smaller:` (bytes, or K, M, G of 1024), and `id:`/`rfc822msgid:`.
+`has:(…)` is of the conversation, not the entry: true of each of its
+entries if one of them (an entry of its thread, or, of none, itself)
+matches the query it holds, as that query alone would find them, its
+own Trash and Spam with it (`has:(in:trash)` lists a conversation with
+an entry in Trash, by those not). So a negation is of an entry, as in
+Gmail (`in:inbox -is:unread` lists a conversation with a read entry in
+the Inbox, however many are unread), and `-has:(…)` of the
+conversation (`in:inbox -has:(is:unread)`: none unread). Compiled,
+it is an `EXISTS` over the thread (`mail_entry_by_thread`).
 Trash and Spam are left out unless the query names them outside a
 negation, as notmuch's excluded tags are: then the list is of them, as
 Gmail's Trash is, or with `in:anywhere` of everything. Errors fail fast:
@@ -1961,7 +1970,12 @@ by name), `account:` (id or Matrix id), and words, of its name. Spaces
 are not listed. A room has the other terms of its messages (messages and
 undecryptable events, which nearly always are: `rooms::message`), as a
 conversation has its entries': it matches if one of them does, with its
-own terms of it. A message's words match its text or an edit's (as a
+own terms of it; `has:(…)`, as of a conversation, is of the room: one
+of its messages matches what it holds (and of a to-do or an event, its
+own one, as `is:done` would list it). A room's `has:(…)` is found once,
+as the rooms its query matches, of as many queries as name it (one
+`Rooms` load: each bucket of home names those before it), and is then
+one of the room's own terms. A message's words match its text or an edit's (as a
 substring, as a room's search does, §12.11), `from:` its sender's id or
 name, `from:me` the accounts' own; `is:unread` is of one after the
 room's read marker, of the main timeline and not the account's (as the
@@ -3880,8 +3894,11 @@ account's security is loaded for it.
 `ListEvents`, each a link to its day. Below, a row of the buckets'
 names and counts, which scroll to them, and the buckets, configured in
 `home` (§3.2), in order. `ListHome` says what they are: each bucket's
-name, and its query less every earlier bucket's (`(q₃) -(q₁) -(q₂)`),
-so an item is in the first bucket that matches it. The client
+name, and its query less the items of every earlier bucket's
+(`(q₃) -has:(q₁) -has:(q₂)`), so an item is in the first bucket that
+matches it: `-(q₁)` is of each message, and a room with an unread
+message that notifies and one that does not (a bridge bot's notices)
+would be in Unread and in Other too. The client
 subscribes to each (§5.7), a window of 20, with `unknown: false`:
 unlike a search, a label or tag no kind has is false rather than an
 error, since the default buckets name Gmail's labels and Element's tags,

@@ -406,6 +406,8 @@ pub fn matching(tx: &Transaction, query: &Query, now: i64) -> Result<Vec<Calenda
 
 fn term_matches(event: &CalendarEvent, term: &Term) -> bool {
     match term {
+        // An event is its own one message.
+        Term::Has(query) => uplink_query::matches(query, &|term| term_matches(event, term)),
         Term::Text {
             fields: None,
             text,

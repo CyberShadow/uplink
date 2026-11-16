@@ -155,6 +155,8 @@ enum Condition {
     Sql(Box<dyn Fn(&str) -> String>),
     /// Of every entry, or none: as a term mail lacks (`is:room`) is false.
     Const(bool),
+    /// `has:(…)`: an entry of its conversation in this scope meets it.
+    Has(Box<Condition>, ListScope),
 }
 
 impl Condition {
@@ -232,6 +234,48 @@ impl Condition {
             Condition::Sql(sql) => sql(x),
             Condition::Const(true) => "1".into(),
             Condition::Const(false) => "0".into(),
+            // Of the thread, by its index; or, of none, of the entry.
+            Condition::Has(condition, scope) => {
+                let h = format!("{x}h");
+                format!(
+                    "CASE WHEN {x}.thread_id IS NULL THEN {scope_x} AND ({matches_x})
+                     ELSE EXISTS (SELECT 1 FROM mail_entry {h}
+                                  WHERE {h}.account_id = {x}.account_id
+                                    AND {h}.thread_id = {x}.thread_id
+                                    AND {scope_h} AND ({matches_h}))
+                     END",
+                    scope_x = in_scope(scope, x),
+                    matches_x = condition.sql(x),
+                    scope_h = in_scope(scope, &h),
+                    matches_h = condition.sql(&h),
+                )
+            }
+        }
+    }
+
+    /// Whether it holds a `has:(…)`, which looks through a thread.
+    fn looks_through_threads(&self) -> bool {
+        match self {
+            Condition::Has(..) => true,
+            Condition::Not(c) => c.looks_through_threads(),
+            Condition::And(all) | Condition::Or(all) => {
+                all.iter().any(Condition::looks_through_threads)
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether it is the same of every entry of a conversation: of the
+    /// conversation, as `has:(…)` and the account are.
+    fn of_conversation(&self) -> bool {
+        match self {
+            Condition::Has(..)
+            | Condition::Conversations(_)
+            | Condition::Account(_)
+            | Condition::Const(_) => true,
+            Condition::Not(c) => c.of_conversation(),
+            Condition::And(all) | Condition::Or(all) => all.iter().all(Condition::of_conversation),
+            Condition::Fts(_) | Condition::Label(_) | Condition::Sql(_) => false,
         }
     }
 }
@@ -363,6 +407,15 @@ impl Compiler<'_> {
             }
             Term::Label(name) => self.label(name, positive),
             Term::Unread => self.label("UNREAD", positive),
+            // Of the conversation: an entry of its thread (or, of none,
+            // itself) meets the query, in that query's own scope.
+            Term::Has(query) => {
+                let (condition, scope) = compile(self.tx, self.accounts, query, self.unknown)?;
+                Ok(match condition {
+                    Condition::Const(false) => Condition::Const(false),
+                    condition => Condition::Has(Box::new(condition), scope),
+                })
+            }
             Term::Kind(kind) => Ok(Condition::Const(*kind == Kind::Mail)),
             // Of other kinds.
             Term::New
@@ -929,11 +982,14 @@ fn newest(tx: &Transaction, scope: &ListScope, condition: Condition) -> Result<(
     // Of the fewest, those that meet the other conjuncts too, up to one
     // too many.
     let candidates = |at: usize, from: &str, condition: &str| -> Result<i64> {
+        // Not those of the conversation, which cost a look through its
+        // thread each: of more, the count is too many, and they are walked.
         let rest: Vec<String> = conjuncts
             .iter()
             .enumerate()
-            .filter(|(i, _)| *i != at)
+            .filter(|(i, c)| *i != at && !c.looks_through_threads())
             .map(|(_, c)| format!("({})", c.sql("c")))
+            .chain(std::iter::once("1".to_owned()))
             .collect();
         Ok(tx.query_row(
             &format!(
@@ -994,7 +1050,12 @@ fn newest(tx: &Transaction, scope: &ListScope, condition: Condition) -> Result<(
                 ),
                 None => ("mail_entry_by_received", "1".to_owned()),
             };
-            let condition = Condition::And(conjuncts);
+            // What is of the conversation is asked of its newest entry
+            // alone, not of each of its entries.
+            let (of_conversation, of_entries): (Vec<_>, Vec<_>) =
+                conjuncts.into_iter().partition(Condition::of_conversation);
+            let condition = Condition::And(of_entries);
+            let of_conversation = Condition::And(of_conversation).sql("e");
             (
                 format!("mail_entry e INDEXED BY {index}"),
                 format!(
@@ -1010,7 +1071,8 @@ fn newest(tx: &Transaction, scope: &ListScope, condition: Condition) -> Result<(
                               AND EXISTS (SELECT 1 FROM mail_entry x
                                           WHERE x.account_id = e.account_id
                                             AND x.thread_id = e.thread_id AND x.id <> e.id
-                                            AND {matches_x} AND {scope_x})))",
+                                            AND {matches_x} AND {scope_x})))
+                     AND {of_conversation}",
                     scope_e = scope_sql("e"),
                     scope_n = scope_sql("n"),
                     scope_x = scope_sql("x"),

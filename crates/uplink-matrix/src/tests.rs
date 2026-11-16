@@ -2083,7 +2083,8 @@ mod query {
         let partly = |query: &str| -> Vec<String> {
             let query = uplink_query::parse(query, 0).unwrap();
             let mut names: Vec<String> = rooms
-                .partly_searched(&query)
+                .partly_searched(&tx, &query)
+                .unwrap()
                 .into_iter()
                 .map(|id| rooms.room(id).unwrap().name.clone())
                 .collect();
@@ -2162,6 +2163,108 @@ mod query {
         let latest = |name: &str| rooms.iter().find(|r| r.name == name).unwrap().latest;
         assert!(latest("Team chat").is_some());
         assert_eq!(latest("Bob"), None);
+    }
+
+    /// How fast home's buckets are of rooms with one as large and busy as
+    /// a public community's (Matrix HQ): each bucket's window lists anew
+    /// on each change, with rooms of its own (as `Items::read_page` has
+    /// them), its query less those before it, by `-has:(…)` as home has
+    /// them or by `-(…)` as it had them. Slow to set up, so run on demand:
+    /// `cargo test --release -p uplink-matrix -- --ignored --nocapture speed`.
+    #[tokio::test]
+    #[ignore]
+    async fn speed_of_home_with_a_large_room() {
+        use std::time::Instant;
+        const MESSAGES: i64 = 500_000;
+
+        let db = Db::new();
+        let mut hq = room("!hq:x", "HQ");
+        hq.events = vec![said("$seed", "@a:x", "hello", 1)];
+        let mut dm = room("!dm:x", "Dm");
+        dm.direct = true;
+        dm.events = vec![said("$d", "@b:x", "hi", 2)];
+        let mut small = room("!small:x", "Small");
+        small.events = vec![said("$s", "@c:x", "hey", 3)];
+        db.observe(Synced {
+            next_batch: "next".into(),
+            rooms: vec![hq, dm, small],
+        })
+        .await
+        .unwrap();
+        let path = db._dir.path().join("db").join("uplink.sqlite");
+        let writer = uplink_storage::rusqlite::Connection::open(&path).unwrap();
+        let started = Instant::now();
+        // From many senders; one in a hundred notifies, one in ten
+        // thousand mentions.
+        writer
+            .execute(
+                "INSERT INTO matrix_event (room, event_id, sender, ts, type, msgtype, body,
+                                           raw_json, encryption, pos, notify, highlight)
+                 WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+                 SELECT r.id, '$hq' || i, '@u' || (i % 500) || ':x', 1000 + i,
+                        'm.room.message', 'm.text', 'message ' || i, '{}', 'none',
+                        (SELECT max(pos) FROM matrix_event) + i * 16,
+                        i % 100 = 0, i % 10000 = 0
+                 FROM n, matrix_room r WHERE r.room_id = '!hq:x'",
+                [MESSAGES],
+            )
+            .unwrap();
+        writer.execute_batch("ANALYZE").unwrap();
+        eprintln!("set up {MESSAGES} messages in {:?}", started.elapsed());
+
+        let home = [
+            "(in:inbox is:unread is:important to:me) OR (is:mention is:new) \
+         OR (is:dm is:unread is:notifying) OR is:invite",
+            "(in:inbox is:unread is:important) OR (is:unread is:notifying) \
+         OR is:overdue OR due:today",
+            "(in:inbox is:unread) OR (is:unread tag:favourite)",
+            "is:starred OR is:todo",
+            "in:inbox",
+            "is:unread -tag:lowpriority",
+        ];
+        let accounts = [account()];
+        // Of HQ, how many are unread: none, some, many, and all (joined,
+        // never read).
+        for unread in [0, 1_000, 50_000, MESSAGES] {
+            let marker = match unread {
+                u if u == MESSAGES => "NULL".to_owned(),
+                u => format!(
+                    "(SELECT id FROM matrix_event WHERE event_id = '$hq{}')",
+                    MESSAGES - u
+                ),
+            };
+            writer
+                .execute_batch(&format!(
+                    "UPDATE matrix_room SET read_up_to = {marker}, fully_read = {marker}
+                     WHERE room_id = '!hq:x'"
+                ))
+                .unwrap();
+            for negation in ["-has:", "-"] {
+                let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
+                let tx = conn.transaction().unwrap();
+                let started = Instant::now();
+                let mut listed = vec![];
+                for at in 0..home.len() {
+                    let text = std::iter::once(format!("({})", home[at]))
+                        .chain(home[..at].iter().map(|q| format!("{negation}({q})")))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let query = uplink_query::parse(&text, 0).unwrap();
+                    let rooms = crate::query::Rooms::load(&tx, &accounts).unwrap();
+                    let names: Vec<_> = rooms
+                        .matching(&tx, &query)
+                        .unwrap()
+                        .into_iter()
+                        .map(|g| g.room.name)
+                        .collect();
+                    listed.push(names);
+                }
+                eprintln!(
+                    "{unread} unread, {negation}(…): {:?} {listed:?}",
+                    started.elapsed()
+                );
+            }
+        }
     }
 
     fn said(id: &str, sender: &str, body: &str, ts: i64) -> ObservedEvent {
@@ -2332,6 +2435,31 @@ mod query {
             groups("is:dm OR from:dave"),
             [hits("Ops", 3, "$9"), ("Bob".to_owned(), None)]
         );
+        // A negation is of a message: Team chat has an unread message
+        // that is not a mention ($2) as well as one that is ($3). Of the
+        // room, `has:(…)`: which a room is in, and so a bucket of home
+        // after one of `is:unread is:mention` is not (SPEC §12.13).
+        assert_eq!(
+            groups("is:unread -(is:unread is:mention)"),
+            [room("Ops"), room("Team chat"), room("Bob")]
+        );
+        assert_eq!(
+            groups("is:unread -has:(is:unread is:mention)"),
+            [room("Ops"), room("Bob")]
+        );
+        // Ops' mention is read, but is one.
+        assert_eq!(groups("is:unread -has:(is:mention)"), [room("Bob")]);
+        // What it holds is of the room, not sought among its messages.
+        assert_eq!(groups("has:(from:bob)"), [room("Team chat"), room("Bob")]);
+        assert_eq!(
+            groups("has:(from:bob) from:carol"),
+            [hits("Team chat", 1, "$5")]
+        );
+        assert_eq!(
+            groups("has:(is:dm) OR has:(ops)"),
+            [room("Ops"), room("Bob")]
+        );
+        assert_eq!(groups("-has:(deploy) -has:(ship)").len(), 0);
 
         // Each room's preview is its latest message, as last edited (the
         // edit is not one of its own); a room with none has none.

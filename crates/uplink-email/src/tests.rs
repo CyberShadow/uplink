@@ -1476,6 +1476,29 @@ pub(crate) mod service {
             ids(all().await.unwrap()),
             [vec!["w1"], vec!["x1", "x2", "x3"], vec!["y1"], vec!["z2"]]
         );
+        // A negation is of an entry: x1, in t1, is read, though x3 is
+        // not. Of the conversation, `has:(…)`, as home's buckets have it
+        // of those before them (SPEC §12.13).
+        let query = |q: &str| mail.list_entries(format!("account:a {q}"), None, 10);
+        assert_eq!(
+            ids(query("in:inbox -is:unread").await.unwrap()),
+            [vec!["x1", "x2", "x3"], vec!["y1"], vec!["z2"]]
+        );
+        assert_eq!(
+            ids(query("in:inbox -has:(is:unread)").await.unwrap()),
+            [vec!["y1"], vec!["z2"]]
+        );
+        assert_eq!(
+            ids(query("has:(from:bob) from:alice").await.unwrap()),
+            [vec!["x1", "x2", "x3"]]
+        );
+        // What it holds is in its own scope: z1, in Trash, is t3's there,
+        // though t3 is listed as the list's scope has it.
+        assert_eq!(ids(query("has:(in:trash)").await.unwrap()), [vec!["z2"]]);
+        assert_eq!(
+            ids(query("has:(-is:unread) has:(is:unread)").await.unwrap()),
+            [vec!["x1", "x2", "x3"]]
+        );
         // Page by page, each conversation once.
         for list in ["account:a in:inbox", "account:a"] {
             let mut paged = vec![];
@@ -2944,6 +2967,17 @@ fn speed_of_search_and_listing() {
             list(conn, query, None, 100).conversations.len()
         });
     }
+    let accounts = ["a", "b"].map(|id| query::ConfiguredAccount {
+        id: id.into(),
+        address: format!("{id}@x"),
+        identities: own(&format!("{id}@x")),
+        provider: uplink_protocol::mail::MailProvider::Gmail,
+    });
+    for negation in ["-has:", "-"] {
+        time(&format!("home's buckets, {negation}(…)"), &mut |conn| {
+            home(conn, &accounts, negation).iter().sum()
+        });
+    }
     time("Inbox, first page", &mut |conn| {
         list(conn, "account:a in:inbox", None, 100)
             .conversations
@@ -2970,6 +3004,72 @@ fn speed_of_search_and_listing() {
         .len()
     });
     eprintln!("slowest: {slowest:?}");
+}
+
+/// Home's default buckets (uplink-config's), each less those before it:
+/// of the items, `-has:(…)`, as home has them, or of each entry, as it had
+/// them. How many of the first 20 conversations each lists.
+fn home(
+    conn: &mut Connection,
+    accounts: &[crate::query::ConfiguredAccount],
+    negation: &str,
+) -> Vec<usize> {
+    let home = [
+        "(in:inbox is:unread is:important to:me) OR (is:mention is:new) \
+         OR (is:dm is:unread is:notifying) OR is:invite",
+        "(in:inbox is:unread is:important) OR (is:unread is:notifying) \
+         OR is:overdue OR due:today",
+        "(in:inbox is:unread) OR (is:unread tag:favourite)",
+        "is:starred OR is:todo",
+        "in:inbox",
+        "is:unread -tag:lowpriority",
+    ];
+    let tx = conn.transaction().unwrap();
+    (0..home.len())
+        .map(|at| {
+            let text = std::iter::once(format!("({})", home[at]))
+                .chain(home[..at].iter().map(|q| format!("{negation}({q})")))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let query = uplink_query::parse(&text, 0).unwrap();
+            let unknown = crate::query::Unknown::False;
+            crate::query::conversations(&tx, accounts, &query, unknown, None, 20)
+                .unwrap()
+                .conversations
+                .len()
+        })
+        .collect()
+}
+
+/// How fast home's buckets are over a copy of a database, `UPLINK_DB`
+/// (`uplink.sqlite`): on demand, as `speed_of_search_and_listing`.
+#[test]
+#[ignore]
+fn speed_of_home_over_a_copy() {
+    use std::time::Instant;
+
+    let path = std::env::var("UPLINK_DB").expect("UPLINK_DB names a copy of a database");
+    let mut conn = Connection::open(path).unwrap();
+    let accounts: Vec<_> = conn
+        .prepare("SELECT id FROM account WHERE kind <> 'matrix'")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|id| {
+            let id = id.unwrap();
+            crate::query::ConfiguredAccount {
+                address: format!("{id}@x"),
+                identities: own(&format!("{id}@x")),
+                id,
+                provider: uplink_protocol::mail::MailProvider::Gmail,
+            }
+        })
+        .collect();
+    for negation in ["-has:", "-", "-has:", "-"] {
+        let started = Instant::now();
+        let listed = home(&mut conn, &accounts, negation);
+        eprintln!("{negation}(…): {listed:?} in {:?}", started.elapsed());
+    }
 }
 
 /// Messages stored before `has_attachments` was recorded get it from their

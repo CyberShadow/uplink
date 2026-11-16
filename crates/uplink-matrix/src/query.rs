@@ -7,7 +7,10 @@
 //! matched in SQL, those after a marker by the index of positions.
 
 use anyhow::Result;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::{
+    cell::RefCell,
+    collections::{BTreeSet, HashMap, HashSet},
+};
 use uplink_protocol::matrix::{
     Membership, Room, RoomEvent, RoomEventId, RoomHistory, RoomHits, RoomId,
 };
@@ -39,6 +42,10 @@ pub struct Rooms<'a> {
     accounts: &'a [ConfiguredAccount],
     all: Vec<Room>,
     spaces: Spaces,
+    /// Of each `has:(…)` matched, the rooms its query matches: a room's
+    /// own term then, found once for as many queries as name it (each
+    /// bucket of home names those before it).
+    has: RefCell<Vec<(Query, HashSet<i64>)>>,
 }
 
 /// A room a query matches: by its own terms, or by its messages, which
@@ -72,7 +79,25 @@ impl<'a> Rooms<'a> {
             accounts,
             all,
             spaces,
+            has: RefCell::new(vec![]),
         })
+    }
+
+    /// Finds the rooms of each `has:(…)` of `query` not yet found.
+    fn resolve(&self, tx: &Transaction, query: &Query) -> Result<()> {
+        for term in outer_terms(query) {
+            let Term::Has(inner) = term else { continue };
+            if self.has.borrow().iter().any(|(q, _)| q == &**inner) {
+                continue;
+            }
+            let rooms = self
+                .matching(tx, inner)?
+                .into_iter()
+                .map(|group| group.room.id.0)
+                .collect();
+            self.has.borrow_mut().push(((**inner).clone(), rooms));
+        }
+        Ok(())
     }
 
     /// Those but spaces, which are no views of their own.
@@ -82,6 +107,7 @@ impl<'a> Rooms<'a> {
 
     /// Those `query` matches, the most recently active first.
     pub fn matching(&self, tx: &Transaction, query: &Query) -> Result<Vec<Group>> {
+        self.resolve(tx, query)?;
         let (mut groups, undecided) = self.decided(query);
         if let Some(mut search) = self.search(query, &undecided, true) {
             let sql = format!(
@@ -142,16 +168,17 @@ impl<'a> Rooms<'a> {
 
     /// Of the rooms whose messages `query` looks through, those of which
     /// not the whole history is stored (SPEC §9.2): it may miss some.
-    pub fn partly_searched(&self, query: &Query) -> Vec<RoomId> {
+    pub fn partly_searched(&self, tx: &Transaction, query: &Query) -> Result<Vec<RoomId>> {
+        self.resolve(tx, query)?;
         let (_, undecided) = self.decided(query);
-        match self.search(query, &undecided, true) {
+        Ok(match self.search(query, &undecided, true) {
             Some(_) => undecided
                 .into_iter()
                 .filter(|room| room.history != RoomHistory::Whole)
                 .map(|room| room.id)
                 .collect(),
             None => vec![],
-        }
+        })
     }
 
     /// Those invited to.
@@ -178,6 +205,7 @@ impl<'a> Rooms<'a> {
         before: Option<RoomEventId>,
         limit: u32,
     ) -> Result<(Vec<RoomEvent>, bool)> {
+        self.resolve(tx, query)?;
         let Some(mut search) = self.search(query, &[room], false) else {
             return Ok((vec![], false));
         };
@@ -267,8 +295,29 @@ impl<'a> Rooms<'a> {
 
     /// What a room's own terms say of it; `None` of a term of its
     /// messages (and of words its name lacks, which they may have).
+    /// A `has:(…)` is of the room, as `resolve` found it.
     fn of_room(&self, room: &Room, term: &Term) -> Option<bool> {
-        of_room(room, term, &self.spaces, self.accounts)
+        match term {
+            Term::Has(query) => Some(
+                self.has
+                    .borrow()
+                    .iter()
+                    .find(|(q, _)| q == &**query)
+                    .expect("a query's has:(…) are resolved before it is matched")
+                    .1
+                    .contains(&room.id.0),
+            ),
+            _ => of_room(room, term, &self.spaces, self.accounts),
+        }
+    }
+}
+
+/// The terms of `query`, but those within a `has:(…)` of it.
+fn outer_terms(query: &Query) -> Vec<&Term> {
+    match query {
+        Query::And(all) | Query::Or(all) => all.iter().flat_map(outer_terms).collect(),
+        Query::Not(q) => outer_terms(q),
+        Query::Term(t) => vec![t],
     }
 }
 
@@ -376,6 +425,7 @@ fn of_room(
         ),
         // Of everything, as Trash and Spam are not of rooms.
         Term::Anywhere => Some(true),
+        Term::Has(_) => unreachable!("Rooms::of_room decides has:(…)"),
         // Of its messages.
         Term::Text {
             fields: Some(Fields::Body | Fields::From),
@@ -577,7 +627,8 @@ impl Cond {
             | Term::Direct
             | Term::Invited
             | Term::Space(_)
-            | Term::Among(_) => of_rooms(term),
+            | Term::Among(_)
+            | Term::Has(_) => of_rooms(term),
             // Of mail, or of other kinds.
             Term::Text {
                 fields: Some(Fields::To | Fields::Cc | Fields::Subject),

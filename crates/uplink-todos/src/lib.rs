@@ -58,17 +58,24 @@ pub fn todos(conn: &Connection) -> Result<Vec<Todo>> {
 /// date, and whether done. Done ones are left out unless the query names
 /// `is:done`, as mail's Trash is unless named.
 pub fn matching(conn: &Connection, query: &Query, today: i64) -> Result<Vec<Todo>> {
-    let done = uplink_query::names(query, &|t| *t == Term::Done);
     let today = uplink_query::date_of(today);
     Ok(todos(conn)?
         .into_iter()
-        .filter(|todo| done || todo.done_at.is_none())
-        .filter(|todo| uplink_query::matches(query, &|term| term_matches(todo, term, &today)))
+        .filter(|todo| query_matches(todo, query, &today))
         .collect())
+}
+
+/// Whether `query` lists `todo`: it matches, and is done only if the
+/// query names `is:done`.
+fn query_matches(todo: &Todo, query: &Query, today: &str) -> bool {
+    (todo.done_at.is_none() || uplink_query::names(query, &|t| *t == Term::Done))
+        && uplink_query::matches(query, &|term| term_matches(todo, term, today))
 }
 
 fn term_matches(todo: &Todo, term: &Term, today: &str) -> bool {
     match term {
+        // A to-do is its own one message.
+        Term::Has(query) => query_matches(todo, query, today),
         Term::Text {
             fields: None,
             text,

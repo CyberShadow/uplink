@@ -15,6 +15,10 @@ const SECTIONS: { title: string; rows: Row[] }[] = [
       ['invoice OR receipt', 'Either'],
       ['-newsletter', 'Not the word; NOT newsletter is the same'],
       ['(invoice OR receipt) -paid', 'Parentheses group terms'],
+      [
+        'is:unread -has:(is:starred)',
+        'has:(…) is of the whole conversation or room: here, with a message unread and none starred',
+      ],
     ],
   },
   {
@@ -88,7 +92,9 @@ export function SearchHelp() {
       <p>
         A search lists mail, rooms, their messages, to-dos and calendar events. Every term must match; a term of one
         kind matches nothing of another (<code>from:</code> no to-do, <code>is:overdue</code> no mail), and so its
-        negation everything of it. A conversation is listed when one of its messages matches. Mail in Trash and Spam
+        negation everything of it. A conversation (or room) is listed when one of its messages matches the whole search, so{' '}
+        <code>is:unread -is:starred</code> lists one with an unread message that is not starred;{' '}
+        <code>has:(…)</code> asks of the conversation instead, whether any of its messages matches what it holds. Mail in Trash and Spam
         is left out, unless the search names <code>in:trash</code>, <code>in:spam</code> or <code>in:anywhere</code>,
         which searches Trash or Spam instead, or everything. Words match a room's name and its messages' text (the
         latest 50 of them; a room's own search finds more), a to-do's title and notes, and an event's subject,
