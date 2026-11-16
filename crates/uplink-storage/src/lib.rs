@@ -695,7 +695,7 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let conn = open(dir.path()).unwrap();
+        let conn = migrated_to(dir.path(), 30);
         let markdown = |sql: &str| -> Vec<Option<bool>> {
             conn.prepare(sql)
                 .unwrap()
@@ -724,6 +724,73 @@ mod tests {
             })
             .unwrap();
         assert_eq!(event, "$e");
+    }
+
+    /// Matrix sends of text, and the log's, say their format (V0061):
+    /// Markdown or plain text, as `markdown` said.
+    #[test]
+    fn matrix_texts_have_a_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = migrated_to(dir.path(), 60);
+        let text = |markdown: bool| {
+            format!(
+                r#"{{"type":"text","body":"hi","markdown":{markdown},"emote":false,"reply_to":null,"replaces":null,"thread":null}}"#
+            )
+        };
+        let (markdown, plain) = (text(true), text(false));
+        let reaction = r#"{"type":"reaction","event":"$e","key":"x"}"#;
+        conn.execute_batch(&format!(
+            r#"INSERT INTO account (id, kind) VALUES ('mx', 'matrix');
+               INSERT INTO matrix_room (id, account_id, room_id, name, encrypted, membership)
+               VALUES (5, 'mx', '!r:x', 'Room', 0, 'joined');
+               INSERT INTO tx_log (id, ts, description, op_type, op_json, inverse_type,
+                                   inverse_json, events_json)
+               VALUES (1, 0, '', 'matrix.send', '{{"room":5,"content":{markdown}}}',
+                       'matrix.cancel_send', '{{"item":3}}', '[]'),
+                      (2, 0, '', 'matrix.cancel_send', '{{"item":3}}',
+                       'matrix.send', '{{"room":5,"content":{plain}}}', '[]'),
+                      (3, 0, '', 'matrix.send', '{{"room":5,"content":{reaction}}}',
+                       'matrix.cancel_send', '{{"item":4}}', '[]');
+               INSERT INTO matrix_send (id, room, content, queued_at, wanted, desired_by, state,
+                                        error, event_id, synced)
+               VALUES (3, 5, '{markdown}', 0, 1, 1, 'queued', NULL, NULL, 0),
+                      (4, 5, '{plain}', 0, 1, 2, 'queued', NULL, NULL, 0),
+                      (5, 5, '{reaction}', 0, 1, 3, 'queued', NULL, NULL, 0);"#
+        ))
+        .unwrap();
+        drop(conn);
+
+        let conn = open(dir.path()).unwrap();
+        let formats = |sql: &str| -> Vec<(Option<String>, Option<bool>)> {
+            conn.prepare(sql)
+                .unwrap()
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        let (md, pl) = (Some("markdown".to_owned()), Some("plain".to_owned()));
+        assert_eq!(
+            formats(
+                "SELECT json_extract(content, '$.format'), json_extract(content, '$.markdown')
+                 FROM matrix_send ORDER BY id"
+            ),
+            [(md.clone(), None), (pl.clone(), None), (None, None)]
+        );
+        assert_eq!(
+            formats(
+                "SELECT json_extract(op_json, '$.content.format'),
+                        json_extract(op_json, '$.content.markdown') FROM tx_log ORDER BY id"
+            ),
+            [(md, None), (None, None), (None, None)]
+        );
+        assert_eq!(
+            formats(
+                "SELECT json_extract(inverse_json, '$.content.format'),
+                        json_extract(inverse_json, '$.content.markdown') FROM tx_log ORDER BY id"
+            ),
+            [(None, None), (pl, None), (None, None)]
+        );
     }
 
     /// Drafts say whom they are from (V0055): the account's own address,

@@ -6,6 +6,7 @@ pub mod backfill;
 pub mod client;
 pub mod crawl;
 pub mod html;
+pub mod markdown;
 pub mod media;
 pub mod membership;
 pub mod outbox;

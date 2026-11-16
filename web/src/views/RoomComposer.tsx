@@ -1,8 +1,9 @@
 // The box to write to a room or one of its threads (SPEC §12.11):
 // Markdown, and commands as Element's (`/me`, `/plain`, `/invite`…), with
 // completions of commands, members and emoji; a reply to a message, or an
-// edit of one's own (Up edits the last); and, but in a thread, files,
-// attached, pasted or dropped, sent with it.
+// edit of one's own (Up edits the last), which begins from the text the
+// server makes of it; and, but in a thread, files, attached, pasted or
+// dropped, sent with it.
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
 import type { Room, RoomEvent, RoomEventId } from '../generated/protocol'
@@ -63,12 +64,15 @@ export function Composer(props: {
   // Where the caret goes once a completion is in the box.
   const placeCaret = useRef<number | null>(null)
   const [, openJoined] = useOpenJoined(room.account, noop)
-  // An edit's text, apart from the draft, which it leaves as it is.
-  const [edit, setEdit] = useState<{ event: number; text: string } | null>(null)
+  // An edit's text, apart from the draft, which it leaves as it is: as
+  // the server made it of the message (`source`), and as typed since.
+  const [edit, setEdit] = useState<{ event: number; source: string; text: string } | null>(null)
   const picker = useRef<HTMLInputElement>(null)
   const editing = mode.type === 'edit' ? mode.event : null
-  const value = editing ? (edit?.event === editing.id ? edit.text : (shown(editing).body ?? '')) : draft
-  const sendable = value.trim() !== '' || (editing === null && files.length > 0)
+  // Until the server makes it, the edit has no text to write to.
+  const loaded = editing && edit?.event === editing.id ? edit : null
+  const value = editing ? (loaded?.text ?? '') : draft
+  const sendable = editing ? loaded !== null && value.trim() !== '' : value.trim() !== '' || files.length > 0
   const typing = useTyping(room)
   const typed = completing(value, caret)
   const open = dismissed ? null : typed
@@ -81,6 +85,18 @@ export function Composer(props: {
   // what one does there. Esc leaves it, to the shortcuts.
   useLayoutEffect(() => focusShown(props.textarea.current!), [props.textarea])
   useKeymap(props.scrolling, { within: props.textarea })
+  const editingId = editing?.id ?? null
+  useEffect(() => {
+    if (editingId === null) return
+    let current = true
+    matrix.editText(room.id, editingId).then(
+      (text) => current && setEdit({ event: editingId, source: text, text }),
+      (e) => current && setError((e as Error).message),
+    )
+    return () => {
+      current = false
+    }
+  }, [matrix, room.id, editingId])
   useLayoutEffect(() => {
     if (placeCaret.current === null) return
     props.textarea.current!.setSelectionRange(placeCaret.current, placeCaret.current)
@@ -89,7 +105,7 @@ export function Composer(props: {
 
   /** Sets the box's text, and where the caret goes. */
   const write = (text: string, at: number) => {
-    if (editing) setEdit({ event: editing.id, text })
+    if (editing) setEdit({ ...loaded!, text })
     else setDraft(text)
     setError(null)
     setCaret(at)
@@ -111,9 +127,20 @@ export function Composer(props: {
     if (!sendable) return
     typing.stop()
     if (editing) {
-      const original = shown(editing)
-      if (value !== original.body) {
-        matrix.send(room.id, message(value, { emote: original.msgtype === 'm.emote', replaces: editing.event_id }))
+      if (value !== loaded!.source) {
+        const command = parse(value)
+        if (command.type === 'error') {
+          setError(command.message)
+          return
+        }
+        if (command.type !== 'message') {
+          setError('An edit is of a message, not a command. To send a /, begin with //.')
+          return
+        }
+        // It stays an action, as `/me` makes it one.
+        const emote = command.emote || shown(editing).msgtype === 'm.emote'
+        const { body, format } = command
+        matrix.send(room.id, message(body, { format, emote, replaces: editing.event_id }))
       }
       leave()
       return
@@ -127,8 +154,8 @@ export function Composer(props: {
           setError(command.message)
           return
         case 'message': {
-          const { body, markdown, emote } = command
-          matrix.send(room.id, message(body, { markdown, emote, reply_to, thread }))
+          const { body, format, emote } = command
+          matrix.send(room.id, message(body, { format, emote, reply_to, thread }))
           reply_to = null
           break
         }
@@ -246,6 +273,7 @@ export function Composer(props: {
           placeholder={editing ? 'Edit your message' : thread !== null ? 'Reply in thread' : `Message ${room.name}`}
           rows={1}
           value={value}
+          readOnly={editing !== null && loaded === null}
           onInput={(event) => {
             const box = event.currentTarget
             let text = box.value

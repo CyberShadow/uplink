@@ -11,6 +11,7 @@
 use crate::{
     client,
     crawl::Crawler,
+    markdown,
     membership::{self, MembershipChanged},
     room_tags::{self, RoomTagSet},
     rooms::{self, Decrypted, ObservedEvent, ObservedRoom, Push, ReceiptSent, SpaceChild, Synced},
@@ -65,7 +66,7 @@ use uplink_config::MatrixAccountConfig;
 use uplink_protocol::{
     matrix::{
         Encryption, MatrixContent, MemberAction, Membership, MembershipChange, ReceiptsChanged,
-        RoomMember, SecurityChanged, Typing,
+        RoomMember, SecurityChanged, TextFormat, Typing,
     },
     LogEntry, Notice, Source,
 };
@@ -1131,7 +1132,7 @@ impl Sender {
         let sent = match content {
             MatrixContent::Text {
                 body,
-                markdown,
+                format,
                 emote,
                 reply_to,
                 replaces,
@@ -1165,7 +1166,7 @@ impl Sender {
                 };
                 let content = text_content(
                     body,
-                    *markdown,
+                    *format,
                     *emote,
                     reply
                         .as_ref()
@@ -1327,27 +1328,32 @@ pub fn pins(now: &[String], event: &str, pinned: bool) -> Option<Vec<String>> {
     }
 }
 
-/// The content of a message of text: Markdown, formatted as HTML if it
-/// formats anything, its links to users mentioning them (the plain body
-/// has their names); or else plain text. It may reply to an event
+/// The content of a message of text, in `format`: Markdown, formatted as
+/// HTML if it formats anything, its links to users mentioning them (the
+/// plain body has their names); plain text; or HTML, its plain body as
+/// Markdown, mentioning as Markdown does. It may reply to an event
 /// (`reply_to`: the event and its sender), which mentions its sender; be
 /// of a thread (`thread`: its root, and its latest message, which it
 /// answers by fallback unless it replies to one); or edit a message: the
-/// edit's own body, for clients that do not know edits, is the new one
-/// marked as such, and as the edited message mentioned whom it did, it
-/// mentions none anew.
+/// edit's own content, for clients that do not know edits, is the new
+/// one marked as such (as Element marks it), and as the edited message
+/// mentioned whom it did, it mentions none anew.
 pub fn text_content(
     body: &str,
-    markdown: bool,
+    format: TextFormat,
     emote: bool,
     reply_to: Option<(&str, &str)>,
     thread: Option<(&str, &str)>,
     replaces: Option<&str>,
 ) -> serde_json::Value {
-    let message = |body: &str, mentioned: &[&str]| {
-        let (plain, mut users) = match markdown {
-            true => mentions(body),
-            false => (body.to_owned(), vec![]),
+    let message = |mentioned: &[&str]| {
+        let ((plain, mut users), html) = match format {
+            TextFormat::Markdown => (
+                mentions(body),
+                FormattedBody::markdown(body).map(|html| html.body),
+            ),
+            TextFormat::Plain => ((body.to_owned(), vec![]), None),
+            TextFormat::Html => (mentions(&markdown::plain(body)), Some(body.to_owned())),
         };
         users.extend(mentioned.iter().map(|&user| user.to_owned()));
         users.sort();
@@ -1364,23 +1370,28 @@ pub fn text_content(
             "body": plain,
             "m.mentions": said,
         });
-        if let Some(html) = markdown.then(|| FormattedBody::markdown(body)).flatten() {
+        if let Some(html) = html {
             content["format"] = json!("org.matrix.custom.html");
-            content["formatted_body"] = json!(html.body);
+            content["formatted_body"] = json!(html);
         }
         content
     };
     let replied: Vec<&str> = reply_to.iter().map(|&(_, sender)| sender).collect();
     match replaces {
         Some(replaces) => {
-            let mut content = message(&format!("* {body}"), &[]);
+            let new = message(&replied);
+            let mut content = new.clone();
+            content["body"] = json!(format!("* {}", new["body"].as_str().expect("a body")));
+            if let Some(html) = new["formatted_body"].as_str() {
+                content["formatted_body"] = json!(format!("* {html}"));
+            }
             content["m.mentions"] = json!({});
-            content["m.new_content"] = message(body, &replied);
+            content["m.new_content"] = new;
             content["m.relates_to"] = json!({ "rel_type": "m.replace", "event_id": replaces });
             content
         }
         None => {
-            let mut content = message(body, &replied);
+            let mut content = message(&replied);
             let in_reply_to = |event: &str| json!({ "event_id": event });
             match (thread, reply_to) {
                 (Some((root, latest)), reply_to) => {

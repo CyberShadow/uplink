@@ -28,7 +28,7 @@ use tokio::sync::mpsc;
 use uplink_config::MatrixAccountConfig;
 use uplink_matrix::{client, service::ConfiguredAccount, service::Matrix, sync::Sync};
 use uplink_protocol::{
-    matrix::{Encryption, Membership, Room, RoomEvent, TimelinePage},
+    matrix::{Encryption, Membership, Room, RoomEvent, TextFormat, TimelinePage},
     ServerResponse,
 };
 use uplink_realtime::Hub;
@@ -974,7 +974,7 @@ fn key() -> String {
 fn text(body: &str) -> uplink_protocol::matrix::MatrixContent {
     uplink_protocol::matrix::MatrixContent::Text {
         body: body.into(),
-        markdown: true,
+        format: TextFormat::Markdown,
         emote: false,
         reply_to: None,
         replaces: None,
@@ -1044,7 +1044,7 @@ async fn replies_edits_reactions_redactions_and_files() {
     // A reply, in Markdown.
     let timeline = send(MatrixContent::Text {
         body: "**hi** bob".into(),
-        markdown: true,
+        format: TextFormat::Markdown,
         emote: false,
         reply_to: Some(hello.event_id.clone()),
         replaces: None,
@@ -1060,7 +1060,7 @@ async fn replies_edits_reactions_redactions_and_files() {
     // Its edit.
     let timeline = send(MatrixContent::Text {
         body: "hi again".into(),
-        markdown: true,
+        format: TextFormat::Markdown,
         emote: false,
         reply_to: None,
         replaces: Some(reply.event_id.clone()),
@@ -1078,7 +1078,7 @@ async fn replies_edits_reactions_redactions_and_files() {
     for body in ["threaded", "threaded again"] {
         send(MatrixContent::Text {
             body: body.into(),
-            markdown: true,
+            format: TextFormat::Markdown,
             emote: false,
             reply_to: None,
             replaces: None,
@@ -1255,7 +1255,7 @@ async fn sends_undone_are_taken_back() {
     };
     let edited = send(MatrixContent::Text {
         body: "second".into(),
-        markdown: true,
+        format: TextFormat::Markdown,
         emote: false,
         reply_to: None,
         replaces: Some(first.event_id.clone()),

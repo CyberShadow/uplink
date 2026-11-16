@@ -322,6 +322,12 @@ pub enum ClientRequest {
         room: RoomId,
         event: RoomEventId,
     },
+    /// The text an edit of the account's own message `event` begins
+    /// from, as last edited (SPEC §12.11).
+    EditText {
+        room: RoomId,
+        event: RoomEventId,
+    },
     /// Send to the room: a message, a reaction, a redaction or a file.
     /// `key`, chosen by the client (a UUID), is the send's: asked again
     /// with it (resent on a new connection, say), it is answered with the
@@ -644,6 +650,15 @@ pub enum ServerResponse {
         event: RoomEventId,
         edits: Vec<matrix::RoomEvent>,
     },
+    /// Of `EditText`: Markdown that formats as the message does, or else
+    /// a command that sends it as it is (`/html`, `/plain`); one that
+    /// begins with a `/` with another, as the composer sends it.
+    EditText {
+        as_of: TxLogId,
+        room: RoomId,
+        event: RoomEventId,
+        text: String,
+    },
     /// Of `SearchRoom`: whether there are more, before the last.
     RoomSearch {
         as_of: TxLogId,
@@ -728,6 +743,7 @@ impl ServerResponse {
             | Self::Timeline { as_of, .. }
             | Self::RoomEvents { as_of, .. }
             | Self::Edits { as_of, .. }
+            | Self::EditText { as_of, .. }
             | Self::Thread { as_of, .. }
             | Self::RoomSearch { as_of, .. }
             | Self::Pinned { as_of, .. }

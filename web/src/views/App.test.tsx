@@ -1998,7 +1998,7 @@ describe('room composer', () => {
     await waitFor(() =>
       expect(sent().slice(1)).toEqual([
         { type: 'member', action: 'invite', user: '@dave:example.org', reason: null },
-        text('**as is**', { markdown: false }),
+        text('**as is**', { format: 'plain' }),
       ]),
     )
     await user.keyboard('/frobnicate{Enter}')
@@ -2238,7 +2238,8 @@ describe('room timeline', () => {
     await waitFor(() => expect(screen.queryByText(/^Replying to/)).toBeNull())
 
     await user.keyboard('{ArrowUp}')
-    expect((box as HTMLTextAreaElement).value).toBe('Sure')
+    // Its text as the server makes it.
+    await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe('Sure'))
     await user.keyboard(' thing{Enter}')
     expect(server.requests).toContainEqual({
       type: 'send_matrix_message',
@@ -2263,6 +2264,32 @@ describe('room timeline', () => {
     expect(document.activeElement).toBe(box)
     expect(server.requests).toContainEqual({ type: 'send_matrix_message', key: expect.any(String), room: room.id, content: { type: 'redaction', event: mine.event_id } })
     await within(timeline()).findByText('Deleting…')
+  })
+
+  it('edits a message as the server makes its text, which may be a command', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const mine = server.receive(room.id, { body: 'Sure', sender: ME, sender_name: 'Me' })
+    // HTML Markdown formats otherwise, sent as it is.
+    server.editTexts.set(mine.id, '/html <ul><li><p>Sure</p></li></ul>')
+    const user = await start(`/rooms/${room.id}`)
+    await within(timeline()).findByText('Sure')
+    const box = screen.getByRole('textbox', { name: 'Message Lounge' }) as HTMLTextAreaElement
+    await user.click(box)
+    await user.keyboard('{ArrowUp}')
+    await waitFor(() => expect(box.value).toBe('/html <ul><li><p>Sure</p></li></ul>'))
+    // Not a command that is no message.
+    const sent = () => server.requests.filter((r) => r.type === 'send_matrix_message')
+    await user.keyboard('{Control>}a{/Control}/topic Lunch{Enter}')
+    expect(screen.getByRole('alert').textContent).toMatch(/An edit is of a message/)
+    expect(sent()).toEqual([])
+    await user.keyboard('{Control>}a{/Control}/html <ul><li><p>Sure!</p></li></ul>{Enter}')
+    expect(sent()).toContainEqual({
+      type: 'send_matrix_message',
+      key: expect.any(String),
+      room: room.id,
+      content: text('<ul><li><p>Sure!</p></li></ul>', { format: 'html', replaces: mine.event_id }),
+    })
   })
 
   it('previews the pages messages link, but in encrypted rooms', async () => {

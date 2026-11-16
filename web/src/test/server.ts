@@ -219,6 +219,9 @@ export class FakeServer implements Requester, Subscriber, Blobs {
   readonly receipts = new Map<RoomId, MemberReceipt[]>()
   /** Of events edited, their edits, oldest first. */
   readonly edits = new Map<number, RoomEvent[]>()
+  /** Of the account's messages, the text an edit begins from, as the
+   * server makes it: else their bodies. */
+  readonly editTexts = new Map<number, string>()
   /** Messages being sent, sent and not yet synced back, or sent though
    * cancelled. */
   readonly matrixSends: MatrixSend[] = []
@@ -1274,6 +1277,11 @@ export class FakeServer implements Requester, Subscriber, Blobs {
         }
       case 'list_edits':
         return { type: 'edits', as_of: this.head(), room: body.room, event: body.event, edits: this.edits.get(body.event) ?? [] }
+      case 'edit_text': {
+        const event = this.events.get(body.room)!.find((e) => e.id === body.event)!
+        const text = this.editTexts.get(body.event) ?? event.body!
+        return { type: 'edit_text', as_of: this.head(), room: body.room, event: body.event, text }
+      }
       case 'search_room': {
         const words = body.query.toLowerCase().split(/\s+/).filter((w) => w !== '')
         const events = this.events.get(body.room)!

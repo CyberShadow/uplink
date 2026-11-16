@@ -17,7 +17,7 @@ use uplink_protocol::{
     compose::{AccountOutbox, Pending},
     matrix::{
         Encryption, MatrixContent, MatrixSend, MatrixSendId, MatrixSendState, Membership, Room,
-        RoomEvent, RoomEventId, RoomId,
+        RoomEvent, RoomEventId, RoomId, TextFormat,
     },
     ServerEvent, ServerResponse, TxLogId,
 };
@@ -1461,6 +1461,44 @@ mod relations {
     }
 
     #[tokio::test]
+    async fn the_accounts_own_messages_are_edited_from_their_html_as_last_edited() {
+        let db = Db::new();
+        let html = |id: &str, sender: &str, formatted_body: &str| {
+            json!({ "type": "m.room.message", "event_id": id, "sender": sender,
+                    "content": { "msgtype": "m.text", "body": "~~struck ~~rest",
+                                 "format": "org.matrix.custom.html",
+                                 "formatted_body": formatted_body } })
+        };
+        db.sync_json(&[
+            html("$1", ME, "<del>struck </del>rest"),
+            html("$2", "@bob:x", "<b>Bob's</b>"),
+            text("$3", ME, "first"),
+            edit("$4", ME, "$3", "**as is**"),
+        ])
+        .await;
+        let timeline = db.timeline().await;
+        let room = db.room().await.id;
+        let edit_text = |event: &str| {
+            let event = timeline.iter().find(|e| e.event_id == event).unwrap().id;
+            db.matrix.edit_text(room, event)
+        };
+        let ServerResponse::EditText { text, .. } = edit_text("$1").await.unwrap() else {
+            panic!()
+        };
+        assert_eq!(text, "<del>struck </del>rest", "as HTML Markdown keeps");
+        let ServerResponse::EditText { text, .. } = edit_text("$3").await.unwrap() else {
+            panic!()
+        };
+        assert_eq!(text, "/plain **as is**", "as last edited, plain");
+        let refused = edit_text("$2").await.unwrap_err();
+        assert_eq!(
+            refused.code,
+            uplink_protocol::ErrorCode::Invalid,
+            "not another's"
+        );
+    }
+
+    #[tokio::test]
     async fn redactions_redact_and_change_what_shows_them() {
         let db = Db::new();
         db.sync_json(&[
@@ -1631,7 +1669,7 @@ mod relations {
         let to_thread = |thread: &str, reply_to: Option<&str>, replaces: Option<&str>| {
             uplink_protocol::matrix::MatrixContent::Text {
                 body: "hi".into(),
-                markdown: true,
+                format: TextFormat::Markdown,
                 emote: false,
                 reply_to: reply_to.map(Into::into),
                 replaces: replaces.map(Into::into),
@@ -1777,7 +1815,7 @@ mod relations {
 fn text(body: &str) -> uplink_protocol::matrix::MatrixContent {
     uplink_protocol::matrix::MatrixContent::Text {
         body: body.into(),
-        markdown: true,
+        format: TextFormat::Markdown,
         emote: false,
         reply_to: None,
         replaces: None,
@@ -1790,7 +1828,7 @@ fn messages_mention_the_users_they_link_and_whom_they_reply_to() {
     use crate::sync::text_content;
     let content = text_content(
         "hi [Bob](https://matrix.to/#/@bob:example.org), [a link](https://example.org) [x](https://matrix.to/#/nobody)",
-        true,
+        TextFormat::Markdown,
         false,
         Some(("$q", "@carol:example.org")),
         None,
@@ -1813,7 +1851,7 @@ fn messages_mention_the_users_they_link_and_whom_they_reply_to() {
     // Plain: as it is, mentioning no one.
     let plain = text_content(
         "**[Bob](https://matrix.to/#/@bob:example.org)**",
-        false,
+        TextFormat::Plain,
         false,
         None,
         None,
@@ -1830,14 +1868,23 @@ fn messages_mention_the_users_they_link_and_whom_they_reply_to() {
 
     // An edit mentions none anew; its new content, all.
     let edit = text_content(
-        "[Bob](https://matrix.to/#/@bob:example.org)!",
-        true,
+        "**[Bob](https://matrix.to/#/@bob:example.org)!**",
+        TextFormat::Markdown,
         true,
         None,
         None,
         Some("$e"),
     );
-    assert_eq!(edit["body"], "* Bob!");
+    assert_eq!(edit["body"], "* **Bob!**");
+    // Marked as Element marks it, not formatted as a list.
+    assert_eq!(
+        edit["formatted_body"],
+        r#"* <strong><a href="https://matrix.to/#/@bob:example.org">Bob</a>!</strong>"#
+    );
+    assert_eq!(
+        edit["m.new_content"]["formatted_body"],
+        r#"<strong><a href="https://matrix.to/#/@bob:example.org">Bob</a>!</strong>"#
+    );
     assert_eq!(edit["msgtype"], "m.emote");
     assert_eq!(edit["m.mentions"], json!({}));
     assert_eq!(
@@ -1845,9 +1892,37 @@ fn messages_mention_the_users_they_link_and_whom_they_reply_to() {
         json!({ "user_ids": ["@bob:example.org"] })
     );
 
+    // HTML: as it is, its plain body Markdown, its links to users
+    // mentioning them.
+    let html = text_content(
+        r#"<del>struck </del>for <a href="https://matrix.to/#/@bob:example.org">Bob</a>"#,
+        TextFormat::Html,
+        false,
+        None,
+        None,
+        None,
+    );
+    assert_eq!(
+        html,
+        json!({
+            "msgtype": "m.text",
+            "body": "~~struck~~ for Bob",
+            "format": "org.matrix.custom.html",
+            "formatted_body": r#"<del>struck </del>for <a href="https://matrix.to/#/@bob:example.org">Bob</a>"#,
+            "m.mentions": { "user_ids": ["@bob:example.org"] },
+        })
+    );
+
     // Of a thread: answering its latest by fallback, mentioning no one;
     // or replying within it.
-    let fallback = text_content("hi", true, false, None, Some(("$root", "$latest")), None);
+    let fallback = text_content(
+        "hi",
+        TextFormat::Markdown,
+        false,
+        None,
+        Some(("$root", "$latest")),
+        None,
+    );
     assert_eq!(
         fallback["m.relates_to"],
         json!({
@@ -1860,7 +1935,7 @@ fn messages_mention_the_users_they_link_and_whom_they_reply_to() {
     assert_eq!(fallback["m.mentions"], json!({}));
     let reply = text_content(
         "hi",
-        true,
+        TextFormat::Markdown,
         false,
         Some(("$q", "@carol:example.org")),
         Some(("$root", "$latest")),
@@ -1881,15 +1956,16 @@ fn messages_mention_the_users_they_link_and_whom_they_reply_to() {
     );
 
     // `@room`, a word of its own, Markdown or not, mentions the room.
-    for (text, markdown, room) in [
-        ("@room: lunch!", true, true),
-        ("lunch, @room", false, true),
-        ("(@room)", true, true),
-        ("@roomy", true, false),
-        ("@room:example.org", true, false),
-        ("me@room", true, false),
+    for (text, format, room) in [
+        ("@room: lunch!", TextFormat::Markdown, true),
+        ("lunch, @room", TextFormat::Plain, true),
+        ("<b>lunch</b>, @room", TextFormat::Html, true),
+        ("(@room)", TextFormat::Markdown, true),
+        ("@roomy", TextFormat::Markdown, false),
+        ("@room:example.org", TextFormat::Markdown, false),
+        ("me@room", TextFormat::Markdown, false),
     ] {
-        let content = text_content(text, markdown, false, None, None, None);
+        let content = text_content(text, format, false, None, None, None);
         let expected = if room {
             json!({ "room": true })
         } else {

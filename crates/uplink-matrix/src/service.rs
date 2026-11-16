@@ -3,7 +3,7 @@
 use crate::{
     backfill,
     client::{self, Clients},
-    media,
+    markdown, media,
     membership::ChangeMembership,
     preview,
     query::Rooms,
@@ -879,6 +879,44 @@ impl Matrix {
                     room,
                     event,
                     edits,
+                })
+            })
+            .await
+    }
+
+    /// The text an edit of the account's own message `event` begins
+    /// from, as last edited (SPEC §12.11).
+    pub async fn edit_text(&self, room: RoomId, event: RoomEventId) -> Response {
+        let accounts = self.accounts.clone();
+        self.reader
+            .read(move |conn| {
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
+                if !rooms::event_in_room(&tx, room, event).map_err(internal)? {
+                    return Err(no_event(room, event));
+                }
+                let account = rooms::room_account(&tx, room)
+                    .map_err(internal)?
+                    .expect("the event's room is stored");
+                let not_editable = || {
+                    error(
+                        ErrorCode::Invalid,
+                        format!("{} is not a message of the account's to edit", event.0),
+                    )
+                };
+                let configured = accounts
+                    .iter()
+                    .find(|a| a.id == account)
+                    .ok_or_else(not_editable)?;
+                let content = rooms::own_message(&tx, room, event, &configured.mxid)
+                    .map_err(internal)?
+                    .ok_or_else(not_editable)?;
+                let text = markdown::edit_text(&content).ok_or_else(not_editable)?;
+                Ok(ServerResponse::EditText {
+                    as_of,
+                    room,
+                    event,
+                    text,
                 })
             })
             .await

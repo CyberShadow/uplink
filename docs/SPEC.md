@@ -2689,22 +2689,26 @@ it, and not applied again (`uplink_tx_log::Repeated`). A send queued anew
 by an undo has none. Its content (`MatrixContent`, stored as
 JSON since V0026) is one of:
 
-- **text**, in Markdown: sent as `m.text` (or `m.emote`, for `/me`) with
-  the plain body, and, if Markdown formats it, `formatted_body` in HTML
-  (ruma's CommonMark, as Element does). Its links to users
+- **text**, in a `format` (V0061; `markdown` said Markdown or plain
+  before, and V0030 marked the earlier sends Markdown). In Markdown: sent
+  as `m.text` (or `m.emote`, for `/me`) with the plain body, and, if
+  Markdown formats it, `formatted_body` in HTML (ruma's CommonMark, as
+  Element does). Its links to users
   (`[name](https://matrix.to/#/@user:server)`, which Element shows as
   pills) mention them: the plain body has their names, and
   `m.mentions.user_ids` the users (intentional mentions; `{}` with
-  none). Or else (`markdown: false`, `/plain`; V0030 marked the earlier
-  sends Markdown) it is sent as it is, mentioning no one by links.
+  none). Plain (`/plain`), it is sent as it is, mentioning no one by
+  links. HTML (`/html`), it is the `formatted_body` as it is, its plain
+  body the HTML as Markdown (htmd's), which mentions as Markdown does.
   Either way, `@room` as a word of its own (not of a user id,
   `@room:server`) mentions the whole room (`m.mentions.room`), which
   notifies its members as its power levels let the account. It may reply to
   a stored event (`m.in_reply_to`, without the fallback quote, which the
   spec no longer asks for), mentioning its sender, or edit one of the
   account's own messages (`m.replace`, with `m.new_content`, which
-  mentions whom it does, and `* ` before the body for clients that do
-  not know edits; the edit itself mentions no one anew). It may be of a
+  mentions whom it does, and, for clients that do not know edits, the
+  new content with `* ` before its body and its HTML, as Element marks
+  it; the edit itself mentions no one anew). It may be of a
   thread (`thread`: the root, a stored event of no thread; not an
   edit): `m.thread`, replying to the root or a message of the thread if
   it does, else to the thread's latest message as a fallback
@@ -3803,7 +3807,8 @@ buttons.
   up to three avatars (and how many more) at the end of a line.
 - **The composer** sends Markdown with Enter (Shift+Enter for a new
   line). A message beginning with `/` is a command, as Element's (`//`
-  sends one `/`): `/me` (an emote), `/plain` (without Markdown),
+  sends one `/`): `/me` (an emote), `/plain` (without Markdown), `/html`
+  (HTML, as it is),
   `/shrug`, `/tableflip`, `/unflip` and `/lenny` (plain text before the
   message), `/invite`, `/remove` (`/kick`), `/ban` and `/unban` (with a
   reason, but inviting), `/topic`, `/roomname`, `/join` (`/j`; opens the
@@ -3818,7 +3823,17 @@ buttons.
   on first use); a whole `:shortcode:` typed becomes its emoji. Up and
   Down choose, Tab or Enter take one, Escape hides them until the text
   changes. Replying shows what it answers above the
-  box; editing fills the box with the message, the draft kept apart.
+  box; editing fills the box with the message, the draft kept apart, as
+  the server makes its text (`EditText`): not from its plain body, which
+  is a fallback the sender's client (or bridge) writes as it likes, often
+  Markdown that formats as nothing (a Slack bridge's `~~struck ~~rest`),
+  but from its HTML (sanitized as §9.2, its media the homeserver's), as
+  Markdown that formats as that HTML does (htmd's faithful translation,
+  checked by formatting it again and comparing what shows); else as
+  `/html` and the HTML. A message without HTML is its body, as `/plain`
+  if Markdown would format it; one beginning with `/` gets another. The
+  edit is sent as the box's text says (Markdown, `/plain` or `/html`;
+  other commands are refused), an action staying one.
   Up, in an empty box, edits the account's last message; Escape cancels
   a reply or edit. Files attached (the paperclip), pasted or dropped on
   the room are listed above the box, to remove or send with the

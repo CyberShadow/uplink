@@ -1,17 +1,26 @@
 // What Matrix events and sends say, as the views show it (SPEC §9).
 
 import { type Linked, linkify as linkifyText, linkifyHtml } from './linkify'
-import type { MatrixContent, MemberAction, Room, RoomEvent, RoomHistory, RoomId, RoomPreview } from './generated/protocol'
+import type {
+  MatrixContent,
+  MemberAction,
+  Room,
+  RoomEvent,
+  RoomHistory,
+  RoomId,
+  RoomPreview,
+  TextFormat,
+} from './generated/protocol'
 import { date } from './format'
 
 /** Message types of text: shown as such, and edited. */
 export const TEXT = new Set(['m.text', 'm.notice', 'm.emote'])
 
-/** A message to send, in Markdown unless `markdown` is false. */
+/** A message to send, in Markdown unless in another `format`. */
 export function text(
   body: string,
   options: {
-    markdown?: boolean
+    format?: TextFormat
     emote?: boolean
     reply_to?: string | null
     replaces?: string | null
@@ -21,7 +30,7 @@ export function text(
   return {
     type: 'text',
     body,
-    markdown: options.markdown ?? true,
+    format: options.format ?? 'markdown',
     emote: options.emote ?? false,
     reply_to: options.reply_to ?? null,
     replaces: options.replaces ?? null,

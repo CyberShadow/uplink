@@ -2,11 +2,11 @@
 // beginning with `/` is one, unless with `//`, which sends it with one
 // `/`.
 
-import type { MemberAction } from './generated/protocol'
+import type { MemberAction, TextFormat } from './generated/protocol'
 
 /** What a command does. */
 export type Command =
-  | { type: 'message'; body: string; markdown: boolean; emote: boolean }
+  | { type: 'message'; body: string; format: TextFormat; emote: boolean }
   | { type: 'member'; action: MemberAction; user: string; reason: string | null }
   | { type: 'name'; name: string }
   | { type: 'topic'; topic: string }
@@ -30,6 +30,7 @@ const PREFIXES: Record<string, string> = {
 export const COMMANDS: readonly CommandHelp[] = [
   { name: 'me', args: '<message>', description: 'Sends it as an action' },
   { name: 'plain', args: '<message>', description: 'Sends it as plain text, without Markdown' },
+  { name: 'html', args: '<message>', description: 'Sends it as HTML, without Markdown' },
   { name: 'shrug', args: '[<message>]', description: `Puts ${PREFIXES.shrug} before it` },
   { name: 'tableflip', args: '[<message>]', description: `Puts ${PREFIXES.tableflip} before it` },
   { name: 'unflip', args: '[<message>]', description: `Puts ${PREFIXES.unflip} before it` },
@@ -50,8 +51,8 @@ const ALIASES: Record<string, string> = { kick: 'remove', part: 'leave', j: 'joi
 /** What `text` asks for: a message, or a command; or why it is not one
  * uplink knows. */
 export function parse(text: string): Command | { type: 'error'; message: string } {
-  if (text.startsWith('//')) return { type: 'message', body: text.slice(1), markdown: true, emote: false }
-  if (!text.startsWith('/')) return { type: 'message', body: text, markdown: true, emote: false }
+  if (text.startsWith('//')) return { type: 'message', body: text.slice(1), format: 'markdown', emote: false }
+  if (!text.startsWith('/')) return { type: 'message', body: text, format: 'markdown', emote: false }
   const match = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text)
   if (!match) return { type: 'error', message: 'Type a command after the /. To send a /, begin with //.' }
   const name = ALIASES[match[1]] ?? match[1]
@@ -67,9 +68,10 @@ export function parse(text: string): Command | { type: 'error'; message: string 
   }
   switch (name) {
     case 'me':
-      return rest === '' ? usage() : { type: 'message', body: rest, markdown: true, emote: true }
+      return rest === '' ? usage() : { type: 'message', body: rest, format: 'markdown', emote: true }
     case 'plain':
-      return rest === '' ? usage() : { type: 'message', body: rest, markdown: false, emote: false }
+    case 'html':
+      return rest === '' ? usage() : { type: 'message', body: rest, format: name, emote: false }
     case 'shrug':
     case 'tableflip':
     case 'unflip':
@@ -77,7 +79,7 @@ export function parse(text: string): Command | { type: 'error'; message: string 
       return {
         type: 'message',
         body: rest === '' ? PREFIXES[name] : `${PREFIXES[name]} ${rest}`,
-        markdown: false,
+        format: 'plain',
         emote: false,
       }
     case 'invite': {

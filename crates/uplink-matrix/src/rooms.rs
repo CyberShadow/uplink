@@ -1335,6 +1335,44 @@ pub fn event_contents(
     Ok(Some((account, contents)))
 }
 
+/// The room's message `event`, if `mxid` sent it and it is not redacted:
+/// its content as last edited (its latest edit's new one).
+pub fn own_message(
+    tx: &Transaction,
+    room: RoomId,
+    event: RoomEventId,
+    mxid: &str,
+) -> Result<Option<serde_json::Value>> {
+    let Some(raw): Option<String> = tx
+        .query_row(
+            "SELECT raw_json FROM matrix_event
+             WHERE id = ?1 AND room = ?2 AND sender = ?3 AND type = 'm.room.message'
+               AND NOT redacted",
+            params![event.0, room.0, mxid],
+            |r| r.get(0),
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    let edited: Option<String> = tx
+        .query_row(
+            &format!(
+                "SELECT json_extract(e.raw_json, '$.content.\"m.new_content\"')
+                 FROM matrix_event t JOIN matrix_event e
+                   ON e.room = t.room AND e.relates_to = t.event_id
+                 WHERE t.id = ?1 AND {EDIT} ORDER BY e.ts DESC, e.event_id DESC LIMIT 1"
+            ),
+            [event.0],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(Some(match edited {
+        Some(new) => serde_json::from_str(&new)?,
+        None => serde_json::from_str::<serde_json::Value>(&raw)?["content"].take(),
+    }))
+}
+
 /// The ids of the account's rooms `room_ids` (Matrix ids), of those
 /// recorded.
 pub fn room_ids(

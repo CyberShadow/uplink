@@ -14,6 +14,11 @@ uplink-storage = { path = "../uplink-storage" }
 uplink-tx-log = { path = "../uplink-tx-log" }
 anyhow = "1"
 base64 = "0.22"
+# Unreleased: its faithful translation as of 0.5.6 does not yet keep
+# emphasis against punctuation, nor escape an ordered list's `1)`.
+htmd = { git = "https://github.com/letmutex/htmd", rev = "650ae502099aa0a96a2614319e4287a0564efd5a" }
+html5ever = "0.40.1"
+markup5ever_rcdom = "0.40.1"
 matrix-sdk = { version = "0.19.1", default-features = false, features = ["sqlite", "e2e-encryption", "markdown", "rustls-aws-lc-rs"] }
 mime = "0.3"
 serde = { version = "1", features = ["derive"] }
@@ -23,7 +28,5 @@ tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 tracing = "0.1"
 
 [dev-dependencies]
-html5ever = "0.40.1"
-markup5ever_rcdom = "0.40.1"
 url = "2.5.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process"] }

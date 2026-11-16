@@ -65,6 +65,7 @@ fn declarations() -> String {
         MemberState,
         RoomPowers,
         MemberAction,
+        TextFormat,
         SecurityChanged,
         MatrixSecurity,
         KeyBackup,

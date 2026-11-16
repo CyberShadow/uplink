@@ -281,6 +281,12 @@ export class MatrixStore {
     return query(this.server, { type: 'search_room', room, query: words, before, limit: TIMELINE_PAGE }, 'room_search')
   }
 
+  /** The text an edit of the account's own message `event` begins from
+   * (SPEC §12.11). Throws the server's refusal. */
+  async editText(room: RoomId, event: RoomEventId): Promise<string> {
+    return (await query(this.server, { type: 'edit_text', room, event }, 'edit_text')).text
+  }
+
   /** The edits of the room's message `event`, oldest first. */
   async edits(room: RoomId, event: RoomEventId): Promise<RoomEvent[] | null> {
     const response = await this.query({ type: 'list_edits', room, event }, 'edits')

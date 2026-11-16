@@ -5,12 +5,18 @@ import { completing } from './views/Autocomplete'
 
 describe('commands', () => {
   it('sends messages, `//` escaping a leading /', () => {
-    expect(parse('hi')).toEqual({ type: 'message', body: 'hi', markdown: true, emote: false })
-    expect(parse('//etc/hosts')).toEqual({ type: 'message', body: '/etc/hosts', markdown: true, emote: false })
-    expect(parse('/me waves')).toEqual({ type: 'message', body: 'waves', markdown: true, emote: true })
-    expect(parse('/plain **as is**')).toEqual({ type: 'message', body: '**as is**', markdown: false, emote: false })
-    expect(parse('/shrug fine')).toEqual({ type: 'message', body: '¯\\_(ツ)_/¯ fine', markdown: false, emote: false })
-    expect(parse('/lenny')).toEqual({ type: 'message', body: '( ͡° ͜ʖ ͡°)', markdown: false, emote: false })
+    expect(parse('hi')).toEqual({ type: 'message', body: 'hi', format: 'markdown', emote: false })
+    expect(parse('//etc/hosts')).toEqual({ type: 'message', body: '/etc/hosts', format: 'markdown', emote: false })
+    expect(parse('/me waves')).toEqual({ type: 'message', body: 'waves', format: 'markdown', emote: true })
+    expect(parse('/plain **as is**')).toEqual({ type: 'message', body: '**as is**', format: 'plain', emote: false })
+    expect(parse('/html <del>gone </del>here')).toEqual({
+      type: 'message',
+      body: '<del>gone </del>here',
+      format: 'html',
+      emote: false,
+    })
+    expect(parse('/shrug fine')).toEqual({ type: 'message', body: '¯\\_(ツ)_/¯ fine', format: 'plain', emote: false })
+    expect(parse('/lenny')).toEqual({ type: 'message', body: '( ͡° ͜ʖ ͡°)', format: 'plain', emote: false })
   })
 
   it('changes members, the room, and joins and leaves', () => {

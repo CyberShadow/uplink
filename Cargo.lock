@@ -1101,6 +1101,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ego-tree"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7bd50d24b1b75aa817bb0339cb9f2e0e664bdfab1e160a69a0fda9145b77fab2"
+
+[[package]]
 name = "either"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1573,6 +1579,15 @@ dependencies = [
  "subtle",
  "x25519-dalek",
  "zeroize",
+]
+
+[[package]]
+name = "htmd"
+version = "0.5.5"
+source = "git+https://github.com/letmutex/htmd?rev=650ae502099aa0a96a2614319e4287a0564efd5a#650ae502099aa0a96a2614319e4287a0564efd5a"
+dependencies = [
+ "ego-tree",
+ "html5ever 0.40.1",
 ]
 
 [[package]]
@@ -4963,6 +4978,7 @@ dependencies = [
  "ammonia",
  "anyhow",
  "base64 0.22.1",
+ "htmd",
  "html5ever 0.40.1",
  "markup5ever_rcdom",
  "matrix-sdk",
