@@ -81,6 +81,7 @@ impl Microsoft {
                 token_file: dir.join("accounts/test.token"),
             },
             imap: exchange.as_ref().map(Dovecot::server),
+            poll_interval_secs: 30,
         };
         let http = reqwest::Client::new();
         authorize(&http, &account, &key).await;

@@ -1740,7 +1740,8 @@ IMAP's per-folder copies, and a REST fake is practical to test against
   per folder on first call, then `@odata.deltaLink` for subsequent calls.
   Library: `reqwest` (no Rust Graph SDK; Graph is JSON+OAuth, easy to call
   directly). Raw MIME for storage via `/messages/{id}/$value`.
-- **Polling**: the delta link of every folder, every 30 s. Cheap under
+- **Polling**: the delta link of every folder, every
+  `poll_interval_secs` (default 30). Cheap under
   Graph throttling for a single user. The user must never see UI for
   "manual refresh"; polling is silent.
 - **Push**, opted in to: IDLE (RFC 2177) on the Inbox at Exchange's

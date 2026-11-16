@@ -35,8 +35,6 @@ use uplink_protocol::mail::{EntryId, LabelKind};
 use uplink_tx_log::Dispatcher;
 
 pub const KIND: &str = "m365";
-/// How often to poll for changes (SPEC §8.3).
-pub const POLL_INTERVAL: Duration = Duration::from_secs(30);
 /// Messages fetched at once.
 const CONCURRENT_FETCHES: usize = 8;
 /// New entries recorded per log entry.
@@ -96,7 +94,7 @@ pub fn task(
         dispatcher,
         uplink_storage::open_reader(data_root)?,
         data_root,
-        POLL_INTERVAL,
+        Duration::from_secs(config.poll_interval_secs.into()),
     ))
 }
 

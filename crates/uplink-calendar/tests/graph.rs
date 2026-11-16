@@ -56,6 +56,7 @@ impl Setup {
                 token_file: dir.path().join("accounts/test.token"),
             },
             imap: None,
+            poll_interval_secs: 30,
         };
         let http = reqwest::Client::new();
         authorize(&http, &account, &key).await;

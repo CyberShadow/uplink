@@ -319,9 +319,16 @@ pub struct M365AccountConfig {
     /// expect it.
     #[serde(default)]
     pub imap: Option<MailServer>,
+    /// How often every folder is polled by Graph (SPEC §8.3).
+    #[serde(default = "M365AccountConfig::default_poll_interval_secs")]
+    pub poll_interval_secs: u32,
 }
 
 impl M365AccountConfig {
+    fn default_poll_interval_secs() -> u32 {
+        30
+    }
+
     pub fn identities(&self) -> Vec<Identity> {
         identities(&self.address, &self.name, &self.identities)
     }

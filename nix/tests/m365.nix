@@ -57,6 +57,8 @@ pkgs.testers.nixosTest {
               authority = "${microsoft}/common";
               resource = microsoft;
             };
+            # Short, so that what waits for a poll waits seconds.
+            poll_interval_secs = 3;
           }
         ];
       };

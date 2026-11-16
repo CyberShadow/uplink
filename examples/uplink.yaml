@@ -98,6 +98,8 @@ accounts: []
   #     client_id: "11111111-2222-3333-4444-555555555555"
   #   # New mail told as it comes, by IMAP (README): opt in.
   #   # imap: { host: outlook.office365.com }
+  #   # How often every folder is polled by Graph, in seconds. Default 30.
+  #   # poll_interval_secs: 30
 
   # — Any other mail account — IMAP and SMTP over TLS, on ports 993 and
   # 465 unless `port` says otherwise; `security: starttls` for STARTTLS

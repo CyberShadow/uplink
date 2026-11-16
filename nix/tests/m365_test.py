@@ -12,10 +12,10 @@ from urllib.parse import parse_qs, urljoin, urlparse
 STATE = "/var/lib/uplink"
 CLIENT_ID = "uplink-test"
 REDIRECT_URI = "http://127.0.0.1/redirect"
-POLL = 30  # uplink's poll interval, seconds
+POLL = 3  # the account's poll interval (m365.nix), seconds
 
 
-def eventually(what, f, timeout=2 * POLL):
+def eventually(what, f, timeout=60):
     deadline = time.monotonic() + timeout
     while True:
         result = f()
