@@ -1,0 +1,115 @@
+From 676bb14dcb30a9f398015ea99260f71754666f4a Mon Sep 17 00:00:00 2001
+From: Vladimir Panteleev <git@cy.md>
+Date: Mon, 16 Nov 2026 14:29:01 +0000
+Subject: [PATCH] fix(google): Pub/Sub's getIamPolicy is a GET, as Google's
+
+A POST to it, as uplink sent, Google answers with a 404 (an HTML page,
+the method not being routed); the fake answered it, so the mistake went
+unnoticed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../google/src/__tests__/google.test.ts       |  4 +-
+ .../@emulators/google/src/routes/pubsub.ts    | 58 +++++++++++--------
+ 2 files changed, 37 insertions(+), 25 deletions(-)
+
+diff --git a/packages/@emulators/google/src/__tests__/google.test.ts b/packages/@emulators/google/src/__tests__/google.test.ts
+index c5d7234..66fdb64 100644
+--- a/packages/@emulators/google/src/__tests__/google.test.ts
++++ b/packages/@emulators/google/src/__tests__/google.test.ts
+@@ -599,8 +599,10 @@ describe("Google plugin integration", () => {
+   async function gmailTopic(name: string) {
+     const topic = `projects/emulate-local/topics/${name}`;
+     expect((await jsonRequest(app, `/v1/${topic}`, { method: "PUT", body: {} })).status).toBe(200);
++    // As Pub/Sub, refused as a POST.
++    expect((await jsonRequest(app, `/v1/${topic}:getIamPolicy`, { method: "POST", body: {} })).status).toBe(404);
+     const policy = (await (
+-      await jsonRequest(app, `/v1/${topic}:getIamPolicy`, { method: "POST", body: {} })
++      await jsonRequest(app, `/v1/${topic}:getIamPolicy`, { method: "GET" })
+     ).json()) as {
+       etag: string;
+       bindings: unknown[];
+diff --git a/packages/@emulators/google/src/routes/pubsub.ts b/packages/@emulators/google/src/routes/pubsub.ts
+index ea48af1..359d8f3 100644
+--- a/packages/@emulators/google/src/routes/pubsub.ts
++++ b/packages/@emulators/google/src/routes/pubsub.ts
+@@ -93,6 +93,14 @@ function splitMethod(segment: string): [string, string | undefined] {
+   return at === -1 ? [segment, undefined] : [segment.slice(0, at), segment.slice(at + 1)];
+ }
+ 
++function policyOf(topic: Topic) {
++  return {
++    version: 1,
++    etag: Buffer.from(String(topic.etag)).toString("base64"),
++    bindings: topic.bindings,
++  };
++}
++
+ /** Puts the messages whose deadline has passed back on the queue. */
+ function redeliver(sub: Subscription): void {
+   const now = Date.now();
+@@ -115,35 +123,37 @@ export function pubsubRoutes({ app, store }: RouteContext): void {
+     return c.json({ name });
+   });
+ 
++  /** The topic of a `topic:method` path segment, and the method. */
++  function topicMethod(c: Context): [Topic | undefined, string | undefined] {
++    const [topicId, method] = splitMethod(c.req.param("topicMethod") ?? "");
++    return [state(store).topics.get(`projects/${c.req.param("project")}/topics/${topicId}`), method];
++  }
++
++  // As Pub/Sub's, getIamPolicy is a GET, and setIamPolicy a POST.
++  app.get("/v1/projects/:project/topics/:topicMethod", (c) => {
++    const auth = requireGoogleAuth(c);
++    if (auth instanceof Response) return auth;
++    const [topic, method] = topicMethod(c);
++    if (method !== "getIamPolicy") return pubsubError(c, 404, "Method not found.", "NOT_FOUND");
++    if (!topic) return pubsubError(c, 404, "Resource not found", "NOT_FOUND");
++    return c.json(policyOf(topic));
++  });
++
+   app.post("/v1/projects/:project/topics/:topicMethod", async (c) => {
+     const auth = requireGoogleAuth(c);
+     if (auth instanceof Response) return auth;
+-    const [topicId, method] = splitMethod(c.req.param("topicMethod"));
+-    const name = `projects/${c.req.param("project")}/topics/${topicId}`;
+-    const topic = state(store).topics.get(name);
++    const [topic, method] = topicMethod(c);
++    if (method !== "setIamPolicy") return pubsubError(c, 404, "Method not found.", "NOT_FOUND");
+     if (!topic) return pubsubError(c, 404, "Resource not found", "NOT_FOUND");
+-    const policy = () => ({
+-      version: 1,
+-      etag: Buffer.from(String(topic.etag)).toString("base64"),
+-      bindings: topic.bindings,
+-    });
+-    switch (method) {
+-      case "getIamPolicy":
+-        return c.json(policy());
+-      case "setIamPolicy": {
+-        const body = await parseGoogleBody(c);
+-        const given = body.policy as { etag?: string; bindings?: IamBinding[] } | undefined;
+-        if (!given) return pubsubError(c, 400, "Policy is required.", "INVALID_ARGUMENT");
+-        if (given.etag !== undefined && given.etag !== policy().etag) {
+-          return pubsubError(c, 409, "There were concurrent policy changes.", "ABORTED");
+-        }
+-        topic.bindings = given.bindings ?? [];
+-        topic.etag++;
+-        return c.json(policy());
+-      }
+-      default:
+-        return pubsubError(c, 404, "Method not found.", "NOT_FOUND");
++    const body = await parseGoogleBody(c);
++    const given = body.policy as { etag?: string; bindings?: IamBinding[] } | undefined;
++    if (!given) return pubsubError(c, 400, "Policy is required.", "INVALID_ARGUMENT");
++    if (given.etag !== undefined && given.etag !== policyOf(topic).etag) {
++      return pubsubError(c, 409, "There were concurrent policy changes.", "ABORTED");
+     }
++    topic.bindings = given.bindings ?? [];
++    topic.etag++;
++    return c.json(policyOf(topic));
+   });
+ 
+   app.put("/v1/projects/:project/subscriptions/:subscription", async (c) => {
+-- 
+2.56.0
+

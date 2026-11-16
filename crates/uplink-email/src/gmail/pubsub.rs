@@ -75,13 +75,9 @@ impl PubSub {
     /// do what.
     pub async fn allow_publisher(&self, topic: &str, member: &str) -> Result<()> {
         let what = format!("the policy of {topic}");
+        // A GET, unlike Resource Manager's.
         let mut policy: Value = self
-            .send(
-                Method::POST,
-                &format!("{topic}:getIamPolicy"),
-                Some(&json!({})),
-                None,
-            )
+            .send(Method::GET, &format!("{topic}:getIamPolicy"), None, None)
             .await?
             .check(&what)?
             .json(&what)?;
