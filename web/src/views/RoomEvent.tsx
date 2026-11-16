@@ -365,14 +365,16 @@ function Body(props: {
       return (
         <>
           {tag}
-          <Media room={room} event={event} content={content} box={IMAGE_BOX} openMember={openMember} /> {edited}
+          <Media room={room} event={event} content={content} box={IMAGE_BOX} openMember={openMember} />
+          {edited}
         </>
       )
     case 'm.location':
       return (
         <span class={styles.body}>
           {tag}
-          <Location content={content.content} /> {edited}
+          <Location content={content.content} />
+          {edited}
         </span>
       )
   }
@@ -389,7 +391,7 @@ function Body(props: {
           <Html room={room} html={content.html} openMember={openMember} />
         ) : (
           <Text room={room} text={content.body} openMember={openMember} />
-        )}{' '}
+        )}
         {edited}
       </div>
       {!notice && !room.encrypted && <LinkPreviews room={room} event={event} body={content.body} html={content.html} />}
