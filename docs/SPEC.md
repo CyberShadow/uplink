@@ -2532,7 +2532,11 @@ client:
 Every timeline event becomes a `matrix_event` row: its type, for
 `m.room.message` its `msgtype` and plain-text `body`, the event JSON
 (decrypted, if it was encrypted and could be), whether it was encrypted,
-and the sender's display name in the room at the time.
+and the sender's display name in the room at the time. A sender who had
+none then (a member joined before they were named, as a bridge's can
+be) is named by the name they were given next, their first later member
+event with one, once it is stored, and the messages' rows are changed
+(`TimelineChanged`).
 
 **Nothing is dropped:** the timeline shows text message types (`m.text`,
 `m.notice`, `m.emote`) as text, undecryptable events as such, and every

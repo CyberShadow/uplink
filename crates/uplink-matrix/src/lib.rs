@@ -23,7 +23,7 @@ pub mod typing;
 pub mod verification;
 
 #[cfg(test)]
-mod gap_tests;
+mod storing_tests;
 #[cfg(test)]
 mod tests;
 

@@ -304,7 +304,11 @@ impl Observation for Synced {
             }
             let added: Vec<RoomEventId> = inserted.into_iter().flatten().collect();
             let redacted = redact(tx, id, &room.version)?;
-            let touched = touched(tx, &added, &redacted)?;
+            let mut touched = touched(tx, &added, &redacted)?;
+            // A member's new name names their messages that had none.
+            if room.events.iter().any(|e| e.kind == "m.room.member") {
+                add_touched(&mut touched, name_unnamed(tx, id)?);
+            }
             if send::sends_synced(tx, id)? {
                 sent.push(id);
             }
@@ -677,6 +681,37 @@ pub(crate) fn redacted_json(raw: &str, redaction: &str, rules: &RedactionRules) 
 /// which they are, whose latest message may be one; and the messages of
 /// threads whose roots were added, which go from the main timeline to
 /// the thread.
+/// Names the room's messages whose sender had no name when they were
+/// sent (a member joined before they were named, as a bridge's members
+/// can be) by the name they were given next: that of their first later
+/// member event with one (SPEC §9.2).
+fn name_unnamed(tx: &Transaction, room: RoomId) -> Result<Vec<RoomEventId>> {
+    const NEXT_NAME: &str = "FROM matrix_event m
+         WHERE m.room = e.room AND m.type = 'm.room.member' AND m.pos > e.pos
+           AND json_extract(m.raw_json, '$.state_key') = e.sender
+           AND json_extract(m.raw_json, '$.content.displayname') IS NOT NULL";
+    let mut named = tx.prepare(&format!(
+        "UPDATE matrix_event AS e
+         SET sender_name = (SELECT json_extract(m.raw_json, '$.content.displayname')
+                            {NEXT_NAME} ORDER BY m.pos LIMIT 1)
+         WHERE e.room = ?1 AND e.sender_name IS NULL AND EXISTS (SELECT 1 {NEXT_NAME})
+         RETURNING id"
+    ))?;
+    let ids = named
+        .query_map([room.0], |r| Ok(RoomEventId(r.get(0)?)))?
+        .collect::<Result<_, _>>()?;
+    Ok(ids)
+}
+
+/// `touched`, and `more` not already among them.
+fn add_touched(touched: &mut Vec<RoomEventId>, more: Vec<RoomEventId>) {
+    for id in more {
+        if !touched.contains(&id) {
+            touched.push(id);
+        }
+    }
+}
+
 fn touched(
     tx: &Transaction,
     added: &[RoomEventId],
@@ -1866,7 +1901,11 @@ impl Observation for Filled {
             _ => None,
         };
         let redacted = redact(tx, self.room, &self.version)?;
-        let touched = touched(tx, &added, &redacted)?;
+        let mut touched = touched(tx, &added, &redacted)?;
+        // Earlier messages of members named later.
+        if missing.iter().any(|e| e.sender_name.is_none()) {
+            add_touched(&mut touched, name_unnamed(tx, self.room)?);
+        }
         // What is before them is read, as of synced events.
         observe_receipts(tx, self.room, &self.own_receipts)?;
         observe_fully_read(tx, self.room, self.fully_read.as_deref())?;
