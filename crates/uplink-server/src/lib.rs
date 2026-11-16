@@ -1366,11 +1366,27 @@ async fn static_file_handler(state: State<AppState>, uri: Uri) -> Response {
     index_handler(state).await.into_response()
 }
 
+/// The app's icons, which are not asked for with the credentials: the
+/// browser fetches a notification's icon apart from the page (Firefox
+/// prompts for them, and shows the notification without it), as it does
+/// the manifest's. They are the repository's, and tell nothing.
+const PUBLIC_PATHS: &[&str] = &[
+    "/logo.svg",
+    "/logo-192.png",
+    "/logo-512.png",
+    "/logo-maskable-512.png",
+    "/apple-touch-icon.png",
+];
+
 async fn basic_auth_middleware(
     axum::extract::State(state): axum::extract::State<AppState>,
     req: Request,
     next: Next,
 ) -> Response {
+    if req.method() == Method::GET && PUBLIC_PATHS.contains(&req.uri().path()) {
+        return next.run(req).await;
+    }
+
     let Some(auth) = req
         .headers()
         .get(header::AUTHORIZATION)
@@ -1521,6 +1537,46 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// The icons, but nothing else, without the credentials.
+    #[tokio::test]
+    async fn the_icons_need_no_credentials() {
+        let app = build_app(test_state());
+        let status = |method: Method, uri: &str| {
+            let request = Request::builder()
+                .method(method)
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap();
+            let app = app.clone();
+            async move { app.oneshot(request).await.unwrap().status() }
+        };
+        for path in PUBLIC_PATHS {
+            assert_ne!(
+                status(Method::GET, path).await,
+                StatusCode::UNAUTHORIZED,
+                "{path}"
+            );
+            assert_eq!(
+                status(Method::POST, path).await,
+                StatusCode::UNAUTHORIZED,
+                "{path}"
+            );
+        }
+        for path in [
+            "/",
+            "/index.html",
+            "/manifest.webmanifest",
+            "/logo-192.png/x",
+            "/api/blobs",
+        ] {
+            assert_eq!(
+                status(Method::GET, path).await,
+                StatusCode::UNAUTHORIZED,
+                "{path}"
+            );
+        }
     }
 
     #[tokio::test]

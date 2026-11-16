@@ -4148,7 +4148,10 @@ server does not notify (the Android app, ROADMAP, would).
 
 ### 13.1 Browser auth
 
-HTTP Basic Auth on every route (`/`, `/api/*`, `/ws`). The bcrypt hash
+HTTP Basic Auth on every route (`/`, `/api/*`, `/ws`), but the app's
+icons (`logo.svg`, `logo-*.png`, `apple-touch-icon.png`): the browser
+fetches a notification's icon (§12.16) apart from the page, without the
+credentials. They are the repository's, and tell nothing. The bcrypt hash
 lives in `server.basic_auth.password_bcrypt`. The middleware uses
 `subtle` crate for constant-time compare and `bcrypt` for verification.
 bcrypt takes about 200 ms by design, and the browser sends the password
