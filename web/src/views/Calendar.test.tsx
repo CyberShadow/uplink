@@ -65,6 +65,20 @@ describe('calendar', () => {
     expect(timed('Sunday 2026-11-15').map((e) => e.textContent)).toEqual(['22:00 Late call'])
   })
 
+  it('puts a quarter hour beside the event as it ends, being drawn taller than it is', async () => {
+    server.addEvent('work', 'Catch-up', '2026-11-17T13:45:00Z', '2026-11-17T14:00:00Z')
+    server.addEvent('work', 'Call', '2026-11-17T14:00:00Z', '2026-11-17T15:00:00Z')
+    server.addEvent('work', 'Wrap-up', '2026-11-17T15:00:00Z', '2026-11-17T15:30:00Z')
+    await start('/calendar/week/2026-11-17')
+    await waitFor(() => expect(timed('Tuesday 2026-11-17')).toHaveLength(3))
+    expect(timed('Tuesday 2026-11-17').map((e) => [e.textContent, e.style.left, e.style.width])).toEqual([
+      ['08:45 Catch-up', '0%', '50%'],
+      ['09:00 Call', '50%', '50%'],
+      // An hour long, Call ends as Wrap-up starts: one above the other.
+      ['10:00 Wrap-up', '0%', '100%'],
+    ])
+  })
+
   it('moves by week with j and k, to today with t, and between views with a and w', async () => {
     const user = await start('/calendar/week/2026-11-11')
     await user.keyboard('j')

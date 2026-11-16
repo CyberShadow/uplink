@@ -16,6 +16,8 @@ const HOUR = 3_600_000
 /** Days the agenda lists. */
 const AGENDA_DAYS = 14
 const HOUR_PX = 48
+/** The least an event is drawn, however short: a line. */
+const MIN_EVENT_PX = 16
 /** Events shorter than two lines are on one. */
 const SHORT_PX = 32
 /** The hour a week not of today opens at. */
@@ -528,7 +530,8 @@ function Week(props: {
 }
 
 /** Where the day's timed events go: by time, side by side where they
- * overlap. */
+ * overlap as drawn (a short one is drawn taller than its time, and so can
+ * reach into the next). */
 function laidOut(events: CalendarEvent[], day: Date) {
   const start = day.getTime()
   const end = addDays(day, 1).getTime()
@@ -545,14 +548,14 @@ function laidOut(events: CalendarEvent[], day: Date) {
     laneEnds = []
   }
   for (const event of [...events].sort((a, b) => a.start - b.start || b.end - a.end)) {
-    const from = Math.max(event.start, start)
-    const to = Math.min(Math.max(event.end, event.start + 15 * 60_000), end)
-    if (from >= clusterEnd) close()
-    let lane = laneEnds.findIndex((laneEnd) => laneEnd <= from)
-    if (lane === -1) lane = laneEnds.push(to) - 1
-    else laneEnds[lane] = to
-    clusterEnd = Math.max(clusterEnd, to)
-    cluster.push({ event, top: px(from), height: Math.max(px(to) - px(from), 16), lane, lanes: 1 })
+    const top = px(Math.max(event.start, start))
+    const bottom = Math.max(px(Math.min(event.end, end)), top + MIN_EVENT_PX)
+    if (top >= clusterEnd) close()
+    let lane = laneEnds.findIndex((laneEnd) => laneEnd <= top)
+    if (lane === -1) lane = laneEnds.push(bottom) - 1
+    else laneEnds[lane] = bottom
+    clusterEnd = Math.max(clusterEnd, bottom)
+    cluster.push({ event, top, height: bottom - top, lane, lanes: 1 })
   }
   close()
   return placed
