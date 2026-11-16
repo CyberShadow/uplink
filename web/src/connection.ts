@@ -388,9 +388,37 @@ export class Connection implements Requester, Subscriber {
     this.sent.clear()
     if (this.disposed) return
     this.status.value = 'connecting'
+    this.retry()
+  }
+
+  /** Connects again, after the backoff, once the server answers over
+   * HTTP. A WebSocket that fails to connect makes Firefox delay the next
+   * to the same host and path, longer each time (up to a minute, RFC 6455
+   * §7.2.3), unseen: tried while the server is down, they would hold
+   * the connection back long after it is up again. The first connection
+   * goes ahead, as the page was just loaded from the server. */
+  private retry() {
     const delay = BACKOFF_MS[Math.min(this.attempt, BACKOFF_MS.length - 1)]
     this.attempt++
-    this.reconnect = setTimeout(() => this.connect(), delay)
+    this.reconnect = setTimeout(() => {
+      void this.answers().then((up) => {
+        if (this.disposed) return
+        if (up) this.connect()
+        else this.retry()
+      })
+    }, delay)
+  }
+
+  /** Whether the server answers: not a proxy in front of it, which tells
+   * of its being down with an error. */
+  private async answers(): Promise<boolean> {
+    const page = new URL('/', this.url.replace(/^ws/, 'http'))
+    try {
+      return (await fetch(page, { method: 'HEAD', cache: 'no-store' })).ok
+    } catch {
+      // Not reached.
+      return false
+    }
   }
 
   private startHeartbeat() {

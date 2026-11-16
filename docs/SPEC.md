@@ -108,7 +108,12 @@ Don't litigate these in code review.
 5. **Real-time uses one channel: a JSON-over-WebSocket protocol uplink
    defines.** No SSE, no long-poll, no second port. Heartbeat is app-level
    ping/pong at 25–30 s. The stream is the log itself (§6): reconnection
-   replays the entries after the last one the client saw.
+   replays the entries after the last one the client saw. A dropped
+   client reconnects with backoff, once the server answers over HTTP
+   (`HEAD /`): a WebSocket that fails to connect makes Firefox hold the
+   next back, unseen, for up to a minute (RFC 6455 §7.2.3), so none is
+   tried while the server is down. The first connection, of a page just
+   loaded, goes ahead at once.
 6. **No client-side persistence.** No client cache of mail metadata, no
    client cache of Matrix events. The SPA loads from the server on connect,
    keeps reactive state in memory, and writes nothing to disk. (IndexedDB

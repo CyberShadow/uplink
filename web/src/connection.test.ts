@@ -77,6 +77,10 @@ let peers: Peer[]
 let nextPeer: (peer: Peer) => void
 let connected: Promise<Peer>
 let connection: Connection | undefined
+/** Whether the server answers over HTTP, as the client checks before
+ * connecting again: of each check, its URL and method. */
+let answers: boolean
+let checks: [string, string | undefined][]
 
 function expectConnection() {
   connected = new Promise((resolve) => (nextPeer = resolve))
@@ -84,6 +88,13 @@ function expectConnection() {
 
 beforeEach(() => {
   peers = []
+  answers = true
+  checks = []
+  vi.stubGlobal('fetch', async (url: URL, init: RequestInit) => {
+    checks.push([url.href, init.method])
+    if (!answers) throw new TypeError('NetworkError when attempting to fetch resource.')
+    return new Response(null, { status: 200 })
+  })
   expectConnection()
   server = new Server(URL, { selectProtocol: (protocols) => protocols[0] })
   server.on('connection', (socket) => {
@@ -98,6 +109,7 @@ afterEach(() => {
   connection = undefined
   server.stop()
   vi.useRealTimers()
+  vi.unstubAllGlobals()
 })
 
 function connect() {
@@ -175,6 +187,31 @@ describe('Connection', () => {
     await vi.waitFor(() => expect(connection.status.value).toBe('open'))
     expect(handlers.reset).toHaveBeenCalledOnce()
     expect(handlers.entry.mock.calls.map(([e]) => e.id)).toEqual([6, 7])
+  })
+
+  it('connects again only once the server answers over HTTP, but at first at once', async () => {
+    vi.useFakeTimers()
+    connect()
+    const accepting = accept({ cursor: 0, resumed: false })
+    await vi.advanceTimersByTimeAsync(10)
+    const { peer } = await accepting
+    expect(checks).toEqual([])
+
+    // Down: no WebSocket is tried, which Firefox would hold the next back
+    // for; the server is asked again, with the backoff.
+    answers = false
+    peer.socket.close()
+    await vi.advanceTimersByTimeAsync(BACKOFF_MS[0] + BACKOFF_MS[1] + 10)
+    expect(checks).toEqual([
+      ['http://uplink.test/', 'HEAD'],
+      ['http://uplink.test/', 'HEAD'],
+    ])
+    expect(peers).toHaveLength(1)
+
+    answers = true
+    await vi.advanceTimersByTimeAsync(BACKOFF_MS[2] + 10)
+    expect(checks).toHaveLength(3)
+    expect(peers).toHaveLength(2)
   })
 
   it('sends a Matrix message in flight again on a new connection, of its key', async () => {
