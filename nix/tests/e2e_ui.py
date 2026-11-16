@@ -437,9 +437,32 @@ def hostile_matrix(page):
     }
 
 
+def room_history(page):
+    """Opens the Archive room, and scrolls to the top of what it shows:
+    how many lines it showed, how many once more loaded, and how far the
+    line at the top moved meanwhile."""
+    page.get_by_role("navigation").get_by_role("link", name="Archive").click()
+    timeline = page.get_by_role("list", name="Timeline")
+    expect(timeline).to_contain_text("Message 120", timeout=15000)
+    lines = timeline.locator("[data-event]")
+    shown = lines.count()
+    # The line at the top, as scrolled there: before anything loads.
+    event, y = timeline.locator("xpath=..").evaluate("""scroller => {
+        scroller.scrollTop = -scroller.scrollHeight
+        const line = scroller.querySelector('[data-event]')
+        return [line.dataset.event, line.getBoundingClientRect().y]
+    }""")
+    top = timeline.locator(f"[data-event='{event}']")
+    expect(lines).not_to_have_count(shown, timeout=15000)
+    # Time for another page to load, as one would if the top were still in
+    # view.
+    page.wait_for_timeout(2000)
+    return {"shown": shown, "loaded": lines.count(), "moved": top.bounding_box()["y"] - y}
+
+
 STEPS = {
     f.__name__: f
-    for f in [read, archive, undo, label, search, reply, matrix, todos, home, history, trash, attachment, tabs, hostile, hostile_matrix]
+    for f in [read, archive, undo, label, search, reply, matrix, todos, home, history, trash, attachment, tabs, hostile, hostile_matrix, room_history]
 }
 
 step = STEPS[sys.argv[1]]

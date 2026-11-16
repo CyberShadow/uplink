@@ -101,8 +101,12 @@
   padding: 8px 0;
 }
 
+/* Never what the browser's scroll anchoring holds in place: the events
+   loaded go in after it, and, held, it would push them down, staying in
+   view to load more, and more. Without it, the events shown hold. */
 .earlier {
   padding: 4px 16px;
+  overflow-anchor: none;
 }
 
 /* A line per event: time, sender, what it says; actions on hover. */

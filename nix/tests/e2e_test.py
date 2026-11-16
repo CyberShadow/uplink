@@ -287,4 +287,26 @@ with subtest("a hostile Matrix message runs nothing, and has uplink fetch nothin
             "links": [None, None],
         }, (browser, result)
 
+with subtest("a room's history loads a page at a time as its top comes into view"):
+    archive = matrix(bob, "POST", "/createRoom", {"name": "Archive", "invite": ["@alice:localhost"]})["room_id"]
+    matrix(alice, "POST", f"/rooms/{archive}/join", {})
+    sends = " && ".join(
+        f"curl -sf -X PUT -H 'Authorization: Bearer {bob}' -d '{{\"msgtype\": \"m.text\", \"body\": \"Message {n}\"}}' "
+        + shlex.quote(f"{MATRIX}/rooms/{archive}/send/m.room.message/history-{n}")
+        for n in range(1, 121)
+    )
+    machine.succeed(sends)
+    eventually(
+        "the room's whole history to be stored",
+        lambda: machine.succeed(
+            f"sqlite3 {STATE}/db/uplink.sqlite \"SELECT count(*) FROM matrix_event WHERE body LIKE 'Message %'\""
+        ).strip() == "120",
+        timeout=60,
+    )
+    for browser in ["chromium", "firefox"]:
+        result = ui(f"room_history {browser}")
+        # One page more, the lines shown before staying where they were.
+        assert result["loaded"] == result["shown"] + 50, (browser, result)
+        assert abs(result["moved"]) < 1, (browser, result)
+
 machine.copy_from_vm("/tmp/screenshots", "")
