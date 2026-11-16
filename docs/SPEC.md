@@ -2991,7 +2991,9 @@ log nothing; sync records the room, and leaving it is the op above):
 `CreateMatrixRoom` creates one (named, with a topic, inviting users,
 encrypted or not; private, or public under an address), `StartDirectChat`
 opens the account's joined direct chat with a user, or creates one
-(encrypted, marked direct in `m.direct`), and `JoinMatrixRoom` joins by
+(marked direct in `m.direct`; encrypted if the homeserver lists a device
+of theirs to encrypt to, as Element does, so that a bridge's bot, which
+has none, can read it), and `JoinMatrixRoom` joins by
 address or id. Each answers `MatrixRoomJoined` with the room's Matrix id
 once the homeserver has; its refusal (as of an address that does not
 exist) is `Invalid`, with its reason. The client opens the room once

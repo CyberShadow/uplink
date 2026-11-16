@@ -2054,6 +2054,8 @@ async fn rooms_are_created_direct_chats_started_and_rooms_joined_by_address() {
     let homeserver = Homeserver::start(dir.path()).await;
     let bob = homeserver.register(dir.path(), "bob").await;
     homeserver.register(dir.path(), "alice").await;
+    // As a bridge's bot: never syncing, it has no device keys.
+    homeserver.register(dir.path(), "bot").await;
     let _bob_received = sync_messages(&bob);
     let uplink = Uplink::new(&homeserver);
     let _sync = uplink.pair_and_sync().await;
@@ -2116,7 +2118,8 @@ async fn rooms_are_created_direct_chats_started_and_rooms_joined_by_address() {
             .await,
     );
     assert_ne!(direct, created);
-    listed(direct.clone()).await;
+    // Bob has a device, so it is encrypted.
+    assert!(listed(direct.clone()).await.encrypted);
     eventually("the direct chat to be known as one", || async {
         let again = joined(
             uplink
@@ -2129,6 +2132,16 @@ async fn rooms_are_created_direct_chats_started_and_rooms_joined_by_address() {
         (again == direct).then_some(())
     })
     .await;
+    // With one who has no device to encrypt to, it is not.
+    let bot_direct = joined(
+        uplink
+            .matrix
+            .start_direct_chat("mx", "@bot:localhost")
+            .await
+            .answered()
+            .await,
+    );
+    assert!(!listed(bot_direct).await.encrypted);
 
     // Bob's public room, by its address.
     let mut request = CreateRoom::new();

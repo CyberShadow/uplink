@@ -662,8 +662,14 @@ impl Matrix {
     }
 
     /// The account's direct chat with `user` it has joined, else one
-    /// created (encrypted), inviting them.
+    /// created, inviting them: encrypted if they have a device to encrypt
+    /// to, as the homeserver lists their keys (a bridge's bot has none,
+    /// and would not read it), as Element does.
     pub async fn start_direct_chat(&self, account: &str, user: &str) -> Remote {
+        use matrix_sdk::ruma::{
+            api::client::room::create_room::v3::{Request, RoomPreset},
+            events::{room::encryption::RoomEncryptionEventContent, InitialStateEvent},
+        };
         let client = self.client(account)?;
         let user = user_id(user)?;
         if client.user_id() == Some(&*user) {
@@ -677,11 +683,31 @@ impl Matrix {
         };
         Ok(match client.get_dm_room(&user) {
             Some(room) => Answer::Now(Ok(joined(room))),
-            None => {
-                Answer::later(
-                    async move { Ok(joined(client.create_dm(&user).await.map_err(refused)?)) },
-                )
-            }
+            None => Answer::later(async move {
+                let encryption = client.encryption();
+                // Their keys queried from the homeserver (sharing no room
+                // with them, the store would know none); the identity it
+                // answers is not needed, only the devices it stores.
+                encryption
+                    .request_user_identity(&user)
+                    .await
+                    .map_err(refused)?;
+                let devices = encryption
+                    .get_user_devices(&user)
+                    .await
+                    .map_err(|e| internal(e.into()))?;
+                let mut request = Request::new();
+                request.invite = vec![user];
+                request.is_direct = true;
+                request.preset = Some(RoomPreset::TrustedPrivateChat);
+                if devices.devices().next().is_some() {
+                    request.initial_state = vec![InitialStateEvent::with_empty_state_key(
+                        RoomEncryptionEventContent::with_recommended_defaults(),
+                    )
+                    .to_raw_any()];
+                }
+                Ok(joined(client.create_room(request).await.map_err(refused)?))
+            }),
         })
     }
 
