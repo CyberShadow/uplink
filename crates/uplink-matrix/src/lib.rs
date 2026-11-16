@@ -23,6 +23,8 @@ pub mod typing;
 pub mod verification;
 
 #[cfg(test)]
+mod gap_tests;
+#[cfg(test)]
 mod tests;
 
 use uplink_tx_log::Registry;

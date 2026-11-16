@@ -1816,13 +1816,18 @@ impl Observation for Filled {
                 .is_some())
         };
         let mut missing = vec![];
+        let mut seen = HashSet::new();
         let mut closed = false;
         for e in self.events {
             if stored(&e)? {
                 closed = true;
                 break;
             }
-            missing.push(e);
+            // A page may list an event twice (tuwunel gave two rooms one
+            // id, and the room its creation twice): it is stored once.
+            if seen.insert(e.event_id.clone()) {
+                missing.push(e);
+            }
         }
         let n = missing.len() as i64;
         ensure!(
@@ -1834,10 +1839,20 @@ impl Observation for Filled {
         // Oldest first, just before the gap's event.
         missing.reverse();
         let positions: Vec<i64> = (0..n).map(|i| before - n + i).collect();
+        // An error, not a panic: a panic here, holding the database,
+        // poisons it for every request after.
         let added: Vec<RoomEventId> = insert_events(tx, self.room, &missing, &positions)?
             .into_iter()
-            .map(|id| id.expect("events not stored are stored"))
-            .collect();
+            .zip(&missing)
+            .map(|(id, e)| {
+                id.with_context(|| {
+                    format!(
+                        "event {} of room {} was not stored",
+                        e.event_id, self.room.0
+                    )
+                })
+            })
+            .collect::<Result<_>>()?;
         tx.execute("DELETE FROM matrix_gap WHERE id = ?1", [self.gap.0])?;
         let left = match added.first() {
             Some(oldest) if !closed && !self.start => {
