@@ -28,7 +28,7 @@ use uplink_protocol::{
         RoomsChanged, ThreadSummary, TimelineAdded, TimelineChanged, TimelineFilled, TimelineGap,
         TimelinePage,
     },
-    ServerEvent,
+    ServerEvent, TxLogId,
 };
 use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 use uplink_tx_log::{Applied, Inverse, Observation, Observed, Op};
@@ -67,6 +67,9 @@ pub struct SyncState {
 #[derive(Debug, Serialize)]
 pub struct Synced {
     pub next_batch: String,
+    /// The latest entry as it was requested: what it tells of may be of
+    /// before entries after (room tags, `room_tags::stale`).
+    pub requested: TxLogId,
     pub rooms: Vec<ObservedRoom>,
     /// What the account's account data says of image packs, if the
     /// response changed it (or is the first). Not in the log: it is
@@ -301,7 +304,8 @@ impl Observation for Synced {
         let mut added_total = 0;
         for room in self.rooms {
             let (id, upserted) = upsert_room(tx, account, &room)?;
-            let tagged = room_tags::observe(tx, id, &room.tags)?;
+            // Stale, they are read again.
+            let tagged = room_tags::observe(tx, id, &room.tags, self.requested)? == Some(true);
             image_packs::observe_room(tx, account, id, &room.image_packs)?;
             let changed = set_children(tx, id, &room.children)? || upserted || tagged;
             let positions = synced_positions(tx, id, room.events.len())?;

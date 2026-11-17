@@ -1087,6 +1087,9 @@ mod tests {
     use uplink_realtime::Hub;
     use uplink_tx_log::{Dispatcher, Registry};
 
+    /// What a sync requested after every entry tells of: current.
+    const FRESH: uplink_protocol::TxLogId = uplink_protocol::TxLogId(i64::MAX);
+
     /// A room for the account `mx`, joined, of these events.
     fn room(
         room_id: &str,
@@ -1094,6 +1097,7 @@ mod tests {
         events: Vec<uplink_matrix::rooms::ObservedEvent>,
     ) -> Synced {
         Synced {
+            requested: FRESH,
             next_batch: "next".into(),
             packs: None,
             rooms: vec![ObservedRoom {
@@ -1921,6 +1925,7 @@ mod tests {
             .observe(
                 "mx".into(),
                 Synced {
+                    requested: FRESH,
                     next_batch: "next".into(),
                     packs: None,
                     rooms: vec![ObservedRoom {

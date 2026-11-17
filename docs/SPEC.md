@@ -2986,8 +2986,14 @@ which a verified device gives.
   tag asked for (`PUT`/`DELETE .../tags/{tag}`, without an order); a
   refusal waits in the outbox, listed by op, for a decision (undoing the
   op). Sync settles a tag had as asked, however it came about; others'
-  changes show unless one is asked for. `Room.tags` lists those shown
-  (as asked), sorted.
+  changes show unless one is asked for. The homeserver sets tags one by
+  one, and syncs run beside the sender: a sync requested before the
+  homeserver set one (V0066: `matrix_room.tags_set_by`, the entry that
+  recorded it; `Synced.requested`, the latest entry as the sync was
+  requested) may tell of them as they were before. Differing, its tags
+  are not taken for the homeserver's; the sync task reads them again
+  (`GET .../tags`, `RoomTagsRead`), by the same rule, until read as of
+  after. `Room.tags` lists those shown (as asked), sorted.
 - **Pinned events**: a room records, as its client has them on sync,
   the events pinned (`m.room.pinned_events`, in its order) and whether
   the account may pin (by the room's power levels; of a room invited

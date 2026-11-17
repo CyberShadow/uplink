@@ -13,7 +13,7 @@ use crate::{
     crawl::Crawler,
     image_packs, markdown,
     membership::{self, MembershipChanged},
-    room_tags::{self, RoomTagSet},
+    room_tags::{self, RoomTagSet, RoomTagsRead},
     rooms::{self, Decrypted, ObservedEvent, ObservedRoom, Push, ReceiptSent, SpaceChild, Synced},
     send::{
         self, SendFailed, SendStarted, SendSucceeded, TakeBackFailed, TakeBackStarted,
@@ -39,6 +39,7 @@ use matrix_sdk::{
             filter::{FilterDefinition, RoomEventFilter},
             receipt::create_receipt::v3::ReceiptType,
             sync::sync_events::v3::Filter,
+            tag::get_tags,
         },
         events::{
             receipt::ReceiptThread,
@@ -69,7 +70,7 @@ use uplink_protocol::{
         Encryption, MatrixContent, MemberAction, Membership, MembershipChange, ReceiptsChanged,
         RoomMember, SecurityChanged, TextFormat, Typing,
     },
-    LogEntry, Notice, Source,
+    LogEntry, Notice, Source, TxLogId,
 };
 use uplink_storage::{
     rusqlite::Connection,
@@ -217,6 +218,15 @@ pub(crate) async fn retry<T, F: std::future::Future<Output = Result<T>>>(
     }
 }
 
+/// The latest entry: what is requested after it may tell of what is
+/// before entries after it.
+async fn head(reader: &Arc<Mutex<Connection>>) -> Result<TxLogId> {
+    read(reader, |conn| {
+        uplink_tx_log::as_of(&conn.unchecked_transaction()?)
+    })
+    .await
+}
+
 pub(crate) async fn read<R: Send + 'static>(
     reader: &Arc<Mutex<Connection>>,
     f: impl FnOnce(&Connection) -> Result<R> + Send + 'static,
@@ -266,6 +276,7 @@ impl Syncer {
                 None => SyncToken::NoToken,
             })
             .timeout(if first { FIRST_SYNC } else { LONG_POLL });
+        let requested = head(&self.reader).await?;
         let response = self.client.sync_once(settings).await?;
         let next_batch = response.next_batch.clone();
         let moment = self.moment(&response).await?;
@@ -294,11 +305,13 @@ impl Syncer {
                     self.account.clone(),
                     Synced {
                         next_batch: next_batch.clone(),
+                        requested,
                         rooms,
                         packs,
                     },
                 )
                 .await?;
+            self.read_tags_again(requested).await?;
         }
         self.notify(moment).await?;
         if !undecryptable.is_empty() {
@@ -307,6 +320,47 @@ impl Syncer {
                 .expect("the redecryptor runs as long as the syncer");
         }
         Ok(next_batch)
+    }
+
+    /// Reads from the homeserver again the tags of the rooms it set after
+    /// entry `requested`, which a sync requested then may have told of as
+    /// they were before (`room_tags::stale`), until read as of after.
+    async fn read_tags_again(&self, requested: TxLogId) -> Result<()> {
+        let account = self.account.clone();
+        let mut rooms = read(&self.reader, move |conn| {
+            room_tags::set_since(conn, &account, requested)
+        })
+        .await?;
+        while let Some((room, room_id)) = rooms.pop() {
+            let requested = head(&self.reader).await?;
+            let user = self.client.user_id().context("the client has no user")?;
+            let response = self
+                .client
+                .send(get_tags::v3::Request::new(
+                    user.to_owned(),
+                    <&RoomId>::try_from(room_id.as_str())?.to_owned(),
+                ))
+                .await?;
+            let tags = room_tags::parse(&serde_json::json!({ "tags": response.tags }))?;
+            self.dispatcher
+                .observe(
+                    self.account.clone(),
+                    RoomTagsRead {
+                        room,
+                        tags,
+                        requested,
+                    },
+                )
+                .await?;
+            if read(&self.reader, move |conn| {
+                room_tags::stale(conn, room, requested)
+            })
+            .await?
+            {
+                rooms.push((room, room_id));
+            }
+        }
+        Ok(())
     }
 
     /// What the response says of the moment, by joined room: who is

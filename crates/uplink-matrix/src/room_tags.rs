@@ -101,10 +101,52 @@ fn set_row(
     Ok(())
 }
 
-/// Records the room's tags as synced; returns whether those shown changed.
+/// Whether the room's tags as told by what was requested after entry
+/// `requested` (a sync, a read) may be of before the homeserver set one
+/// (as recorded since), and so are not known by it: the homeserver sets
+/// them one by one, and its sync tells of them as it can.
+pub fn stale(conn: &Connection, room: RoomId, requested: TxLogId) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT coalesce(tags_set_by > ?2, 0) FROM matrix_room WHERE id = ?1",
+        params![room.0, requested.0],
+        |r| r.get(0),
+    )?)
+}
+
+/// The account's rooms whose tags the homeserver set after entry
+/// `requested`, of which a sync requested then may tell [`stale`]ly.
+pub fn set_since(
+    conn: &Connection,
+    account: &str,
+    requested: TxLogId,
+) -> Result<Vec<(RoomId, String)>> {
+    Ok(conn
+        .prepare("SELECT id, room_id FROM matrix_room WHERE account_id = ?1 AND tags_set_by > ?2")?
+        .query_map(params![account, requested.0], |r| {
+            Ok((RoomId(r.get(0)?), r.get(1)?))
+        })?
+        .collect::<Result<_, _>>()?)
+}
+
+/// Records the room's tags as the homeserver has them, as told by what
+/// was requested after entry `requested`; returns whether those shown
+/// changed, or `None` if they may be stale and differ: read them again.
 /// A tag asked for prevails until set (or refused); one had as asked for,
 /// however it came about, is no longer pending.
-pub(crate) fn observe(tx: &Transaction, room: RoomId, tags: &[String]) -> Result<bool> {
+pub(crate) fn observe(
+    tx: &Transaction,
+    room: RoomId,
+    tags: &[String],
+    requested: TxLogId,
+) -> Result<Option<bool>> {
+    let had: BTreeSet<&String> = tags.iter().collect();
+    let observed: BTreeSet<String> = tx
+        .prepare("SELECT tag FROM matrix_room_tag WHERE room = ?1 AND observed")?
+        .query_map([room.0], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    if had != observed.iter().collect() && stale(tx, room, requested)? {
+        return Ok(None);
+    }
     let stored: Vec<(String, bool, bool, Option<i64>)> = tx
         .prepare("SELECT tag, desired, observed, desired_by FROM matrix_room_tag WHERE room = ?1")?
         .query_map([room.0], |r| {
@@ -128,7 +170,7 @@ pub(crate) fn observe(tx: &Transaction, room: RoomId, tags: &[String]) -> Result
             changed = true;
         }
     }
-    Ok(changed)
+    Ok(Some(changed))
 }
 
 // ── ops ───────────────────────────────────────────────────────────────────
@@ -351,6 +393,10 @@ impl Observation for RoomTagSet {
                 // Asked for no longer, the tag shown is the homeserver's.
                 let shown = if by.is_some() { desired } else { self.tagged };
                 set_row(tx, self.room, &self.tag, shown, self.tagged, by)?;
+                tx.execute(
+                    "UPDATE matrix_room SET tags_set_by = ?2 WHERE id = ?1",
+                    params![self.room.0, this_entry(tx)?.0],
+                )?;
                 if shown != desired {
                     events.push(ServerEvent::RoomsChanged(RoomsChanged {
                         rooms: vec![self.room],
@@ -372,6 +418,37 @@ impl Observation for RoomTagSet {
                 }
             },
             events,
+        })
+    }
+}
+
+/// The room's tags, read from the homeserver as a sync told of them
+/// [`stale`]: as of after that sync, so of after what it may have missed.
+/// Read after entry `requested`, they may be [`stale`] in turn, and are
+/// read again.
+#[derive(Debug, Serialize)]
+pub struct RoomTagsRead {
+    pub room: RoomId,
+    pub tags: Vec<String>,
+    pub requested: TxLogId,
+}
+
+impl Observation for RoomTagsRead {
+    const KIND: &'static str = "matrix.room_tags_read";
+
+    fn apply(self, _account: &str, tx: &Transaction) -> Result<Observed> {
+        let changed = observe(tx, self.room, &self.tags, self.requested)?;
+        Ok(Observed {
+            description: match changed {
+                None => "Read room tags, set meanwhile".to_owned(),
+                Some(_) => "Read room tags".to_owned(),
+            },
+            events: match changed {
+                Some(true) => vec![ServerEvent::RoomsChanged(RoomsChanged {
+                    rooms: vec![self.room],
+                })],
+                Some(false) | None => vec![],
+            },
         })
     }
 }
