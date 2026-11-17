@@ -194,6 +194,27 @@ describe('mail', () => {
       expect(expanded()).toEqual(['true', 'true', 'true'])
     })
 
+    it('opens at the first unread, else at the latest, else at its subject', async () => {
+      const [first, second] = thread()
+      const unread = server.labelId('work', 'UNREAD')
+      const scrolled = vi.spyOn(Element.prototype, 'scrollIntoView')
+      const user = await start('/mail/work/INBOX')
+      const openedAt = async () => {
+        await user.keyboard('{Enter}')
+        const conversation = await screen.findByRole('list', { name: 'Conversation' })
+        const at = scrolled.mock.contexts.at(-1) as Element
+        await user.keyboard('{Escape}')
+        await screen.findByRole('list', { name: 'Messages' })
+        return at === conversation.closest('article') ? 'subject' : within(conversation).getAllByRole('listitem').indexOf(at as HTMLLIElement)
+      }
+      expect(await openedAt()).toBe(2)
+      second.labels.push(unread)
+      expect(await openedAt()).toBe(1)
+      first.labels.push(unread)
+      expect(await openedAt()).toBe('subject')
+      scrolled.mockRestore()
+    })
+
     it('replies to the latest message', async () => {
       const [, , last] = thread()
       const user = await start('/mail/work/INBOX')

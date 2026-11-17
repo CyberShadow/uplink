@@ -1,5 +1,5 @@
-import type { Ref } from 'preact'
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
+import type { Ref, RefObject } from 'preact'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import type {
   CalendarEvent,
@@ -68,6 +68,7 @@ export function Mail(props: Props) {
   const { mail, matrix, todos, ops } = useServices()
   const { route, query } = useLocation()
   const [picking, setPicking] = useState<'label' | 'move' | null>(null)
+  const bar = useRef<HTMLDivElement>(null)
 
   const { inbox, account, label, terms, message } = props
   const view: View = useMemo(
@@ -319,6 +320,7 @@ export function Mail(props: Props) {
             thread={openThread}
             back={backToList}
             unlisted={unlisted}
+            bar={bar}
             // A message by itself, or one not listed, is of no list to go
             // through.
             place={
@@ -337,6 +339,7 @@ export function Mail(props: Props) {
             mail={mail}
             thread={openThread}
             entries={shown!}
+            bar={bar}
             back={backToList}
             // The path names an entry of it, which may be the one leaving.
             reopen={(entry) => route(pathFor(entry), true)}
@@ -603,10 +606,11 @@ function ConversationToolbar(props: {
   /** Whether it is not in the list it was opened in. */
   unlisted: boolean
   place: Place | null
+  bar: Ref<HTMLDivElement>
 }) {
   const { place } = props
   return (
-    <div class={styles.toolbar} role="toolbar" aria-label="Conversation actions">
+    <div ref={props.bar} class={styles.toolbar} role="toolbar" aria-label="Conversation actions">
       <span class={styles.group}>
         <ToolButton label="Back to the list" icon="arrow-left" action={props.back} />
       </span>
@@ -835,6 +839,8 @@ function ConversationView(props: {
   mail: MailStore
   thread: Thread
   entries: Entry[]
+  /** The toolbar that stays above it as it scrolls. */
+  bar: RefObject<HTMLDivElement>
   back: () => void
   reopen: (entry: EntryId) => void
 }) {
@@ -909,8 +915,16 @@ function ConversationView(props: {
   const isExpanded = (entry: Entry) =>
     expanded.get(entry.id) ?? (entry === latest || initially.has(entry.id))
 
+  // It opens at its first unread, or else at its latest, as Gmail's does;
+  // at its subject, if that is its first message.
+  const [opening] = useState(() => (entries.find((e) => initially.has(e.id)) ?? latest).id)
+  const [atSubject] = useState(opening === entries[0].id)
+  const article = useRef<HTMLElement>(null)
+  const openingAt = useRef<HTMLLIElement>(null)
+  useOpenAt(atSubject ? article : openingAt, article, props.bar)
+
   return (
-    <article class={styles.message}>
+    <article ref={article} class={styles.message}>
       <h1 class={styles.messageSubject}>
         {latest.subject ?? '(no subject)'}{' '}
         {thread.entries.some((e) => todos.flagged.value.has(e.message)) && <Flag />}
@@ -918,7 +932,7 @@ function ConversationView(props: {
       </h1>
       <ol class={styles.conversation} aria-label="Conversation">
         {entries.map((entry) => (
-          <li key={entry.id}>
+          <li key={entry.id} ref={entry.id === opening ? openingAt : undefined}>
             <ConversationMessage
               mail={mail}
               entry={entry}
@@ -945,6 +959,45 @@ function ConversationView(props: {
       </div>
     </article>
   )
+}
+
+/** Scrolls `target` to the top, below `bar`, and keeps it there as
+ * `content` grows (its messages load, as they show, after it: those
+ * before it are collapsed), until the user scrolls, clicks or types.
+ * Not while a message's frame loads (or loads anew, its document
+ * changed): laying out the page would lay the frame out before its
+ * styles are in, as Firefox warns; loaded, it is fitted, and scrolled to
+ * again. */
+function useOpenAt(target: RefObject<HTMLElement>, content: RefObject<HTMLElement>, bar: RefObject<HTMLElement>) {
+  useLayoutEffect(() => {
+    const element = target.current!
+    const within = content.current!
+    const pin = () => {
+      const frames = [...within.querySelectorAll('iframe')]
+      if (frames.some((frame) => frame.contentDocument!.readyState !== 'complete')) return
+      element.style.scrollMarginTop = `${bar.current!.offsetHeight}px`
+      element.scrollIntoView({ block: 'start' })
+    }
+    pin()
+    const observer = new ResizeObserver(pin)
+    observer.observe(within)
+    // Before the frame's own handler fits it; so, pinned once it has.
+    let frame = 0
+    const load = () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(pin)
+    }
+    within.addEventListener('load', load, true)
+    const events = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const
+    const stop = () => {
+      observer.disconnect()
+      within.removeEventListener('load', load, true)
+      cancelAnimationFrame(frame)
+      for (const type of events) window.removeEventListener(type, stop, true)
+    }
+    for (const type of events) window.addEventListener(type, stop, true)
+    return stop
+  }, [target, content, bar])
 }
 
 /** What can be done to one message of a conversation; `spam` is `null`

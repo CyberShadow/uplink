@@ -3698,7 +3698,10 @@ in the view has a star of its own. A row is unread if any entry is,
 names its senders (`me` for the account's identities, §3.2; by first names
 if several), counts its messages, and shows the user's labels of any.
 The view lists the messages oldest first, the unread ones and the
-latest expanded (a header toggles one); opening it reads them all, and
+latest expanded (a header toggles one), scrolled, as Gmail's, to the
+first unread, or else the latest (to the subject, if that is the first),
+and kept there as they load until the user scrolls, clicks or types;
+opening it reads them all, and
 replying, forwarding and flagging (`Shift+t`, or unflagging the flagged
 ones) take the latest.
 A conversation its path opens in a list that does not have it (moved
