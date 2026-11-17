@@ -1068,8 +1068,7 @@ session only ever waits for entries already committed.)
 ### 5.5 Notices
 
 What is only of the moment — who is typing, that members sent read
-receipts, that the account's devices or keys changed, that something
-came into a badged bucket (§12.16), that the home view's buckets were
+receipts, that the account's devices or keys changed, that the home view's buckets were
 configured anew — is not logged:
 the server pushes it to the sessions connected as `Notice { notice }`,
 live only, never replayed. A session that falls behind the notices skips
@@ -1165,6 +1164,19 @@ truncates what it has paged through: a window has exactly the first
 items it was widened to, whatever comes and goes before them; an item
 after it is not sent, so a client showing a page while thousands of
 messages are first synced is sent only what changes of that page.
+
+A window is of items, or, with `of: unseen`, of the messages the query
+matches that are unseen (§12.15), as notifications want (§12.16), where
+home wants conversations: each message as the query matches it within
+its item (§8.7: `has:(…)` of its conversation or room, a room's own
+terms holding of its messages), newest first by its own time (an
+entry's receipt, a message's `ts`), keyed by its entry or event, with
+its item's key, and as the client shows it (an entry's sender, subject
+and snippet; a room's name, a message's sender and text, as last
+edited). Messages are mail's entries, and a room's messages and its
+invitation (§9.5); to-dos and events have none, so such a window never
+has them. It changes as an item window does: an edit upserts its
+message, and what is read, archived, redacted or seen leaves.
 
 Windows are of their connection. On a new one, resumed or not, the
 client subscribes anew, from the first page: what it had of them is
@@ -2917,8 +2929,13 @@ which a verified device gives.
   counts its messages that notify only while it is in a `count`
   bucket.
 - **Browser notifications** are of the home buckets that notify
-  (§12.16): a room's message is news if the bucket's query matches it,
-  as a message, and an invitation if its room is in the bucket. The
+  (§12.16): of a room's messages that the bucket's query matches, as
+  messages, and of its invitation. An invited room has one message: the
+  invitation, the stripped `m.room.member` event of the account that
+  sync gives (the SDK's `invite_details`), stored as the room's event,
+  its sender the inviter. It has no `ts` (stripped state has none), so
+  it is positioned by when it was stored, and is news unless the
+  account's first sync stored it. The
   default buckets ask the push rules (`is:notifying`) of every message
   but mentions, so what the push rules mute does not notify, and what
   they notify of is in a bucket that notifies: a bridged DM, which they
@@ -4113,9 +4130,9 @@ Two things are tracked of what comes in, as Thunderbird's "new" and
   before (`is:unread`, the provider's flag); a room's messages are read
   as they are shown on screen (below).
 
-**Seen is of places.** Showing a place, in a visible tab (a label's or
-All inboxes' list, a room, To-dos, Calendar, Home), sees everything in
-it, however much is on screen: a new message in a label is seen once
+**Seen is of places.** Attending a place (below: a label's or All
+inboxes' list, a room, To-dos, Calendar, Home) sees everything in it,
+however much is on screen: a new message in a label is seen once
 the label is opened, though the message is not. Each place keeps when
 it was last seen (desired state uplink alone keeps, §6.6; V0042
 `seen`: of each kind, the latest id stored then, as ids are given in
@@ -4130,10 +4147,31 @@ listing of the mailbox, which may take days, stores the account's
 history with ids as new as any, and that is not news, however late it
 is stored. So with a room's messages: those sent (`ts`) before uplink
 began to sync the Matrix account, which a first sync and the filling of
-gaps store, neither notify nor highlight (§9.5). The
-client dispatches `MarkSeen { place }` on showing a place whose mark
-has a dot, and on new activity in it while it shows; not otherwise, so
-that the log is not filled with visits.
+gaps store, neither notify nor highlight (§9.5). A to-do is the user's
+own, and never news.
+
+**A place is seen while it is attended:** shown in a visible tab of a
+focused window, the user having used it (a key, the pointer, a touch)
+within 5 minutes, as Slack and Discord take the user for away after a
+while of nothing. Visible alone is not enough: a tab left on another
+screen, or under another window, is not looked at. The client tells
+the server what it attends (`Attend { place }`, `place` none once it
+no longer does, of the moment as `SetTyping` is, §5.5: it answers
+`Done` and logs nothing), on every change; the connection's end ends
+it. The server keeps, in memory, the places attended by any session,
+and what is in one is seen, however it came: so what comes while the
+user looks is never unseen, not for a moment, and no client, here or
+on another device, notifies of it (§12.16). It records the seen as
+`MarkSeen { place }` (as shown, below) as attention to a place begins,
+and as it ends, as of then, so that the log is not filled with visits;
+an attended place's being seen changes what is unseen across items, as
+a place seen does (§5.7, §12.14). What came while a place was attended,
+when the server stopped before attention ended, is unseen again.
+
+A place's watermark is of ids, not of what it held: what was stored
+before a place was seen, but came into it after (a filter elsewhere
+labelled it, a bucket's query was configured anew), is seen though
+never shown there. That is rare, and taken as so.
 
 **Rooms open at their latest message**, as Element's and Discord's do,
 for seeing what goes on now and for writing; catching up and mentions
@@ -4181,7 +4219,7 @@ user's own.
 
 ### 12.16 Notifications
 
-What comes from others into a bucket is notified of as its badge says
+What comes into a bucket is notified of as its badge says
 (`Urgency`), as freedesktop's urgencies and Android's channels'
 importance tell apart what interrupts from what goes by: of an `alert`
 bucket's, as what needs the user, the notification interrupts: it stays
@@ -4191,61 +4229,48 @@ bucket's (Unread), as what is to be kept up with when the user comes to
 it, and an unbadged one's (Backlog, Unsorted, Other) are not notified
 of. Reminders of events (§10.2) interrupt.
 
-What comes is mail, messages and invitations; to-dos and events are
-the user's own (a meeting request comes as mail):
+What is notified of is messages (§5.7): mail's entries, a room's
+messages and invitations; to-dos and events have none, so are not
+notified of (a meeting request comes as mail). Notifications are
+matched as messages, where home lists items, since an item is in a
+bucket by any of its messages, but what is news is a message: so
+`is:notifying` defers to the push rules (§9.5), while chatter in a room
+with a mention is no news to a bucket of `is:mention`. A message is
+notified of while it is in a notifying bucket and unseen (§12.15): news
+(mail received, a message sent, once uplink began to sync the account;
+an invitation not stored by the first sync), and in no place seen or
+attended since it was stored. So it stands until it is dealt with,
+here or in another client, as Element and Gmail's apps take back their
+notifications: read, archived or redacted, which takes it out of the
+bucket, or seen; and while the user looks at where it is, it is not
+notified of at all, nor on their other devices, as Slack does not
+notify the phone while the desktop is in use.
 
-- of a conversation, its newest entry stored since the badges were last
-  derived, received within the hour, that is not the user's own (in
-  Sent or Drafts);
-- of a room, its newest message stored since, sent within the hour, not
-  the user's own, that the bucket's query matches as a message (§8.7: as
-  a room's search finds it, its room's terms holding of it), of its main
-  timeline or its threads: so `is:notifying` defers to the push rules
-  (§9.5), while chatter in a room with a mention is no news to a bucket
-  of `is:mention`;
-- an invitation to a room invited to now but not then, by the room's
-  name, which the client may not have listed yet. It has no message, nor
-  time: an account's first sync tells of those pending.
-
-Within the hour, so that what is only newly stored (an account's first
-sync, a room's history) is not news. The server finds them as it
-derives the badges (§12.14), of the same read: of the items each
-notifying bucket holds of those checked again (derived anew, of its 100
-most recently active items), those whose news is after the watermark
-(the latest ids of each kind, as `seen` has them, §12.15) of the
-previous derivation, and the invitations not among those then; none at
-first. It tells every
-session of each (`Notice::Arrival { bucket, urgency, item }`, §5.5): live
-only, so a client not connected then, as while the computer slept, is
-not told; the badges are what remains of it.
-
-What was told of is no news once it is dealt with, here or in another
-client, as Element and Gmail's apps take back their notifications: its
-conversation or room no longer in a bucket that notifies (read,
-archived), or what it told of deleted (the entry removed, in Trash or
-Spam; the message redacted), though what else came keeps its item in
-the bucket, or the invitation answered. The server keeps what it told
-of, one per conversation or room, a later arrival replacing it (as the
-client's `tag`), and checks each again as it derives the badges, of
-the same read; it tells every session of what is no news
-(`Notice::Recall { item }`), and forgets it. It keeps them in memory
-only: a notification told of before the server restarted is not
-recalled.
+The client subscribes, for each urgency, to the unseen messages of its
+buckets (`of: unseen`, §5.7, a window of 100, the most a desktop shows
+at once): their queries, each as home has it (less the items of every
+earlier bucket), joined by `OR`. What the windows hold is what stands:
+the server keeps no notifications of its own. The first listing of a
+page's windows is what was there before it opened, and is not notified
+of, as the badges are what tells of it; after, what is new to a window
+is notified of, a message changed (an edit) updates its notification
+quietly, and one gone from it closes its notification, as does the
+oldest let go of more than 100. A new connection lists them anew
+(§5.7), and what it lists is compared with what the page had: what is
+new is notified of, and what is gone closed.
 
 Once the browser lets uplink notify (an item of the nav's views, under
-Calendar, asks it to, until it is answered), the web client notifies of
-each, unless the tab is visible
-and shows it (the conversation opened by any of its entries, the room):
+Calendar, asks it to, until it is answered), the web client notifies,
+one per conversation or room (`tag`), of its newest message standing:
 the sender and subject of mail, with its snippet, the room's name and
 the message's sender and text, or the room's name and that it invites
-the user; one per conversation or room, a
-later replacing it (`tag`). Each, and each reminder, carries uplink's
-icon (`logo-192.png`), as the browser passes on to a desktop's
-notifications no more than the title, body and image: it is what tells
-them as uplink's. A click opens it: the conversation in its
-account's All Mail, or the room. A recall closes it, if it is still
-of what was recalled (not replaced). Only while a client is open: the
-server does not notify (the Android app, ROADMAP, would).
+the user. A message after replaces it; the newest's going shows the
+next one standing, if any, quietly, or closes it. Each, and each
+reminder, carries uplink's icon (`logo-192.png`), as the browser passes
+on to a desktop's notifications no more than the title, body and image:
+it is what tells them as uplink's. A click opens it: the conversation
+in its account's All Mail, or the room. Only while a client is open:
+the server does not notify (the Android app, ROADMAP, would).
 
 ## 13. Authentication & secrets
 
