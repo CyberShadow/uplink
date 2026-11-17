@@ -1,7 +1,7 @@
 //! The media of events (SPEC §9.8): images, videos, audio and files sent
-//! to rooms, their thumbnails, and images in formatted messages, fetched
-//! by the account's client (decrypting those of encrypted rooms) for the
-//! web client to show.
+//! to rooms, their thumbnails, images in formatted messages and those of
+//! custom reactions to them, fetched by the account's client (decrypting
+//! those of encrypted rooms) for the web client to show.
 //!
 //! Only media an event names are fetched, so that the web client cannot
 //! have the server fetch whatever it names.
@@ -26,6 +26,16 @@ pub struct Named {
 /// its `formatted_body`.
 pub fn named(contents: &[Value], mxc: &str) -> Option<Named> {
     contents.iter().find_map(|content| in_content(content, mxc))
+}
+
+/// The image `mxc` a custom reaction reacts with (MSC4027), which says
+/// nothing of it.
+pub fn reaction(mxc: &str) -> Named {
+    Named {
+        source: MediaSource::Plain(OwnedMxcUri::from(mxc)),
+        mime: None,
+        name: None,
+    }
 }
 
 fn in_content(content: &Value, mxc: &str) -> Option<Named> {

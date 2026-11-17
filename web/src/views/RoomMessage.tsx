@@ -7,7 +7,7 @@ import type { MemberReceipt, Room, RoomEvent } from '../generated/protocol'
 import { dateTime } from '../format'
 import { keepFocus } from '../keymap'
 import { displayName } from '../matrix'
-import { pretty, Versions } from './RoomEvent'
+import { pretty, ReactionKey, Versions } from './RoomEvent'
 import panel from './RoomInfo.module.css'
 import styles from './Room.module.css'
 
@@ -53,7 +53,7 @@ export function MessageDetails(props: {
           <ul class={styles.history}>
             {event.reactions.map((r) => (
               <li key={r.key}>
-                {r.key} {r.senders.map((s) => displayName(s.sender, s.sender_name)).join(', ')}
+                <ReactionKey room={room} event={event} reactionKey={r.key} shortcode={r.shortcode} /> {r.senders.map((s) => displayName(s.sender, s.sender_name)).join(', ')}
               </li>
             ))}
           </ul>

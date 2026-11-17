@@ -245,8 +245,13 @@ pub struct EventEdit {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Reaction {
-    /// What is reacted with: usually an emoji.
+    /// What is reacted with: usually an emoji, or an image's `mxc:` URI
+    /// (MSC4027, a custom reaction), served as media the event names
+    /// (SPEC §9.8).
     pub key: String,
+    /// The image's name, as `:shortcode:`: the first its reactions give
+    /// (MSC4027's `com.beeper.reaction.shortcode`).
+    pub shortcode: Option<String>,
     /// Each sender once, in the order they reacted.
     pub senders: Vec<Reactor>,
 }
@@ -328,8 +333,13 @@ pub enum MatrixContent {
         /// to the thread's root or one of its messages, if to any.
         thread: Option<String>,
     },
-    /// Reacts to an event with `key`, usually an emoji.
-    Reaction { event: String, key: String },
+    /// Reacts to an event with `key`, usually an emoji, or an image's
+    /// `mxc:` URI named by `shortcode` (MSC4027).
+    Reaction {
+        event: String,
+        key: String,
+        shortcode: Option<String>,
+    },
     /// Redacts an event: deletes a message, or takes a reaction back.
     Redaction { event: String },
     /// A file uploaded to uplink, sent as an image, a video, audio or a

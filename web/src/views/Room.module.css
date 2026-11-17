@@ -607,6 +607,12 @@ button.sender:hover .name {
   cursor: pointer;
 }
 
+/* A custom reaction's image, as tall as an emoji. */
+.customReaction {
+  height: 1.25em;
+  vertical-align: -0.25em;
+}
+
 .reaction.own {
   border-color: var(--accent);
   background: var(--selected);

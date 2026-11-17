@@ -160,12 +160,15 @@ impl Matrix {
                     let (account, contents) = rooms::event_contents(&tx, room, event)
                         .map_err(internal)?
                         .ok_or_else(|| no_event(room, event))?;
-                    let named = media::named(&contents, &mxc).ok_or_else(|| {
-                        error(
-                            ErrorCode::NotFound,
-                            format!("event {} does not name {mxc}", event.0),
-                        )
-                    })?;
+                    let reacted = rooms::reacted_with(&tx, event, &mxc).map_err(internal)?;
+                    let named = media::named(&contents, &mxc)
+                        .or_else(|| reacted.then(|| media::reaction(&mxc)))
+                        .ok_or_else(|| {
+                            error(
+                                ErrorCode::NotFound,
+                                format!("event {} does not name {mxc}", event.0),
+                            )
+                        })?;
                     Ok((account, named))
                 }
             })
@@ -1002,6 +1005,13 @@ impl Matrix {
             }
             MatrixContent::Reaction { key, .. } if key.is_empty() => {
                 return invalid("the reaction is empty".into());
+            }
+            MatrixContent::Reaction {
+                key,
+                shortcode: Some(_),
+                ..
+            } if !key.starts_with("mxc://") => {
+                return invalid(format!("{key} is no image to name by a shortcode"));
             }
             MatrixContent::File {
                 blob, name, mime, ..

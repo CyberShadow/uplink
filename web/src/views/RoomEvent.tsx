@@ -26,8 +26,10 @@ import {
   linkifyMessage,
   links,
   media,
+  mediaPath,
   mxcPath,
   permalink,
+  reactionName,
   senderColor,
   shown,
   stateSummary,
@@ -112,7 +114,11 @@ export function lineActions(line: Line, matrix: MatrixStore): LineActions {
       else if (pending) {
         // Until the server has it, there is none of its to cancel.
         if (!isLocal(pending)) matrix.cancelSend(pending.id)
-      } else matrix.send(room.id, { type: 'reaction', event: event.event_id, key })
+      } else {
+        // A custom reaction is named as others name it.
+        const shortcode = event.reactions.find((r) => r.key === key)?.shortcode ?? null
+        matrix.send(room.id, { type: 'reaction', event: event.event_id, key, shortcode })
+      }
     }
   }
   if (replyable && own && TEXT.has(content.msgtype ?? '')) actions.edit = line.edit
@@ -201,6 +207,7 @@ export function EventRow(
         )}
         {!event.redacted && (
           <Reactions
+            room={room}
             event={event}
             me={me}
             overlay={props.overlay}
@@ -742,6 +749,7 @@ export function reveal(event: RoomEventId) {
  * takes it back. Those being sent count, and those being taken back do
  * not. */
 function Reactions(props: {
+  room: Room
   event: RoomEvent
   me: string
   overlay: Overlay
@@ -768,24 +776,36 @@ function Reactions(props: {
         if (count === 0) return null
         const names = senders.map((s) => displayName(s.sender, s.sender_name))
         if (pending && !mine) names.push('you')
+        const shortcode =
+          event.reactions.find((r) => r.key === key)?.shortcode ??
+          (pending?.content.type === 'reaction' ? pending.content.shortcode : null)
         return (
           <li key={key}>
             <button
               type="button"
               class={[styles.reaction, (mine || pending) && styles.own, pending && styles.saving].filter(Boolean).join(' ')}
               aria-pressed={mine !== undefined || pending !== undefined}
-              title={`${names.join(', ')} reacted with ${key}`}
+              title={`${names.join(', ')} reacted with ${reactionName(key, shortcode)}`}
               disabled={!props.joined}
               onMouseDown={keepFocus}
               onClick={() => props.toggle(key)}
             >
-              {key} {count}
+              <ReactionKey room={props.room} event={event} reactionKey={key} shortcode={shortcode} /> {count}
             </button>
           </li>
         )
       })}
     </ul>
   )
+}
+
+/** What a reaction reacts with: its emoji (or text), or a custom one's
+ * image, served as media the event names. */
+export function ReactionKey(props: { room: Room; event: RoomEvent; reactionKey: string; shortcode: string | null }) {
+  const { reactionKey: key } = props
+  const src = mediaPath(props.room.id, props.event, key)
+  if (src === null) return <>{key}</>
+  return <img class={styles.customReaction} src={src} alt={reactionName(key, props.shortcode)} />
 }
 
 /** Whether a line's reaction picker is open: by the pointer, or by a

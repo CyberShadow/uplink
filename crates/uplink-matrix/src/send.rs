@@ -201,7 +201,9 @@ fn named(content: &MatrixContent) -> String {
             ..
         } => format!("the edit {}", quote(body)),
         MatrixContent::Text { body, .. } => quote(body),
-        MatrixContent::Reaction { key, .. } => format!("the reaction {key}"),
+        MatrixContent::Reaction { key, shortcode, .. } => {
+            format!("the reaction {}", shortcode.as_ref().unwrap_or(key))
+        }
         MatrixContent::Redaction { .. } => "the deletion".to_owned(),
         MatrixContent::File { name, .. } => quote(name),
         MatrixContent::Name { name } => format!("the name {}", quote(name)),
@@ -234,13 +236,18 @@ fn described(tx: &Transaction, room: RoomId, content: &MatrixContent) -> Result<
             ..
         } => format!("Replied {}", quote(body)),
         MatrixContent::Text { body, .. } => format!("Sent {}", quote(body)),
-        MatrixContent::Reaction { key, .. } => format!("Reacted with {key}"),
+        MatrixContent::Reaction { key, shortcode, .. } => {
+            format!("Reacted with {}", shortcode.as_ref().unwrap_or(key))
+        }
         MatrixContent::Redaction { event } => {
             let redacted: Option<(String, Option<String>, Option<String>)> = tx
                 .query_row(
-                    "SELECT type, body,
-                            json_extract(raw_json, '$.content.\"m.relates_to\".key')
-                     FROM matrix_event WHERE room = ?1 AND event_id = ?2",
+                    &format!(
+                        "SELECT e.type, e.body,
+                                coalesce({}, json_extract(e.raw_json, '$.content.\"m.relates_to\".key'))
+                         FROM matrix_event e WHERE e.room = ?1 AND e.event_id = ?2",
+                        crate::rooms::SHORTCODE
+                    ),
                     params![room.0, event],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )

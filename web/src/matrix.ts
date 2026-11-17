@@ -44,7 +44,7 @@ export function sendSummary(content: MatrixContent): string {
     case 'text':
       return content.replaces !== null ? `Edit: ${content.body}` : content.body
     case 'reaction':
-      return `Reaction ${content.key}`
+      return `Reaction ${reactionName(content.key, content.shortcode)}`
     case 'redaction':
       return 'Deletion'
     case 'file':
@@ -116,6 +116,12 @@ export function mxcPath(mxc: string): string | null {
   const match = /^mxc:\/\/((?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(?::[0-9]{1,5})?)\/([A-Za-z0-9_-]+)$/.exec(mxc)
   if (!match || match[1] === '.' || match[1] === '..') return null
   return `${match[1]}/${match[2]}`
+}
+
+/** What a reaction is named in words: a custom one (MSC4027, an image's
+ * `mxc:` URI) by its shortcode. */
+export function reactionName(key: string, shortcode: string | null): string {
+  return shortcode ?? (mxcPath(key) !== null ? 'a custom reaction' : key)
 }
 
 /** Where the server serves the media `mxc` an event names (SPEC §9.8),

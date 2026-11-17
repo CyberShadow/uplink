@@ -1742,8 +1742,8 @@ describe('matrix', () => {
     await user.keyboard('#{Enter}')
     expect(document.activeElement).toBe(lineOf(mine))
     expect(sent()).toEqual([
-      { type: 'reaction', event: theirs.event_id, key: '👎' },
-      { type: 'reaction', event: theirs.event_id, key: '🎉' },
+      { type: 'reaction', event: theirs.event_id, key: '👎', shortcode: null },
+      { type: 'reaction', event: theirs.event_id, key: '🎉', shortcode: null },
       { type: 'pin', event: theirs.event_id, pinned: true },
       { type: 'redaction', event: mine.event_id },
     ])
@@ -2184,7 +2184,7 @@ describe('room timeline', () => {
     const room = server.addRoom('Lounge')
     const event = server.receive(room.id, {
       body: 'Lunch?',
-      reactions: [{ key: '👍', senders: [{ sender: '@bob:example.org', sender_name: 'Bob', event_id: '$r1' }] }],
+      reactions: [{ key: '👍', shortcode: null, senders: [{ sender: '@bob:example.org', sender_name: 'Bob', event_id: '$r1' }] }],
     })
     const user = await start(`/rooms/${room.id}`)
     await within(timeline()).findByText('Lunch?')
@@ -2195,7 +2195,7 @@ describe('room timeline', () => {
       type: 'send_matrix_message',
       key: expect.any(String),
       room: room.id,
-      content: { type: 'reaction', event: event.event_id, key: '👍' },
+      content: { type: 'reaction', event: event.event_id, key: '👍', shortcode: null },
     })
     await within(line('Lunch?')).findByRole('button', { name: '👍 2', pressed: true })
     // Not listed apart while it goes out.
@@ -2205,6 +2205,7 @@ describe('room timeline', () => {
       reactions: [
         {
           key: '👍',
+          shortcode: null,
           senders: [
             { sender: '@bob:example.org', sender_name: 'Bob', event_id: '$r1' },
             { sender: ME, sender_name: 'Me', event_id: '$r2' },
@@ -2224,8 +2225,39 @@ describe('room timeline', () => {
       type: 'send_matrix_message',
       key: expect.any(String),
       room: room.id,
-      content: { type: 'reaction', event: event.event_id, key: '🎉' },
+      content: { type: 'reaction', event: event.event_id, key: '🎉', shortcode: null },
     })
+  })
+
+  it('shows a custom reaction as its image, and reacts with it by its shortcode', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const bob = { sender: '@bob:example.org', sender_name: 'Bob', event_id: '$r1' }
+    const event = server.receive(room.id, {
+      body: 'Lunch?',
+      reactions: [
+        { key: 'mxc://example.org/cat', shortcode: ':cat:', senders: [bob] },
+        { key: 'mxc://example.org/dog', shortcode: null, senders: [{ ...bob, event_id: '$r2' }] },
+      ],
+    })
+    const user = await start(`/rooms/${room.id}`)
+    await within(timeline()).findByText('Lunch?')
+    const chip = within(line('Lunch?')).getByRole('button', { name: ':cat: 1' })
+    expect(chip.getAttribute('title')).toBe('Bob reacted with :cat:')
+    expect(within(chip).getByRole('img').getAttribute('src')).toBe(
+      `/api/rooms/${room.id}/events/${event.id}/media/example.org/cat`,
+    )
+    expect(within(line('Lunch?')).getByRole('button', { name: 'a custom reaction 1' }).getAttribute('title')).toBe(
+      'Bob reacted with a custom reaction',
+    )
+    await user.click(chip)
+    expect(server.requests).toContainEqual({
+      type: 'send_matrix_message',
+      key: expect.any(String),
+      room: room.id,
+      content: { type: 'reaction', event: event.event_id, key: 'mxc://example.org/cat', shortcode: ':cat:' },
+    })
+    await within(line('Lunch?')).findByRole('button', { name: ':cat: 2', pressed: true })
   })
 
   it('replies, edits the last message with Up, and deletes', async () => {
@@ -2520,7 +2552,7 @@ describe('room timeline', () => {
     server.change(room.id, secret, { kind: 'm.room.message', msgtype: 'm.text', body: 'Secret', encryption: 'decrypted' })
     await within(timeline()).findByText('Secret')
     server.relation(room.id, reaction, hello, {
-      reactions: [{ key: '👍', senders: [{ sender: '@bob:example.org', sender_name: 'Bob', event_id: reaction.event_id }] }],
+      reactions: [{ key: '👍', shortcode: null, senders: [{ sender: '@bob:example.org', sender_name: 'Bob', event_id: reaction.event_id }] }],
     })
     await waitFor(() => expect(within(timeline()).queryByText(/Unable to decrypt/)).toBeNull())
     within(line('Hello')).getByRole('button', { name: /👍/ })

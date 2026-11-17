@@ -1181,13 +1181,20 @@ impl Sender {
                     .await
                     .map(|sent| sent.response.event_id)
             }
-            MatrixContent::Reaction { event, key } => room
-                .send_raw(
-                    "m.reaction",
-                    json!({ "m.relates_to": {
+            MatrixContent::Reaction {
+                event,
+                key,
+                shortcode,
+            } => room
+                .send_raw("m.reaction", {
+                    let mut content = json!({ "m.relates_to": {
                         "rel_type": "m.annotation", "event_id": event, "key": key,
-                    } }),
-                )
+                    } });
+                    if let Some(shortcode) = shortcode {
+                        content[rooms::REACTION_SHORTCODE] = json!(shortcode);
+                    }
+                    content
+                })
                 .with_transaction_id(&txn_id)
                 .await
                 .map(|sent| sent.response.event_id),

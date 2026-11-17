@@ -1109,6 +1109,7 @@ async fn replies_edits_reactions_redactions_and_files() {
     let timeline = send(MatrixContent::Reaction {
         event: hello.event_id.clone(),
         key: "👍".into(),
+        shortcode: None,
     })
     .await;
     let reactions = find(&timeline, &hello.event_id).reactions;
@@ -1123,6 +1124,41 @@ async fn replies_edits_reactions_redactions_and_files() {
     })
     .await;
     assert!(find(&timeline, &hello.event_id).reactions.is_empty());
+
+    // A custom reaction (MSC4027), with an image's shortcode: it is the
+    // reaction's, and its image is served as the message's.
+    let emoji = bob
+        .media()
+        .upload(&"image/png".parse().unwrap(), PNG.to_vec(), None)
+        .await
+        .unwrap()
+        .content_uri
+        .to_string();
+    let timeline = send(MatrixContent::Reaction {
+        event: hello.event_id.clone(),
+        key: emoji.clone(),
+        shortcode: Some(":dot:".into()),
+    })
+    .await;
+    let reactions = find(&timeline, &hello.event_id).reactions;
+    assert_eq!(
+        (reactions[0].key.as_str(), reactions[0].shortcode.as_deref()),
+        (emoji.as_str(), Some(":dot:"))
+    );
+    let media = uplink
+        .matrix
+        .media(room.id, hello.id, emoji, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        (media.data, media.mime.as_str(), media.inline),
+        (PNG.to_vec(), "image/png", true),
+        "known by its signature"
+    );
+    send(MatrixContent::Redaction {
+        event: reactions[0].senders[0].event_id.clone(),
+    })
+    .await;
 
     // A file, encrypted as the room is.
     let png = b"\x89PNG\r\n\x1a\nnot really".to_vec();

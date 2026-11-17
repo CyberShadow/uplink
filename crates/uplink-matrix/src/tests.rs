@@ -1450,6 +1450,7 @@ mod relations {
         );
         // Edits and reactions are not unread messages.
         assert_eq!(db.room().await.unread, 1);
+        assert!(first.reactions.iter().all(|r| r.shortcode.is_none()));
 
         let room = db.room().await.id;
         let ServerResponse::Edits { edits, .. } =
@@ -1458,6 +1459,35 @@ mod relations {
             panic!()
         };
         assert_eq!(ids(&edits), ["$2", "$3"], "not another's");
+    }
+
+    #[tokio::test]
+    async fn custom_reactions_are_named_by_the_first_shortcode_given() {
+        let db = Db::new();
+        let custom = |id: &str, sender: &str, shortcode: serde_json::Value| {
+            let mut event = reaction(id, sender, "$1", "mxc://x/cat");
+            event["content"]["com.beeper.reaction.shortcode"] = shortcode;
+            event
+        };
+        db.sync_json(&[
+            text("$1", "@bob:x", "hello"),
+            reaction("$2", "@bob:x", "$1", "mxc://x/cat"),
+            custom("$3", "@eve:x", json!(42)),
+            custom("$4", ME, json!(":cat:")),
+            custom("$5", "@carol:x", json!(":kitty:")),
+        ])
+        .await;
+        let timeline = db.timeline().await;
+        let [cat] = &timeline[0].reactions[..] else {
+            panic!("{:?}", timeline[0].reactions)
+        };
+        assert_eq!(cat.key, "mxc://x/cat");
+        assert_eq!(
+            cat.shortcode.as_deref(),
+            Some(":cat:"),
+            "of those that are text"
+        );
+        assert_eq!(cat.senders.len(), 4);
     }
 
     #[tokio::test]

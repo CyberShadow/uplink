@@ -217,7 +217,7 @@ describe('Connection', () => {
   it('sends a Matrix message in flight again on a new connection, of its key', async () => {
     const { connection } = connect()
     const first = await accept({ cursor: 1, resumed: false })
-    const body = { type: 'send_matrix_message', room: 1, key: 'k', content: { type: 'reaction', event: '$e', key: '👍' } } as const
+    const body = { type: 'send_matrix_message', room: 1, key: 'k', content: { type: 'reaction', event: '$e', key: '👍', shortcode: null } } as const
     const sent = connection.request(body)
     await first.peer.next('request')
 

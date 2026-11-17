@@ -2553,7 +2553,9 @@ them, and does not list them on their own:
   listed by `ListEdits`;
 - **reactions** (`m.reaction` with `m.annotation`): an event carries
   them by key, in the order first reacted with, each sender once, with
-  the reaction's event (redacting it takes the reaction back);
+  the reaction's event (redacting it takes the reaction back). A custom
+  reaction (MSC4027) has an image's `mxc:` URI for its key, and is named
+  by the first `com.beeper.reaction.shortcode` its reactions give;
 - **redactions**: the event redacted is redacted in storage too, by the
   room version's rules (ruma's, the SDK's fallback version if it does
   not know it; an encrypted event's payload, which may not be canonical
@@ -2713,7 +2715,10 @@ JSON since V0026) is one of:
   edit): `m.thread`, replying to the root or a message of the thread if
   it does, else to the thread's latest message as a fallback
   (`is_falling_back`), as the spec asks;
-- a **reaction** to a stored event (`m.reaction`, `m.annotation`);
+- a **reaction** to a stored event (`m.reaction`, `m.annotation`); one
+  with an image's `mxc:` URI (MSC4027) may name it by a `shortcode`
+  (`com.beeper.reaction.shortcode`), as the web client does with those
+  others reacted with;
 - a **redaction** of a stored event not yet redacted (deleting a
   message, or taking a reaction back), through the redaction endpoint,
   which is deduplicated by transaction id too;
@@ -3013,8 +3018,9 @@ decrypted, of encrypted rooms):
 - `/api/rooms/:room/events/:event/media/:server/:media` — the media
   `mxc://server/media`, if the event (or one of its edits) names it: as
   the file it sends (`url`, or an encrypted `file`), its thumbnail
-  (`info.thumbnail_url` or `thumbnail_file`), or an image of its
-  `formatted_body` (custom emoji, inline images). Only those, so that
+  (`info.thumbnail_url` or `thumbnail_file`), an image of its
+  `formatted_body` (custom emoji, inline images), or the image of a
+  custom reaction to it (MSC4027). Only those, so that
   the web client cannot have the server fetch whatever it names. Its
   type is the event's `info.mimetype` (a thumbnail's,
   `thumbnail_info.mimetype`); an image named without one is known by its
@@ -3763,7 +3769,8 @@ buttons.
   or any typed), reply, edit (the account's own messages of text), and a
   menu of delete (its own) and view source. Reactions show below the
   message, by key with their count, those of the account highlighted; a
-  click adds one's own or takes it back.
+  click adds one's own or takes it back. A custom reaction shows its
+  image, named by its shortcode, and is added with it.
 - **Sends** that change a loaded event — reactions, edits, deletions —
   show on it while they go out (counted, "(saving…)", "Deleting…");
   others, and those needing a decision (refused, sent though

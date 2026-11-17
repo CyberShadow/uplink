@@ -43,6 +43,14 @@ use crate::{
 
 pub const ACCOUNT_KIND: &str = "matrix";
 
+/// What a custom reaction's image is named in its content (MSC4027).
+pub const REACTION_SHORTCODE: &str = "com.beeper.reaction.shortcode";
+
+/// Of a reaction `e`, in SQL, its [`REACTION_SHORTCODE`], if a string.
+pub const SHORTCODE: &str =
+    "CASE json_type(e.raw_json, '$.content.\"com.beeper.reaction.shortcode\"')
+  WHEN 'text' THEN json_extract(e.raw_json, '$.content.\"com.beeper.reaction.shortcode\"') END";
+
 // ── sync ──────────────────────────────────────────────────────────────────
 
 /// `account.sync_state` of a Matrix account.
@@ -1335,6 +1343,21 @@ pub fn event_contents(
     Ok(Some((account, contents)))
 }
 
+/// Whether the stored event `event` has a reaction with `key` (redacted
+/// ones no longer say what they were).
+pub fn reacted_with(tx: &Transaction, event: RoomEventId, key: &str) -> Result<bool> {
+    Ok(tx.query_row(
+        "SELECT EXISTS (
+           SELECT 1 FROM matrix_event t
+           JOIN matrix_event e ON e.room = t.room AND e.relates_to = t.event_id
+           WHERE t.id = ?1 AND e.rel_type = 'm.annotation' AND e.type = 'm.reaction'
+             AND NOT e.redacted
+             AND json_extract(e.raw_json, '$.content.\"m.relates_to\".key') = ?2)",
+        params![event.0, key],
+        |r| r.get(0),
+    )?)
+}
+
 /// The room's message `event`, if `mxid` sent it and it is not redacted:
 /// its content as last edited (its latest edit's new one).
 pub fn own_message(
@@ -2014,15 +2037,15 @@ fn query_events(
          WHERE t.id = ?1 AND {EDIT}
          ORDER BY e.ts DESC, e.event_id DESC LIMIT 1"
     ))?;
-    let mut reactions = tx.prepare(
+    let mut reactions = tx.prepare(&format!(
         "SELECT json_extract(e.raw_json, '$.content.\"m.relates_to\".key'),
-                e.sender, e.sender_name, e.event_id
+                e.sender, e.sender_name, e.event_id, {SHORTCODE}
          FROM matrix_event t JOIN matrix_event e ON e.room = t.room AND e.relates_to = t.event_id
          WHERE t.id = ?1 AND e.rel_type = 'm.annotation' AND e.type = 'm.reaction'
            AND NOT e.redacted
            AND json_type(e.raw_json, '$.content.\"m.relates_to\".key') = 'text'
-         ORDER BY e.id",
-    )?;
+         ORDER BY e.id"
+    ))?;
     let mut replied = tx.prepare(&format!(
         "SELECT t.id, t.event_id, t.sender, t.sender_name, t.type, t.redacted,
                 coalesce(json_extract(e.raw_json, '$.content.\"m.new_content\".msgtype'), t.msgtype),
@@ -2068,18 +2091,23 @@ fn query_events(
                     sender_name: r.get(2)?,
                     event_id: r.get(3)?,
                 },
+                r.get::<_, Option<String>>(4)?,
             ))
         })? {
-            let (key, reactor) = row?;
+            let (key, reactor, shortcode) = row?;
             match event.reactions.iter_mut().find(|r| r.key == key) {
                 Some(reaction) => {
                     // Each sender counts once per key.
                     if !reaction.senders.iter().any(|s| s.sender == reactor.sender) {
                         reaction.senders.push(reactor);
                     }
+                    if reaction.shortcode.is_none() {
+                        reaction.shortcode = shortcode;
+                    }
                 }
                 None => event.reactions.push(Reaction {
                     key,
+                    shortcode,
                     senders: vec![reactor],
                 }),
             }

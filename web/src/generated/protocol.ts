@@ -1161,9 +1161,16 @@ html: string | null, };
 
 export type Reaction = { 
 /**
- * What is reacted with: usually an emoji.
+ * What is reacted with: usually an emoji, or an image's `mxc:` URI
+ * (MSC4027, a custom reaction), served as media the event names
+ * (SPEC §9.8).
  */
 key: string, 
+/**
+ * The image's name, as `:shortcode:`: the first its reactions give
+ * (MSC4027's `com.beeper.reaction.shortcode`).
+ */
+shortcode: string | null, 
 /**
  * Each sender once, in the order they reacted.
  */
@@ -1240,7 +1247,7 @@ replaces: string | null,
  * The root of the thread it is of (`m.thread`); then it replies
  * to the thread's root or one of its messages, if to any.
  */
-thread: string | null, } | { "type": "reaction", event: string, key: string, } | { "type": "redaction", event: string, } | { "type": "file", blob: BlobId, name: string, mime: string, reply_to: string | null, } | { "type": "name", name: string, } | { "type": "topic", topic: string, } | { "type": "pin", event: string, pinned: boolean, } | { "type": "member", user: string, action: MemberAction, reason: string | null, };
+thread: string | null, } | { "type": "reaction", event: string, key: string, shortcode: string | null, } | { "type": "redaction", event: string, } | { "type": "file", blob: BlobId, name: string, mime: string, reply_to: string | null, } | { "type": "name", name: string, } | { "type": "topic", topic: string, } | { "type": "pin", event: string, pinned: boolean, } | { "type": "member", user: string, action: MemberAction, reason: string | null, };
 
 /**
  * A message being sent, sent and not yet synced back, or sent though
@@ -1597,4 +1604,4 @@ export type EventChangeKind = "create" | "update" | "delete";
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "7ec38d179783854f"
+export const PROTOCOL_VERSION = "148c271f227bb609"
