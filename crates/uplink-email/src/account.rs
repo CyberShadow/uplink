@@ -30,7 +30,7 @@ use tokio::sync::broadcast::{self, error::RecvError};
 use uplink_protocol::{
     compose::OutboxId,
     mail::{EntryId, Identity, LabelId, LabelKind},
-    LogEntry, Source,
+    LogEntry, ServerEvent, Source,
 };
 use uplink_storage::rusqlite::{params, Connection, OptionalExtension};
 use uplink_storage::store::{Store, VariantHash};
@@ -424,7 +424,8 @@ impl<P: Provider> SyncTask<P> {
     }
 
     /// Until the poll interval passes, mail is due (unix ms), the user
-    /// changes something, or the provider tells of a change.
+    /// changes something of the account's to push (its outbox), or the
+    /// provider tells of a change.
     async fn wait(&self, wake: &mut broadcast::Receiver<Arc<LogEntry>>, next_due: Option<i64>) {
         let mut interval = self.poll_interval;
         if let Some(due) = next_due {
@@ -441,13 +442,24 @@ impl<P: Provider> SyncTask<P> {
                     Told::Failing(error) => self.record_watch(error).await,
                 },
                 entry = wake.recv() => match entry {
-                    Ok(entry) if entry.source == Source::User => return,
+                    Ok(entry) if self.pushes(&entry) => return,
                     Ok(_) => {}
                     Err(RecvError::Lagged(_)) => return,
                     Err(RecvError::Closed) => panic!("the hub outlives sync tasks"),
                 },
             }
         }
+    }
+
+    /// Whether `entry` is the user's, of something of the account's to
+    /// push: its own observations change its outbox too, but are what it
+    /// pushed or synced.
+    fn pushes(&self, entry: &LogEntry) -> bool {
+        entry.source == Source::User
+            && entry.events.iter().any(|event| match event {
+                ServerEvent::OutboxChanged(changed) => changed.accounts.contains(&self.account.id),
+                _ => false,
+            })
     }
 
     /// Records that the provider's watch is failing, for `error`, or is
