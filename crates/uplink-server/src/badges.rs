@@ -15,8 +15,9 @@ const EVERY: Duration = Duration::from_secs(60);
 
 /// Keeps the hub's badges, `badged` derived as of `since`:
 /// after log entries (those that come while they are kept, at once), by
-/// checking again what they name; and derived anew when the buckets are
-/// configured anew, each minute, and after entries missed.
+/// checking again what they name, and each minute what time moves; and
+/// derived anew when the buckets are configured anew, and after entries
+/// missed.
 pub async fn keep(items: Items, hub: Arc<Hub>, badged: Badged, mut since: Since) {
     let mut badged = Some(badged);
     let mut entries = hub.subscribe();
@@ -39,7 +40,7 @@ pub async fn keep(items: Items, hub: Arc<Hub>, badged: Badged, mut since: Since)
                 Err(RecvError::Lagged(_)) => changed.everything = true,
                 Err(RecvError::Closed) => unreachable!("the hub outlives the server"),
             },
-            _ = minute.tick() => changed.everything = true,
+            _ = minute.tick() => changed.time = true,
         }
         // Those that came meanwhile are checked with these.
         loop {

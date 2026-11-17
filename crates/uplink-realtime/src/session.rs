@@ -249,7 +249,7 @@ async fn session(
                 let current = (**badges.borrow_and_update()).clone();
                 send(socket, &WsServerMsg::Badges { badges: current }).await?;
             }
-            _ = minute.tick() => followed.changed.merge(Changed::everything()),
+            _ = minute.tick() => followed.changed.merge(Changed::time()),
             () = std::future::ready(()), if !followed.changed.is_empty() || windows.any_due() => {
                 windows.came(&std::mem::take(&mut followed.changed));
                 refresh(socket, backend, &mut live, &mut followed, &mut windows).await?;

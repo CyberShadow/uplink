@@ -1137,9 +1137,12 @@ naming a space, its rooms whole, as a room changed may change which
 rooms it holds) takes its place, of as many as the window holds (and
 one too many, to know if there are more), and what the query no longer
 matches leaves; what comes after what it held is listed after it, to
-fill it. Each minute (time alone moves items, into `due:today`), and
-after an event the log does not name items by (entries removed, a
-label list changed, a place seen, §12.15), it lists each whole. It
+fill it. Each minute it checks again what time alone moves (`time`):
+of every query, its to-dos (into `due:today`) and events (as of now)
+whole, and of a query bounded by a time (`newer_than:`), its mail and
+rooms whole too. After an event the log does not name items by (entries
+removed, a label list changed, a place seen, §12.15), it lists each
+whole. It
 lists them one at a time, in turn, those due longest first, each due
 once however many entries came: a request waits for one listing at
 most, and a listing reads what changed, not the window. So the client
@@ -4052,12 +4055,13 @@ what its query matches among them (of mail, among the conversations of
 the entries named), in place of what it held of them. What the log
 names otherwise, it checks whole: the events, named only by their
 calendar; a bucket's rooms, if its query names a space, which holds
-rooms however deeply. It derives them anew, each bucket whole, when the
-buckets are configured anew, after entries removed, a label list
-changed or a place seen (which change what names mean, or what is
-unseen, across items), after entries missed, after a read that failed,
-and each minute, as time alone moves items (into `due:today`, out of
-`newer_than:`). It pushes them only if they differ. The client sums
+rooms however deeply; and each minute what time alone moves, as windows
+do (§5.7: to-dos and events, and mail and rooms of a query bounded by a
+time). It derives them anew, each bucket whole, when the buckets are
+configured anew, after entries removed, a label list changed or a place
+seen (which change what names mean, or what is unseen, across items),
+after entries missed, and after a read that failed. It pushes them only
+if they differ. The client sums
 folded places' marks itself, as the folds are its own.
 
 ### 12.15 Seen and read

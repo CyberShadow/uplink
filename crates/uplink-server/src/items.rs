@@ -242,17 +242,64 @@ struct Held {
 }
 
 /// Of kinds checked again, those wholly.
+/// Of a query, the kinds what changed is checked again of wholly, rather
+/// than item by item.
 struct Whole {
+    mail: bool,
     rooms: bool,
+    todos: bool,
     events: bool,
+}
+
+impl Whole {
+    /// Of `query`, by what `changed`: of a query naming a space, its
+    /// rooms, as a room changed may change which rooms it holds; the
+    /// events, which the log names only by their calendars. Time moves
+    /// to-dos (`due:today`, `is:overdue`) and events (as of now) of any
+    /// query, and mail and rooms of one bounded by a time
+    /// (`newer_than:`).
+    fn of(query: &Query, changed: &Changed) -> Self {
+        let timed = changed.time
+            && uplink_query::terms(query)
+                .iter()
+                .any(|term| matches!(term, Term::After(_) | Term::Before(_)));
+        Self {
+            mail: timed,
+            rooms: timed || (of_spaces(query) && !changed.rooms.is_empty()),
+            todos: changed.time,
+            events: changed.time || changed.events,
+        }
+    }
+
+    /// Whether `item` is of a kind checked again wholly.
+    fn holds(&self, item: &Item) -> bool {
+        match item {
+            Item::Mail { .. } => self.mail,
+            Item::Room { .. } => self.rooms,
+            Item::Todo { .. } => self.todos,
+            Item::Event { .. } => self.events,
+        }
+    }
+
+    /// The kinds checked again wholly.
+    fn kinds(&self) -> impl Iterator<Item = Kind> {
+        [
+            (Kind::Mail, self.mail),
+            (Kind::Room, self.rooms),
+            (Kind::Todo, self.todos),
+            (Kind::Event, self.events),
+        ]
+        .into_iter()
+        .filter_map(|(kind, whole)| whole.then_some(kind))
+    }
 }
 
 /// What a bucket's query holds of what changed: of the items named, and
 /// of the kinds checked again wholly.
 struct Fresh {
     among: Held,
-    rooms: Option<HashMap<uplink_protocol::matrix::RoomId, u32>>,
-    events: Option<HashSet<uplink_protocol::calendar::EventId>>,
+    /// Of each kind checked again wholly, what it holds of it.
+    whole: Vec<(Kind, Held)>,
 }
 
 impl Held {
@@ -272,11 +319,13 @@ impl Held {
         self.rooms.extend(fresh.among.rooms);
         self.todos.extend(fresh.among.todos);
         self.events.extend(fresh.among.events);
-        if let Some(rooms) = fresh.rooms {
-            self.rooms = rooms;
-        }
-        if let Some(events) = fresh.events {
-            self.events = events;
+        for (kind, held) in fresh.whole {
+            match kind {
+                Kind::Mail => self.mail = held.mail,
+                Kind::Room => self.rooms = held.rooms,
+                Kind::Todo => self.todos = held.todos,
+                Kind::Event => self.events = held.events,
+            }
         }
     }
 }
@@ -528,12 +577,15 @@ impl Items {
                     this.page(&tx, query, others, after, limit)
                 };
                 let conversations = conversations(&tx, &changed)?;
-                let whole_rooms = of_spaces(&query) && !changed.rooms.is_empty();
-                let touched = |item: &Item| match item {
-                    Item::Mail { .. } => conversations.contains(&item.key().0),
-                    Item::Room { room, .. } => whole_rooms || changed.rooms.contains(&room.id),
-                    Item::Todo { todo } => changed.todos.contains(&todo.id),
-                    Item::Event { .. } => changed.events,
+                let whole = Whole::of(&query, &changed);
+                let touched = |item: &Item| {
+                    whole.holds(item)
+                        || match item {
+                            Item::Mail { .. } => conversations.contains(&item.key().0),
+                            Item::Room { room, .. } => changed.rooms.contains(&room.id),
+                            Item::Todo { todo } => changed.todos.contains(&todo.id),
+                            Item::Event { .. } => false,
+                        }
                 };
                 // What it matches of what changed: of the first `limit`,
                 // as no more can be of the window, and one too many, as
@@ -544,10 +596,8 @@ impl Items {
                     ..
                 } = page(&query.clone().among(among(&changed)), None, limit + 1)?;
                 let of_kind = |kind| query.clone().and(Query::Term(Term::Kind(kind)));
-                for (kind, whole) in [(Kind::Room, whole_rooms), (Kind::Event, changed.events)] {
-                    if whole {
-                        fresh.extend(page(&of_kind(kind), None, limit + 1)?.items);
-                    }
+                for kind in whole.kinds() {
+                    fresh.extend(page(&of_kind(kind), None, limit + 1)?.items);
                 }
                 // Of more than it held, what is after its last is not known
                 // whole: it is listed after it, if needed.
@@ -720,20 +770,12 @@ impl Items {
                         this.hold(&tx, &rooms, &seen, bucket.badge, &query, today, now)
                     };
                     let of_kind = |kind| bucket.query.clone().and(Query::Term(Term::Kind(kind)));
-                    let whole = Whole {
-                        rooms: of_spaces(&bucket.query) && !changed.rooms.is_empty(),
-                        events: changed.events,
-                    };
                     let fresh = Fresh {
                         among: hold(bucket.query.clone().among(among.clone()))?,
-                        rooms: match whole.rooms {
-                            true => Some(hold(of_kind(Kind::Room))?.rooms),
-                            false => None,
-                        },
-                        events: match whole.events {
-                            true => Some(hold(of_kind(Kind::Event))?.events),
-                            false => None,
-                        },
+                        whole: Whole::of(&bucket.query, &changed)
+                            .kinds()
+                            .map(|kind| Ok((kind, hold(of_kind(kind))?)))
+                            .collect::<Result<_, ServerError>>()?,
                     };
                     bucket.held.update(&conversations, &among, fresh);
                     // What came is of what was stored since: what the log
@@ -1398,6 +1440,135 @@ mod tests {
         let kept = window("label:SPAM", 2, held, changed).await.unwrap();
         assert_eq!(kept.items.len(), 2);
         assert!(kept.more);
+    }
+
+    /// Time moves items no entry names: into `due:today`, out of
+    /// `newer_than:`. Windows and badges checked again of what time moves
+    /// are as listed anew.
+    #[tokio::test]
+    async fn what_time_moves_is_checked_again() {
+        use uplink_email::mailbox::{MailboxObserved, NewEntry, ObservedLabel};
+        use uplink_protocol::mail::LabelKind;
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = Registry::new();
+        uplink_email::mailbox::register(&mut registry);
+        uplink_todos::register(&mut registry);
+        let dispatcher = Dispatcher::new(
+            uplink_storage::open(dir.path()).unwrap(),
+            registry,
+            Arc::new(Hub::new(16)),
+        );
+        let raw = b"Message-ID: <m@x>\r\nFrom: bob@x\r\nTo: a@x\r\nSubject: s\r\n\r\nhi\r\n";
+        let store = uplink_storage::store::Store::mail(dir.path());
+        dispatcher
+            .observe(
+                "a".into(),
+                MailboxObserved {
+                    account_kind: "gmail",
+                    labels: Some(vec![ObservedLabel {
+                        external_id: "INBOX".into(),
+                        name: "INBOX".into(),
+                        system: true,
+                        kind: LabelKind::Tag,
+                    }]),
+                    rekeyed: vec![],
+                    added: vec![NewEntry {
+                        external_id: "m".into(),
+                        thread_id: Some("t".into()),
+                        received_at: now(),
+                        labels: vec!["INBOX".into()],
+                        variant: store.put(raw).unwrap(),
+                        size_bytes: raw.len() as i64,
+                        parsed: uplink_email::parse::parse(raw),
+                    }],
+                    updated: vec![],
+                    removed: vec![],
+                    sync_state: None,
+                },
+            )
+            .await
+            .unwrap();
+        let todos = uplink_todos::service::Todos::new(
+            dispatcher.clone(),
+            uplink_storage::open_reader(dir.path()).unwrap(),
+        );
+        todos
+            .create(
+                "Later".into(),
+                String::new(),
+                Some("2999-01-01".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        let items = Items::new(
+            vec![uplink_storage::open_reader(dir.path()).unwrap()],
+            vec![mail::ConfiguredAccount {
+                id: "a".into(),
+                address: "a@x".into(),
+                identities: vec![],
+                provider: uplink_protocol::mail::MailProvider::Gmail,
+            }],
+            RoomsView::kept(&dispatcher, vec![]).unwrap(),
+            vec![],
+        );
+        let queries = ["newer_than:1d", "due:today", "newer_than:1d OR due:today"];
+        items.configure_home(
+            queries
+                .iter()
+                .map(|query| HomeBucket {
+                    name: query.to_string(),
+                    query: query.to_string(),
+                    badge: Some(Badge::Count),
+                })
+                .collect(),
+        );
+        let window = |query: &str, held, changed| {
+            items.window(query.into(), UnknownNames::False, 10, held, changed)
+        };
+        let anew = || uplink_realtime::Held {
+            items: vec![],
+            more: false,
+        };
+        let mut listed = vec![];
+        for query in queries {
+            listed.push(window(query, anew(), Changed::everything()).await.unwrap());
+        }
+        let (badged, first) = items.badged(None).await.unwrap();
+        // A day on: the mail is older, the to-do due.
+        let writer =
+            uplink_storage::rusqlite::Connection::open(dir.path().join("db").join("uplink.sqlite"))
+                .unwrap();
+        writer
+            .execute_batch(&format!(
+                "UPDATE mail_entry SET received_at = received_at - 2 * 86400000;
+                 UPDATE todo SET due = date({} * 86400, 'unixepoch');",
+                uplink_query::today(now())
+            ))
+            .unwrap();
+        for (query, listing) in queries.iter().zip(listed) {
+            let held = uplink_realtime::Held {
+                items: listing.items.clone(),
+                more: listing.more,
+            };
+            let kept = window(query, held, Changed::time()).await.unwrap();
+            let anew = window(query, anew(), Changed::everything()).await.unwrap();
+            assert_ne!(kept.items, listing.items, "{query}: time moved it");
+            assert_eq!(kept.items, anew.items, "{query}");
+        }
+        let (kept, derived) = items
+            .rebadged(badged, Changed::time(), first.since.clone())
+            .await
+            .unwrap();
+        let (anew, derived_anew) = items.badged(Some(first.since)).await.unwrap();
+        let held = |b: &Badged| {
+            b.buckets
+                .iter()
+                .map(|b| (b.name.clone(), b.held.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(held(&kept), held(&anew));
+        assert_eq!(derived.badges, derived_anew.badges);
     }
 
     /// What came into a badged bucket since it was last derived is told

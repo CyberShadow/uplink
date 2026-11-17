@@ -1136,6 +1136,9 @@ pub struct Changed {
     pub todos: Vec<TodoId>,
     /// The events, which the log names only by their calendars: all.
     pub events: bool,
+    /// Time passed, which moves items into `due:today` and out of
+    /// `newer_than:`: what it moves (a query's).
+    pub time: bool,
     /// What the log does not name item by item: everything.
     pub everything: bool,
 }
@@ -1145,6 +1148,14 @@ impl Changed {
     pub fn everything() -> Self {
         Self {
             everything: true,
+            ..Self::default()
+        }
+    }
+
+    /// Of time passed.
+    pub fn time() -> Self {
+        Self {
+            time: true,
             ..Self::default()
         }
     }
@@ -1165,6 +1176,7 @@ impl Changed {
         self.rooms.extend(other.rooms);
         self.todos.extend(other.todos);
         self.events |= other.events;
+        self.time |= other.time;
         self.everything |= other.everything;
     }
 
