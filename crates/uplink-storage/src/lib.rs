@@ -42,8 +42,7 @@ pub fn open(data_root: &Path) -> Result<Connection> {
     );
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
-    conn.pragma_update(None, "temp_store", "MEMORY")?;
-    conn.pragma_update(None, "cache_size", -64000)?;
+    configure(&conn)?;
 
     drop_sparse_occurrences(&mut conn)
         .with_context(|| format!("repairing the calendar of {}", path.display()))?;
@@ -102,8 +101,18 @@ fn drop_sparse_occurrences(conn: &mut Connection) -> Result<()> {
 /// `data_root`.
 pub fn open_reader(data_root: &Path) -> Result<Connection> {
     let path = db_path(data_root);
-    Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .with_context(|| format!("opening {} for reading", path.display()))
+    let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("opening {} for reading", path.display()))?;
+    configure(&conn)?;
+    Ok(conn)
+}
+
+/// The settings of SPEC §4.2 that are of each connection, reading or
+/// writing, not of the database.
+fn configure(conn: &Connection) -> Result<()> {
+    conn.pragma_update(None, "temp_store", "MEMORY")?;
+    conn.pragma_update(None, "cache_size", -64000)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -141,6 +150,17 @@ mod tests {
             .query_row("SELECT count(*) FROM tx_log", [], |r| r.get::<_, i64>(0))
             .unwrap();
         reader.execute("DELETE FROM tx_log", []).unwrap_err();
+    }
+
+    /// Its cache is as large as the writer's: its queries read the same
+    /// tables, as many times.
+    #[test]
+    fn reader_has_the_connection_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        drop(open(dir.path()).unwrap());
+        let reader = open_reader(dir.path()).unwrap();
+        assert_eq!(pragma::<i64>(&reader, "temp_store"), 2); // MEMORY
+        assert_eq!(pragma::<i64>(&reader, "cache_size"), -64000);
     }
 
     #[test]

@@ -426,8 +426,8 @@ level. With `~1 M` messages that's ~4 K files per dir, fine for ext4/btrfs.
 - `synchronous = NORMAL` — fsync on checkpoint only. Acceptable durability
   given btrfs snapshots.
 - `foreign_keys = ON`.
-- `temp_store = MEMORY`.
-- `cache_size = -64000` (64 MiB).
+- `temp_store = MEMORY`, of each connection, writing or reading.
+- `cache_size = -64000` (64 MiB), of each connection, writing or reading.
 - On open, after the migrations, `PRAGMA optimize = 0x10002` (with
   `analysis_limit = 1000`): statistics of the tables that have none, or
   have grown much since, so that the planner chooses indexes by how
