@@ -110,6 +110,7 @@ impl Db {
     ) -> TxLogId {
         self.observe(Synced {
             next_batch: "next".into(),
+            packs: None,
             rooms: vec![ObservedRoom {
                 room_id: ROOM.into(),
                 name: "Room".into(),
@@ -119,6 +120,7 @@ impl Db {
                 limited: false,
                 own_receipts: own_receipts.iter().map(|r| r.to_string()).collect(),
                 fully_read: fully_read.map(str::to_owned),
+                image_packs: vec![],
                 space: false,
                 direct: false,
                 avatar: None,
@@ -733,6 +735,7 @@ mod membership {
         async fn sync_membership(&self, membership: Membership) {
             self.observe(Synced {
                 next_batch: "next".into(),
+                packs: None,
                 rooms: vec![ObservedRoom {
                     room_id: ROOM.into(),
                     name: "Room".into(),
@@ -742,6 +745,7 @@ mod membership {
                     limited: false,
                     own_receipts: vec![],
                     fully_read: None,
+                    image_packs: vec![],
                     space: false,
                     direct: false,
                     avatar: None,
@@ -936,6 +940,7 @@ mod room_tags {
         async fn sync_tags(&self, tags: &[&str]) -> TxLogId {
             self.observe(Synced {
                 next_batch: "next".into(),
+                packs: None,
                 rooms: vec![ObservedRoom {
                     room_id: ROOM.into(),
                     name: "Room".into(),
@@ -945,6 +950,7 @@ mod room_tags {
                     limited: false,
                     own_receipts: vec![],
                     fully_read: None,
+                    image_packs: vec![],
                     space: false,
                     direct: false,
                     avatar: None,
@@ -1146,6 +1152,7 @@ mod space_order {
         async fn sync_space(&self, order: Option<&str>) {
             self.observe(Synced {
                 next_batch: "next".into(),
+                packs: None,
                 rooms: vec![ObservedRoom {
                     room_id: ROOM.into(),
                     name: "Space".into(),
@@ -1155,6 +1162,7 @@ mod space_order {
                     limited: false,
                     own_receipts: vec![],
                     fully_read: None,
+                    image_packs: vec![],
                     space: true,
                     direct: false,
                     avatar: None,
@@ -2018,6 +2026,7 @@ mod query {
             limited: false,
             own_receipts: vec![],
             fully_read: None,
+            image_packs: vec![],
             space: false,
             direct: false,
             avatar: None,
@@ -2053,6 +2062,7 @@ mod query {
         whole.events = vec![message("$3", "@bob:x")];
         db.observe(Synced {
             next_batch: "next".into(),
+            packs: None,
             rooms: vec![small, large, whole],
         })
         .await
@@ -2098,6 +2108,138 @@ mod query {
     }
 
     #[tokio::test]
+    async fn rooms_offer_the_accounts_packs_their_own_their_spaces_and_those_used_everywhere() {
+        use crate::{image_packs, rooms::SpaceChild};
+        let pack = |name: Option<&str>, images: &[&str]| {
+            let images: serde_json::Map<_, _> = images
+                .iter()
+                .map(|i| (i.to_string(), json!({ "url": format!("mxc://x/{i}") })))
+                .collect();
+            image_packs::Pack::parse(&json!({ "pack": { "display_name": name }, "images": images }))
+        };
+        let child = |room_id: &str| SpaceChild {
+            room_id: room_id.into(),
+            order: None,
+        };
+        let db = Db::new();
+        let mut lounge = room("!lounge:x", "Lounge");
+        lounge.image_packs = vec![(String::new(), pack(None, &["cat"]))];
+        let mut slack = room("!slack:x", "Slack");
+        slack.space = true;
+        slack.children = vec![child("!lounge:x"), child("!outer:x")];
+        slack.image_packs = vec![
+            ("work.000".into(), pack(Some("Work"), &["parrot"])),
+            ("work.001".into(), pack(Some("Work"), &["shipit"])),
+        ];
+        // Spaces may list each other.
+        let mut outer = room("!outer:x", "Outer");
+        outer.space = true;
+        outer.children = vec![child("!slack:x")];
+        outer.image_packs = vec![("o".into(), pack(Some("Outer"), &["o"]))];
+        let mut left = room("!left:x", "Left");
+        left.space = true;
+        left.membership = Membership::Left;
+        left.children = vec![child("!lounge:x")];
+        left.image_packs = vec![("l".into(), pack(None, &["l"]))];
+        let mut global = room("!global:x", "Global");
+        global.image_packs = vec![
+            ("g".into(), pack(None, &["g"])),
+            ("other".into(), pack(None, &["other"])),
+        ];
+        db.observe(Synced {
+            next_batch: "next".into(),
+            packs: Some(image_packs::AccountPacks {
+                user: Some(pack(None, &["mine"])),
+                everywhere: vec![
+                    ("!global:x".into(), "g".into()),
+                    ("!lounge:x".into(), String::new()),
+                ],
+            }),
+            rooms: vec![lounge, slack, outer, left, global],
+        })
+        .await
+        .unwrap();
+        let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
+        let tx = conn.transaction().unwrap();
+        let id = |room_id: &str| -> RoomId {
+            tx.query_row(
+                "SELECT id FROM matrix_room WHERE room_id = ?1",
+                [room_id],
+                |r| Ok(RoomId(r.get(0)?)),
+            )
+            .unwrap()
+        };
+        let offered = |room: RoomId| -> Vec<(Option<String>, Vec<String>)> {
+            image_packs::offered(&tx, room)
+                .unwrap()
+                .unwrap()
+                .into_iter()
+                .map(|p| (p.name, p.images.into_iter().map(|i| i.shortcode).collect()))
+                .collect()
+        };
+        let named = |name: Option<&str>, images: &[&str]| {
+            (
+                name.map(str::to_owned),
+                images.iter().map(|i| i.to_string()).collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(
+            offered(id("!lounge:x")),
+            [
+                named(None, &["mine"]),
+                named(Some("Lounge"), &["cat"]),
+                named(Some("Outer"), &["o"]),
+                named(Some("Work"), &["parrot"]),
+                named(Some("Work"), &["shipit"]),
+                named(Some("Global"), &["g"]),
+            ],
+            "once each, not of spaces left"
+        );
+        assert_eq!(
+            offered(id("!global:x")),
+            [
+                named(None, &["mine"]),
+                named(Some("Global"), &["g"]),
+                named(Some("Global"), &["other"]),
+                named(Some("Lounge"), &["cat"]),
+            ]
+        );
+        assert!(image_packs::offered(&tx, RoomId(-1)).unwrap().is_none());
+        let offering = |room: &str, image: &str| {
+            image_packs::offering(&tx, id(room), &format!("mxc://x/{image}")).unwrap()
+        };
+        assert_eq!(offering("!lounge:x", "parrot"), Some(account().id));
+        assert_eq!(offering("!lounge:x", "other"), None);
+        assert_eq!(offering("!lounge:x", "l"), None);
+        drop(tx);
+
+        // Packs change as synced.
+        let mut lounge = room("!lounge:x", "Lounge");
+        lounge.image_packs = vec![(String::new(), pack(None, &["dog"]))];
+        db.observe(Synced {
+            next_batch: "next".into(),
+            packs: None,
+            rooms: vec![lounge],
+        })
+        .await
+        .unwrap();
+        let tx = conn.transaction().unwrap();
+        let lounge: RoomId = tx
+            .query_row(
+                "SELECT id FROM matrix_room WHERE room_id = '!lounge:x'",
+                [],
+                |r| Ok(RoomId(r.get(0)?)),
+            )
+            .unwrap();
+        let packs = image_packs::offered(&tx, lounge).unwrap().unwrap();
+        assert_eq!(packs[1].images[0].url, "mxc://x/dog");
+        assert_eq!(
+            packs[0].images[0].shortcode, "mine",
+            "the account's own kept"
+        );
+    }
+
+    #[tokio::test]
     async fn queries_match_rooms_by_name_tags_spaces_and_what_is_unread() {
         let db = Db::new();
         let mut work = room("!work:x", "Work");
@@ -2118,6 +2260,7 @@ mod query {
         party.membership = Membership::Invited;
         db.observe(Synced {
             next_batch: "next".into(),
+            packs: None,
             rooms: vec![work, team, bob, news, party],
         })
         .await
@@ -2187,6 +2330,7 @@ mod query {
         small.events = vec![said("$s", "@c:x", "hey", 3)];
         db.observe(Synced {
             next_batch: "next".into(),
+            packs: None,
             rooms: vec![hq, dm, small],
         })
         .await
@@ -2330,6 +2474,7 @@ mod query {
         ops.fully_read = Some("$7".into());
         db.observe(Synced {
             next_batch: "next".into(),
+            packs: None,
             rooms: vec![work, team, bob, ops],
         })
         .await

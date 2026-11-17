@@ -594,6 +594,10 @@ fn build_app(state: AppState) -> Router {
             get(room_avatar_handler),
         )
         .route(
+            "/api/rooms/:room/emotes/:server/:media",
+            get(pack_image_handler),
+        )
+        .route(
             "/api/rooms/:room/events/:event/media/:server/:media",
             get(|state, path| event_media_handler(state, path, false)),
         )
@@ -726,6 +730,41 @@ async fn room_avatar_handler(
         .services
         .matrix
         .avatar(
+            uplink_protocol::matrix::RoomId(room),
+            format!("mxc://{server}/{media}"),
+        )
+        .await
+    {
+        Ok((mime, image)) => (
+            [
+                (header::CONTENT_TYPE, mime),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+                (header::CONTENT_SECURITY_POLICY, "sandbox"),
+                (
+                    header::CACHE_CONTROL,
+                    "private, max-age=31536000, immutable",
+                ),
+            ],
+            image,
+        )
+            .into_response(),
+        Err(e) if e.code == ErrorCode::NotFound => {
+            (StatusCode::NOT_FOUND, e.message).into_response()
+        }
+        Err(e) => (StatusCode::BAD_GATEWAY, e.message).into_response(),
+    }
+}
+
+/// The image `mxc://server/media` of an image pack the room offers
+/// (SPEC §9.9). Media never change, so it is cached for good.
+async fn pack_image_handler(
+    State(state): State<AppState>,
+    extract::Path((room, server, media)): extract::Path<(i64, String, String)>,
+) -> Response {
+    match state
+        .services
+        .matrix
+        .pack_image(
             uplink_protocol::matrix::RoomId(room),
             format!("mxc://{server}/{media}"),
         )
@@ -1185,6 +1224,7 @@ impl Backend for Services {
                 self.matrix.list_room_events(room, events).await
             }
             ClientRequest::ListEdits { room, event } => self.matrix.list_edits(room, event).await,
+            ClientRequest::ListImagePacks { room } => self.matrix.list_image_packs(room).await,
             ClientRequest::EditText { room, event } => self.matrix.edit_text(room, event).await,
             ClientRequest::ListThread { room, root } => self.matrix.list_thread(room, root).await,
             ClientRequest::ListPinned { room } => self.matrix.list_pinned(room).await,

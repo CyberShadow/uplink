@@ -256,6 +256,29 @@ pub struct Reaction {
     pub senders: Vec<Reactor>,
 }
 
+/// An image pack (MSC2545) a room offers to react with (SPEC §9.9).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ImagePack {
+    /// Its `display_name`, else its room's name; `None` of the account's
+    /// own, unnamed.
+    pub name: Option<String>,
+    /// Its images usable as emoji, by shortcode.
+    pub images: Vec<PackImage>,
+}
+
+/// An image of a pack: served by `/api/rooms/{room}/emotes/{server}/{media}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PackImage {
+    /// What it is named by, without colons.
+    pub shortcode: String,
+    /// Its `mxc:` URI.
+    pub url: String,
+    /// What it shows, in words.
+    pub body: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Reactor {

@@ -3,7 +3,7 @@
 use crate::{
     backfill,
     client::{self, Clients},
-    markdown, media,
+    image_packs, markdown, media,
     membership::ChangeMembership,
     preview,
     query::Rooms,
@@ -131,6 +131,53 @@ impl Matrix {
             ))
         })?;
         Ok((mime, image))
+    }
+
+    /// The image `mxc` of a pack the room offers (SPEC §9.9), as it is:
+    /// emoji may be animated.
+    pub async fn pack_image(
+        &self,
+        room: RoomId,
+        mxc: String,
+    ) -> Result<(&'static str, Vec<u8>), ServerError> {
+        let account = self
+            .reader
+            .read({
+                let mxc = mxc.clone();
+                move |conn| {
+                    let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                    image_packs::offering(&tx, room, &mxc)
+                        .map_err(internal)?
+                        .ok_or_else(|| {
+                            error(
+                                ErrorCode::NotFound,
+                                format!("room {} offers no pack with {mxc}", room.0),
+                            )
+                        })
+                }
+            })
+            .await?;
+        let client = self.client(&account)?;
+        let source = MatrixMediaSource::Plain(mxc.as_str().into());
+        let image = client::media(&client, source, false)
+            .await
+            .map_err(internal)?;
+        let mime = media::image_type(&image)
+            .ok_or_else(|| error(ErrorCode::NotFound, format!("{mxc} is not an image shown")))?;
+        Ok((mime, image))
+    }
+
+    /// The image packs the room offers to react with (SPEC §9.9).
+    pub async fn list_image_packs(&self, room: RoomId) -> Response {
+        self.reader
+            .read(move |conn| {
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                let packs = image_packs::offered(&tx, room)
+                    .map_err(internal)?
+                    .ok_or_else(|| no_room(room))?;
+                Ok(ServerResponse::ImagePacks { room, packs })
+            })
+            .await
     }
 
     fn client(&self, account: &str) -> Result<matrix_sdk::Client, ServerError> {

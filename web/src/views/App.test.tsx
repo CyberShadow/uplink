@@ -2263,6 +2263,53 @@ describe('room timeline', () => {
     await within(line('Lunch?')).findByRole('button', { name: ':cat: 2', pressed: true })
   })
 
+  it("offers the room's image packs to react with, as typed narrows them", async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    server.imagePacks.set(room.id, [
+      { name: null, images: [{ shortcode: 'mine', url: 'mxc://example.org/mine', body: null }] },
+      {
+        name: 'Work',
+        images: [
+          { shortcode: 'party_parrot', url: 'mxc://example.org/parrot', body: 'Party parrot' },
+          { shortcode: 'shipit', url: 'mxc://example.org/shipit', body: 'squirrel' },
+        ],
+      },
+    ])
+    const event = server.receive(room.id, { body: 'Lunch?' })
+    const user = await start(`/rooms/${room.id}`)
+    await within(timeline()).findByText('Lunch?')
+    await user.click(within(line('Lunch?')).getByRole('button', { name: 'React' }))
+    const picker = screen.getByRole('dialog', { name: 'React' })
+    const work = await within(picker).findByRole('region', { name: 'Work' })
+    within(picker).getByRole('region', { name: 'Your emoji' })
+    const parrot = within(work).getByRole('button', { name: 'React with :party_parrot:' })
+    expect(parrot.querySelector('img')!.getAttribute('src')).toBe(`/api/rooms/${room.id}/emotes/example.org/parrot`)
+
+    // By shortcode, or what the image shows.
+    await user.type(within(picker).getByRole('textbox', { name: 'Reaction' }), 'squir')
+    expect(within(picker).queryByRole('region', { name: 'Your emoji' })).toBeNull()
+    expect(within(picker).getAllByRole('button', { name: /^React with :/ }).map((b) => b.title)).toEqual([':shipit:'])
+    await user.click(within(picker).getByRole('button', { name: 'React with :shipit:' }))
+    expect(server.requests).toContainEqual({
+      type: 'send_matrix_message',
+      key: expect.any(String),
+      room: room.id,
+      content: { type: 'reaction', event: event.event_id, key: 'mxc://example.org/shipit', shortcode: ':shipit:' },
+    })
+
+    // A shortcode typed whole is its image.
+    await user.click(within(line('Lunch?')).getByRole('button', { name: 'React' }))
+    await screen.findByRole('region', { name: 'Work' })
+    await user.type(screen.getByRole('textbox', { name: 'Reaction' }), ':mine:{Enter}')
+    expect(server.requests).toContainEqual({
+      type: 'send_matrix_message',
+      key: expect.any(String),
+      room: room.id,
+      content: { type: 'reaction', event: event.event_id, key: 'mxc://example.org/mine', shortcode: ':mine:' },
+    })
+  })
+
   it('replies, edits the last message with Up, and deletes', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')

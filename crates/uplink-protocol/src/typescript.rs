@@ -168,6 +168,8 @@ fn declarations() -> String {
         EventEdit,
         Reaction,
         Reactor,
+        ImagePack,
+        PackImage,
         RepliedEvent,
         ThreadSummary,
         UrlPreview,

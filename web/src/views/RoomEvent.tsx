@@ -7,6 +7,7 @@ import { render } from 'preact'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import type {
+  ImagePack,
   MemberReceipt,
   Room,
   RoomEvent,
@@ -28,6 +29,7 @@ import {
   media,
   mediaPath,
   mxcPath,
+  packImagePath,
   permalink,
   reactionName,
   senderColor,
@@ -83,8 +85,9 @@ export interface LineActions {
   thread?: () => void
   /** Opens the thread it would be the root of. */
   replyInThread?: () => void
-  /** Reacts with the key, unless the account has: then takes it back. */
-  react?: (key: string) => void
+  /** Reacts with the key (a custom reaction's image named by its
+   * shortcode), unless the account has: then takes it back. */
+  react?: (key: string, shortcode: string | null) => void
   delete?: () => void
   pin?: { pinned: boolean; toggle: () => void }
 }
@@ -105,7 +108,7 @@ export function lineActions(line: Line, matrix: MatrixStore): LineActions {
   const actions: LineActions = {}
   if (replyable) {
     actions.reply = line.reply
-    actions.react = (key) => {
+    actions.react = (key, shortcode) => {
       const mine = event.reactions
         .find((r) => r.key === key)
         ?.senders.find((s) => s.sender === me && !line.pendingRedactions.has(s.event_id))
@@ -114,11 +117,7 @@ export function lineActions(line: Line, matrix: MatrixStore): LineActions {
       else if (pending) {
         // Until the server has it, there is none of its to cancel.
         if (!isLocal(pending)) matrix.cancelSend(pending.id)
-      } else {
-        // A custom reaction is named as others name it.
-        const shortcode = event.reactions.find((r) => r.key === key)?.shortcode ?? null
-        matrix.send(room.id, { type: 'reaction', event: event.event_id, key, shortcode })
-      }
+      } else matrix.send(room.id, { type: 'reaction', event: event.event_id, key, shortcode })
     }
   }
   if (replyable && own && TEXT.has(content.msgtype ?? '')) actions.edit = line.edit
@@ -213,7 +212,7 @@ export function EventRow(
             overlay={props.overlay}
             pendingRedactions={props.pendingRedactions}
             joined={joined}
-            toggle={(key) => can.react?.(key)}
+            toggle={(key, shortcode) => can.react?.(key, shortcode)}
           />
         )}
         {event.thread !== null && props.openThread !== null && (
@@ -223,7 +222,7 @@ export function EventRow(
       </div>
       <Readers room={room} readers={props.readers} />
       <div class={styles.actions}>
-        {can.react && <ReactButton react={can.react} open={props.reacting} setOpen={props.setReacting} />}
+        {can.react && <ReactButton room={room} react={can.react} open={props.reacting} setOpen={props.setReacting} />}
         {can.reply && (
           <button type="button" aria-label="Reply" title="Reply (r)" onMouseDown={keepFocus} onClick={can.reply}>
             <Icon name="reply" />
@@ -766,7 +765,7 @@ function Reactions(props: {
   overlay: Overlay
   pendingRedactions: ReadonlySet<string>
   joined: boolean
-  toggle: (key: string) => void
+  toggle: (key: string, shortcode: string | null) => void
 }) {
   const { event, me } = props
   const sending = props.overlay.filter((s) => s.content.type === 'reaction')
@@ -799,7 +798,7 @@ function Reactions(props: {
               title={`${names.join(', ')} reacted with ${reactionName(key, shortcode)}`}
               disabled={!props.joined}
               onMouseDown={keepFocus}
-              onClick={() => props.toggle(key)}
+              onClick={() => props.toggle(key, shortcode)}
             >
               <ReactionKey room={props.room} event={event} reactionKey={key} shortcode={shortcode} /> {count}
             </button>
@@ -825,18 +824,35 @@ export function ReactionKey(props: { room: Room; event: RoomEvent; reactionKey: 
  * once closed. */
 export type Reacting = null | 'pointer' | 'key'
 
-/** The button offering reactions: the quick ones, or any typed. */
+/** The button offering reactions: the quick ones, the images of the
+ * packs the room offers (those whose shortcode or description has what
+ * is typed), or any typed: an image's `:shortcode:` is that image. */
 function ReactButton(props: {
-  react: (key: string) => void
+  room: Room
+  react: (key: string, shortcode: string | null) => void
   open: Reacting
   setOpen: (open: Reacting) => void
 }) {
   const { open, setOpen } = props
+  const { matrix } = useServices()
   const [typed, setTyped] = useState('')
+  // Of the room as it is when the picker opens.
+  const [packs, setPacks] = useState<ImagePack[] | null>(null)
+  const opened = open !== null
+  useEffect(() => {
+    setPacks(null)
+    if (!opened) return
+    let current = true
+    void matrix.imagePacks(props.room.id).then((packs) => current && setPacks(packs))
+    return () => {
+      current = false
+    }
+  }, [opened, matrix, props.room.id])
   const root = useRef<HTMLSpanElement>(null)
   const input = useRef<HTMLInputElement>(null)
   const picker = useRef<HTMLDivElement>(null)
-  const above = useOpensAbove(picker, open !== null)
+  // Placed once its packs show, which make it larger.
+  const above = useOpensAbove(picker, opened && packs !== null)
   const close = () => {
     setOpen(null)
     setTyped('')
@@ -854,10 +870,19 @@ function ReactButton(props: {
     document.addEventListener('pointerdown', outside)
     return () => document.removeEventListener('pointerdown', outside)
   }, [open, setOpen])
-  const choose = (key: string) => {
+  const choose = (key: string, shortcode: string | null) => {
     close()
-    props.react(key)
+    props.react(key, shortcode)
   }
+  const words = typed.trim().replace(/^:|:$/g, '').toLowerCase()
+  const shown = (packs ?? [])
+    .map((pack) => ({
+      ...pack,
+      images: pack.images.filter(
+        (i) => i.shortcode.toLowerCase().includes(words) || (i.body ?? '').toLowerCase().includes(words),
+      ),
+    }))
+    .filter((pack) => pack.images.length > 0)
   return (
     <span class={styles.reactRoot} ref={root}>
       <button
@@ -897,14 +922,18 @@ function ReactButton(props: {
           }}
         >
           {QUICK.map((key) => (
-            <button key={key} type="button" aria-label={`React with ${key}`} onMouseDown={keepFocus} onClick={() => choose(key)}>
+            <button key={key} type="button" aria-label={`React with ${key}`} onMouseDown={keepFocus} onClick={() => choose(key, null)}>
               {key}
             </button>
           ))}
           <form
             onSubmit={(event) => {
               event.preventDefault()
-              if (typed.trim() !== '') choose(typed.trim())
+              const key = typed.trim()
+              if (key === '') return
+              const image = (packs ?? []).flatMap((p) => p.images).find((i) => `:${i.shortcode}:` === key)
+              if (image) choose(image.url, key)
+              else choose(key, null)
             }}
           >
             <input
@@ -915,6 +944,27 @@ function ReactButton(props: {
               onInput={(event) => setTyped(event.currentTarget.value)}
             />
           </form>
+          {shown.length > 0 && (
+            <div class={styles.packs}>
+              {shown.map((pack, at) => (
+                <section key={at} aria-label={pack.name ?? 'Your emoji'}>
+                  <h4>{pack.name ?? 'Your emoji'}</h4>
+                  {pack.images.map((image) => (
+                    <button
+                      key={image.shortcode}
+                      type="button"
+                      aria-label={`React with :${image.shortcode}:`}
+                      title={`:${image.shortcode}:`}
+                      onMouseDown={keepFocus}
+                      onClick={() => choose(image.url, `:${image.shortcode}:`)}
+                    >
+                      <img src={packImagePath(props.room.id, image.url)} alt="" loading="lazy" />
+                    </button>
+                  ))}
+                </section>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </span>

@@ -997,6 +997,7 @@ than it buffers is closed; the client reconnects and resumes.
   `ListPinned { room }` — of the room's pinned events, those stored and
   listed, in the order pinned (§9.5);
   `PreviewUrl { room, event, url }` — a link's preview (§9.8);
+  `ListImagePacks { room }` — the image packs the room offers (§9.9);
   `ResolveRoomAlias { account, alias }` — the room an address is of
   (§9.7);
   `SearchRoom { room, query, before, limit }` — the room's messages
@@ -3076,6 +3077,29 @@ targets (its `body` may be in a bridged network's markup, as Slack's
 `<http://dlang.org|dlang.org>`); else the URLs in its text. A page that
 cannot be previewed shows none.
 
+### 9.9 Image packs
+
+Custom emoji come in image packs (MSC2545), as Cinny and other clients
+that know them have them: a room's (`im.ponies.room_emotes` state, a
+pack by state key), the account's own (`im.ponies.user_emotes` account
+data), and the rooms' packs it uses everywhere (`im.ponies.emote_rooms`
+account data, by room and state key). A bridge has one for a network's
+custom emoji: mautrix-slack's of a workspace, in its space, once asked
+for (its `import-image-pack`). Sync records them as the SDK's store has
+them, of each the name (`pack.display_name`) and the images usable as
+emoji (`usage`, the image's, else the pack's, has `emoticon`, or neither
+says) with an `mxc:` URI and a shortcode with no colon or white space,
+by shortcode. Not in the log, as events are not: they are stored.
+
+A room offers, as Cinny's: the account's own pack, the room's, those of
+the spaces it is in (and of theirs, up, by `m.space.child`), and those
+used everywhere, each once, of joined rooms only. `ListImagePacks
+{ room }` (not logged) lists them in that order, with their images; a
+pack without a name is named after its room, but the account's own.
+`/api/rooms/:room/emotes/:server/:media` serves an image of one of them,
+as it is (emoji may be animated), if an image the browser decodes (by
+its signature); sandboxed and cached as other media (§9.8).
+
 ---
 
 ## 10. Calendar pipeline
@@ -3788,7 +3812,11 @@ buttons.
   menu of delete (its own) and view source. Reactions show below the
   message, by key with their count, those of the account highlighted; a
   click adds one's own or takes it back. A custom reaction shows its
-  image, named by its shortcode, and is added with it.
+  image, named by its shortcode, and is added with it. The reaction
+  picker offers, after the quick ones, the images of the packs the room
+  offers (§9.9), by pack, as it opens; what is typed narrows them to
+  those whose shortcode or description (`body`) has it, and a whole
+  `:shortcode:` typed reacts with its image.
 - **Sends** that change a loaded event — reactions, edits, deletions —
   show on it while they go out (counted, "(saving…)", "Deleting…");
   others, and those needing a decision (refused, sent though

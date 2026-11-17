@@ -69,6 +69,7 @@ impl Db {
                 "mx".into(),
                 Synced {
                     next_batch: "next".into(),
+                    packs: None,
                     rooms: vec![ObservedRoom {
                         room_id: ROOM.into(),
                         name: "Room".into(),
@@ -78,6 +79,7 @@ impl Db {
                         limited,
                         own_receipts: vec![],
                         fully_read: None,
+                        image_packs: vec![],
                         space: false,
                         direct: false,
                         avatar: None,

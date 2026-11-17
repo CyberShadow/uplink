@@ -727,7 +727,7 @@ const PNG: [u8; 74] = [
 ];
 
 #[tokio::test(flavor = "multi_thread")]
-async fn spaces_list_their_rooms_and_avatars_are_served() {
+async fn spaces_list_their_rooms_and_avatars_and_packs_are_served() {
     use matrix_sdk::ruma::{
         api::client::room::create_room::v3::{CreationContent, Request as CreateRoom},
         serde::Raw,
@@ -777,6 +777,16 @@ async fn spaces_list_their_rooms_and_avatars_are_served() {
         }
     };
     list(&first, "b").await;
+    // An image pack of the space's, as a bridge's of a Slack workspace.
+    space
+        .send_state_event_raw(
+            "im.ponies.room_emotes",
+            "work",
+            json!({ "pack": { "display_name": "Work", "usage": ["emoticon"] },
+                    "images": { "dot": { "url": avatar } } }),
+        )
+        .await
+        .unwrap();
 
     // Paired after: the first sync ends where pairing synced to.
     let uplink = Uplink::new(&homeserver);
@@ -811,6 +821,46 @@ async fn spaces_list_their_rooms_and_avatars_are_served() {
     let other = uplink
         .matrix
         .avatar(synced.id, "mxc://localhost/other".into())
+        .await
+        .unwrap_err();
+    assert_eq!(other.code, uplink_protocol::ErrorCode::NotFound);
+
+    // Its rooms offer its packs, and the account's own, once set.
+    let first = uplink.room(first.room_id()).await.unwrap();
+    let packs = || async {
+        match uplink.matrix.list_image_packs(first.id).await.unwrap() {
+            uplink_protocol::ServerResponse::ImagePacks { packs, .. } => packs
+                .into_iter()
+                .map(|p| (p.name, p.images.into_iter().map(|i| i.shortcode).collect()))
+                .collect::<Vec<(Option<String>, Vec<String>)>>(),
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+    assert_eq!(packs().await, [(Some("Work".into()), vec!["dot".into()])]);
+    alice_phone
+        .account()
+        .set_account_data_raw(
+            matrix_sdk::ruma::events::GlobalAccountDataEventType::from("im.ponies.user_emotes"),
+            Raw::new(&json!({ "images": { "mine": { "url": avatar } } }))
+                .unwrap()
+                .cast_unchecked(),
+        )
+        .await
+        .unwrap();
+    eventually("uplink to see the account's own pack", || async {
+        (packs().await.len() == 2).then_some(())
+    })
+    .await;
+    assert_eq!(packs().await[0], (None, vec!["mine".into()]));
+    let (mime, image) = uplink
+        .matrix
+        .pack_image(first.id, avatar.to_string())
+        .await
+        .unwrap();
+    assert_eq!((mime, image), ("image/png", PNG.to_vec()), "as it is");
+    let other = uplink
+        .matrix
+        .pack_image(first.id, "mxc://localhost/other".into())
         .await
         .unwrap_err();
     assert_eq!(other.code, uplink_protocol::ErrorCode::NotFound);

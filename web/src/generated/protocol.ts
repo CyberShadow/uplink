@@ -254,7 +254,7 @@ export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": 
 /**
  * Done by a view being shown (opening a conversation reads it).
  */
-shown: boolean, } | { "type": "count_conversations", query: string, } | { "type": "list_drafts" } | { "type": "create_draft", id: DraftId, account: string, content: DraftContent, in_reply_to: MessageId | null, } | { "type": "edit_draft", draft: DraftId, revision: number, splice: Splice, } | { "type": "delete_draft", draft: DraftId, } | { "type": "attach_to_draft", draft: DraftId, blob: BlobId, name: string, mime: string, } | { "type": "detach_from_draft", draft: DraftId, attachment: DraftAttachmentId, } | { "type": "send_draft", draft: DraftId, } | { "type": "cancel_send", item: OutboxId, } | { "type": "keep_sent", item: OutboxId, } | { "type": "list_outbox" } | { "type": "keep_observed", account: string, op: TxLogId | null, } | { "type": "list_rooms" } | { "type": "list_timeline", room: RoomId, page: TimelinePage, limit: number, } | { "type": "fill_gap", room: RoomId, gap: GapId, } | { "type": "list_room_events", room: RoomId, events: Array<RoomEventId>, } | { "type": "list_edits", room: RoomId, event: RoomEventId, } | { "type": "edit_text", room: RoomId, event: RoomEventId, } | { "type": "send_matrix_message", room: RoomId, key: string, content: MatrixContent, } | { "type": "cancel_matrix_send", item: MatrixSendId, } | { "type": "keep_matrix_sent", item: MatrixSendId, } | { "type": "mark_seen", place: Place, } | { "type": "mark_room_read", room: RoomId, event: RoomEventId, 
+shown: boolean, } | { "type": "count_conversations", query: string, } | { "type": "list_drafts" } | { "type": "create_draft", id: DraftId, account: string, content: DraftContent, in_reply_to: MessageId | null, } | { "type": "edit_draft", draft: DraftId, revision: number, splice: Splice, } | { "type": "delete_draft", draft: DraftId, } | { "type": "attach_to_draft", draft: DraftId, blob: BlobId, name: string, mime: string, } | { "type": "detach_from_draft", draft: DraftId, attachment: DraftAttachmentId, } | { "type": "send_draft", draft: DraftId, } | { "type": "cancel_send", item: OutboxId, } | { "type": "keep_sent", item: OutboxId, } | { "type": "list_outbox" } | { "type": "keep_observed", account: string, op: TxLogId | null, } | { "type": "list_rooms" } | { "type": "list_timeline", room: RoomId, page: TimelinePage, limit: number, } | { "type": "fill_gap", room: RoomId, gap: GapId, } | { "type": "list_room_events", room: RoomId, events: Array<RoomEventId>, } | { "type": "list_edits", room: RoomId, event: RoomEventId, } | { "type": "edit_text", room: RoomId, event: RoomEventId, } | { "type": "list_image_packs", room: RoomId, } | { "type": "send_matrix_message", room: RoomId, key: string, content: MatrixContent, } | { "type": "cancel_matrix_send", item: MatrixSendId, } | { "type": "keep_matrix_sent", item: MatrixSendId, } | { "type": "mark_seen", place: Place, } | { "type": "mark_room_read", room: RoomId, event: RoomEventId, 
 /**
  * Done by the room being shown, as it is read.
  */
@@ -308,7 +308,7 @@ gaps: Array<TimelineGap>,
  * which follow it. With the events, so that one synced back
  * shows in one place or the other, never both or neither.
  */
-sends: Array<MatrixSend> | null, } | { "type": "room_events", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, } | { "type": "edits", as_of: TxLogId, room: RoomId, event: RoomEventId, edits: Array<RoomEvent>, } | { "type": "edit_text", as_of: TxLogId, room: RoomId, event: RoomEventId, text: string, } | { "type": "room_search", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, more: boolean, } | { "type": "url_preview", preview: UrlPreview | null, } | { "type": "pinned", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, } | { "type": "thread", as_of: TxLogId, room: RoomId, root: RoomEvent, replies: Array<RoomEvent>, } | { "type": "receipts", room: RoomId, receipts: Array<MemberReceipt>, } | { "type": "matrix_room_joined", room_id: string, } | { "type": "room_alias_resolved", room_id: string, } | { "type": "members", room: RoomId, members: Array<MemberInfo>, powers: RoomPowers, } | { "type": "todos", as_of: TxLogId, todos: Array<Todo>, } | { "type": "events", as_of: TxLogId, events: Array<CalendarEvent>, 
+sends: Array<MatrixSend> | null, } | { "type": "room_events", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, } | { "type": "image_packs", room: RoomId, packs: Array<ImagePack>, } | { "type": "edits", as_of: TxLogId, room: RoomId, event: RoomEventId, edits: Array<RoomEvent>, } | { "type": "edit_text", as_of: TxLogId, room: RoomId, event: RoomEventId, text: string, } | { "type": "room_search", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, more: boolean, } | { "type": "url_preview", preview: UrlPreview | null, } | { "type": "pinned", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, } | { "type": "thread", as_of: TxLogId, room: RoomId, root: RoomEvent, replies: Array<RoomEvent>, } | { "type": "receipts", room: RoomId, receipts: Array<MemberReceipt>, } | { "type": "matrix_room_joined", room_id: string, } | { "type": "room_alias_resolved", room_id: string, } | { "type": "members", room: RoomId, members: Array<MemberInfo>, powers: RoomPowers, } | { "type": "todos", as_of: TxLogId, todos: Array<Todo>, } | { "type": "events", as_of: TxLogId, events: Array<CalendarEvent>, 
 /**
  * The time zones configured to show the hours in too.
  */
@@ -1183,6 +1183,37 @@ export type Reactor = { sender: string, sender_name: string | null,
 event_id: string, };
 
 /**
+ * An image pack (MSC2545) a room offers to react with (SPEC §9.9).
+ */
+export type ImagePack = { 
+/**
+ * Its `display_name`, else its room's name; `None` of the account's
+ * own, unnamed.
+ */
+name: string | null, 
+/**
+ * Its images usable as emoji, by shortcode.
+ */
+images: Array<PackImage>, };
+
+/**
+ * An image of a pack: served by `/api/rooms/{room}/emotes/{server}/{media}`.
+ */
+export type PackImage = { 
+/**
+ * What it is named by, without colons.
+ */
+shortcode: string, 
+/**
+ * Its `mxc:` URI.
+ */
+url: string, 
+/**
+ * What it shows, in words.
+ */
+body: string | null, };
+
+/**
  * The event a reply answers, as the reply shows it.
  */
 export type RepliedEvent = { id: RoomEventId, event_id: string, sender: string, sender_name: string | null, kind: string, 
@@ -1604,4 +1635,4 @@ export type EventChangeKind = "create" | "update" | "delete";
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "148c271f227bb609"
+export const PROTOCOL_VERSION = "25106870498b8fe9"

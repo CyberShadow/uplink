@@ -1048,6 +1048,7 @@ mod tests {
     ) -> Synced {
         Synced {
             next_batch: "next".into(),
+            packs: None,
             rooms: vec![ObservedRoom {
                 room_id: room_id.into(),
                 name: room_id.into(),
@@ -1070,6 +1071,7 @@ mod tests {
                 limited: false,
                 own_receipts: vec![],
                 fully_read: None,
+                image_packs: vec![],
             }],
         }
     }
@@ -1730,6 +1732,7 @@ mod tests {
                 "mx".into(),
                 Synced {
                     next_batch: "next".into(),
+                    packs: None,
                     rooms: vec![ObservedRoom {
                         room_id: "!r:x".into(),
                         name: "Rent talk".into(),
@@ -1752,6 +1755,7 @@ mod tests {
                         limited: false,
                         own_receipts: vec![],
                         fully_read: None,
+                        image_packs: vec![],
                     }],
                 },
             )

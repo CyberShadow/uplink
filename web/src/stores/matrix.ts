@@ -22,6 +22,7 @@ import type {
   ServerResponse,
   TxLogId,
   GapId,
+  ImagePack,
   TimelineFilled,
   TimelineGap,
   UrlPreview,
@@ -285,6 +286,11 @@ export class MatrixStore {
    * (SPEC §12.11). Throws the server's refusal. */
   async editText(room: RoomId, event: RoomEventId): Promise<string> {
     return (await query(this.server, { type: 'edit_text', room, event }, 'edit_text')).text
+  }
+
+  /** The image packs the room offers to react with (SPEC §9.9). */
+  async imagePacks(room: RoomId): Promise<ImagePack[]> {
+    return (await query(this.server, { type: 'list_image_packs', room }, 'image_packs')).packs
   }
 
   /** The edits of the room's message `event`, oldest first. */

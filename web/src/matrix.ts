@@ -124,6 +124,12 @@ export function reactionName(key: string, shortcode: string | null): string {
   return shortcode ?? (mxcPath(key) !== null ? 'a custom reaction' : key)
 }
 
+/** Where the server serves the image `mxc` of a pack the room offers
+ * (SPEC §9.9). */
+export function packImagePath(room: RoomId, mxc: string): string {
+  return `/api/rooms/${room}/emotes/${mxcPath(mxc)!}`
+}
+
 /** Where the server serves the media `mxc` an event names (SPEC §9.8),
  * or a thumbnail of it; `null` if it is not an `mxc:` URI. */
 export function mediaPath(room: RoomId, event: RoomEvent, mxc: string, thumbnail = false): string | null {

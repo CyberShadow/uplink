@@ -11,7 +11,7 @@
 use crate::{
     client,
     crawl::Crawler,
-    markdown,
+    image_packs, markdown,
     membership::{self, MembershipChanged},
     room_tags::{self, RoomTagSet},
     rooms::{self, Decrypted, ObservedEvent, ObservedRoom, Push, ReceiptSent, SpaceChild, Synced},
@@ -44,7 +44,8 @@ use matrix_sdk::{
             receipt::ReceiptThread,
             room::message::{AddMentions, FormattedBody},
             tag::{TagInfo, TagName},
-            AnyRoomAccountDataEventContent, RoomAccountDataEventType, StateEventType,
+            AnyRoomAccountDataEventContent, GlobalAccountDataEventType, RoomAccountDataEventType,
+            StateEventType,
         },
         EventId, OwnedEventId, OwnedTransactionId, RoomId, UserId,
     },
@@ -268,6 +269,15 @@ impl Syncer {
         let response = self.client.sync_once(settings).await?;
         let next_batch = response.next_batch.clone();
         let moment = self.moment(&response).await?;
+        let packs_changed = response.account_data.iter().any(|raw| {
+            matches!(raw.get_field::<String>("type"),
+                     Ok(Some(t)) if t == image_packs::USER_PACK || t == image_packs::EMOTE_ROOMS)
+        });
+        let packs = if first || packs_changed {
+            Some(self.account_packs().await?)
+        } else {
+            None
+        };
         let rooms = self.observe(response, first).await?;
         let undecryptable: Vec<(String, String)> = rooms
             .iter()
@@ -278,13 +288,14 @@ impl Syncer {
                     .map(|e| (room.room_id.clone(), e.raw.clone()))
             })
             .collect();
-        if first || !rooms.is_empty() {
+        if first || !rooms.is_empty() || packs.is_some() {
             self.dispatcher
                 .observe(
                     self.account.clone(),
                     Synced {
                         next_batch: next_batch.clone(),
                         rooms,
+                        packs,
                     },
                 )
                 .await?;
@@ -480,8 +491,58 @@ impl Syncer {
             limited,
             own_receipts,
             fully_read: room.fully_read_event_id().map(|e| e.to_string()),
+            image_packs: image_packs(&room).await?,
         })
     }
+
+    /// What the account's account data says of image packs, as the
+    /// client's store has it.
+    async fn account_packs(&self) -> Result<image_packs::AccountPacks> {
+        let account = self.client.account();
+        let content = |raw: Option<Raw<_>>| -> Result<Option<serde_json::Value>> {
+            raw.map(|raw| serde_json::from_str(raw.json().get()))
+                .transpose()
+                .map_err(Into::into)
+        };
+        let user = content(
+            account
+                .account_data_raw(GlobalAccountDataEventType::from(image_packs::USER_PACK))
+                .await?,
+        )?;
+        let everywhere = content(
+            account
+                .account_data_raw(GlobalAccountDataEventType::from(image_packs::EMOTE_ROOMS))
+                .await?,
+        )?;
+        Ok(image_packs::AccountPacks {
+            user: user.as_ref().map(image_packs::Pack::parse),
+            everywhere: everywhere
+                .as_ref()
+                .map(image_packs::parse_emote_rooms)
+                .unwrap_or_default(),
+        })
+    }
+}
+
+/// The room's image packs, by state key, in its order: of a room invited
+/// to, none, as its stripped state has none.
+async fn image_packs(room: &Room) -> Result<Vec<(String, image_packs::Pack)>> {
+    let mut packs = vec![];
+    for event in room
+        .get_state_events(StateEventType::from(image_packs::ROOM_PACKS))
+        .await?
+    {
+        let RawAnySyncOrStrippedState::Sync(raw) = event else {
+            continue;
+        };
+        let event: serde_json::Value = serde_json::from_str(raw.json().get())?;
+        let key = event["state_key"]
+            .as_str()
+            .context("a state event without a state key")?;
+        packs.push((key.to_owned(), image_packs::Pack::parse(&event["content"])));
+    }
+    packs.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(packs)
 }
 
 /// The room's avatar or, of a direct chat without one, the other user's,

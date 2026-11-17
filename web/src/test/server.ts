@@ -49,6 +49,7 @@ import type {
   MatrixContent,
   MatrixSend,
   MatrixVerification,
+  ImagePack,
   MemberInfo,
   RoomPowers,
   GapId,
@@ -212,6 +213,8 @@ export class FakeServer implements Requester, Subscriber, Blobs {
   readonly security = new Map<string, MatrixSecurity>()
   /** Of rooms, their members, and what the account may do there. */
   readonly members = new Map<RoomId, { members: MemberInfo[]; powers: RoomPowers }>()
+  /** The image packs each room offers. */
+  readonly imagePacks = new Map<RoomId, ImagePack[]>()
   /** Of rooms, their gaps, with the events missing there. */
   private readonly gaps = new Map<RoomId, { id: GapId; before: RoomEventId; missing: RoomEvent[] }[]>()
   private nextGap = 1
@@ -1367,6 +1370,8 @@ export class FakeServer implements Requester, Subscriber, Blobs {
         const { members, powers } = this.members.get(body.room) ?? { members: [], powers: NO_POWERS }
         return { type: 'members', room: body.room, members, powers }
       }
+      case 'list_image_packs':
+        return { type: 'image_packs', room: body.room, packs: this.imagePacks.get(body.room) ?? [] }
       case 'set_typing':
         return { type: 'done' }
       case 'get_matrix_security':

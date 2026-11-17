@@ -333,6 +333,10 @@ pub enum ClientRequest {
         room: RoomId,
         event: RoomEventId,
     },
+    /// The image packs the room offers to react with (SPEC §9.9).
+    ListImagePacks {
+        room: RoomId,
+    },
     /// Send to the room: a message, a reaction, a redaction or a file.
     /// `key`, chosen by the client (a UUID), is the send's: asked again
     /// with it (resent on a new connection, say), it is answered with the
@@ -648,6 +652,12 @@ pub enum ServerResponse {
         room: RoomId,
         events: Vec<matrix::RoomEvent>,
     },
+    /// Of `ListImagePacks`, in the order offered: the account's own, the
+    /// room's, its spaces', those it uses everywhere.
+    ImagePacks {
+        room: RoomId,
+        packs: Vec<matrix::ImagePack>,
+    },
     /// Of `ListEdits`: the edit events, as stored.
     Edits {
         as_of: TxLogId,
@@ -756,15 +766,16 @@ impl ServerResponse {
             | Self::Events { as_of, .. }
             | Self::Event { as_of, .. }
             | Self::History { as_of, .. } => Some(*as_of),
-            // Message content does not change; a count is of the moment;
-            // home's buckets are of the configuration; the rest is not
-            // logged.
+            // Message content does not change; a count is of the moment, as
+            // are a room's packs, which change unannounced; home's buckets
+            // are of the configuration; the rest is not logged.
             Self::Message { .. }
             | Self::Home { .. }
             | Self::ConversationCount { .. }
             | Self::Done
             | Self::Receipts { .. }
             | Self::Members { .. }
+            | Self::ImagePacks { .. }
             | Self::MatrixRoomJoined { .. }
             | Self::RoomAliasResolved { .. }
             | Self::MatrixSecurity { .. }

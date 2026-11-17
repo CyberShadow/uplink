@@ -34,7 +34,7 @@ use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Row, Trans
 use uplink_tx_log::{Applied, Inverse, Observation, Observed, Op};
 
 use crate::{
-    html,
+    html, image_packs,
     membership::{parse_desired, parse_membership},
     outbox, room_tags, send,
     service::ConfiguredAccount,
@@ -68,6 +68,11 @@ pub struct SyncState {
 pub struct Synced {
     pub next_batch: String,
     pub rooms: Vec<ObservedRoom>,
+    /// What the account's account data says of image packs, if the
+    /// response changed it (or is the first). Not in the log: it is
+    /// stored.
+    #[serde(skip)]
+    pub packs: Option<image_packs::AccountPacks>,
 }
 
 #[derive(Debug, Serialize)]
@@ -116,6 +121,10 @@ pub struct ObservedRoom {
     pub own_receipts: Vec<String>,
     /// The event the account's `m.fully_read` is at, if it has one.
     pub fully_read: Option<String>,
+    /// Its image packs, by state key, in its order. Not in the log: they
+    /// are stored.
+    #[serde(skip)]
+    pub image_packs: Vec<(String, image_packs::Pack)>,
 }
 
 /// A room a space lists, by an `m.space.child` event with `via`.
@@ -293,6 +302,7 @@ impl Observation for Synced {
         for room in self.rooms {
             let (id, upserted) = upsert_room(tx, account, &room)?;
             let tagged = room_tags::observe(tx, id, &room.tags)?;
+            image_packs::observe_room(tx, account, id, &room.image_packs)?;
             let changed = set_children(tx, id, &room.children)? || upserted || tagged;
             let positions = synced_positions(tx, id, room.events.len())?;
             let inserted = insert_events(tx, id, &room.events, &positions)?;
@@ -330,6 +340,9 @@ impl Observation for Synced {
                     events: touched,
                 }));
             }
+        }
+        if let Some(packs) = &self.packs {
+            image_packs::observe_account(tx, account, packs)?;
         }
         if !changed_rooms.is_empty() {
             events.push(ServerEvent::RoomsChanged(RoomsChanged {
