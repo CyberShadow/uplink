@@ -1364,4 +1364,33 @@ mod tests {
         assert_eq!(found("body"), [1, 2]);
         assert_eq!(found("{to_addrs} : \"b@x\""), [1, 2]);
     }
+
+    /// Accounts first synced after V0053 by a build that did not set
+    /// their `news_since` get it (V0078), as V0053 gave it: of one synced,
+    /// its first log entry's time. Those that have one keep it.
+    #[test]
+    fn accounts_without_news_since_get_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = migrated_to(dir.path(), 77);
+        conn.execute_batch(
+            "INSERT INTO account (id, kind, news_since) VALUES ('old', 'matrix', 5);
+             INSERT INTO account (id, kind) VALUES ('synced', 'matrix'), ('new', 'matrix');
+             INSERT INTO tx_log (id, ts, description, op_type, op_json, inverse_type,
+                                 inverse_json, events_json, account_id)
+             VALUES (1, 70, '', 'matrix.synced', '{}', NULL, NULL, '[]', 'synced'),
+                    (2, 90, '', 'matrix.synced', '{}', NULL, NULL, '[]', 'synced');",
+        )
+        .unwrap();
+        drop(conn);
+        let conn = crate::open(dir.path()).unwrap();
+        let since = |id: &str| -> Option<i64> {
+            conn.query_row("SELECT news_since FROM account WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(since("old"), Some(5));
+        assert_eq!(since("synced"), Some(70));
+        assert!(since("new").unwrap() > 1_700_000_000_000);
+    }
 }
