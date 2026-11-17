@@ -428,7 +428,11 @@ impl Compiler<'_> {
             | Term::Overdue
             | Term::HasDue
             | Term::Done => Ok(Condition::Const(false)),
-            Term::Among(among) => Ok(Condition::Conversations(among.entries.clone())),
+            // Of no entries, of no conversation.
+            Term::Among(among) => Ok(match among.entries.is_empty() {
+                true => Condition::Const(false),
+                false => Condition::Conversations(among.entries.clone()),
+            }),
             Term::Anywhere => {
                 self.anywhere |= positive;
                 sql(Box::new(|_| "1".into()))
@@ -948,7 +952,12 @@ fn newest(tx: &Transaction, scope: &ListScope, condition: Condition) -> Result<(
     // index alone (a label's rows are of entries), and only as far as it
     // may be the fewest.
     let mut fewest: Option<(i64, usize, String, String)> = None;
-    for (at, conjunct) in conjuncts.iter().enumerate() {
+    // Those of the conversations of some entries first: they are few, and
+    // then bound how far each other is counted.
+    let mut order: Vec<usize> = (0..conjuncts.len()).collect();
+    order.sort_by_key(|&at| !matches!(conjuncts[at], Condition::Conversations(_)));
+    for at in order {
+        let conjunct = &conjuncts[at];
         let (counted, from, condition) = match conjunct {
             Condition::Fts(fts) => (
                 "message_fts f JOIN mail_entry c ON c.message = f.rowid",

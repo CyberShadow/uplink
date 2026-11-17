@@ -1572,6 +1572,16 @@ pub(crate) mod service {
                 placed.iter().step_by(2).cloned().collect::<Vec<_>>(),
                 "{list}"
             );
+            // Of no entries, of none: as of what changed but mail.
+            let of_none = crate::query::placed(
+                &tx,
+                &accounts,
+                &query.clone().among(uplink_query::Among::default()),
+                unknown(),
+                false,
+            )
+            .unwrap();
+            assert_eq!(of_none, vec![], "{list}");
             let places = totals(&placed);
             drop(tx);
             let ServerResponse::Conversations { conversations, .. } =
