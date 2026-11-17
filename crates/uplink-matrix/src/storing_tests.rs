@@ -203,3 +203,29 @@ async fn earlier_messages_fetched_are_named_by_the_name_given_after() {
         [("$1".into(), Some("Bea".into())), ("$bea".into(), None)]
     );
 }
+
+/// Of a member named twice, their events before each name are named by
+/// it: those before the first by the first, those between (the first
+/// member event too, which had no name of its sender) by the second.
+#[tokio::test]
+async fn messages_are_named_by_the_next_name_given() {
+    let db = Db::new();
+    db.sync(vec![message_from("$1", "@bea:example.org")], false)
+        .await;
+    db.sync(vec![named("$b1", "@bea:example.org", "Bea")], false)
+        .await;
+    db.sync(vec![message_from("$2", "@bea:example.org")], false)
+        .await;
+    db.sync(vec![named("$b2", "@bea:example.org", "Beatrice")], false)
+        .await;
+    let names: Vec<Option<String>> = db.stored().into_iter().map(|(_, name)| name).collect();
+    assert_eq!(
+        names,
+        [
+            Some("Bea".into()),
+            Some("Beatrice".into()),
+            Some("Beatrice".into()),
+            None
+        ]
+    );
+}

@@ -316,9 +316,7 @@ impl Observation for Synced {
             let redacted = redact(tx, id, &room.version)?;
             let mut touched = touched(tx, &added, &redacted)?;
             // A member's new name names their messages that had none.
-            if room.events.iter().any(|e| e.kind == "m.room.member") {
-                add_touched(&mut touched, name_unnamed(tx, id)?);
-            }
+            add_touched(&mut touched, name_unnamed(tx, id, &added)?);
             if send::sends_synced(tx, id)? {
                 sent.push(id);
             }
@@ -697,23 +695,49 @@ pub(crate) fn redacted_json(raw: &str, redaction: &str, rules: &RedactionRules) 
 /// Names the room's messages whose sender had no name when they were
 /// sent (a member joined before they were named, as a bridge's members
 /// can be) by the name they were given next: that of their first later
-/// member event with one (SPEC §9.2).
-fn name_unnamed(tx: &Transaction, room: RoomId) -> Result<Vec<RoomEventId>> {
+/// member event with one (SPEC §9.2). Of what `added` can name: those of
+/// them, and of the members they name, those before (others before a
+/// stored name were named as it was stored). The others named, which
+/// were stored before.
+fn name_unnamed(tx: &Transaction, room: RoomId, added: &[RoomEventId]) -> Result<Vec<RoomEventId>> {
     const NEXT_NAME: &str = "FROM matrix_event m
-         WHERE m.room = e.room AND m.type = 'm.room.member' AND m.pos > e.pos
-           AND json_extract(m.raw_json, '$.state_key') = e.sender
-           AND json_extract(m.raw_json, '$.content.displayname') IS NOT NULL";
-    let mut named = tx.prepare(&format!(
+         WHERE m.room = e.room AND m.member = e.sender AND m.member_name IS NOT NULL
+           AND m.pos > e.pos";
+    let set_name = format!(
         "UPDATE matrix_event AS e
-         SET sender_name = (SELECT json_extract(m.raw_json, '$.content.displayname')
-                            {NEXT_NAME} ORDER BY m.pos LIMIT 1)
-         WHERE e.room = ?1 AND e.sender_name IS NULL AND EXISTS (SELECT 1 {NEXT_NAME})
+         SET sender_name = (SELECT m.member_name {NEXT_NAME} ORDER BY m.pos LIMIT 1)"
+    );
+    let added_json = serde_json::to_string(&added.iter().map(|e| e.0).collect::<Vec<_>>())?;
+    tx.prepare_cached(&format!(
+        "{set_name}
+         WHERE e.id IN (SELECT value FROM json_each(?1)) AND e.sender_name IS NULL
+           AND EXISTS (SELECT 1 {NEXT_NAME})"
+    ))?
+    .execute([&added_json])?;
+    // Of each member an added event names, the latest such event.
+    let naming: Vec<(String, i64)> = tx
+        .prepare_cached(
+            "SELECT member, max(pos) FROM matrix_event
+             WHERE id IN (SELECT value FROM json_each(?1)) AND member_name IS NOT NULL
+             GROUP BY member",
+        )?
+        .query_map([&added_json], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    let mut before = tx.prepare_cached(&format!(
+        "{set_name}
+         WHERE e.room = ?1 AND e.sender = ?2 AND e.sender_name IS NULL AND e.pos < ?3
          RETURNING id"
     ))?;
-    let ids = named
-        .query_map([room.0], |r| Ok(RoomEventId(r.get(0)?)))?
-        .collect::<Result<_, _>>()?;
-    Ok(ids)
+    let mut named = vec![];
+    for (member, pos) in naming {
+        for id in before.query_map(params![room.0, member, pos], |r| r.get(0))? {
+            let id = RoomEventId(id?);
+            if !added.contains(&id) {
+                named.push(id);
+            }
+        }
+    }
+    Ok(named)
 }
 
 /// `touched`, and `more` not already among them.
@@ -1916,9 +1940,7 @@ impl Observation for Filled {
         let redacted = redact(tx, self.room, &self.version)?;
         let mut touched = touched(tx, &added, &redacted)?;
         // Earlier messages of members named later.
-        if missing.iter().any(|e| e.sender_name.is_none()) {
-            add_touched(&mut touched, name_unnamed(tx, self.room)?);
-        }
+        add_touched(&mut touched, name_unnamed(tx, self.room, &added)?);
         // What is before them is read, as of synced events.
         observe_receipts(tx, self.room, &self.own_receipts)?;
         observe_fully_read(tx, self.room, self.fully_read.as_deref())?;
