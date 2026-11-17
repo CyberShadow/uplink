@@ -222,9 +222,12 @@ impl Condition {
                 "{x}.message IN (SELECT rowid FROM message_fts WHERE message_fts MATCH {})",
                 literal(fts)
             ),
+            // A look-up, where it is: not `EXISTS`, which SQLite makes a
+            // join, and so checks after a costlier condition of the entry
+            // alone (`-has:(…)` of each, where this would rule out most).
             Condition::Label(labels) => format!(
-                "EXISTS (SELECT 1 FROM entry_label ml
-                         WHERE ml.entry = {x}.id AND ml.label IN ({}) AND ml.desired)",
+                "(SELECT 1 FROM entry_label ml
+                  WHERE ml.entry = {x}.id AND ml.label IN ({}) AND ml.desired LIMIT 1) IS NOT NULL",
                 ids(labels)
             ),
             Condition::Account(account) => format!("{x}.account_id = {}", literal(account)),
