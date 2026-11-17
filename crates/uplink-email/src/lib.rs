@@ -21,5 +21,15 @@ pub mod remote;
 pub mod service;
 pub mod watching;
 
+/// The kinds of the mail accounts, as recorded (`account.kind`): one per
+/// provider.
+pub const KINDS: [&str; 5] = [
+    gmail::sync::KIND,
+    m365::sync::KIND,
+    imap::sync::KIND,
+    pop3::sync::KIND,
+    jmap::sync::KIND,
+];
+
 #[cfg(test)]
 mod tests;

@@ -26,9 +26,7 @@ pub fn outbox(tx: &Transaction) -> Result<Vec<AccountOutbox>> {
     fn account(accounts: &mut BTreeMap<String, MailOutbox>, id: String) -> &mut MailOutbox {
         accounts.entry(id).or_default()
     }
-    for (id, failing) in
-        uplink_tx_log::push::failing(tx, &[crate::gmail::sync::KIND, crate::m365::sync::KIND])?
-    {
+    for (id, failing) in uplink_tx_log::push::failing(tx, &crate::KINDS)? {
         account(&mut accounts, id).failing = Some(failing);
     }
     // Per account and op, newest first (changes of no op last), the

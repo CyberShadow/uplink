@@ -1051,6 +1051,44 @@ async fn failing_pushes_are_recorded_from_the_first_failure() {
     assert_eq!(failing(), (None, None));
 }
 
+/// The outbox tells of every mail account whose pushes fail, of each
+/// provider: it told of Gmail's and M365's alone.
+#[tokio::test]
+async fn failing_pushes_are_in_the_outbox_of_every_provider() {
+    let db = Db::new();
+    for kind in crate::KINDS {
+        db.observe(
+            kind,
+            MailboxObserved {
+                account_kind: kind,
+                ..observed(labels(ALL), vec![], vec![], &[])
+            },
+        )
+        .await;
+        db.dispatcher
+            .observe(
+                kind.into(),
+                PushFailing {
+                    error: Some("down".into()),
+                    at: 10,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let mut conn = db.reader();
+    let tx = conn.transaction().unwrap();
+    let failing: Vec<String> = crate::outbox::outbox(&tx)
+        .unwrap()
+        .into_iter()
+        .filter(|account| account.failing.is_some())
+        .map(|account| account.account)
+        .collect();
+    let mut kinds: Vec<String> = crate::KINDS.iter().map(|k| k.to_string()).collect();
+    kinds.sort();
+    assert_eq!(failing, kinds);
+}
+
 #[tokio::test]
 async fn labels_are_replaced_by_a_listing() {
     let db = Db::new();
