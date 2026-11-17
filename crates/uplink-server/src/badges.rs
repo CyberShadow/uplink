@@ -1,6 +1,7 @@
 //! The badges (SPEC §12.14): what the badged home buckets hold, kept
 //! current in the hub, which sends them to every session; and what comes
-//! into them from others, which it sends as notices (SPEC §12.16).
+//! into them from others, and what of it is no news any more, which it
+//! sends as notices (SPEC §12.16).
 
 use crate::items::{Badged, Items, Since};
 use std::{sync::Arc, time::Duration};
@@ -60,6 +61,9 @@ pub async fn keep(items: Items, hub: Arc<Hub>, badged: Badged, mut since: Since)
                 hub.set_badges(derived.badges);
                 for arrival in derived.arrivals {
                     hub.notify(Notice::Arrival(arrival));
+                }
+                for item in derived.recalls {
+                    hub.notify(Notice::Recall { item });
                 }
                 since = derived.since;
             }

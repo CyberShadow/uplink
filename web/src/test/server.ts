@@ -676,6 +676,11 @@ export class FakeServer implements Requester, Subscriber, Blobs {
     this.client.notice({ type: 'arrival', bucket, urgency, item })
   }
 
+  /** What came is no news any more (SPEC §12.16). */
+  recall(item: Arrived) {
+    this.client.notice({ type: 'recall', item })
+  }
+
   /** Members are typing in the room, as sync says. */
   typing(room: RoomId, users: RoomMember[]) {
     this.client.notice({ type: 'typing', room, users })

@@ -300,6 +300,15 @@ pub fn tag_known(tx: &Transaction, name: &str) -> Result<bool> {
     Ok(known)
 }
 
+/// Whether the stored message `event` is not deleted (redacted).
+pub fn kept(tx: &Transaction, event: RoomEventId) -> Result<bool> {
+    Ok(tx.query_row(
+        "SELECT NOT redacted FROM matrix_event WHERE id = ?1",
+        [event.0],
+        |r| r.get(0),
+    )?)
+}
+
 /// The spaces each room is in, however deeply, by name.
 struct Spaces {
     parents: HashMap<String, Vec<String>>,

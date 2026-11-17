@@ -152,7 +152,8 @@ MVP:
 - IndexedDB client-side write-through for draft text resilience.
 - Browser notifications of what comes from others into the home buckets
   that notify (mail, messages, invitations), interrupting or quiet as
-  their badges say (SPEC §12.16).
+  their badges say, taken back once no news: read, deleted or answered,
+  here or elsewhere (SPEC §12.16).
 
 Deferred:
 - Web Push: notifications with no client open (SPEC §12.16 needs one).

@@ -1335,17 +1335,21 @@ describe('matrix', () => {
   })
 
   it('notifies of what comes into the badged buckets, as urgently as they say, but what is on show', async () => {
-    const shown: Array<{ title: string; options: NotificationOptions; onclick: (() => void) | null }> = []
+    const shown: Array<{ title: string; options: NotificationOptions; onclick: (() => void) | null; closes: number }> =
+      []
     class FakeNotification {
       static permission = 'granted'
       onclick: (() => void) | null = null
+      closes = 0
       constructor(
         readonly title: string,
         readonly options: NotificationOptions,
       ) {
         shown.push(this)
       }
-      close() {}
+      close() {
+        this.closes++
+      }
     }
     vi.stubGlobal('Notification', FakeNotification)
     try {
@@ -1395,6 +1399,13 @@ describe('matrix', () => {
       server.arrive('Upkeep', 'quiet', { kind: 'mail', entry: other.id })
       await waitFor(() => expect(shown).toHaveLength(3))
       expect(shown[2].title).toBe('Bob: Other')
+
+      // Once no news, it is taken back; but not for what was not shown,
+      // though of its conversation (the reply to Rent, clicked).
+      server.recall({ kind: 'mail', entry: reply.id })
+      server.recall({ kind: 'mail', entry: other.id })
+      await waitFor(() => expect(shown[2].closes).toBe(1))
+      expect(shown.map((n) => n.closes)).toEqual([1, 1, 1])
 
       // An invitation, of a room not yet listed, by its name; a click
       // opens it.

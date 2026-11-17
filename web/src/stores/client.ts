@@ -69,7 +69,8 @@ export class Client {
         this.matrix.notice(notice)
         break
       case 'arrival':
-        this.home.arrived(notice)
+      case 'recall':
+        this.home.told(notice)
         break
     }
   }

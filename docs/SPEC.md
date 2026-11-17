@@ -4109,6 +4109,19 @@ session of each (`Notice::Arrival { bucket, urgency, item }`, §5.5): live
 only, so a client not connected then, as while the computer slept, is
 not told; the badges are what remains of it.
 
+What was told of is no news once it is dealt with, here or in another
+client, as Element and Gmail's apps take back their notifications: its
+conversation or room no longer in a bucket that notifies (read,
+archived), or what it told of deleted (the entry removed, in Trash or
+Spam; the message redacted), though what else came keeps its item in
+the bucket, or the invitation answered. The server keeps what it told
+of, one per conversation or room, a later arrival replacing it (as the
+client's `tag`), and checks each again as it derives the badges, of
+the same read; it tells every session of what is no news
+(`Notice::Recall { item }`), and forgets it. It keeps them in memory
+only: a notification told of before the server restarted is not
+recalled.
+
 Once the browser lets uplink notify (an item of the nav's views, under
 Calendar, asks it to, until it is answered), the web client notifies of
 each, unless the tab is visible
@@ -4117,7 +4130,8 @@ the sender and subject of mail, with its snippet, the room's name and
 the message's sender and text, or the room's name and that it invites
 the user; one per conversation or room, a
 later replacing it (`tag`). A click opens it: the conversation in its
-account's All Mail, or the room. Only while a client is open: the
+account's All Mail, or the room. A recall closes it, if it is still
+of what was recalled (not replaced). Only while a client is open: the
 server does not notify (the Android app, ROADMAP, would).
 
 ## 13. Authentication & secrets

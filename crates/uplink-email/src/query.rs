@@ -547,6 +547,19 @@ pub fn label_known(tx: &Transaction, name: &str) -> Result<bool> {
         .is_some())
 }
 
+/// Whether `entry` is not deleted: still stored, and in neither Trash
+/// nor Spam (what is in either is shown only there, SPEC §8.1).
+pub fn kept(tx: &Transaction, entry: EntryId) -> Result<bool> {
+    Ok(tx.query_row(
+        "SELECT EXISTS (
+           SELECT 1 FROM mail_entry e WHERE id = ?1 AND NOT EXISTS (
+             SELECT 1 FROM entry_label el JOIN label l ON l.id = el.label
+             WHERE el.entry = e.id AND el.desired AND l.external_id IN ('TRASH', 'SPAM')))",
+        [entry.0],
+        |r| r.get(0),
+    )?)
+}
+
 /// Of the conversation's entries, the newest that came from others: is
 /// stored after `since`, was received after `received_after` (ms since
 /// the Unix epoch), and is not the user's own (in Sent or Drafts).

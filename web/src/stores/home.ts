@@ -5,7 +5,7 @@
 // changes.
 
 import { batch, computed, signal } from '@preact/signals'
-import type { Arrival, Badges, CalendarEvent, HomeBucket, LogEntry } from '../generated/protocol'
+import type { Badges, CalendarEvent, HomeBucket, LogEntry, Notice } from '../generated/protocol'
 import type { Requester, Subscriber } from '../connection'
 import { rowOf, type Row } from '../items'
 import { Loader, query } from './query'
@@ -13,6 +13,10 @@ import { LiveWindow } from './window'
 
 /** Rows a bucket shows at most; the rest are a search away. */
 export const BUCKET_LIMIT = 20
+
+/** What comes from others into the badged buckets, and what of it is no
+ * news any more (SPEC §12.16). */
+export type News = Extract<Notice, { type: 'arrival' | 'recall' }>
 
 export interface Bucket {
   bucket: HomeBucket
@@ -38,8 +42,8 @@ export class HomeStore {
   readonly badges = signal<Badges | null>(null)
   /** The buckets' windows, in order, as last configured. */
   private windows: { bucket: HomeBucket; window: LiveWindow }[] = []
-  /** Those told of what comes into the badged buckets. */
-  private listeners = new Set<(arrival: Arrival) => void>()
+  /** Those told the news. */
+  private listeners = new Set<(news: News) => void>()
 
   /** The buckets as configured, subscribed to anew if they changed. */
   private configuration = new Loader(async () => {
@@ -99,15 +103,14 @@ export class HomeStore {
     this.configuration.invalidate()
   }
 
-  /** Tells `listener` of what comes from others into the badged buckets
-   * (SPEC §12.16), until the returned function is called. */
-  onArrival(listener: (arrival: Arrival) => void): () => void {
+  /** Tells `listener` the news, until the returned function is called. */
+  onNews(listener: (news: News) => void): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
   }
 
-  arrived(arrival: Arrival) {
-    this.listeners.forEach((listener) => listener(arrival))
+  told(news: News) {
+    this.listeners.forEach((listener) => listener(news))
   }
 
   /** Moves the focus `by` rows. */

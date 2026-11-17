@@ -41,20 +41,36 @@ const ARRIVALS_AMONG: u32 = 100;
 const RECENT: i64 = 60 * 60 * 1000;
 
 /// The badges, what came into the badged buckets since they were last
-/// derived, and as of when they were derived now.
+/// derived, what told of before is no news any more, and as of when
+/// they were derived now.
 pub struct Derived {
     pub badges: Badges,
     pub arrivals: Vec<Arrival>,
+    pub recalls: Vec<Arrived>,
     pub since: Since,
 }
 
 /// As of when the badges were derived: what came after is news. An
 /// invitation, which has no message, is news if its room was not invited
-/// to then.
+/// to then. And what was told of that is news still, to recall once it
+/// is not (SPEC §12.16).
 #[derive(Debug, Clone)]
 pub struct Since {
     watermark: Watermark,
     invited: BTreeSet<RoomId>,
+    standing: Standing,
+}
+
+/// What told of stands, one per conversation or room, as the client's
+/// notifications are (`tag`): a later arrival of one replaces it.
+type Standing = HashMap<Notified, Arrived>;
+
+/// What an arrival is of.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Notified {
+    /// By its key, as `Held` has it.
+    Conversation(String),
+    Room(RoomId),
 }
 
 #[derive(Clone)]
@@ -121,6 +137,94 @@ impl Badged {
             marks: places.into(),
         }
     }
+
+    /// What was derived, of what the buckets hold now, with what came
+    /// (`arrivals`), and what stood before.
+    fn derived(
+        &self,
+        tx: &Transaction,
+        rooms: &Rooms,
+        arrivals: Vec<Arrival>,
+        standing: Standing,
+    ) -> Result<Derived, ServerError> {
+        let (standing, recalls) = self.stand(tx, rooms, standing, &arrivals)?;
+        Ok(Derived {
+            badges: self.badges(),
+            arrivals,
+            recalls,
+            since: Since {
+                watermark: crate::seen::latest(tx).map_err(internal)?,
+                invited: rooms.invited().collect(),
+                standing,
+            },
+        })
+    }
+
+    /// Whether a bucket that notifies holds it.
+    fn notifies(&self, notified: &Notified) -> bool {
+        self.buckets
+            .iter()
+            .filter(|bucket| bucket.badge.urgency().is_some())
+            .any(|bucket| match notified {
+                Notified::Conversation(key) => bucket.held.mail.contains_key(key),
+                Notified::Room(room) => bucket.held.rooms.contains_key(room),
+            })
+    }
+
+    /// What stands of `standing` and `arrivals`: each arrival, replacing
+    /// what stood of its conversation or room; and what stood that is
+    /// news still: a bucket that notifies holds its conversation or room,
+    /// and what it told of is not deleted, nor the invitation answered.
+    /// And what stood that is not, to recall.
+    fn stand(
+        &self,
+        tx: &Transaction,
+        rooms: &Rooms,
+        standing: Standing,
+        arrivals: &[Arrival],
+    ) -> Result<(Standing, Vec<Arrived>), ServerError> {
+        let mut told = Standing::new();
+        for arrival in arrivals {
+            told.insert(notified(tx, &arrival.item)?, arrival.item.clone());
+        }
+        let mut recalls = vec![];
+        for (notified, arrived) in standing {
+            if told.contains_key(&notified) {
+                continue;
+            }
+            match self.notifies(&notified) && kept(tx, rooms, &arrived)? {
+                true => {
+                    told.insert(notified, arrived);
+                }
+                false => recalls.push(arrived),
+            }
+        }
+        Ok((told, recalls))
+    }
+}
+
+/// What `arrived` is of.
+fn notified(tx: &Transaction, arrived: &Arrived) -> Result<Notified, ServerError> {
+    Ok(match arrived {
+        Arrived::Mail { entry } => {
+            let keys = mail::conversation_keys(tx, &[*entry]).map_err(internal)?;
+            let [key] = <[String; 1]>::try_from(keys).expect("what came is stored");
+            Notified::Conversation(key)
+        }
+        Arrived::Message { room, .. } | Arrived::Invite { room, .. } => Notified::Room(*room),
+    })
+}
+
+/// Whether what `arrived` told of is not deleted, nor the invitation
+/// answered.
+fn kept(tx: &Transaction, rooms: &Rooms, arrived: &Arrived) -> Result<bool, ServerError> {
+    Ok(match arrived {
+        Arrived::Mail { entry } => mail::kept(tx, *entry).map_err(internal)?,
+        Arrived::Message { event, .. } => {
+            uplink_matrix::query::kept(tx, *event).map_err(internal)?
+        }
+        Arrived::Invite { room, .. } => rooms.invited().any(|invited| invited == *room),
+    })
 }
 
 /// What a badged bucket holds, item by item, with where each is.
@@ -551,10 +655,6 @@ impl Items {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
                 let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
                 let seen = Seen::load(&tx).map_err(internal)?;
-                let now_since = Since {
-                    watermark: crate::seen::latest(&tx).map_err(internal)?,
-                    invited: rooms.invited().collect(),
-                };
                 let mut badged = Badged { buckets: vec![] };
                 let mut arrivals = vec![];
                 for (badge, bucket) in buckets {
@@ -580,15 +680,9 @@ impl Items {
                         held,
                     });
                 }
-                let badges = badged.badges();
-                Ok((
-                    badged,
-                    Derived {
-                        badges,
-                        arrivals,
-                        since: now_since,
-                    },
-                ))
+                let standing = since.map(|since| since.standing).unwrap_or_default();
+                let derived = badged.derived(&tx, &rooms, arrivals, standing)?;
+                Ok((badged, derived))
             })
             .await
     }
@@ -613,10 +707,6 @@ impl Items {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
                 let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
                 let seen = Seen::load(&tx).map_err(internal)?;
-                let now_since = Since {
-                    watermark: crate::seen::latest(&tx).map_err(internal)?,
-                    invited: rooms.invited().collect(),
-                };
                 let conversations = conversations(&tx, &changed)?;
                 let among = among(&changed);
                 let mut badged = badged;
@@ -666,15 +756,8 @@ impl Items {
                         )?);
                     }
                 }
-                let badges = badged.badges();
-                Ok((
-                    badged,
-                    Derived {
-                        badges,
-                        arrivals,
-                        since: now_since,
-                    },
-                ))
+                let derived = badged.derived(&tx, &rooms, arrivals, since.standing)?;
+                Ok((badged, derived))
             })
             .await
     }
@@ -1126,6 +1209,7 @@ mod tests {
         let mut todo_ids = vec![];
         let mut came = 0;
         let mut invited = 0;
+        let mut recalled = 0;
         // Of the labels, by step: as many sets as there are steps of a kind.
         let sets: [&[&str]; 5] = [
             &["INBOX", "UNREAD"],
@@ -1253,6 +1337,16 @@ mod tests {
             assert_eq!(held(&kept), held(&anew), "step {step}");
             assert_eq!(derived.badges, derived_anew.badges, "step {step}");
             assert_eq!(derived.arrivals, derived_anew.arrivals, "step {step}");
+            let sorted = |mut recalls: Vec<Arrived>| {
+                recalls.sort_by_key(|item| format!("{item:?}"));
+                recalls
+            };
+            recalled += derived.recalls.len();
+            assert_eq!(
+                sorted(derived.recalls),
+                sorted(derived_anew.recalls),
+                "step {step}"
+            );
             came += derived.arrivals.len();
             invited += derived
                 .arrivals
@@ -1266,6 +1360,7 @@ mod tests {
         assert!(badged.badges().marks.home.count > 0);
         assert!(came > 0);
         assert!(invited > 0, "invitations came");
+        assert!(recalled > 0, "what came was recalled");
         assert!(left > 0, "items left windows");
         // An empty window, and more come at once than it holds.
         let listing = window("label:SPAM", 2, anew(), Changed::everything())
@@ -1407,6 +1502,213 @@ mod tests {
         // Once told of, the invitation is not news again.
         let (arrived, _) = arrivals(vec![bucket("is:invite", Some(Badge::Alert))], &now).await;
         assert!(arrived.is_empty(), "{arrived:?}");
+    }
+
+    /// What was told of is recalled once it is no news: its conversation
+    /// or room no longer in a bucket that notifies (read elsewhere), or
+    /// what it told of deleted (mail trashed, a message redacted, though
+    /// what else came keeps the item in the bucket), or the invitation
+    /// answered; not before, nor once a later arrival replaces it.
+    #[tokio::test]
+    async fn recalls_are_of_what_is_no_news() {
+        use uplink_email::mailbox::{EntryLabels, MailboxObserved, NewEntry, ObservedLabel};
+        use uplink_protocol::mail::LabelKind;
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = Registry::new();
+        uplink_email::mailbox::register(&mut registry);
+        uplink_matrix::register(&mut registry);
+        let dispatcher = Dispatcher::new(
+            uplink_storage::open(dir.path()).unwrap(),
+            registry,
+            Arc::new(Hub::new(64)),
+        );
+        let store = uplink_storage::store::Store::mail(dir.path());
+        let observed = |labels, added, updated| MailboxObserved {
+            account_kind: "gmail",
+            labels,
+            rekeyed: vec![],
+            added,
+            updated,
+            removed: vec![],
+            sync_state: None,
+        };
+        let labels = ["INBOX", "UNREAD", "TRASH", "SPAM"]
+            .iter()
+            .map(|id| ObservedLabel {
+                external_id: id.to_string(),
+                name: id.to_string(),
+                system: true,
+                kind: LabelKind::Tag,
+            })
+            .collect();
+        let mail = |added, updated| dispatcher.observe("a".into(), observed(None, added, updated));
+        dispatcher
+            .observe("a".into(), observed(Some(labels), vec![], vec![]))
+            .await
+            .unwrap();
+        let entry = |id: &str, thread: &str| {
+            let raw = format!(
+                "Message-ID: <{id}@x>\r\nFrom: bob@x\r\nTo: a@x\r\nSubject: s {id}\r\n\r\nhi\r\n"
+            );
+            let raw = raw.as_bytes();
+            NewEntry {
+                external_id: id.to_owned(),
+                thread_id: Some(thread.to_owned()),
+                received_at: now(),
+                labels: vec!["INBOX".into(), "UNREAD".into()],
+                variant: store.put(raw).unwrap(),
+                size_bytes: raw.len() as i64,
+                parsed: uplink_email::parse::parse(raw),
+            }
+        };
+        let labelled = |id: &str, labels: &[&str]| EntryLabels {
+            external_id: id.into(),
+            labels: labels.iter().map(|l| l.to_string()).collect(),
+        };
+        // Bob's, now, and notifying.
+        let event = |mut raw: serde_json::Value| {
+            raw["sender"] = "@bob:x".into();
+            raw["origin_server_ts"] = now().into();
+            uplink_matrix::rooms::ObservedEvent {
+                push: uplink_matrix::rooms::Push {
+                    notify: true,
+                    highlight: false,
+                },
+                ..uplink_matrix::rooms::ObservedEvent::parse(
+                    &raw.to_string(),
+                    None,
+                    uplink_protocol::matrix::Encryption::None,
+                )
+                .unwrap()
+            }
+        };
+        let message = |id: &str| {
+            event(serde_json::json!({
+                "type": "m.room.message",
+                "event_id": id,
+                "content": { "msgtype": "m.text", "body": "hi" },
+            }))
+        };
+        let matrix = |room| dispatcher.observe("mx".into(), room);
+        let items = Items::new(
+            vec![uplink_storage::open_reader(dir.path()).unwrap()],
+            vec![mail::ConfiguredAccount {
+                id: "a".into(),
+                address: "a@x".into(),
+                identities: vec![],
+                provider: uplink_protocol::mail::MailProvider::Gmail,
+            }],
+            vec![uplink_matrix::service::ConfiguredAccount {
+                id: "mx".into(),
+                mxid: "@me:x".into(),
+                history_members: 100,
+            }],
+            vec![],
+        );
+        items.configure_home(vec![
+            HomeBucket {
+                name: "Urgent".into(),
+                query: "is:unread OR is:invite".into(),
+                badge: Some(Badge::Alert),
+            },
+            HomeBucket {
+                name: "Unread".into(),
+                query: "label:INBOX".into(),
+                badge: Some(Badge::Dot),
+            },
+        ]);
+        let (_, first) = items.badged(None).await.unwrap();
+        let mut since = first.since;
+        // Derived anew and kept agree on what is recalled.
+        let mut derive = async || {
+            let (badged, derived) = items.badged(Some(since.clone())).await.unwrap();
+            let (_, kept) = items
+                .rebadged(badged, Changed::default(), since.clone())
+                .await
+                .unwrap();
+            assert_eq!(kept.recalls, derived.recalls);
+            since = derived.since;
+            let mut recalls = derived.recalls;
+            recalls.sort_by_key(|item| format!("{item:?}"));
+            (derived.arrivals, recalls)
+        };
+        mail(
+            vec![entry("m1", "t"), entry("m2", "t"), entry("n1", "u")],
+            vec![],
+        )
+        .await
+        .unwrap();
+        matrix(room(
+            "!r:x",
+            Membership::Joined,
+            vec![message("$0"), message("$1")],
+        ))
+        .await
+        .unwrap();
+        matrix(room("!s:x", Membership::Joined, vec![message("$2")]))
+            .await
+            .unwrap();
+        matrix(room("!i:x", Membership::Invited, vec![]))
+            .await
+            .unwrap();
+        let (arrivals, recalls) = derive().await;
+        assert_eq!(arrivals.len(), 5, "{arrivals:?}");
+        assert!(recalls.is_empty(), "{recalls:?}");
+        // In the order stored: of t, m2 (m1 is earlier); u's n1; of !r,
+        // $1 ($0 is earlier); !s's $2; the invitation.
+        let mut arrivals: Vec<Arrived> = arrivals.into_iter().map(|a| a.item).collect();
+        arrivals.sort_by_key(|item| match item {
+            Arrived::Mail { entry } => (0, entry.0),
+            Arrived::Message { event, .. } => (1, event.0),
+            Arrived::Invite { room, .. } => (2, room.0),
+        });
+        let [m2, n1, r1, s2, invite] = <[Arrived; 5]>::try_from(arrivals).unwrap();
+        assert!(matches!(invite, Arrived::Invite { .. }), "{invite:?}");
+
+        // m2 (of t, the one told of) trashed, t's m1 unread still; n1
+        // stands. $1 redacted, $0 unread still; !s read; !i joined.
+        mail(vec![], vec![labelled("m2", &["TRASH", "UNREAD"])])
+            .await
+            .unwrap();
+        let redaction = event(serde_json::json!({
+            "type": "m.room.redaction",
+            "event_id": "$x",
+            "redacts": "$1",
+            "content": { "redacts": "$1" },
+        }));
+        matrix(room("!r:x", Membership::Joined, vec![redaction]))
+            .await
+            .unwrap();
+        let mut read = room("!s:x", Membership::Joined, vec![]);
+        read.rooms[0].own_receipts = vec!["$2".into()];
+        matrix(read).await.unwrap();
+        matrix(room("!i:x", Membership::Joined, vec![]))
+            .await
+            .unwrap();
+        let (arrivals, recalls) = derive().await;
+        assert!(arrivals.is_empty(), "{arrivals:?}");
+        let mut expected = vec![m2, r1, s2, invite];
+        expected.sort_by_key(|item| format!("{item:?}"));
+        assert_eq!(recalls, expected);
+        // n1 stands, and nothing more is recalled while nothing changes.
+        let (_, recalls) = derive().await;
+        assert!(recalls.is_empty(), "{recalls:?}");
+
+        // A later arrival of u replaces n1's: n1 is not recalled, nor
+        // recalled after, but n2 is, once u is read.
+        mail(vec![entry("n2", "u")], vec![]).await.unwrap();
+        let (arrivals, recalls) = derive().await;
+        let [n2] = <[Arrival; 1]>::try_from(arrivals).unwrap();
+        assert_ne!(n2.item, n1);
+        assert!(recalls.is_empty(), "{recalls:?}");
+        mail(
+            vec![],
+            vec![labelled("n1", &["INBOX"]), labelled("n2", &["INBOX"])],
+        )
+        .await
+        .unwrap();
+        let (_, recalls) = derive().await;
+        assert_eq!(recalls, [n2.item]);
     }
 
     #[tokio::test]

@@ -112,6 +112,11 @@ pub enum Notice {
     /// The account's devices, their trust or its key backup changed.
     SecurityChanged(matrix::SecurityChanged),
     Arrival(Arrival),
+    /// What an arrival told of is no news any more (SPEC §12.16): the
+    /// client takes back its notification of it, if it stands.
+    Recall {
+        item: Arrived,
+    },
 }
 
 /// What came from others into a home bucket that notifies (SPEC §12.16):

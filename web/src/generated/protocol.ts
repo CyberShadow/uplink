@@ -29,7 +29,7 @@ cursor: TxLogId, resumed: boolean, } | { "type": "response", request_id: number,
 /**
  * A notice of the moment (SPEC §5.5).
  */
-export type Notice = { "type": "home_changed" } | { "type": "calendar_configured" } | { "type": "typing" } & Typing | { "type": "receipts_changed" } & ReceiptsChanged | { "type": "security_changed" } & SecurityChanged | { "type": "arrival" } & Arrival;
+export type Notice = { "type": "home_changed" } | { "type": "calendar_configured" } | { "type": "typing" } & Typing | { "type": "receipts_changed" } & ReceiptsChanged | { "type": "security_changed" } & SecurityChanged | { "type": "arrival" } & Arrival | { "type": "recall", item: Arrived, };
 
 /**
  * Who is typing in the room, but the account: all of them, each time.
@@ -1597,4 +1597,4 @@ export type EventChangeKind = "create" | "update" | "delete";
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "7057802a467ab8f2"
+export const PROTOCOL_VERSION = "7ec38d179783854f"
