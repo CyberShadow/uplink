@@ -46,7 +46,11 @@ pub fn open(data_root: &Path) -> Result<Connection> {
 
     drop_sparse_occurrences(&mut conn)
         .with_context(|| format!("repairing the calendar of {}", path.display()))?;
+    // Each with its record, in one transaction: refinery otherwise
+    // commits a migration, then that it was applied, so that one
+    // interrupted between the two is applied again, and fails.
     embedded::migrations::runner()
+        .set_grouped(true)
         .run(&mut conn)
         .with_context(|| format!("migrating {}", path.display()))?;
     // Statistics of the tables, for the planner: of those without, or

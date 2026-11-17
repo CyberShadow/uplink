@@ -459,7 +459,10 @@ For a single-writer embedded DB, sqlx's pool semantics buy nothing.
 `crates/uplink-storage/migrations/V0001__init.sql`, etc. The CLI command
 `uplink migrate` runs them; the server runs them automatically at startup
 and refuses to start if the migration set has been edited (checksum
-mismatch).
+mismatch). Those pending are applied in one transaction, each with its
+record (refinery's `grouped`): a server stopped as it migrates leaves
+none applied, not one applied but not recorded, which would be applied
+again, and fail.
 
 ### 4.3 Schema (initial migration sketch)
 
