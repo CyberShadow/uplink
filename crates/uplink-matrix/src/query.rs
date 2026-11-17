@@ -19,7 +19,7 @@ use uplink_storage::rusqlite::{params_from_iter, types::Value, Transaction};
 
 use crate::{
     room_tags,
-    rooms::{self, after, has_text, having, message, pos_of, Marker, MAIN},
+    rooms::{self, after, has_text, having, marked, message, pos_of, Marker, MAIN},
     service::ConfiguredAccount,
 };
 
@@ -497,22 +497,24 @@ impl Search {
         let after = match condition.markers() {
             None => "1".to_owned(),
             Some(markers) => {
-                let positions: Vec<String> = markers.into_iter().map(Marker::pos).collect();
+                let positions: Vec<&str> = markers.into_iter().map(Marker::pos).collect();
                 match positions.as_slice() {
                     [one] => format!("e.pos > {one}"),
                     _ => format!("e.pos > min({})", positions.join(", ")),
                 }
             }
         };
+        let rooms = self
+            .rooms
+            .iter()
+            .map(i64::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let me = self.sql.me();
         format!(
-            "FROM matrix_room r CROSS JOIN matrix_event e
-             WHERE r.id IN ({rooms}) AND e.room = r.id AND {after} AND {message} AND {matches}",
-            rooms = self
-                .rooms
-                .iter()
-                .map(i64::to_string)
-                .collect::<Vec<_>>()
-                .join(", "),
+            "FROM {marked} r CROSS JOIN matrix_event e
+             WHERE e.room = r.id AND {after} AND {message} AND {matches}",
+            marked = marked(&me, &format!("r.id IN ({rooms})")),
             message = message(),
         )
     }

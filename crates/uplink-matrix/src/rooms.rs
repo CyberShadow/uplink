@@ -1216,8 +1216,7 @@ pub fn rooms(tx: &Transaction, account: &ConfiguredAccount) -> Result<Vec<Room>>
             after = after(marker, "?2"),
         )
     };
-    Ok(tx
-        .prepare(&format!(
+    let sql = format!(
             "SELECT r.id, r.account_id, r.room_id, r.name, r.encrypted, r.membership,
                     (SELECT count(*) FROM matrix_event e WHERE {unread} AND {MAIN}),
                     (SELECT max(ts) FROM matrix_event e WHERE e.room = r.id),
@@ -1239,7 +1238,7 @@ pub fn rooms(tx: &Transaction, account: &ConfiguredAccount) -> Result<Vec<Room>>
                     coalesce(json_extract(pe.raw_json, '$.content.\"m.new_content\".msgtype'), p.msgtype),
                     coalesce(json_extract(pe.raw_json, '$.content.\"m.new_content\".body'), p.body),
                     {HISTORY_SINCE}, {fetched}, r.created
-             FROM matrix_room r
+             FROM {rooms} r
              -- Its preview: its latest message, and that's latest edit.
              LEFT JOIN matrix_event p ON p.id = (
                SELECT e.id FROM matrix_event e
@@ -1251,8 +1250,11 @@ pub fn rooms(tx: &Transaction, account: &ConfiguredAccount) -> Result<Vec<Room>>
                JOIN matrix_event e ON e.room = t.room AND e.relates_to = t.event_id
                WHERE t.id = p.id AND {EDIT}
                ORDER BY e.ts DESC, e.event_id DESC LIMIT 1)
-             WHERE r.account_id = ?1 AND (r.membership != 'left' OR r.desired = 'joined')
              ORDER BY 8 DESC NULLS LAST, r.id",
+            rooms = marked(
+                "?2",
+                "r.account_id = ?1 AND (r.membership != 'left' OR r.desired = 'joined')"
+            ),
             read_pos = pos_of("r.read_up_to"),
             fully_pos = pos_of("r.fully_read"),
             after_fully = after(Marker::FullyRead),
@@ -1260,76 +1262,78 @@ pub fn rooms(tx: &Transaction, account: &ConfiguredAccount) -> Result<Vec<Room>>
             shown_order = space_order::SHOWN,
             shown_tags = room_tags::SHOWN,
             fetched = fetched_whole("?3"),
-        ))?
+        );
+    Ok(tx
+        .prepare(&sql)?
         .query_map(
             params![account.id, account.mxid, account.history_members],
             |r| {
-            Ok(Room {
-                id: RoomId(r.get(0)?),
-                account: r.get(1)?,
-                room_id: r.get(2)?,
-                name: r.get(3)?,
-                encrypted: r.get(4)?,
-                membership: parse_membership(&r.get::<_, String>(5)?),
-                unread: r.get(6)?,
-                last_event_ts: r.get(7)?,
-                read_up_to: match (r.get::<_, Option<i64>>(8)?, r.get(16)?) {
-                    (Some(event), Some(pos)) => Some(ReadMarker {
-                        event: RoomEventId(event),
-                        pos,
-                    }),
-                    (None, None) => None,
-                    _ => unreachable!("a read marker is of a stored event"),
-                },
-                pending: parse_desired(r.get::<_, Option<String>>(9)?.as_deref()),
-                membership_error: r.get(10)?,
-                space: r.get(11)?,
-                avatar: r.get(12)?,
-                children: serde_json::from_str(&r.get::<_, String>(13)?)
-                    .expect("json_group_array makes an array of strings"),
-                topic: r.get(14)?,
-                alias: r.get(25)?,
-                joined_members: r.get(15)?,
-                may_pin: r.get(18)?,
-                notifying: r.get(19)?,
-                highlighted: r.get(20)?,
-                pinned: serde_json::from_str(&r.get::<_, String>(17)?)
-                    .expect("pinned is a JSON array of strings"),
-                space_order: r.get(21)?,
-                tags: serde_json::from_str(&r.get::<_, String>(22)?)
-                    .expect("json_group_array makes an array of strings"),
-                direct: r.get(23)?,
-                latest: r.get::<_, Option<i64>>(24)?.map(RoomEventId),
-                fully_read: match (r.get::<_, Option<i64>>(26)?, r.get(27)?) {
-                    (Some(event), Some(pos)) => Some(ReadMarker {
-                        event: RoomEventId(event),
-                        pos,
-                    }),
-                    (None, None) => None,
-                    _ => unreachable!("a fully-read marker is of a stored event"),
-                },
-                mentions: r.get(28)?,
-                preview: match r.get::<_, Option<i64>>(29)? {
-                    Some(event) => Some(RoomPreview {
-                        event: RoomEventId(event),
-                        sender: r.get(30)?,
-                        sender_name: r.get(31)?,
-                        kind: r.get(32)?,
-                        msgtype: r.get(33)?,
-                        body: r.get(34)?,
-                    }),
-                    None => None,
-                },
-                history: match (r.get::<_, Option<i64>>(35)?, r.get(36)?) {
-                    (None, _) => RoomHistory::Whole,
-                    (Some(since), true) => RoomHistory::Fetching {
-                        since,
-                        created: r.get(37)?,
+                Ok(Room {
+                    id: RoomId(r.get(0)?),
+                    account: r.get(1)?,
+                    room_id: r.get(2)?,
+                    name: r.get(3)?,
+                    encrypted: r.get(4)?,
+                    membership: parse_membership(&r.get::<_, String>(5)?),
+                    unread: r.get(6)?,
+                    last_event_ts: r.get(7)?,
+                    read_up_to: match (r.get::<_, Option<i64>>(8)?, r.get(16)?) {
+                        (Some(event), Some(pos)) => Some(ReadMarker {
+                            event: RoomEventId(event),
+                            pos,
+                        }),
+                        (None, None) => None,
+                        _ => unreachable!("a read marker is of a stored event"),
                     },
-                    (Some(since), false) => RoomHistory::Partial { since },
-                },
-            })
-        },
+                    pending: parse_desired(r.get::<_, Option<String>>(9)?.as_deref()),
+                    membership_error: r.get(10)?,
+                    space: r.get(11)?,
+                    avatar: r.get(12)?,
+                    children: serde_json::from_str(&r.get::<_, String>(13)?)
+                        .expect("json_group_array makes an array of strings"),
+                    topic: r.get(14)?,
+                    alias: r.get(25)?,
+                    joined_members: r.get(15)?,
+                    may_pin: r.get(18)?,
+                    notifying: r.get(19)?,
+                    highlighted: r.get(20)?,
+                    pinned: serde_json::from_str(&r.get::<_, String>(17)?)
+                        .expect("pinned is a JSON array of strings"),
+                    space_order: r.get(21)?,
+                    tags: serde_json::from_str(&r.get::<_, String>(22)?)
+                        .expect("json_group_array makes an array of strings"),
+                    direct: r.get(23)?,
+                    latest: r.get::<_, Option<i64>>(24)?.map(RoomEventId),
+                    fully_read: match (r.get::<_, Option<i64>>(26)?, r.get(27)?) {
+                        (Some(event), Some(pos)) => Some(ReadMarker {
+                            event: RoomEventId(event),
+                            pos,
+                        }),
+                        (None, None) => None,
+                        _ => unreachable!("a fully-read marker is of a stored event"),
+                    },
+                    mentions: r.get(28)?,
+                    preview: match r.get::<_, Option<i64>>(29)? {
+                        Some(event) => Some(RoomPreview {
+                            event: RoomEventId(event),
+                            sender: r.get(30)?,
+                            sender_name: r.get(31)?,
+                            kind: r.get(32)?,
+                            msgtype: r.get(33)?,
+                            body: r.get(34)?,
+                        }),
+                        None => None,
+                    },
+                    history: match (r.get::<_, Option<i64>>(35)?, r.get(36)?) {
+                        (None, _) => RoomHistory::Whole,
+                        (Some(since), true) => RoomHistory::Fetching {
+                            since,
+                            created: r.get(37)?,
+                        },
+                        (Some(since), false) => RoomHistory::Partial { since },
+                    },
+                })
+            },
         )?
         .collect::<Result<_, _>>()?)
 }
@@ -1797,22 +1801,60 @@ pub(crate) enum Marker {
 }
 
 impl Marker {
-    /// Of room `r`, the position its messages after it are after, or
-    /// below every position without it: a bound of `e.pos`, so that the
-    /// index `(room, pos)` finds them rather than all of the room's.
-    pub(crate) fn pos(self) -> String {
-        let column = match self {
-            Marker::Read => "r.read_up_to",
-            Marker::FullyRead => "r.fully_read",
-        };
-        format!("coalesce({}, {})", pos_of(column), i64::MIN)
+    /// Of room `r` of [`marked`], the position its messages after it are
+    /// after: a bound of `e.pos`, so that the index `(room, pos)` finds
+    /// them rather than all of the room's.
+    pub(crate) fn pos(self) -> &'static str {
+        match self {
+            Marker::Read => "r.read_floor",
+            Marker::FullyRead => "r.fully_floor",
+        }
     }
 }
 
-/// Of a message `e` of room `r`, whether it is after `r`'s `marker`,
-/// and of others than `me` (SQL of the room's account's Matrix id).
+/// The rooms `filter` (SQL of a room `r`) holds, to name `r` by (`FROM
+/// {marked} r`), with what their messages are after, each found once a
+/// room (materialized), not again for each message: of each marker
+/// ([`Marker::pos`]), its position, or that of the latest message of
+/// `me` (SQL of the room's account's Matrix id) in the main timeline,
+/// who read what they answered, as Element counts it (a thread's, the
+/// thread), below every position without either; and since when its
+/// messages are news (`news_since`, SPEC §12.15).
+pub(crate) fn marked(me: &str, filter: &str) -> String {
+    let own = format!(
+        "(SELECT o.pos FROM matrix_event o
+          WHERE o.room = r.id AND o.sender = {me}
+            AND o.type IN ('m.room.message', 'm.room.encrypted')
+            AND o.rel_type IS NOT 'm.thread'
+          ORDER BY o.pos DESC LIMIT 1)"
+    );
+    let floor = |marker: &str| {
+        format!(
+            "max(coalesce({marker}, {min}), coalesce({own}, {min}))",
+            marker = pos_of(marker),
+            min = i64::MIN
+        )
+    };
+    format!(
+        "(WITH marked AS MATERIALIZED (
+            SELECT r.*, {read} AS read_floor, {fully} AS fully_floor,
+                   (SELECT a.news_since FROM account a WHERE a.id = r.account_id) AS news_since
+            FROM matrix_room r WHERE {filter})
+          SELECT * FROM marked)",
+        read = floor("r.read_up_to"),
+        fully = floor("r.fully_read"),
+    )
+}
+
+/// Of a message `e` of room `r` (of [`marked`]), whether it is after
+/// `r`'s `marker`, of others than `me` (SQL of the room's account's
+/// Matrix id), and news: the history stored of before uplink synced the
+/// account is no more unread, or new, than it notifies.
 pub(crate) fn after(marker: Marker, me: &str) -> String {
-    format!("(e.pos > {pos} AND e.sender != {me})", pos = marker.pos())
+    format!(
+        "(e.pos > {pos} AND e.sender != {me} AND e.ts >= r.news_since)",
+        pos = marker.pos()
+    )
 }
 
 /// The position of the event whose id `id` (an SQL expression) is.

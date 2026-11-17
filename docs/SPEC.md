@@ -2864,8 +2864,12 @@ which a verified device gives.
 
 - A room's unread count is computed locally: messages (and undecryptable
   events, which nearly always are messages) from others after the read
-  marker (by the conditions queries find messages by, §8.7:
-  `rooms::message`, `rooms::after`). The homeserver's notification
+  marker, or after the account's own latest message of the main
+  timeline, which reads what it answers (as Element counts it), and
+  news (§12.15): the history stored of before uplink synced the account
+  is no more unread than it notifies (by the conditions queries find
+  messages by, §8.7: `rooms::message`, `rooms::after`; `is:new` is
+  after the fully-read marker alike). The homeserver's notification
   counts are not used, since they
   could not follow an undo. Of those, of the main timeline and threads,
   a room counts those that notify (`notifying`) and highlight

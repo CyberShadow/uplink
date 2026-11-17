@@ -374,8 +374,8 @@ async fn messages_both_ways_in_an_encrypted_room() {
     assert_eq!(own.sender, "@alice:localhost");
     assert_eq!(
         uplink.room(&room_id).await.unwrap().unread,
-        1,
-        "own messages are not unread"
+        0,
+        "own messages are not unread, nor what is before them, which they answer"
     );
 
     // An event type uplink does not know, stored as it came.
@@ -1838,8 +1838,9 @@ async fn gaps_are_filled_from_the_homeserver() {
     assert_eq!(events[0].kind, "m.room.create", "back to the room's start");
     assert_eq!(
         uplink.room(bob_room.room_id()).await.unwrap().unread,
-        30 + 40,
-        "those fetched before the receipt's event are read"
+        40,
+        "those fetched before the receipt's event are read, and the history sent \
+         before uplink synced the account is no news, though after it"
     );
     assert!(events.windows(2).all(|w| w[0].pos < w[1].pos));
     // Paging by position, as clients do.

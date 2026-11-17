@@ -316,7 +316,10 @@ async fn events_are_stored_once_and_counted_unread() {
     db.sync(&[("$1", "@bob:x"), ("$2", ME)], &[]).await;
     db.sync(&[("$2", ME), ("$3", "@bob:x")], &[]).await;
     let room = db.room().await;
-    assert_eq!(room.unread, 2, "own messages are not unread");
+    assert_eq!(
+        room.unread, 1,
+        "own messages are not unread, nor what is before them, which they answer"
+    );
     let ServerResponse::Timeline { events, .. } = db
         .matrix
         .list_timeline(room.id, uplink_protocol::matrix::TimelinePage::Latest, 10)
@@ -340,13 +343,13 @@ async fn unread_messages_that_notify_or_highlight_are_counted() {
     };
     db.sync_events(
         vec![
+            // Never one's own.
+            pushed("$4", ME, true, true),
             message("$1", "@bob:x"),
             pushed("$2", "@bob:x", true, false),
             pushed("$3", "@bob:x", true, true),
-            // Never one's own.
-            pushed("$4", ME, true, true),
             // Nor history, sent before uplink began to sync the account,
-            // which the push rules evaluate as any.
+            // which the push rules evaluate as any, and is no more unread.
             ObservedEvent {
                 ts: sent - 1,
                 ..pushed("$5", "@bob:x", true, true)
@@ -356,10 +359,10 @@ async fn unread_messages_that_notify_or_highlight_are_counted() {
     )
     .await;
     let room = db.room().await;
-    assert_eq!((room.unread, room.notifying, room.highlighted), (4, 2, 1));
+    assert_eq!((room.unread, room.notifying, room.highlighted), (3, 2, 1));
     let events = db.timeline().await;
     db.matrix
-        .mark_read(room.id, events[2].id, false, false)
+        .mark_read(room.id, events[3].id, false, false)
         .await
         .unwrap();
     let room = db.room().await;
@@ -438,9 +441,9 @@ async fn what_came_matches_and_is_recent() {
     let since = db.event("$1").await;
     db.sync_events(
         vec![
+            pushed("$4", ME, true, 3000),
             pushed("$2", "@bob:x", true, 3000),
             pushed("$3", "@bob:x", false, 3000),
-            pushed("$4", ME, true, 3000),
             // Sent long before: stored only now, as history is.
             pushed("$5", "@bob:x", true, 1000),
         ],

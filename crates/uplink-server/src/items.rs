@@ -1642,6 +1642,11 @@ mod tests {
         )
         .await
         .unwrap();
+        // First, so that the messages after are news: what the account's
+        // first sync brings is history.
+        matrix(room("!i:x", Membership::Invited, vec![]))
+            .await
+            .unwrap();
         matrix(room(
             "!r:x",
             Membership::Joined,
@@ -1650,9 +1655,6 @@ mod tests {
         .await
         .unwrap();
         matrix(room("!s:x", Membership::Joined, vec![message("$2")]))
-            .await
-            .unwrap();
-        matrix(room("!i:x", Membership::Invited, vec![]))
             .await
             .unwrap();
         let (arrivals, recalls) = derive().await;
