@@ -14,6 +14,7 @@ pub mod outbox;
 pub mod preview;
 pub mod query;
 pub mod room_tags;
+pub mod room_view;
 pub mod rooms;
 pub mod security;
 pub mod send;

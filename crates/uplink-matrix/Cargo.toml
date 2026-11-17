@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 uplink-realtime = { path = "../uplink-realtime" }
 ammonia = "4.2.4"
+arc-swap = "1"
 uplink-config = { path = "../uplink-config" }
 uplink-protocol = { path = "../uplink-protocol" }
 uplink-query = { path = "../uplink-query" }

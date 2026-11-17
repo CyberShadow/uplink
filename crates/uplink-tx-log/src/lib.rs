@@ -176,9 +176,27 @@ pub struct Dispatcher {
 }
 
 struct Inner {
-    conn: Mutex<Connection>,
+    writer: Mutex<Writer>,
     registry: Registry,
     hub: Arc<Hub>,
+}
+
+/// The connection, and the views kept of what it writes: one lock, so
+/// that a view is derived of what was written as it was written.
+struct Writer {
+    conn: Connection,
+    views: Vec<Arc<dyn View>>,
+}
+
+/// State derived of the database that queries would otherwise derive
+/// anew as they read (as many times as there are windows and badges),
+/// kept by the writer instead, as it writes: of what each entry says
+/// changed, before it reaches the hub, so that what is told of the entry
+/// finds the view as of it, or later.
+pub trait View: Send + Sync + 'static {
+    /// The view as of `tx`, which records `entry`: what to publish, once
+    /// it commits.
+    fn derive(&self, tx: &Transaction, entry: &LogEntry) -> Result<Box<dyn FnOnce() + Send>>;
 }
 
 impl Dispatcher {
@@ -186,11 +204,23 @@ impl Dispatcher {
     pub fn new(conn: Connection, registry: Registry, hub: Arc<Hub>) -> Self {
         Self {
             inner: Arc::new(Inner {
-                conn: Mutex::new(conn),
+                writer: Mutex::new(Writer {
+                    conn,
+                    views: vec![],
+                }),
                 registry,
                 hub,
             }),
         }
+    }
+
+    /// The view `load` derives of the database as it is, kept from then on
+    /// as entries are written (no write comes between).
+    pub fn keep<V: View>(&self, load: impl FnOnce(&Connection) -> Result<V>) -> Result<Arc<V>> {
+        let mut writer = self.inner.lock();
+        let view = Arc::new(load(&writer.conn)?);
+        writer.views.push(view.clone());
+        Ok(view)
     }
 
     pub fn hub(&self) -> &Arc<Hub> {
@@ -259,8 +289,8 @@ impl Dispatcher {
 }
 
 impl Inner {
-    fn lock(&self) -> MutexGuard<'_, Connection> {
-        self.conn.lock().expect("database connection poisoned")
+    fn lock(&self) -> MutexGuard<'_, Writer> {
+        self.writer.lock().expect("database connection poisoned")
     }
 
     /// Runs `execute` and records its result in one transaction, then
@@ -274,7 +304,8 @@ impl Inner {
     where
         E: From<anyhow::Error>,
     {
-        let mut conn = self.lock();
+        let mut writer = self.lock();
+        let Writer { conn, views } = &mut *writer;
         let tx = conn.transaction().context("beginning transaction")?;
         let expected = this_entry(&tx)?;
         let (executed, undoes) = execute(&tx)?;
@@ -290,9 +321,16 @@ impl Inner {
             )
             .context("marking tx_log entry undone")?;
         }
+        let derived: Vec<_> = views
+            .iter()
+            .map(|view| view.derive(&tx, &entry))
+            .collect::<Result<_>>()?;
         tx.commit().context("committing")?;
-        // Publish while still holding the writer, so that entries reach the
-        // hub in commit order.
+        // Publish while still holding the writer, so that views and
+        // entries are as of commit order, and a view before its entry.
+        for publish in derived {
+            publish();
+        }
         self.hub.publish(entry.clone());
         Ok(entry)
     }

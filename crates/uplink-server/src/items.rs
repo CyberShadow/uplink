@@ -14,7 +14,10 @@ use std::{
 };
 use uplink_config::HomeBucket;
 use uplink_email::query::{self as mail, ListError, Unknown};
-use uplink_matrix::query::{Group, Rooms};
+use uplink_matrix::{
+    query::{Group, Rooms},
+    room_view::RoomsView,
+};
 use uplink_protocol::{
     calendar::CalendarEvent,
     mail::{EntryId, ListPosition, ListScope},
@@ -77,7 +80,7 @@ enum Notified {
 pub struct Items {
     reader: Reader,
     mail_accounts: Vec<mail::ConfiguredAccount>,
-    matrix_accounts: Vec<uplink_matrix::service::ConfiguredAccount>,
+    rooms: Arc<RoomsView>,
     /// As configured, top to bottom; configured anew on reload.
     home: Arc<ArcSwap<Vec<HomeBucket>>>,
 }
@@ -424,17 +427,18 @@ fn mail_after(after: ItemPosition) -> ListPosition {
 impl Items {
     /// `readers` are read-only connections to the database, on which
     /// queries run at once: listing windows again and deriving badges are
-    /// many, and long.
+    /// many, and long. `rooms` are the configured Matrix accounts' rooms,
+    /// as the writer keeps them.
     pub fn new(
         readers: Vec<Connection>,
         mail_accounts: Vec<mail::ConfiguredAccount>,
-        matrix_accounts: Vec<uplink_matrix::service::ConfiguredAccount>,
+        rooms: Arc<RoomsView>,
         home: Vec<HomeBucket>,
     ) -> Self {
         Self {
             reader: Reader::pool(readers),
             mail_accounts,
-            matrix_accounts,
+            rooms,
             home: Arc::new(ArcSwap::from_pointee(home)),
         }
     }
@@ -517,8 +521,8 @@ impl Items {
         self.reader
             .read(move |conn| {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
-                let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
-                let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
+                let rooms = Rooms::of(&this.rooms, &tx).map_err(internal)?;
+                let as_of = rooms.as_of();
                 let page = |query: &Query, after, limit| {
                     let others = others(&tx, &rooms, query, today, now)?;
                     this.page(&tx, query, others, after, limit)
@@ -607,8 +611,8 @@ impl Items {
                     UnknownNames::Invalid => this.check_names(&tx, &query)?,
                     UnknownNames::False => {}
                 }
-                let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
-                let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
+                let rooms = Rooms::of(&this.rooms, &tx).map_err(internal)?;
+                let as_of = rooms.as_of();
                 let others = others(&tx, &rooms, &query, today, now)?;
                 let partial_rooms = rooms.partly_searched(&tx, &query).map_err(internal)?;
                 Ok((
@@ -653,7 +657,7 @@ impl Items {
         self.reader
             .read(move |conn| {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
-                let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
+                let rooms = Rooms::of(&this.rooms, &tx).map_err(internal)?;
                 let seen = Seen::load(&tx).map_err(internal)?;
                 let mut badged = Badged { buckets: vec![] };
                 let mut arrivals = vec![];
@@ -705,7 +709,7 @@ impl Items {
         self.reader
             .read(move |conn| {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
-                let rooms = Rooms::load(&tx, &this.matrix_accounts).map_err(internal)?;
+                let rooms = Rooms::of(&this.rooms, &tx).map_err(internal)?;
                 let seen = Seen::load(&tx).map_err(internal)?;
                 let conversations = conversations(&tx, &changed)?;
                 let among = among(&changed);
@@ -975,7 +979,8 @@ impl Items {
                         .iter()
                         .any(|a| a.id == *account || a.address.eq_ignore_ascii_case(account))
                         || self
-                            .matrix_accounts
+                            .rooms
+                            .accounts()
                             .iter()
                             .any(|a| a.id == *account || a.mxid == *account);
                     if !known {
@@ -1164,11 +1169,15 @@ mod tests {
                 identities: vec![],
                 provider: uplink_protocol::mail::MailProvider::Gmail,
             }],
-            vec![uplink_matrix::service::ConfiguredAccount {
-                id: "mx".into(),
-                mxid: "@me:x".into(),
-                history_members: 100,
-            }],
+            RoomsView::kept(
+                &dispatcher,
+                vec![uplink_matrix::service::ConfiguredAccount {
+                    id: "mx".into(),
+                    mxid: "@me:x".into(),
+                    history_members: 100,
+                }],
+            )
+            .unwrap(),
             vec![],
         );
         let bucket = |name: &str, query: &str, badge| HomeBucket {
@@ -1433,11 +1442,15 @@ mod tests {
         let items = Items::new(
             vec![uplink_storage::open_reader(dir.path()).unwrap()],
             vec![],
-            vec![uplink_matrix::service::ConfiguredAccount {
-                id: "mx".into(),
-                mxid: "@me:x".into(),
-                history_members: 100,
-            }],
+            RoomsView::kept(
+                &dispatcher,
+                vec![uplink_matrix::service::ConfiguredAccount {
+                    id: "mx".into(),
+                    mxid: "@me:x".into(),
+                    history_members: 100,
+                }],
+            )
+            .unwrap(),
             vec![],
         );
         let bucket = |query: &str, badge| HomeBucket {
@@ -1602,11 +1615,15 @@ mod tests {
                 identities: vec![],
                 provider: uplink_protocol::mail::MailProvider::Gmail,
             }],
-            vec![uplink_matrix::service::ConfiguredAccount {
-                id: "mx".into(),
-                mxid: "@me:x".into(),
-                history_members: 100,
-            }],
+            RoomsView::kept(
+                &dispatcher,
+                vec![uplink_matrix::service::ConfiguredAccount {
+                    id: "mx".into(),
+                    mxid: "@me:x".into(),
+                    history_members: 100,
+                }],
+            )
+            .unwrap(),
             vec![],
         );
         items.configure_home(vec![
@@ -1779,11 +1796,15 @@ mod tests {
         let items = Items::new(
             vec![uplink_storage::open_reader(dir.path()).unwrap()],
             vec![],
-            vec![uplink_matrix::service::ConfiguredAccount {
-                id: "mx".into(),
-                mxid: "@me:x".into(),
-                history_members: 100,
-            }],
+            RoomsView::kept(
+                &dispatcher,
+                vec![uplink_matrix::service::ConfiguredAccount {
+                    id: "mx".into(),
+                    mxid: "@me:x".into(),
+                    history_members: 100,
+                }],
+            )
+            .unwrap(),
             vec![],
         );
         let list = |query: &str| {

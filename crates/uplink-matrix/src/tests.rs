@@ -30,6 +30,7 @@ const ROOM: &str = "!room:example.org";
 struct Db {
     _dir: tempfile::TempDir,
     dispatcher: Dispatcher,
+    rooms: Arc<crate::room_view::RoomsView>,
     matrix: Matrix,
 }
 
@@ -51,15 +52,17 @@ impl Db {
         )
         .unwrap();
         let dispatcher = Dispatcher::new(db, registry, Arc::new(Hub::new(64)));
+        let rooms = crate::room_view::RoomsView::kept(&dispatcher, vec![account()]).unwrap();
         let matrix = Matrix::new(
             dispatcher.clone(),
             uplink_storage::open_reader(dir.path()).unwrap(),
-            vec![account()],
+            rooms.clone(),
             uplink_storage::store::Store::blobs(dir.path()),
         );
         Self {
             _dir: dir,
             dispatcher,
+            rooms,
             matrix,
         }
     }
@@ -454,8 +457,7 @@ async fn what_came_matches_and_is_recent() {
     let arrived = |query: &str| {
         let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
         let tx = conn.transaction().unwrap();
-        let accounts = [account()];
-        let rooms = crate::query::Rooms::load(&tx, &accounts).unwrap();
+        let rooms = crate::query::Rooms::of(&db.rooms, &tx).unwrap();
         let query = uplink_query::parse(query, 0).unwrap();
         let arrived = rooms.arrived(&tx, &query, &[room], since, 2000).unwrap();
         arrived
@@ -2073,7 +2075,7 @@ mod query {
         let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
         let tx = conn.transaction().unwrap();
         let history = |name: &str| {
-            crate::rooms::rooms(&tx, &account())
+            crate::rooms::rooms(&tx, &account(), None)
                 .unwrap()
                 .into_iter()
                 .find(|r| r.name == name)
@@ -2091,8 +2093,7 @@ mod query {
         assert_eq!(history("Large"), RoomHistory::Partial { since });
         assert_eq!(history("Whole"), RoomHistory::Whole);
 
-        let accounts = [account()];
-        let rooms = crate::query::Rooms::load(&tx, &accounts).unwrap();
+        let rooms = crate::query::Rooms::of(&db.rooms, &tx).unwrap();
         let partly = |query: &str| -> Vec<String> {
             let query = uplink_query::parse(query, 0).unwrap();
             let mut names: Vec<String> = rooms
@@ -2271,9 +2272,8 @@ mod query {
         let matching = |query: &str| -> Vec<String> {
             let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
             let tx = conn.transaction().unwrap();
-            let accounts = [account()];
             let query = uplink_query::parse(query, 0).unwrap();
-            let mut names: Vec<String> = crate::query::Rooms::load(&tx, &accounts)
+            let mut names: Vec<String> = crate::query::Rooms::of(&db.rooms, &tx)
                 .unwrap()
                 .matching(&tx, &query)
                 .unwrap()
@@ -2305,7 +2305,7 @@ mod query {
         assert!(known("favourite") && known("low_priority") && known("Projects"));
         assert!(!known("inbox"));
         // Reading a room marks it read up to its latest event.
-        let rooms = crate::rooms::rooms(&tx, &account()).unwrap();
+        let rooms = crate::rooms::rooms(&tx, &account(), None).unwrap();
         let latest = |name: &str| rooms.iter().find(|r| r.name == name).unwrap().latest;
         assert!(latest("Team chat").is_some());
         assert_eq!(latest("Bob"), None);
@@ -2369,7 +2369,6 @@ mod query {
             "in:inbox",
             "is:unread -tag:lowpriority",
         ];
-        let accounts = [account()];
         // Of HQ, how many are unread: none, some, many, and all (joined,
         // never read).
         for unread in [0, 1_000, 50_000, MESSAGES] {
@@ -2386,6 +2385,8 @@ mod query {
                      WHERE room_id = '!hq:x'"
                 ))
                 .unwrap();
+            // Written past the writer: listed anew.
+            let view = crate::room_view::RoomsView::kept(&db.dispatcher, vec![account()]).unwrap();
             for negation in ["-has:", "-"] {
                 let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
                 let tx = conn.transaction().unwrap();
@@ -2397,7 +2398,7 @@ mod query {
                         .collect::<Vec<_>>()
                         .join(" ");
                     let query = uplink_query::parse(&text, 0).unwrap();
-                    let rooms = crate::query::Rooms::load(&tx, &accounts).unwrap();
+                    let rooms = crate::query::Rooms::of(&view, &tx).unwrap();
                     let names: Vec<_> = rooms
                         .matching(&tx, &query)
                         .unwrap()
@@ -2485,11 +2486,10 @@ mod query {
         let matching = |query: &str| -> Vec<String> {
             let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
             let tx = conn.transaction().unwrap();
-            let accounts = [account()];
             let query = uplink_query::parse(query, 0).unwrap();
             // The hits of the rooms found by their messages, as each
             // room's own search finds them.
-            let rooms = crate::query::Rooms::load(&tx, &accounts).unwrap();
+            let rooms = crate::query::Rooms::of(&db.rooms, &tx).unwrap();
             let mut found: Vec<_> = rooms
                 .matching(&tx, &query)
                 .unwrap()
@@ -2545,9 +2545,8 @@ mod query {
         let groups = |query: &str| -> Vec<(String, Option<(u32, String)>)> {
             let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
             let tx = conn.transaction().unwrap();
-            let accounts = [account()];
             let query = uplink_query::parse(query, 0).unwrap();
-            crate::query::Rooms::load(&tx, &accounts)
+            crate::query::Rooms::of(&db.rooms, &tx)
                 .unwrap()
                 .matching(&tx, &query)
                 .unwrap()
@@ -2613,7 +2612,7 @@ mod query {
         // edit is not one of its own); a room with none has none.
         let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
         let tx = conn.transaction().unwrap();
-        let rooms = crate::rooms::rooms(&tx, &account()).unwrap();
+        let rooms = crate::rooms::rooms(&tx, &account(), None).unwrap();
         // Its counts are of what the terms of its messages find.
         let ops = rooms.iter().find(|r| r.name == "Ops").unwrap();
         assert_eq!((ops.unread, ops.mentions, ops.highlighted), (1, 1, 0));

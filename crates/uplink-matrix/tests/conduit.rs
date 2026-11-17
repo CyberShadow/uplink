@@ -26,7 +26,9 @@ use std::{
 };
 use tokio::sync::mpsc;
 use uplink_config::MatrixAccountConfig;
-use uplink_matrix::{client, service::ConfiguredAccount, service::Matrix, sync::Sync};
+use uplink_matrix::{
+    client, room_view::RoomsView, service::ConfiguredAccount, service::Matrix, sync::Sync,
+};
 use uplink_protocol::{
     matrix::{Encryption, Membership, Room, RoomEvent, TextFormat, TimelinePage},
     ServerResponse,
@@ -160,14 +162,19 @@ impl Uplink {
             history_members: members,
             state_dir: dir.path().join("matrix/mx"),
         };
-        let matrix = Matrix::new(
-            dispatcher.clone(),
-            uplink_storage::open_reader(dir.path()).unwrap(),
+        let rooms = RoomsView::kept(
+            &dispatcher,
             vec![ConfiguredAccount {
                 id: account.id.clone(),
                 mxid: account.mxid.clone(),
                 history_members: account.history_members,
             }],
+        )
+        .unwrap();
+        let matrix = Matrix::new(
+            dispatcher.clone(),
+            uplink_storage::open_reader(dir.path()).unwrap(),
+            rooms,
             uplink_storage::store::Store::blobs(dir.path()),
         );
         Self {

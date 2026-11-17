@@ -10,15 +10,18 @@ use anyhow::Result;
 use std::{
     cell::RefCell,
     collections::{BTreeSet, HashMap, HashSet},
+    sync::Arc,
 };
 use uplink_protocol::matrix::{
     Membership, Room, RoomEvent, RoomEventId, RoomHistory, RoomHits, RoomId,
 };
+use uplink_protocol::TxLogId;
 use uplink_query::{text_matches, Fields, Kind, Query, Term};
 use uplink_storage::rusqlite::{params_from_iter, types::Value, Transaction};
 
 use crate::{
     room_tags,
+    room_view::{Listed, RoomsView},
     rooms::{self, after, has_text, having, marked, message, pos_of, Marker, MAIN},
     service::ConfiguredAccount,
 };
@@ -38,9 +41,10 @@ fn seeks(query: &Query) -> bool {
 
 /// The rooms of some accounts, as listed, to match queries against: read
 /// once for as many queries, as the home view's buckets are.
-pub struct Rooms<'a> {
-    accounts: &'a [ConfiguredAccount],
-    all: Vec<Room>,
+pub struct Rooms {
+    accounts: Arc<Vec<ConfiguredAccount>>,
+    as_of: TxLogId,
+    all: Arc<Listed>,
     spaces: Spaces,
     /// Of each `has:(…)` matched, the rooms its query matches: a room's
     /// own term then, found once for as many queries as name it (each
@@ -68,19 +72,27 @@ impl Group {
     }
 }
 
-impl<'a> Rooms<'a> {
-    pub fn load(tx: &Transaction, accounts: &'a [ConfiguredAccount]) -> Result<Self> {
-        let mut all = vec![];
-        for account in accounts {
-            all.extend(rooms::rooms(tx, account)?);
-        }
-        let spaces = Spaces::of(&all);
+impl Rooms {
+    /// As `view` keeps them, to read with `tx`.
+    pub fn of(view: &RoomsView, tx: &Transaction) -> Result<Self> {
+        let snapshot = uplink_tx_log::as_of(tx)?;
+        let listed = view.listed();
+        let spaces = Spaces::of(&listed.rooms);
         Ok(Self {
-            accounts,
-            all,
+            accounts: view.accounts().clone(),
+            as_of: snapshot.min(listed.as_of),
+            all: listed,
             spaces,
             has: RefCell::new(vec![]),
         })
+    }
+
+    /// What is read of them and of the snapshot they are read with is as
+    /// of this entry, or later (one is kept as entries commit, so may be
+    /// of others than the other): to tell readers of entries after it as
+    /// of then, which may find some of them read already.
+    pub fn as_of(&self) -> TxLogId {
+        self.as_of
     }
 
     /// Finds the rooms of each `has:(…)` of `query` not yet found.
@@ -102,7 +114,7 @@ impl<'a> Rooms<'a> {
 
     /// Those but spaces, which are no views of their own.
     fn listed(&self) -> impl Iterator<Item = &Room> {
-        self.all.iter().filter(|room| !room.space)
+        self.all.rooms.iter().filter(|room| !room.space)
     }
 
     /// Those `query` matches, the most recently active first.
@@ -186,6 +198,12 @@ impl<'a> Rooms<'a> {
         self.listed()
             .filter(|room| room.membership == Membership::Invited)
             .map(|room| room.id)
+    }
+
+    /// Every account's rooms, of each account in turn, as
+    /// [`rooms::rooms`] lists them.
+    pub fn all(&self) -> &[Room] {
+        &self.all.rooms
     }
 
     /// The room listed by this id, if it is.
@@ -307,7 +325,7 @@ impl<'a> Rooms<'a> {
                     .1
                     .contains(&room.id.0),
             ),
-            _ => of_room(room, term, &self.spaces, self.accounts),
+            _ => of_room(room, term, &self.spaces, &self.accounts),
         }
     }
 }

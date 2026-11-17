@@ -440,6 +440,14 @@ level. With `~1 M` messages that's ~4 K files per dir, fine for ext4/btrfs.
   queries (lists, windows, home, badges, §8.7) on a pool of four
   (`Reader::pool`), so that a click waits not for a window listed again
   or the badges derived, which are long and many as mail syncs.
+- What queries would derive anew as they read, many times an entry (each
+  window and badge), and is costly to, the writer keeps instead as views
+  (`View`): as it writes each entry, of what the entry names, published
+  before the entry reaches the hub. So the rooms (§9.5): each entry lists
+  anew only the rooms it names. A reader takes a view with its snapshot,
+  as of the earlier of the two, so that what came between is told again
+  (every change to a room names it: checked, as tests write, against the
+  rooms listed anew).
 
 **Why rusqlite over sqlx**: no compile-time DB schema dependency (sqlx
 verifies queries against a live DB at build time, which is brittle for an

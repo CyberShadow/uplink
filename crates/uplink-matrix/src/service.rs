@@ -8,6 +8,7 @@ use crate::{
     preview,
     query::Rooms,
     room_tags::{self, SetRoomTags},
+    room_view::RoomsView,
     rooms::{self, FullyRead, MarkFullyRead, MarkRead},
     security,
     send::{self, CancelMessage, KeepSent, SendMessage},
@@ -69,6 +70,7 @@ pub struct Matrix {
     dispatcher: Dispatcher,
     reader: Reader,
     accounts: Arc<Vec<ConfiguredAccount>>,
+    rooms: Arc<RoomsView>,
     clients: Clients,
     /// Files uploaded to send.
     blobs: Store,
@@ -77,17 +79,19 @@ pub struct Matrix {
 
 impl Matrix {
     /// `reader` is a read-only connection to the database `dispatcher`
-    /// writes; `blobs`, the files uploaded to send.
+    /// writes, and `rooms` the configured accounts' rooms it keeps;
+    /// `blobs`, the files uploaded to send.
     pub fn new(
         dispatcher: Dispatcher,
         reader: Connection,
-        accounts: Vec<ConfiguredAccount>,
+        rooms: Arc<RoomsView>,
         blobs: Store,
     ) -> Self {
         Self {
             dispatcher,
             reader: Reader::new(reader),
-            accounts: Arc::new(accounts),
+            accounts: rooms.accounts().clone(),
+            rooms,
             clients: Clients::default(),
             blobs,
             typing: Typing::default(),
@@ -806,12 +810,12 @@ impl Matrix {
 
     pub async fn list_rooms(&self) -> Response {
         let configured = self.accounts.clone();
+        let view = self.rooms.clone();
         self.reader
             .read(move |conn| {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
-                let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
+                let rooms = Rooms::of(&view, &tx).map_err(internal)?;
                 let mut accounts = vec![];
-                let mut rooms = vec![];
                 for account in configured.iter() {
                     accounts.push(MatrixAccount {
                         id: account.id.clone(),
@@ -820,12 +824,11 @@ impl Matrix {
                             .map_err(internal)?
                             .is_some(),
                     });
-                    rooms.extend(rooms::rooms(&tx, account).map_err(internal)?);
                 }
                 Ok(ServerResponse::Rooms {
-                    as_of,
+                    as_of: rooms.as_of(),
                     accounts,
-                    rooms,
+                    rooms: rooms.all().to_vec(),
                 })
             })
             .await
@@ -890,12 +893,12 @@ impl Matrix {
             .expect("the clock is after 1970")
             .as_millis() as i64;
         let query = uplink_query::parse(&query, now).map_err(|e| error(ErrorCode::Invalid, e.0))?;
-        let accounts = self.accounts.clone();
+        let view = self.rooms.clone();
         self.reader
             .read(move |conn| {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
-                let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
-                let rooms = Rooms::load(&tx, &accounts).map_err(internal)?;
+                let rooms = Rooms::of(&view, &tx).map_err(internal)?;
+                let as_of = rooms.as_of();
                 let Some(listed) = rooms.room(room) else {
                     return Err(no_room(room));
                 };

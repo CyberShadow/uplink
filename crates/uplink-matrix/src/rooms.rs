@@ -1207,7 +1207,12 @@ pub fn sync_state(conn: &Connection, account: &str) -> Result<Option<SyncState>>
 /// `mxid` is the account's user: its own messages are never unread. Its
 /// counts are by the conditions queries find messages by (`message`,
 /// `after`).
-pub fn rooms(tx: &Transaction, account: &ConfiguredAccount) -> Result<Vec<Room>> {
+/// Of those, `only` these, if given.
+pub fn rooms(
+    tx: &Transaction,
+    account: &ConfiguredAccount,
+    only: Option<&[RoomId]>,
+) -> Result<Vec<Room>> {
     // Of room `r`, its messages from others after its marker.
     let after = |marker: Marker| {
         format!(
@@ -1253,7 +1258,8 @@ pub fn rooms(tx: &Transaction, account: &ConfiguredAccount) -> Result<Vec<Room>>
              ORDER BY 8 DESC NULLS LAST, r.id",
             rooms = marked(
                 "?2",
-                "r.account_id = ?1 AND (r.membership != 'left' OR r.desired = 'joined')"
+                "r.account_id = ?1 AND (r.membership != 'left' OR r.desired = 'joined')
+                 AND (?4 IS NULL OR r.id IN (SELECT value FROM json_each(?4)))"
             ),
             read_pos = pos_of("r.read_up_to"),
             fully_pos = pos_of("r.fully_read"),
@@ -1266,7 +1272,15 @@ pub fn rooms(tx: &Transaction, account: &ConfiguredAccount) -> Result<Vec<Room>>
     Ok(tx
         .prepare(&sql)?
         .query_map(
-            params![account.id, account.mxid, account.history_members],
+            params![
+                account.id,
+                account.mxid,
+                account.history_members,
+                only.map(|ids| {
+                    serde_json::to_string(&ids.iter().map(|id| id.0).collect::<Vec<_>>())
+                        .expect("ids serialize")
+                }),
+            ],
             |r| {
                 Ok(Room {
                     id: RoomId(r.get(0)?),

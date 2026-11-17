@@ -32,7 +32,7 @@ use uplink_config::{
     AccountConfig, BasicAuthConfig, Config, ConfigChanged, ConfigSection, Watcher,
 };
 use uplink_email::{gmail, imap, jmap, m365, pop3, query::ConfiguredAccount, service::Mail};
-use uplink_matrix::service::Matrix;
+use uplink_matrix::{room_view::RoomsView, service::Matrix};
 use uplink_protocol::{
     mail::{ConversationAction, ConversationSet, MailProvider},
     Changed, ClientRequest, ErrorCode, Notice, ServerError, ServerResponse, TxLogId, UnknownNames,
@@ -298,6 +298,7 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
             | AccountConfig::Jmap(_) => None,
         })
         .collect();
+    let rooms = RoomsView::kept(&dispatcher, matrix_accounts)?;
     Ok(Services {
         outbox: Outbox::new(uplink_storage::open_reader(root)?),
         items: items::Items::new(
@@ -305,7 +306,7 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
                 .map(|_| uplink_storage::open_reader(root))
                 .collect::<Result<_>>()?,
             mail_accounts.clone(),
-            matrix_accounts.clone(),
+            rooms.clone(),
             config.home.clone(),
         ),
         todos: Todos::new(dispatcher.clone(), uplink_storage::open_reader(root)?),
@@ -317,7 +318,7 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
         matrix: Matrix::new(
             dispatcher.clone(),
             uplink_storage::open_reader(root)?,
-            matrix_accounts,
+            rooms,
             uplink_storage::store::Store::blobs(root),
         ),
         mail: Mail::new(
@@ -1512,6 +1513,7 @@ mod tests {
             let conn = uplink_storage::open(dir.path()).unwrap();
             let reader = || uplink_storage::open_reader(dir.path()).unwrap();
             let dispatcher = Dispatcher::new(conn, Registry::new(), Arc::new(Hub::new(16)));
+            let rooms = RoomsView::kept(&dispatcher, vec![]).unwrap();
             let services = Services {
                 mail: Mail::new(
                     dispatcher.clone(),
@@ -1523,11 +1525,11 @@ mod tests {
                 matrix: Matrix::new(
                     dispatcher.clone(),
                     reader(),
-                    vec![],
+                    rooms.clone(),
                     uplink_storage::store::Store::blobs(dir.path()),
                 ),
                 outbox: Outbox::new(reader()),
-                items: items::Items::new(vec![reader()], vec![], vec![], vec![]),
+                items: items::Items::new(vec![reader()], vec![], rooms, vec![]),
                 todos: Todos::new(dispatcher.clone(), reader()),
                 calendar: Calendar::new(dispatcher.clone(), reader(), vec![]),
                 reader: Arc::new(LogReader::new(reader(), 16)),
