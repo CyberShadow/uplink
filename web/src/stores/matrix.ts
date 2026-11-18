@@ -32,6 +32,7 @@ import type { Blobs } from '../blobs'
 import { RequestError, type Requester } from '../connection'
 import type { Ops } from './ops'
 import { Loader, query, type Response } from './query'
+import { RoomDrafts } from './roomDrafts'
 
 /** Events loaded at once. */
 export const TIMELINE_PAGE = 50
@@ -60,13 +61,19 @@ export class MatrixStore {
     this.rooms.value = response.rooms
   })
 
+  /** What is being written to the rooms. */
+  readonly drafts: RoomDrafts
+
   constructor(
     private readonly server: Requester & Blobs,
     private readonly ops: Ops,
-  ) {}
+  ) {
+    this.drafts = new RoomDrafts(server, ops)
+  }
 
   reset() {
     this.roomLoader.invalidate()
+    this.drafts.reset()
     for (const timeline of this.timelines.values()) timeline.reset()
     for (const security of this.securities.values()) security.changed()
     for (const members of this.memberLists.values()) members.changed()
@@ -75,6 +82,7 @@ export class MatrixStore {
   }
 
   apply(entry: LogEntry) {
+    this.drafts.apply(entry)
     for (const event of entry.events) {
       if (event.type === 'timeline_added' || event.type === 'timeline_filled' || event.type === 'timeline_changed') {
         // Any may be of a thread, or change its root; or be pinned.
@@ -109,6 +117,8 @@ export class MatrixStore {
         case 'draft_edited':
         case 'drafts_changed':
         case 'outbox_changed':
+        case 'room_draft_edited':
+        case 'room_drafts_changed':
         case 'todos_changed':
         case 'calendar_changed':
           break
@@ -214,25 +224,6 @@ export class MatrixStore {
    * enough, and why it was not sent, if it was not. */
   send(room: RoomId, content: MatrixContent) {
     this.timeline(room).send(content)
-  }
-
-  /** Uploads `files` and sends each, in order; stops at one that fails to
-   * upload. */
-  async sendFiles(room: RoomId, files: readonly File[], reply_to: string | null) {
-    for (const file of files) {
-      let uploaded
-      try {
-        uploaded = await this.server.upload(file)
-      } catch (error) {
-        this.ops.fail(`Could not send ${file.name}: ${(error as Error).message}`)
-        return
-      }
-      const mime = file.type || 'application/octet-stream'
-      const content: MatrixContent = { type: 'file', blob: uploaded.blob, name: file.name, mime, reply_to }
-      this.send(room, content)
-      // Only the first answers what it replies to.
-      reply_to = null
-    }
   }
 
   /** A preview of the page `url` that the room's message `event` links:

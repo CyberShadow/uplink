@@ -369,6 +369,50 @@ pub enum MatrixSendState {
     TakingBack,
 }
 
+/// Where a message is written (SPEC §7.6): a room's box, or that of
+/// one of its threads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RoomBox {
+    pub room: RoomId,
+    /// The thread's root; `None` for the room's box.
+    pub thread: Option<RoomEventId>,
+}
+
+/// What is being written in a box (SPEC §7.6). A box never written to
+/// has none: it is empty, at revision 0.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RoomDraft {
+    pub at: RoomBox,
+    /// Number of edits applied to the text.
+    pub revision: i64,
+    /// As typed: Markdown, or a command.
+    pub text: String,
+    /// The message it replies to, as the timeline lists it.
+    pub reply_to: Option<RoomEvent>,
+    /// The files to send with it, in the order attached: of a room's
+    /// box only. Not part of the text: attaching and detaching leave the
+    /// revision as it is.
+    pub attachments: Vec<crate::compose::DraftAttachment>,
+}
+
+/// A box's text changed by `splice`, making its revision `revision`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RoomDraftEdited {
+    pub at: RoomBox,
+    pub revision: i64,
+    pub splice: crate::compose::Splice,
+}
+
+/// What these rooms' boxes reply to, or their files, changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RoomDraftsChanged {
+    pub rooms: Vec<RoomId>,
+}
+
 /// What a send sends to a room (SPEC §9.3). Events it is of are named
 /// by their Matrix ids, which the homeserver knows them by.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

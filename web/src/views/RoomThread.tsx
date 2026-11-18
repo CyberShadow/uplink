@@ -2,13 +2,13 @@
 // panel: its root, its messages, those being sent to it, and a box to
 // write to it.
 
-import { useMemo, useRef, useState } from 'preact/hooks'
+import { useMemo, useRef } from 'preact/hooks'
 import type { Room, RoomEventId } from '../generated/protocol'
 import { useServices } from '../context'
 import { keepFocus, pages } from '../keymap'
 import { TEXT, shown } from '../matrix'
 import { Events, NO_READERS_BY_EVENT, overlaid, rows } from './Room'
-import { Composer, type Mode } from './RoomComposer'
+import { Composer, type Mode, useMode } from './RoomComposer'
 import styles from './Room.module.css'
 // Its header as the room info's.
 import panel from './RoomInfo.module.css'
@@ -30,7 +30,8 @@ export function ThreadPanel(props: {
   const composer = useRef<HTMLTextAreaElement>(null)
   const scroller = useRef<HTMLDivElement>(null)
   const listed = useRef<HTMLOListElement>(null)
-  const [mode, setMode] = useState<Mode>({ type: 'new' })
+  const at = useMemo(() => ({ room: room.id, thread: props.root }), [room.id, props.root])
+  const [mode, setMode] = useMode(at)
   const events = useMemo(() => (state ? [state.root, ...state.replies] : []), [state])
   const rootId = state?.root.event_id ?? null
   const [overlay, outgoing] = useMemo(() => overlaid(events, sends, rootId), [events, sends, rootId])
@@ -79,15 +80,15 @@ export function ThreadPanel(props: {
           />
         </ol>
       </div>
-      {room.membership === 'joined' && rootId !== null && (
+      {room.membership === 'joined' && rootId !== null && matrix.drafts.drafts.value !== null && (
         <Composer
           room={room}
+          at={at}
           textarea={composer}
           mode={mode}
           setMode={setMode}
           lastOwn={lastOwn}
           thread={rootId}
-          attachments={null}
           scrolling={pages(scroller)}
           focusLine={(event) => listed.current!.querySelector<HTMLElement>(`[data-event="${event}"]`)?.focus()}
           back={props.back}

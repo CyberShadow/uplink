@@ -27,6 +27,8 @@ import type {
   Failing,
   PendingChanges,
   DraftField,
+  RoomBox,
+  RoomDraft,
   Splice,
   Entry,
   ImageRule,
@@ -211,9 +213,13 @@ function mayChangeLists(event: ServerEvent): boolean {
     case 'drafts_changed':
     case 'outbox_changed':
     case 'matrix_sends_changed':
+    case 'room_draft_edited':
+    case 'room_drafts_changed':
       return false
   }
 }
+
+const boxKey = (at: RoomBox) => `${at.room} ${at.thread ?? ''}`
 
 export class FakeServer implements Requester, Subscriber, Blobs {
   readonly requests: ClientRequest[] = []
@@ -228,6 +234,8 @@ export class FakeServer implements Requester, Subscriber, Blobs {
   private nextEntry = 1
 
   readonly drafts = new Map<string, Draft>()
+  /** What is being written to the rooms, by box (`room thread`). */
+  readonly roomDrafts = new Map<string, RoomDraft>()
   readonly outbox: OutboxItem[] = []
   private nextOutbox = 1
   /** Of the Matrix sends asked for, by key, the entry that queued each. */
@@ -290,6 +298,16 @@ export class FakeServer implements Requester, Subscriber, Blobs {
   }
 
   /** Edits a draft as another tab would. */
+  /** What the box holds: empty, if never written to. */
+  roomDraft(at: RoomBox): RoomDraft {
+    return this.roomDrafts.get(boxKey(at)) ?? { at, revision: 0, text: '', reply_to: null, attachments: [] }
+  }
+
+  /** An edit of a room's box made in another tab. */
+  editRoomDraftElsewhere(at: RoomBox, splice: Splice) {
+    this.editRoomDraft(at, this.roomDraft(at).revision, splice)
+  }
+
   editElsewhere(draft: string, field: DraftField, splice: Splice) {
     this.editDraft(draft, this.drafts.get(draft)!.revision, field, splice)
   }
@@ -1563,6 +1581,40 @@ export class FakeServer implements Requester, Subscriber, Blobs {
         this.undoable.set(this.head(), { revert: () => this.cancelMatrixSend(id, 'Undid it'), undone: false })
         return response
       }
+      case 'list_room_drafts':
+        return { type: 'room_drafts', as_of: this.head(), drafts: [...this.roomDrafts.values()] }
+      case 'edit_room_draft':
+        return { type: 'dispatched', tx_log_id: this.editRoomDraft(body.at, body.revision, body.splice) }
+      case 'set_room_draft_reply': {
+        const reply_to = this.events.get(body.at.room)!.find((e) => e.id === body.reply_to) ?? null
+        this.roomDrafts.set(boxKey(body.at), { ...this.roomDraft(body.at), reply_to })
+        return this.dispatched(reply_to ? 'Began a reply' : 'Left off replying', [
+          { type: 'room_drafts_changed', rooms: [body.at.room] },
+        ])
+      }
+      case 'attach_to_room_draft': {
+        const at = { room: body.room, thread: null }
+        const draft = this.roomDraft(at)
+        const attachment = {
+          id: this.nextAttachment++,
+          blob: body.blob,
+          name: body.name,
+          mime: body.mime,
+          size: this.blobs.get(body.blob)!,
+        }
+        this.roomDrafts.set(boxKey(at), { ...draft, attachments: [...draft.attachments, attachment] })
+        return this.dispatched(`Attached '${body.name}'`, [{ type: 'room_drafts_changed', rooms: [body.room] }])
+      }
+      case 'detach_from_room_draft': {
+        const at = { room: body.room, thread: null }
+        const draft = this.roomDraft(at)
+        if (!draft.attachments.some((a) => a.id === body.attachment)) {
+          throw new RequestError({ code: 'conflict', message: 'the file is no longer attached' })
+        }
+        const attachments = draft.attachments.filter((a) => a.id !== body.attachment)
+        this.roomDrafts.set(boxKey(at), { ...draft, attachments })
+        return this.dispatched('Removed a file', [{ type: 'room_drafts_changed', rooms: [body.room] }])
+      }
       case 'cancel_matrix_send':
         return { type: 'dispatched', tx_log_id: this.cancelMatrixSend(body.item, 'Cancelled sending') }
       case 'keep_matrix_sent': {
@@ -2107,6 +2159,28 @@ export class FakeServer implements Requester, Subscriber, Blobs {
     this.drafts.set(id, { ...draft, content, revision: revision + 1 })
     return this.commit({ type: 'user' }, 'Edited draft', [
       { type: 'draft_edited', draft: id, revision: revision + 1, field, splice },
+    ])
+  }
+
+  /** Undone by the inverse splice, of whatever revision it is at then. */
+  private editRoomDraft(at: RoomBox, revision: number, splice: Splice): number {
+    const entry = this.spliceRoomDraft(at, revision, splice)
+    const inverse = { offset: splice.offset, delete: splice.insert, insert: splice.delete }
+    this.undoable.set(entry, {
+      revert: () => this.spliceRoomDraft(at, this.roomDraft(at).revision, inverse),
+      undone: false,
+    })
+    return entry
+  }
+
+  private spliceRoomDraft(at: RoomBox, revision: number, splice: Splice): number {
+    const draft = this.roomDraft(at)
+    if (draft.revision !== revision) {
+      throw new RequestError({ code: 'conflict', message: `the draft is at revision ${draft.revision}` })
+    }
+    this.roomDrafts.set(boxKey(at), { ...draft, text: apply(draft.text, splice), revision: revision + 1 })
+    return this.commit({ type: 'user' }, 'Edited the draft', [
+      { type: 'room_draft_edited', at, revision: revision + 1, splice },
     ])
   }
 

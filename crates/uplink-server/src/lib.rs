@@ -1243,6 +1243,28 @@ impl Backend for Services {
             ClientRequest::SendMatrixMessage { room, key, content } => {
                 self.matrix.send_message(room, key, content).await
             }
+            ClientRequest::ListRoomDrafts => self.matrix.list_room_drafts().await,
+            ClientRequest::EditRoomDraft {
+                at,
+                revision,
+                splice,
+            } => self.matrix.edit_room_draft(at, revision, splice).await,
+            ClientRequest::SetRoomDraftReply { at, reply_to } => {
+                self.matrix.set_room_draft_reply(at, reply_to).await
+            }
+            ClientRequest::AttachToRoomDraft {
+                room,
+                blob,
+                name,
+                mime,
+            } => {
+                self.matrix
+                    .attach_to_room_draft(room, blob, name, mime)
+                    .await
+            }
+            ClientRequest::DetachFromRoomDraft { room, attachment } => {
+                self.matrix.detach_from_room_draft(room, attachment).await
+            }
             ClientRequest::CancelMatrixSend { item } => self.matrix.cancel_send(item).await,
             ClientRequest::KeepMatrixSent { item } => self.matrix.keep_sent(item).await,
             ClientRequest::MarkRoomRead {

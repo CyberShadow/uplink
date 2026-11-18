@@ -67,7 +67,8 @@ It is built for people who live in their inbox and want it fast:
   Drafts are saved as you type, on the server, and stay in step across
   tabs and devices: start a reply on your laptop, finish it on your phone.
   Rich text, attachments, reply, reply to all and forward, with the quoted
-  mail folded away.
+  mail folded away. A chat message left half written is kept the same
+  way, with what it replies to and its files, in the room you left it in.
 
 <p align="center">
   <picture>

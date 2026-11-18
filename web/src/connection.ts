@@ -113,8 +113,9 @@ interface Pending {
 }
 
 /** Queries can be sent again on a new connection, and so can ops that
- * refuse to apply twice: creating a draft (its id exists) and editing one
- * (its revision moved on); and sending a Matrix message, answered, asked
+ * refuse to apply twice: creating a draft (its id exists) and editing one,
+ * or what is written to a room (its revision moved on); and sending a
+ * Matrix message, answered, asked
  * again, by the entry that queued it (of its key). Other ops can't, since
  * one may have been applied before the connection dropped. */
 function isResendable(body: ClientRequest): boolean {
@@ -127,6 +128,7 @@ function isResendable(body: ClientRequest): boolean {
     case 'load_message':
     case 'list_drafts':
     case 'list_outbox':
+    case 'list_room_drafts':
     case 'list_rooms':
     case 'list_timeline':
     case 'list_room_events':
@@ -152,6 +154,7 @@ function isResendable(body: ClientRequest): boolean {
     case 'list_history':
     case 'create_draft':
     case 'edit_draft':
+    case 'edit_room_draft':
     case 'send_matrix_message':
       return true
     // Of the connection they were sent on: a new one subscribes anew.
@@ -169,6 +172,9 @@ function isResendable(body: ClientRequest): boolean {
     case 'cancel_send':
     case 'keep_sent':
     case 'keep_observed':
+    case 'set_room_draft_reply':
+    case 'attach_to_room_draft':
+    case 'detach_from_room_draft':
     case 'cancel_matrix_send':
     case 'keep_matrix_sent':
     case 'mark_room_read':

@@ -268,7 +268,7 @@ export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": 
 /**
  * Done by a view being shown (opening a conversation reads it).
  */
-shown: boolean, } | { "type": "count_conversations", query: string, } | { "type": "list_drafts" } | { "type": "create_draft", id: DraftId, account: string, content: DraftContent, in_reply_to: MessageId | null, } | { "type": "edit_draft", draft: DraftId, revision: number, field: DraftField, splice: Splice, } | { "type": "delete_draft", draft: DraftId, } | { "type": "attach_to_draft", draft: DraftId, blob: BlobId, name: string, mime: string, } | { "type": "detach_from_draft", draft: DraftId, attachment: DraftAttachmentId, } | { "type": "send_draft", draft: DraftId, } | { "type": "cancel_send", item: OutboxId, } | { "type": "keep_sent", item: OutboxId, } | { "type": "list_outbox" } | { "type": "keep_observed", account: string, op: TxLogId | null, } | { "type": "list_rooms" } | { "type": "list_timeline", room: RoomId, page: TimelinePage, limit: number, } | { "type": "fill_gap", room: RoomId, gap: GapId, } | { "type": "list_room_events", room: RoomId, events: Array<RoomEventId>, } | { "type": "list_edits", room: RoomId, event: RoomEventId, } | { "type": "edit_text", room: RoomId, event: RoomEventId, } | { "type": "list_image_packs", room: RoomId, } | { "type": "send_matrix_message", room: RoomId, key: string, content: MatrixContent, } | { "type": "cancel_matrix_send", item: MatrixSendId, } | { "type": "keep_matrix_sent", item: MatrixSendId, } | { "type": "attend", place: Place | null, } | { "type": "mark_room_read", room: RoomId, event: RoomEventId, 
+shown: boolean, } | { "type": "count_conversations", query: string, } | { "type": "list_drafts" } | { "type": "create_draft", id: DraftId, account: string, content: DraftContent, in_reply_to: MessageId | null, } | { "type": "edit_draft", draft: DraftId, revision: number, field: DraftField, splice: Splice, } | { "type": "delete_draft", draft: DraftId, } | { "type": "attach_to_draft", draft: DraftId, blob: BlobId, name: string, mime: string, } | { "type": "detach_from_draft", draft: DraftId, attachment: DraftAttachmentId, } | { "type": "send_draft", draft: DraftId, } | { "type": "cancel_send", item: OutboxId, } | { "type": "keep_sent", item: OutboxId, } | { "type": "list_outbox" } | { "type": "keep_observed", account: string, op: TxLogId | null, } | { "type": "list_rooms" } | { "type": "list_timeline", room: RoomId, page: TimelinePage, limit: number, } | { "type": "fill_gap", room: RoomId, gap: GapId, } | { "type": "list_room_events", room: RoomId, events: Array<RoomEventId>, } | { "type": "list_edits", room: RoomId, event: RoomEventId, } | { "type": "edit_text", room: RoomId, event: RoomEventId, } | { "type": "list_image_packs", room: RoomId, } | { "type": "send_matrix_message", room: RoomId, key: string, content: MatrixContent, } | { "type": "list_room_drafts" } | { "type": "edit_room_draft", at: RoomBox, revision: number, splice: Splice, } | { "type": "set_room_draft_reply", at: RoomBox, reply_to: RoomEventId | null, } | { "type": "attach_to_room_draft", room: RoomId, blob: BlobId, name: string, mime: string, } | { "type": "detach_from_room_draft", room: RoomId, attachment: DraftAttachmentId, } | { "type": "cancel_matrix_send", item: MatrixSendId, } | { "type": "keep_matrix_sent", item: MatrixSendId, } | { "type": "attend", place: Place | null, } | { "type": "mark_room_read", room: RoomId, event: RoomEventId, 
 /**
  * Done by the room being shown, as it is read.
  */
@@ -311,7 +311,7 @@ partial_rooms: Array<RoomId>, } | { "type": "window", as_of: TxLogId, change: Wi
 /**
  * Of its conversations.
  */
-scope: ListScope, } | { "type": "unseen_window", as_of: TxLogId, change: WindowChange<Unseen>, } | { "type": "message", message: MessageContent, } | { "type": "drafts", as_of: TxLogId, drafts: Array<Draft>, } | { "type": "outbox", as_of: TxLogId, accounts: Array<AccountOutbox>, } | { "type": "rooms", as_of: TxLogId, accounts: Array<MatrixAccount>, rooms: Array<Room>, } | { "type": "timeline", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, 
+scope: ListScope, } | { "type": "unseen_window", as_of: TxLogId, change: WindowChange<Unseen>, } | { "type": "message", message: MessageContent, } | { "type": "drafts", as_of: TxLogId, drafts: Array<Draft>, } | { "type": "room_drafts", as_of: TxLogId, drafts: Array<RoomDraft>, } | { "type": "outbox", as_of: TxLogId, accounts: Array<AccountOutbox>, } | { "type": "rooms", as_of: TxLogId, accounts: Array<MatrixAccount>, rooms: Array<Room>, } | { "type": "timeline", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, 
 /**
  * Whether there are earlier events than those listed.
  */
@@ -572,7 +572,7 @@ export type Source = { "type": "user" } | { "type": "account", id: string, };
  * rather than content, since they are stored in the log; clients query
  * what they display.
  */
-export type ServerEvent = { "type": "entries_added" } & EntriesAdded | { "type": "entries_removed" } & EntriesRemoved | { "type": "labels_changed" } & LabelsChanged | { "type": "label_list_changed" } & LabelListChanged | { "type": "account_changed" } & AccountChanged | { "type": "image_rule_changed" } & ImageRuleChanged | { "type": "draft_edited" } & DraftEdited | { "type": "drafts_changed" } & DraftsChanged | { "type": "outbox_changed" } & OutboxChanged | { "type": "rooms_changed" } & RoomsChanged | { "type": "timeline_added" } & TimelineAdded | { "type": "timeline_filled" } & TimelineFilled | { "type": "timeline_changed" } & TimelineChanged | { "type": "matrix_sends_changed" } & MatrixSendsChanged | { "type": "todos_changed" } & TodosChanged | { "type": "calendar_changed" } & CalendarChanged | { "type": "seen_changed" };
+export type ServerEvent = { "type": "entries_added" } & EntriesAdded | { "type": "entries_removed" } & EntriesRemoved | { "type": "labels_changed" } & LabelsChanged | { "type": "label_list_changed" } & LabelListChanged | { "type": "account_changed" } & AccountChanged | { "type": "image_rule_changed" } & ImageRuleChanged | { "type": "draft_edited" } & DraftEdited | { "type": "drafts_changed" } & DraftsChanged | { "type": "outbox_changed" } & OutboxChanged | { "type": "rooms_changed" } & RoomsChanged | { "type": "timeline_added" } & TimelineAdded | { "type": "timeline_filled" } & TimelineFilled | { "type": "timeline_changed" } & TimelineChanged | { "type": "matrix_sends_changed" } & MatrixSendsChanged | { "type": "room_draft_edited" } & RoomDraftEdited | { "type": "room_drafts_changed" } & RoomDraftsChanged | { "type": "todos_changed" } & TodosChanged | { "type": "calendar_changed" } & CalendarChanged | { "type": "seen_changed" };
 
 export type MessageId = number;
 
@@ -1481,6 +1481,50 @@ export type TimelineChanged = { room: RoomId, events: Array<RoomEventId>, };
  */
 export type MatrixSendsChanged = { rooms: Array<RoomId>, };
 
+/**
+ * Where a message is written (SPEC §7.6): a room's box, or that of
+ * one of its threads.
+ */
+export type RoomBox = { room: RoomId, 
+/**
+ * The thread's root; `None` for the room's box.
+ */
+thread: RoomEventId | null, };
+
+/**
+ * What is being written in a box (SPEC §7.6). A box never written to
+ * has none: it is empty, at revision 0.
+ */
+export type RoomDraft = { at: RoomBox, 
+/**
+ * Number of edits applied to the text.
+ */
+revision: number, 
+/**
+ * As typed: Markdown, or a command.
+ */
+text: string, 
+/**
+ * The message it replies to, as the timeline lists it.
+ */
+reply_to: RoomEvent | null, 
+/**
+ * The files to send with it, in the order attached: of a room's
+ * box only. Not part of the text: attaching and detaching leave the
+ * revision as it is.
+ */
+attachments: Array<DraftAttachment>, };
+
+/**
+ * A box's text changed by `splice`, making its revision `revision`.
+ */
+export type RoomDraftEdited = { at: RoomBox, revision: number, splice: Splice, };
+
+/**
+ * What these rooms' boxes reply to, or their files, changed.
+ */
+export type RoomDraftsChanged = { rooms: Array<RoomId>, };
+
 export type TodoId = number;
 
 export type Todo = { id: TodoId, title: string, notes: string, 
@@ -1732,4 +1776,4 @@ export type EventChangeKind = "create" | "update" | "delete";
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "086b23fc89e2fb88"
+export const PROTOCOL_VERSION = "afd6893aeca57c55"

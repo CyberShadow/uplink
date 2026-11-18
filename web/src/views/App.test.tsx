@@ -1733,7 +1733,8 @@ describe('matrix', () => {
     // typing; out of the box, so does the sequence.
     await user.keyboard('{Alt>}{Shift>}h{/Shift}{/Alt}')
     expect(location.pathname).toBe('/')
-    await user.click(within(document.querySelector('nav')!).getByRole('link', { name: 'Lounge' }))
+    // (What was written there is its draft, which the nav marks.)
+    await user.click(within(document.querySelector('nav')!).getByRole('link', { name: /^Lounge/ }))
     expect(document.activeElement).toBe(box())
     await user.keyboard('{Escape}gk')
     expect(location.pathname).toBe('/todos')
@@ -2094,6 +2095,92 @@ describe('room composer', () => {
       'Unknown command /frobnicate. To send it as a message, begin with //.',
     )
     expect(box.value).toBe('/frobnicate')
+  })
+
+  it('keeps what is written as the room\'s draft, with every tab', async () => {
+    server.addMatrixAccount()
+    const lounge = server.addRoom('Lounge')
+    server.addRoom('Den')
+    const at = { room: lounge.id, thread: null }
+    const nav = () => screen.getByRole('navigation')
+    const user = await start(`/rooms/${lounge.id}`)
+    const box = () => screen.getByRole('textbox', { name: /^Message / }) as HTMLTextAreaElement
+
+    await user.click(box())
+    await user.keyboard('Shall we')
+    // Saved once typing pauses, and marked in the nav.
+    await waitFor(() => expect(server.roomDraft(at).text).toBe('Shall we'))
+    await within(nav()).findByRole('img', { name: 'Draft' })
+
+    // Written in another tab meanwhile: both are in the box, the caret
+    // where it was in the text.
+    server.editRoomDraftElsewhere(at, { offset: 0, delete: '', insert: 'Hm. ' })
+    await waitFor(() => expect(box().value).toBe('Hm. Shall we'))
+    expect(box().selectionStart).toBe('Hm. Shall we'.length)
+    await user.keyboard(' dance?')
+
+    // Another room's box is its own; back, the room's is as it was left,
+    // saved on leaving.
+    await user.click(within(nav()).getByRole('link', { name: /^Den/ }))
+    await waitFor(() => expect(box().getAttribute('aria-label')).toBe('Message Den'))
+    expect(box().value).toBe('')
+    expect(server.roomDraft(at).text).toBe('Hm. Shall we dance?')
+    await user.click(within(nav()).getByRole('link', { name: /^Lounge/ }))
+    await waitFor(() => expect(box().value).toBe('Hm. Shall we dance?'))
+
+    // Sent, the box is emptied, as its draft is.
+    await user.click(box())
+    await user.keyboard('{Enter}')
+    expect(box().value).toBe('')
+    await waitFor(() => expect(server.roomDraft(at).text).toBe(''))
+    expect(server.requests).toContainEqual({
+      type: 'send_matrix_message',
+      key: expect.any(String),
+      room: lounge.id,
+      content: text('Hm. Shall we dance?'),
+    })
+    await waitFor(() => expect(within(nav()).queryByRole('img', { name: 'Draft' })).toBeNull())
+  })
+
+  it('sends at once what is typed and sent before it is saved, as no draft', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const user = await start(`/rooms/${room.id}`)
+    await user.click(screen.getByRole('textbox', { name: 'Message Lounge' }))
+    await user.keyboard('Quick{Enter}')
+    await waitFor(() =>
+      expect(server.requests).toContainEqual({
+        type: 'send_matrix_message',
+        key: expect.any(String),
+        room: room.id,
+        content: text('Quick'),
+      }),
+    )
+    expect(server.requests.filter((r) => r.type === 'edit_room_draft')).toEqual([])
+  })
+
+  it('replies to what the draft does, until sent', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const question = server.receive(room.id, { body: 'Lunch?' })
+    const at = { room: room.id, thread: null }
+    server.roomDrafts.set(`${room.id} `, { ...server.roomDraft(at), text: 'Where', reply_to: question })
+    const user = await start(`/rooms/${room.id}`)
+    const box = (await screen.findByRole('textbox', { name: 'Message Lounge' })) as HTMLTextAreaElement
+    expect(box.value).toBe('Where')
+    expect(screen.getByText(/^Replying to/).textContent).toContain('Lunch?')
+
+    await user.click(box)
+    await user.keyboard('?{Enter}')
+    expect(screen.queryByText(/^Replying to/)).toBeNull()
+    expect(server.requests).toContainEqual({
+      type: 'send_matrix_message',
+      key: expect.any(String),
+      room: room.id,
+      content: text('Where?', { reply_to: question.event_id }),
+    })
+    await waitFor(() => expect(server.roomDraft(at)).toMatchObject({ text: '', reply_to: null }))
+    expect(screen.queryByText(/^Replying to/)).toBeNull()
   })
 })
 
@@ -2950,6 +3037,15 @@ describe('room timeline', () => {
     )
     expect(server.requests).toContainEqual({ type: 'send_matrix_message', key: expect.any(String), room: room.id, content: text('Here') })
     expect(screen.queryByRole('list', { name: 'Files to send' })).toBeNull()
+    // The files were the draft's, until sent.
+    expect(server.requests).toContainEqual({
+      type: 'attach_to_room_draft',
+      room: room.id,
+      blob: 'blob:hello',
+      name: 'hello.txt',
+      mime: 'text/plain',
+    })
+    await waitFor(() => expect(server.roomDraft({ room: room.id, thread: null }).attachments).toEqual([]))
   })
 })
 

@@ -296,6 +296,34 @@ def tabs(page):
     return {"draft": page.url.rsplit("/", 1)[1]}
 
 
+def room_draft(page):
+    """Writes to the Planning room without sending: another tab has what
+    is written, and adds to it; reloaded, the room still has it."""
+    nav = page.get_by_role("navigation")
+    nav.get_by_role("link", name="Planning").click()
+    box = page.get_by_role("textbox", name="Message Planning")
+    expect(box).to_be_focused()
+    page.keyboard.type("Half a thought")
+    other = page.context.new_page()
+    errors = []
+    other.on("console", lambda m: m.type in ("error", "warning") and errors.append(f"{m.text} at {m.location['url']}"))
+    other.on("pageerror", lambda e: errors.append(str(e)))
+    other.goto(page.url)
+    other_box = other.get_by_role("textbox", name="Message Planning")
+    expect(other_box).to_have_value("Half a thought")
+    other_box.click()
+    other.keyboard.press("Control+End")
+    other.keyboard.type(", finished")
+    expect(box).to_have_value("Half a thought, finished")
+    # The nav marks the room as having something written to it.
+    expect(nav.get_by_role("img", name="Draft")).to_be_visible()
+    page.screenshot(path=f"{SHOTS}/room-draft.png")
+    page.reload()
+    expect(page.get_by_role("textbox", name="Message Planning")).to_have_value("Half a thought, finished")
+    assert not errors, errors
+    return {}
+
+
 def home(page):
     """Goes home: the rows of each bucket."""
     page.get_by_role("link", name="Home").click()
@@ -462,7 +490,7 @@ def room_history(page):
 
 STEPS = {
     f.__name__: f
-    for f in [read, archive, undo, label, search, reply, matrix, todos, home, history, trash, attachment, tabs, hostile, hostile_matrix, room_history]
+    for f in [read, archive, undo, label, search, reply, matrix, todos, home, history, trash, attachment, tabs, room_draft, hostile, hostile_matrix, room_history]
 }
 
 step = STEPS[sys.argv[1]]

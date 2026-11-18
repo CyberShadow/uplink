@@ -78,6 +78,8 @@ export class DraftStore {
         case 'timeline_added':
         case 'timeline_filled':
         case 'matrix_sends_changed':
+        case 'room_draft_edited':
+        case 'room_drafts_changed':
         case 'todos_changed':
         case 'calendar_changed':
           break

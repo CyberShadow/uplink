@@ -675,6 +675,25 @@ CREATE TABLE matrix_send (     -- (V0023: was matrix_outbox)
   event_id     TEXT,                 -- set if sent, but of a member's change (V0029)
   synced       INTEGER NOT NULL      -- the event is synced: out of the outbox
 );
+-- What is being written to a room (V0077, §7.6): a box's text as typed,
+-- edited as a draft's (§7.2); a box never written to has no row.
+CREATE TABLE matrix_draft (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  room      INTEGER NOT NULL REFERENCES matrix_room(id),
+  thread    INTEGER REFERENCES matrix_event(id), -- its root; NULL: the room's box
+  revision  INTEGER NOT NULL,          -- edits so far
+  text      TEXT NOT NULL,
+  reply_to  INTEGER REFERENCES matrix_event(id)
+);
+CREATE UNIQUE INDEX matrix_draft_box ON matrix_draft(room, coalesce(thread, 0));
+CREATE TABLE matrix_draft_attachment ( -- as draft_attachment (§7.4)
+  id     INTEGER PRIMARY KEY AUTOINCREMENT,
+  draft  INTEGER NOT NULL REFERENCES matrix_draft(id),
+  blob   TEXT NOT NULL,
+  name   TEXT NOT NULL,
+  mime   TEXT NOT NULL,
+  size   INTEGER NOT NULL
+);
 -- Full-text search of Matrix messages is deferred.
 
 -- ── calendar (M365; as built, V0012, V0054; §10) ─────────────────────
@@ -993,7 +1012,9 @@ than it buffers is closed; the client reconnects and resumes.
   (appended to the timeline), `TimelineChanged { room, events }` (what
   those events show changed: they were edited, reacted to or redacted,
   or what they reply to was; §9.2), `MatrixSendsChanged { rooms }` (their
-  sends were added, changed state or went).
+  sends were added, changed state or went), `RoomDraftEdited { at,
+  revision, splice }` and `RoomDraftsChanged { rooms }` (what is being
+  written to them, §7.6).
 - **Calendar**: `CalendarEventAdded`, `CalendarEventRemoved`,
   `CalendarEventChanged`.
 - **To-dos**: `TodosChanged { todos }` (added, edited or deleted; the
@@ -1083,6 +1104,9 @@ than it buffers is closed; the client reconnects and resumes.
   { rule, always }` (§8.9);
   `SendMatrixMessage { room, key, content }`, `CancelMatrixSend { item }`,
   `KeepMatrixSent { item }`,
+  `ListRoomDrafts`, `EditRoomDraft { at, revision, splice }`,
+  `SetRoomDraftReply { at, reply_to }`, `AttachToRoomDraft { room, blob,
+  name, mime }`, `DetachFromRoomDraft { room, attachment }` (§7.6),
   `MarkRoomRead { room, event }`, `ChangeMembership { room, change }`,
   `OrderSpaces { changes }` (§9).
 
@@ -1852,7 +1876,9 @@ in any order that keeps their text in place. Each entry stores only the
 changed span, never a copy of the draft.
 
 The client (`web/src/compose/session.ts`) keeps the text as typed and the
-server's draft it is based on. Typing pauses for 500 ms, then one edit
+server's draft it is based on: a session edits any text of fields the
+server holds at a revision (a mail draft's six; the one of what is written
+to a room, §7.6), told what the server has of it and how to edit it. Typing pauses for 500 ms, then one edit
 goes out for the first field that differs (common prefix/suffix, never
 splitting a surrogate pair), one edit in flight at a time. When the
 server's draft changes, the client recognizes its own edit (the next
@@ -1923,6 +1949,51 @@ and edits are resent on reconnect. Only closing the tab while
 disconnected loses it, which is offline use, a non-goal (VISION). If it
 turns out to matter: write every debounced edit to IndexedDB before it is
 sent, remove it once acknowledged, and re-send pending edits on startup.
+
+### 7.6 What is written to a room
+
+What is written to a Matrix room and not sent is a draft too: the
+server's, so that it is there on coming back to the room, after a reload,
+and in every tab, as VISION asks of client state. It is local to uplink:
+Matrix has no drafts for other clients to share.
+
+There is one per box (`RoomBox { room, thread }`: a room's, or that of
+one of its threads, by its root), which needs no creating or discarding:
+a box never written to is empty, at revision 0, and has no row; a row,
+once made, stays when the box is emptied, so that its revision only
+rises (a revision starting over would let a stale edit apply). A draft
+(`RoomDraft`) is the box's text as typed (Markdown, or a command), what
+its message replies to, and, of a room's box, the files to send with it
+(a thread's messages take none, §12.11).
+
+- **The text** is edited as a mail draft's is (§7.2), by the same splices
+  against a revision, the same session in the client and the same rebase:
+  `matrix.draft.edit` (`EditRoomDraft { at, revision, splice }`),
+  announced by `RoomDraftEdited`. An edit of one's own message (§12.11) is
+  not the draft: it stays the tab's, and leaves the draft as it is.
+- **What it replies to** is set by `matrix.draft.reply`
+  (`SetRoomDraftReply { at, reply_to }`, an event of the room, or
+  nothing), whose inverse sets what it replaced.
+- **Files** are uploaded as a mail draft's (§7.4), when attached, pasted
+  or dropped, then attached by `matrix.draft.attach` and removed by
+  `matrix.draft.detach`, each the other's inverse.
+
+The last two leave the revision as it is and announce themselves with
+`RoomDraftsChanged`, upon which tabs list the drafts again
+(`ListRoomDrafts`: every box written to). The tab that made such a change
+shows it at once, until the drafts it lists are as of the change's entry.
+
+**Sending is not of the draft.** The client sends what it makes of the
+text (a message, or a command's doing, §12.11) and of each file, as
+before (§9.3), and empties the box by the ops that filled it: the text by
+an edit, the reply by setting none, each file by detaching it. So a
+message typed and sent before the 500 ms pause was never saved, and
+leaves nothing but its send in the log; and undoing a send takes the
+message back, while undoing the edit that emptied the box puts its text
+back in the box, whatever was written there since.
+
+The nav marks a room with text or files in one of its boxes (a pencil,
+"Draft").
 
 ---
 
@@ -3790,7 +3861,7 @@ src/views/
 ├── Outgoing.tsx           # drafts and the outbox (§6.6)
 ├── Room.tsx               # a Matrix room: its timeline (§12.11)
 ├── RoomEvent.tsx          # an event of the timeline, on a line
-├── RoomComposer.tsx       # the box to write to a room
+├── RoomComposer.tsx       # the box to write to a room, its draft (§7.6)
 ├── Security.tsx           # a Matrix account's device and keys (§12.12)
 ├── Todos.tsx              # the to-do list
 ├── History.tsx            # the outbox, then the user's ops, with Undo
@@ -4001,7 +4072,9 @@ a moment too long would archive several messages).
 `stores/client.ts` holds the tab's stores, which the connection feeds:
 `ops.ts` (the ops dispatched from the tab, and the notice of the last one
 with its Undo), `mail.ts` and `drafts.ts` (drafts and the outbox, plus
-the compose sessions editing drafts in the tab, §7.2).
+the compose sessions editing drafts in the tab, §7.2); `matrix.ts`, and
+in it `roomDrafts.ts` (what is being written to the rooms, and the
+sessions editing it, §7.6).
 
 `stores/mail.ts` mirrors accounts, the list on show, and the
 conversation open. Responses replace what they cover; log entries apply
@@ -4293,7 +4366,10 @@ buttons.
   a reply or edit. Files attached (the paperclip), pasted or dropped on
   the room are listed above the box, to remove or send with the
   message, as files after it (the first answering what it replies to if
-  there is no text).
+  there is no text); one still uploading is listed too, and waited for.
+  What is written, what it replies to and the files are the box's
+  draft (§7.6): saved as typed, kept on leaving the room, and every
+  tab's, each showing what another writes.
 
 ### 12.12 Matrix security
 

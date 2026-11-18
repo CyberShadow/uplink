@@ -199,6 +199,11 @@ with subtest("a draft written in two tabs at once keeps both tabs' text"):
     ).strip()
     assert row == "Plans for Friday|<p>Typed in the other tab, and more</p>", row
 
+with subtest("what is written to a room and not sent is its draft, in every tab"):
+    ui("room_draft")
+    row = machine.succeed(f"sqlite3 {STATE}/db/uplink.sqlite 'SELECT text FROM matrix_draft'").strip()
+    assert row == "Half a thought, finished", row
+
 with subtest("hostile mail runs nothing, loads nothing but through uplink when asked, and stays in its frame"):
     hostile_html = """<p>Hostile content</p>
 <script>alert('script')</script>

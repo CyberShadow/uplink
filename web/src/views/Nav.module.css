@@ -148,6 +148,18 @@
   color: var(--muted);
 }
 
+/* A room with something written to it and not sent. */
+.drafted {
+  display: flex;
+  flex: none;
+  margin: 0 2px;
+}
+
+.drafted svg {
+  width: 12px;
+  height: 12px;
+}
+
 .dot {
   flex: none;
   width: 8px;

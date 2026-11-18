@@ -357,6 +357,8 @@ export function Nav(props: { open: boolean }) {
     tone: Tone = 'size',
     bold = false,
     mark: Mark = NONE,
+    /** Shown after its name. */
+    note: ComponentChildren = null,
   ) => {
     const current = shows(path, href)
     return (
@@ -370,6 +372,7 @@ export function Nav(props: { open: boolean }) {
       >
         {lead}
         <span class={styles.name}>{name}</span>
+        {note}
         <MarkDot mark={mark} />
         <Count count={count} tone={tone} />
         <MarkCount mark={mark} />
@@ -489,6 +492,12 @@ export function Nav(props: { open: boolean }) {
             'size',
             room.unread > 0,
             marks.room(room),
+            // Something is written to it, and not sent (SPEC §7.6).
+            matrix.drafts.rooms.value.has(room.id) && (
+              <span class={styles.drafted} role="img" aria-label="Draft" title="Has a draft">
+                <Icon name="pencil" />
+              </span>
+            ),
           )}
         </li>
       )

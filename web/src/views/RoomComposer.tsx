@@ -3,11 +3,14 @@
 // completions of commands, members and emoji; a reply to a message, or an
 // edit of one's own (Up edits the last), which begins from the text the
 // server makes of it; and, but in a thread, files, attached, pasted or
-// dropped, sent with it.
+// dropped, sent with it. What is written, what it replies to and its
+// files are the box's draft (§7.6): the server's, saved as typed, and so
+// every tab's.
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
-import type { Room, RoomEvent, RoomEventId } from '../generated/protocol'
+import type { Room, RoomBox, RoomEvent, RoomEventId } from '../generated/protocol'
 import { parse } from '../commands'
+import { diff, movePosition } from '../compose/splice'
 import { useServices } from '../context'
 import { byShortcode } from '../emoji'
 import { type Actions, focusShown, keepFocus, useKeymap } from '../keymap'
@@ -26,12 +29,36 @@ export type Mode =
   | { type: 'reply'; event: RoomEvent; back: boolean }
   | { type: 'edit'; event: RoomEvent; back: boolean }
 
+/** What the box at `at` writes, and how to change that. A reply is its
+ * draft's (SPEC §7.6), so every tab's; an edit is this tab's alone, the
+ * draft kept apart. Set to `new`, it leaves what it is in: an edit, or
+ * else a reply. */
+export function useMode(at: RoomBox): [Mode, (mode: Mode) => void] {
+  const { matrix } = useServices()
+  const [editing, setEditing] = useState<Extract<Mode, { type: 'edit' }> | null>(null)
+  // Whether the reply was begun by a key on its line, here.
+  const [back, setBack] = useState(false)
+  const reply = matrix.drafts.draft(at)?.reply_to ?? null
+  const mode: Mode = editing ?? (reply ? { type: 'reply', event: reply, back } : { type: 'new' })
+  const setMode = (next: Mode) => {
+    setEditing(next.type === 'edit' ? next : null)
+    if (next.type === 'edit' || (editing && next.type === 'new')) return
+    setBack(next.type === 'reply' && next.back)
+    const event = next.type === 'reply' ? next.event : null
+    if (event?.id !== reply?.id) void matrix.drafts.setReply(at, event)
+  }
+  return [mode, setMode]
+}
+
 /** How often a typing notice is renewed while typing: the homeserver
  * forgets it after 4 s, as the SDK sends it. */
 const TYPING_RENEW = 3000
 
+/** Of a box whose drafts are loaded. */
 export function Composer(props: {
   room: Room
+  /** The box it is: its draft is what it writes. */
+  at: RoomBox
   textarea: preact.RefObject<HTMLTextAreaElement>
   mode: Mode
   setMode: (mode: Mode) => void
@@ -39,8 +66,6 @@ export function Composer(props: {
   lastOwn: RoomEvent | null
   /** Of a thread's box, the thread's root (a Matrix event id). */
   thread: string | null
-  /** Files to send with the message, but in a thread. */
-  attachments: { files: readonly File[]; setFiles: (files: File[]) => void } | null
   /** Scrolls what the box writes to, by the page keys, from the box. */
   scrolling: Actions
   /** Gives the focus to an event's line, if shown. */
@@ -49,11 +74,16 @@ export function Composer(props: {
    * else, nowhere. */
   back: (() => void) | null
 }) {
-  const { room, mode, setMode, thread } = props
-  const files = props.attachments?.files ?? NO_FILES
+  const { room, at, mode, setMode, thread } = props
   const { matrix } = useServices()
   const me = matrix.accounts.value!.find((a) => a.id === room.account)!.mxid
-  const [draft, setDraft] = useState('')
+  const session = matrix.drafts.session(at)
+  const draft = session.content.value.text
+  // Files go with a room's messages, not a thread's.
+  const attachable = at.thread === null
+  const files = matrix.drafts.draft(at)!.attachments
+  const attaching = matrix.drafts.attaching.value.filter((a) => attachable && a.room === room.id)
+  const attach = (added: readonly File[]) => void matrix.drafts.attach(room.id, added)
   // Why the last message could not be sent, as a command uplink does not
   // know; until the box changes.
   const [error, setError] = useState<string | null>(null)
@@ -72,7 +102,10 @@ export function Composer(props: {
   // Until the server makes it, the edit has no text to write to.
   const loaded = editing && edit?.event === editing.id ? edit : null
   const value = editing ? (loaded?.text ?? '') : draft
-  const sendable = editing ? loaded !== null && value.trim() !== '' : value.trim() !== '' || files.length > 0
+  // Files still uploading are waited for.
+  const sendable = editing
+    ? loaded !== null && value.trim() !== ''
+    : attaching.length === 0 && (value.trim() !== '' || files.length > 0)
   const typing = useTyping(room)
   const typed = completing(value, caret)
   const open = dismissed ? null : typed
@@ -97,6 +130,22 @@ export function Composer(props: {
       current = false
     }
   }, [matrix, room.id, editingId])
+  // What is typed and not yet saved is, on leaving the box.
+  useEffect(() => () => void session.flush(), [session])
+  // Edits from elsewhere, rebased into what is typed here: the caret
+  // stays where it was in the text.
+  useEffect(() => {
+    session.onRebase = (_, from, to) => {
+      const box = props.textarea.current!
+      if (editingId !== null || document.activeElement !== box) return
+      const at = movePosition(box.selectionStart, diff(from, to)!)
+      setCaret(at)
+      placeCaret.current = at
+    }
+    return () => {
+      session.onRebase = null
+    }
+  }, [session, editingId, props.textarea])
   useLayoutEffect(() => {
     if (placeCaret.current === null) return
     props.textarea.current!.setSelectionRange(placeCaret.current, placeCaret.current)
@@ -106,7 +155,7 @@ export function Composer(props: {
   /** Sets the box's text, and where the caret goes. */
   const write = (text: string, at: number) => {
     if (editing) setEdit({ ...loaded!, text })
-    else setDraft(text)
+    else session.set('text', text)
     setError(null)
     setCaret(at)
     placeCaret.current = at
@@ -167,7 +216,7 @@ export function Composer(props: {
         case 'join': {
           const given = value
           matrix.join({ type: 'join_matrix_room', account: room.account, room: command.room }).then(openJoined, (e) => {
-            setDraft((draft) => (draft === '' ? given : draft))
+            if (session.content.value.text === '') session.set('text', given)
             setError((e as Error).message)
           })
           break
@@ -176,14 +225,20 @@ export function Composer(props: {
           void matrix.changeMembership(room.id, 'leave')
           break
       }
-      setDraft('')
+      // Emptied as it was filled, by an edit: saved at once, if what
+      // was sent was saved.
+      session.set('text', '')
+      void session.flush()
       // Files go with a message, not with other commands.
       if (command.type !== 'message') return
     }
     setMode({ type: 'new' })
-    if (files.length === 0) return
-    props.attachments!.setFiles([])
-    void matrix.sendFiles(room.id, files, reply_to)
+    for (const { id, blob, name, mime } of files) {
+      matrix.send(room.id, { type: 'file', blob, name, mime, reply_to })
+      // Only the first answers what it replies to.
+      reply_to = null
+      void matrix.drafts.detach(room.id, id)
+    }
   }
 
   return (
@@ -215,31 +270,37 @@ export function Composer(props: {
       {open !== null && suggestions.length > 0 && (
         <Suggestions suggestions={suggestions} selected={choice} choose={choose} />
       )}
-      {error !== null && (
+      {(error ?? session.error.value) !== null && (
         <p class={styles.composerError} role="alert">
-          {error}
+          {error ?? session.error.value}
         </p>
       )}
-      {files.length > 0 && editing === null && (
+      {files.length + attaching.length > 0 && editing === null && (
         <ul class={styles.staged} aria-label="Files to send">
-          {files.map((file, i) => (
-            <li key={i}>
+          {files.map((file) => (
+            <li key={file.id}>
               <Icon name="paperclip" />
               {file.name}
               <button
                 type="button"
                 aria-label={`Remove ${file.name}`}
                 onMouseDown={keepFocus}
-                onClick={() => props.attachments!.setFiles(files.filter((_, j) => j !== i))}
+                onClick={() => void matrix.drafts.detach(room.id, file.id)}
               >
                 ✕
               </button>
             </li>
           ))}
+          {attaching.map((file, i) => (
+            <li key={`attaching ${i}`} aria-busy="true">
+              <Icon name="paperclip" />
+              {file.name}…
+            </li>
+          ))}
         </ul>
       )}
       <div class={styles.input}>
-        {editing === null && props.attachments !== null && (
+        {editing === null && attachable && (
           <>
             <button
               type="button"
@@ -258,7 +319,7 @@ export function Composer(props: {
               hidden
               aria-label="Files"
               onChange={(event) => {
-                props.attachments!.setFiles([...files, ...event.currentTarget.files!])
+                attach([...event.currentTarget.files!])
                 event.currentTarget.value = ''
                 props.textarea.current!.focus()
               }}
@@ -295,9 +356,9 @@ export function Composer(props: {
           onClick={(event) => setCaret(event.currentTarget.selectionStart)}
           onPaste={(event) => {
             const pasted = [...(event.clipboardData?.files ?? [])]
-            if (pasted.length === 0 || editing || props.attachments === null) return
+            if (pasted.length === 0 || editing || !attachable) return
             event.preventDefault()
-            props.attachments.setFiles([...files, ...pasted])
+            attach(pasted)
           }}
           onKeyDown={(event) => {
             if (event.isComposing) return
@@ -345,8 +406,6 @@ export function Composer(props: {
 }
 
 function noop() {}
-
-const NO_FILES: readonly File[] = []
 
 /** Tells the room while the account types: renewed as it goes on, and
  * stopped once the box is emptied or sent, or the room left. */

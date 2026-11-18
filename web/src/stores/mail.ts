@@ -287,7 +287,10 @@ export class MailStore {
         case 'drafts_changed':
         case 'outbox_changed':
         case 'timeline_filled':
+        case 'timeline_changed':
         case 'matrix_sends_changed':
+        case 'room_draft_edited':
+        case 'room_drafts_changed':
           // Not mail; no counts change.
           continue
       }

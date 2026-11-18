@@ -33,7 +33,7 @@ import { Badge } from './Badge'
 import { Icon } from './Icon'
 import { useLoadInView } from './loadInView'
 import { RoomSearch } from './RoomSearch'
-import { Composer, type Mode } from './RoomComposer'
+import { Composer, type Mode, useMode } from './RoomComposer'
 import { MemberPanel, RoomInfo } from './RoomInfo'
 import { MessageDetails } from './RoomMessage'
 import { ThreadPanel } from './RoomThread'
@@ -72,11 +72,11 @@ function Timeline(props: { room: Room; words: string | null }) {
   const sends = timeline.outgoing.value
   const me = matrix.accounts.value!.find((a) => a.id === room.account)!.mxid
   const composer = useRef<HTMLTextAreaElement>(null)
-  const [mode, setMode] = useState<Mode>({ type: 'new' })
+  const at = useMemo(() => ({ room: room.id, thread: null }), [room.id])
+  const [mode, setMode] = useMode(at)
   // Where catching up was when the room was opened: reading moves the
   // marker, but not the line, while it is on show (SPEC §12.15).
   const [caughtUp] = useState(room.fully_read)
-  const [files, setFiles] = useState<File[]>([])
   // A search shows over another panel, which closing it shows again.
   const [opened, setOpened] = useState<Panel>(null)
   const panel: Panel = words !== null ? { type: 'search', words } : opened
@@ -135,7 +135,7 @@ function Timeline(props: { room: Room; words: string | null }) {
         onDrop={(event) => {
           if (room.membership !== 'joined' || !event.dataTransfer?.files.length) return
           event.preventDefault()
-          setFiles([...files, ...event.dataTransfer.files])
+          void matrix.drafts.attach(room.id, [...event.dataTransfer.files])
         }}
       >
         <header class={styles.header}>
@@ -217,15 +217,15 @@ function Timeline(props: { room: Room; words: string | null }) {
           </ol>
         </div>
         <Typing users={timeline.typing.value} />
-        {room.membership === 'joined' && (
+        {room.membership === 'joined' && matrix.drafts.drafts.value !== null && (
           <Composer
             room={room}
+            at={at}
             textarea={composer}
             mode={mode}
             setMode={setMode}
             lastOwn={lastOwn}
             thread={null}
-            attachments={{ files, setFiles }}
             scrolling={scrolling}
             focusLine={focusLine}
             back={null}

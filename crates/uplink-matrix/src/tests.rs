@@ -3301,3 +3301,217 @@ async fn listing_rooms_costs_as_the_rooms_not_their_history() {
         "of 20 rooms of 20 messages {base} steps, of 80 rooms {more}"
     );
 }
+
+mod drafts {
+    use super::*;
+    use uplink_protocol::{
+        compose::{BlobId, Splice},
+        matrix::{RoomBox, RoomDraft},
+        ErrorCode,
+    };
+
+    fn splice(offset: u32, delete: &str, insert: &str) -> Splice {
+        Splice {
+            offset,
+            delete: delete.into(),
+            insert: insert.into(),
+        }
+    }
+
+    impl Db {
+        async fn drafts(&self) -> Vec<RoomDraft> {
+            match self.matrix.list_room_drafts().await.unwrap() {
+                ServerResponse::RoomDrafts { drafts, .. } => drafts,
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+
+        /// The room's box.
+        async fn the_box(&self) -> RoomBox {
+            RoomBox {
+                room: self.room().await.id,
+                thread: None,
+            }
+        }
+
+        async fn edit(&self, at: &RoomBox, revision: i64, splice: Splice) -> TxLogId {
+            dispatched(self.matrix.edit_room_draft(*at, revision, splice).await)
+        }
+
+        /// What the room's box holds: its revision and text.
+        async fn text(&self) -> (i64, String) {
+            let drafts = self.drafts().await;
+            let [draft] = drafts.as_slice() else {
+                panic!("not one draft: {drafts:?}")
+            };
+            (draft.revision, draft.text.clone())
+        }
+    }
+
+    fn dispatched(response: uplink_tx_log::answer::Response) -> TxLogId {
+        match response.unwrap() {
+            ServerResponse::Dispatched { tx_log_id } => tx_log_id,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_box_is_edited_at_its_revision_from_empty() {
+        let db = Db::new();
+        db.sync(&[("$1", "@bob:x")], &[]).await;
+        let at = db.the_box().await;
+        assert_eq!(db.drafts().await, [], "never written to");
+
+        let typed = db.edit(&at, 0, splice(0, "", "helo")).await;
+        assert_eq!(
+            db.events_of(typed),
+            [ServerEvent::RoomDraftEdited(
+                uplink_protocol::matrix::RoomDraftEdited {
+                    at,
+                    revision: 1,
+                    splice: splice(0, "", "helo"),
+                }
+            )]
+        );
+        let fixed = db.edit(&at, 1, splice(3, "", "l")).await;
+        assert_eq!(db.text().await, (2, "hello".into()));
+
+        // Based on a revision it has moved on from: refused, to rebase.
+        let stale = db
+            .matrix
+            .edit_room_draft(at, 1, splice(0, "", "x"))
+            .await
+            .unwrap_err();
+        assert_eq!(stale.code, ErrorCode::Conflict);
+
+        // Undone in any order that keeps their text in place; emptied,
+        // the box keeps its revision rising.
+        db.dispatcher.undo(typed).await.unwrap_err();
+        db.dispatcher.undo(fixed).await.unwrap();
+        db.dispatcher.undo(typed).await.unwrap();
+        assert_eq!(db.text().await, (4, "".into()));
+        db.edit(&at, 4, splice(0, "", "again")).await;
+        assert_eq!(db.text().await, (5, "again".into()));
+    }
+
+    #[tokio::test]
+    async fn a_thread_has_a_box_of_its_own() {
+        let db = Db::new();
+        db.sync(&[("$1", "@bob:x")], &[]).await;
+        let at = db.the_box().await;
+        let root = db.timeline().await[0].id;
+        let thread = RoomBox {
+            thread: Some(root),
+            ..at
+        };
+        db.edit(&at, 0, splice(0, "", "to the room")).await;
+        db.edit(&thread, 0, splice(0, "", "to the thread")).await;
+        let texts: Vec<_> = db
+            .drafts()
+            .await
+            .into_iter()
+            .map(|d| (d.at.thread, d.text))
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                (None, "to the room".into()),
+                (Some(root), "to the thread".into())
+            ]
+        );
+
+        let none = |at: RoomBox| {
+            let refused = db.matrix.edit_room_draft(at, 0, splice(0, "", "x"));
+            async { refused.await.unwrap_err().code }
+        };
+        let no_thread = RoomBox {
+            thread: Some(RoomEventId(root.0 + 1)),
+            ..at
+        };
+        assert_eq!(none(no_thread).await, ErrorCode::NotFound);
+        let no_room = RoomBox {
+            room: RoomId(at.room.0 + 1),
+            thread: None,
+        };
+        assert_eq!(none(no_room).await, ErrorCode::NotFound);
+    }
+
+    #[tokio::test]
+    async fn a_box_replies_to_a_message_of_its_room() {
+        let db = Db::new();
+        db.sync(&[("$1", "@bob:x"), ("$2", "@eve:x")], &[]).await;
+        let at = db.the_box().await;
+        let [first, second] = db.timeline().await.try_into().unwrap();
+        let reply = |to: Option<RoomEventId>| db.matrix.set_room_draft_reply(at, to);
+        let replied = || async { db.drafts().await[0].reply_to.clone().map(|e| e.event_id) };
+
+        let began = dispatched(reply(Some(first.id)).await);
+        assert_eq!(
+            db.events_of(began),
+            [ServerEvent::RoomDraftsChanged(
+                uplink_protocol::matrix::RoomDraftsChanged {
+                    rooms: vec![at.room]
+                }
+            )]
+        );
+        assert_eq!(replied().await.as_deref(), Some("$1"));
+        // Not an edit of the text: its revision stays.
+        assert_eq!(db.text().await, (0, "".into()));
+
+        let other = dispatched(reply(Some(second.id)).await);
+        assert_eq!(replied().await.as_deref(), Some("$2"));
+        db.dispatcher.undo(other).await.unwrap();
+        assert_eq!(replied().await.as_deref(), Some("$1"));
+        dispatched(reply(None).await);
+        assert_eq!(replied().await, None);
+
+        let unknown = reply(Some(RoomEventId(second.id.0 + 1))).await.unwrap_err();
+        assert_eq!(unknown.code, ErrorCode::NotFound);
+    }
+
+    #[tokio::test]
+    async fn files_are_attached_to_a_rooms_box() {
+        let db = Db::new();
+        db.sync(&[("$1", "@bob:x")], &[]).await;
+        let room = db.room().await.id;
+        let blobs = uplink_storage::store::Store::blobs(db._dir.path());
+        let blob = BlobId(blobs.put(b"a file").unwrap().0);
+        let attach = |name: &str| {
+            db.matrix
+                .attach_to_room_draft(room, blob.clone(), name.into(), "text/plain".into())
+        };
+        let attached = || async {
+            let drafts = db.drafts().await;
+            let files = drafts[0].attachments.iter();
+            files.map(|a| (a.name.clone(), a.size)).collect::<Vec<_>>()
+        };
+
+        let first = dispatched(attach("a.txt").await);
+        dispatched(attach("b.txt").await);
+        assert_eq!(attached().await, [("a.txt".into(), 6), ("b.txt".into(), 6)]);
+        assert_eq!(db.text().await, (0, "".into()), "not an edit of the text");
+
+        // Detached, and attached again as it was, by undoing.
+        let id = db.drafts().await[0].attachments[0].id;
+        let detached = dispatched(db.matrix.detach_from_room_draft(room, id).await);
+        assert_eq!(attached().await, [("b.txt".into(), 6)]);
+        let again = db
+            .matrix
+            .detach_from_room_draft(room, id)
+            .await
+            .unwrap_err();
+        assert_eq!(again.code, ErrorCode::Conflict);
+        db.dispatcher.undo(detached).await.unwrap();
+        assert_eq!(db.drafts().await[0].attachments[0].id, id);
+        db.dispatcher.undo(first).await.unwrap();
+        assert_eq!(attached().await, [("b.txt".into(), 6)]);
+
+        assert_eq!(attach("").await.unwrap_err().code, ErrorCode::Invalid);
+        let none = BlobId("0".repeat(64));
+        let refused = db
+            .matrix
+            .attach_to_room_draft(room, none, "c.txt".into(), "text/plain".into())
+            .await;
+        assert_eq!(refused.unwrap_err().code, ErrorCode::NotFound);
+    }
+}

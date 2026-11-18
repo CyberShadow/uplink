@@ -329,6 +329,33 @@ pub enum ClientRequest {
         key: String,
         content: matrix::MatrixContent,
     },
+    /// What is being written to the rooms (SPEC §7.6): every box written
+    /// to, even if emptied since.
+    ListRoomDrafts,
+    /// Apply `splice` to the text of the box at `revision`; refused with
+    /// `conflict` if it is at another revision.
+    EditRoomDraft {
+        at: matrix::RoomBox,
+        revision: i64,
+        splice: Splice,
+    },
+    /// What the box's message replies to: `reply_to`, or nothing.
+    SetRoomDraftReply {
+        at: matrix::RoomBox,
+        reply_to: Option<RoomEventId>,
+    },
+    /// Attach the uploaded `blob` to the room's box, as a file `name` of
+    /// type `mime`, to send with its message.
+    AttachToRoomDraft {
+        room: RoomId,
+        blob: BlobId,
+        name: String,
+        mime: String,
+    },
+    DetachFromRoomDraft {
+        room: RoomId,
+        attachment: DraftAttachmentId,
+    },
     /// Take a message being sent back: at once if it has not been handed
     /// to the homeserver, or if the homeserver refuses it; if it went out,
     /// it needs a decision (SPEC §9.3).
@@ -624,6 +651,10 @@ pub enum ServerResponse {
         as_of: TxLogId,
         drafts: Vec<Draft>,
     },
+    RoomDrafts {
+        as_of: TxLogId,
+        drafts: Vec<matrix::RoomDraft>,
+    },
     Outbox {
         as_of: TxLogId,
         accounts: Vec<compose::AccountOutbox>,
@@ -756,6 +787,7 @@ impl ServerResponse {
             | Self::Window { as_of, .. }
             | Self::UnseenWindow { as_of, .. }
             | Self::Drafts { as_of, .. }
+            | Self::RoomDrafts { as_of, .. }
             | Self::Outbox { as_of, .. }
             | Self::Rooms { as_of, .. }
             | Self::Timeline { as_of, .. }
@@ -1207,6 +1239,8 @@ pub enum ServerEvent {
     TimelineFilled(matrix::TimelineFilled),
     TimelineChanged(matrix::TimelineChanged),
     MatrixSendsChanged(matrix::MatrixSendsChanged),
+    RoomDraftEdited(matrix::RoomDraftEdited),
+    RoomDraftsChanged(matrix::RoomDraftsChanged),
     TodosChanged(todos::TodosChanged),
     CalendarChanged(calendar::CalendarChanged),
     /// Places were seen, or no longer (SPEC §12.15): what was new may
@@ -1292,7 +1326,9 @@ impl Changed {
             | ServerEvent::DraftEdited(_)
             | ServerEvent::DraftsChanged(_)
             | ServerEvent::OutboxChanged(_)
-            | ServerEvent::MatrixSendsChanged(_) => {}
+            | ServerEvent::MatrixSendsChanged(_)
+            | ServerEvent::RoomDraftEdited(_)
+            | ServerEvent::RoomDraftsChanged(_) => {}
         }
     }
 }

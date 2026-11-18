@@ -3,6 +3,7 @@
 use crate::{
     backfill,
     client::{self, Clients},
+    draft::{self, AttachToDraft, DetachFromDraft, EditDraft, SetReply},
     image_packs, markdown, media,
     membership::ChangeMembership,
     pins::SetPins,
@@ -21,11 +22,12 @@ use matrix_sdk::ruma::events::room::MediaSource as MatrixMediaSource;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uplink_protocol::{
-    compose::BlobId,
+    compose::{BlobId, DraftAttachmentId, Splice},
     matrix::{
         GapId, MatrixAccount, MatrixContent, MatrixSendId, MemberAction, MemberInfo, MemberReceipt,
-        MemberState, Membership, MembershipChange, NewRoom, PinChange, RoomEventId, RoomId,
-        RoomMember, RoomPowers, RoomTagChange, SpaceOrderChange, TimelinePage, VerificationAnswer,
+        MemberState, Membership, MembershipChange, NewRoom, PinChange, RoomBox, RoomEventId,
+        RoomId, RoomMember, RoomPowers, RoomTagChange, SpaceOrderChange, TimelinePage,
+        VerificationAnswer,
     },
     ErrorCode, ServerError, ServerResponse,
 };
@@ -1067,18 +1069,7 @@ impl Matrix {
             MatrixContent::File {
                 blob, name, mime, ..
             } => {
-                if name.trim().is_empty() || name.contains(char::is_control) {
-                    return invalid(format!("not a file name: {name:?}"));
-                }
-                if mime.parse::<mime::Mime>().is_err() {
-                    return invalid(format!("not a MIME type: {mime:?}"));
-                }
-                let hash = VariantHash::parse(&blob.0).ok_or_else(|| {
-                    error(ErrorCode::Invalid, format!("not a blob: {:?}", blob.0))
-                })?;
-                if self.blobs.size(&hash).map_err(internal)?.is_none() {
-                    return Err(error(ErrorCode::NotFound, format!("no blob {}", blob.0)));
-                }
+                self.uploaded(blob, name, mime)?;
             }
             MatrixContent::Member {
                 user,
@@ -1196,6 +1187,113 @@ impl Matrix {
                 room,
                 key: Some(key),
                 content,
+            })
+            .await
+    }
+
+    /// The size, in bytes, of the uploaded `blob`, to send as a file
+    /// `name` of type `mime`: refuses what is not such a file.
+    fn uploaded(&self, blob: &BlobId, name: &str, mime: &str) -> Result<u64, ServerError> {
+        let invalid = |message: String| error(ErrorCode::Invalid, message);
+        if name.trim().is_empty() || name.contains(char::is_control) {
+            return Err(invalid(format!("not a file name: {name:?}")));
+        }
+        if mime.parse::<mime::Mime>().is_err() {
+            return Err(invalid(format!("not a MIME type: {mime:?}")));
+        }
+        let hash = VariantHash::parse(&blob.0)
+            .ok_or_else(|| invalid(format!("not a blob: {:?}", blob.0)))?;
+        self.blobs
+            .size(&hash)
+            .map_err(internal)?
+            .ok_or_else(|| error(ErrorCode::NotFound, format!("no blob {}", blob.0)))
+    }
+
+    pub async fn list_room_drafts(&self) -> Response {
+        self.reader
+            .read(move |conn| {
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
+                let drafts = draft::drafts(&tx).map_err(internal)?;
+                Ok(ServerResponse::RoomDrafts { as_of, drafts })
+            })
+            .await
+    }
+
+    pub async fn edit_room_draft(&self, at: RoomBox, revision: i64, splice: Splice) -> Response {
+        self.check_box(at).await?;
+        self.dispatcher
+            .answer(EditDraft {
+                at,
+                revision: Some(revision),
+                splice,
+            })
+            .await
+    }
+
+    pub async fn set_room_draft_reply(
+        &self,
+        at: RoomBox,
+        reply_to: Option<RoomEventId>,
+    ) -> Response {
+        self.check_box(at).await?;
+        if let Some(event) = reply_to {
+            self.check_event(at.room, event).await?;
+        }
+        self.dispatcher.answer(SetReply { at, reply_to }).await
+    }
+
+    pub async fn attach_to_room_draft(
+        &self,
+        room: RoomId,
+        blob: BlobId,
+        name: String,
+        mime: String,
+    ) -> Response {
+        let size = self.uploaded(&blob, &name, &mime)?;
+        self.check_box(RoomBox { room, thread: None }).await?;
+        self.dispatcher
+            .answer(AttachToDraft {
+                room,
+                id: None,
+                blob,
+                name,
+                mime,
+                size: size.try_into().expect("sizes fit in i64"),
+            })
+            .await
+    }
+
+    pub async fn detach_from_room_draft(
+        &self,
+        room: RoomId,
+        attachment: DraftAttachmentId,
+    ) -> Response {
+        self.check_box(RoomBox { room, thread: None }).await?;
+        self.dispatcher
+            .answer(DetachFromDraft { room, attachment })
+            .await
+    }
+
+    /// Refuses a box that is none: of no room, or of a thread whose root
+    /// is no event of the room's.
+    async fn check_box(&self, at: RoomBox) -> Result<(), ServerError> {
+        self.reader
+            .read(move |conn| {
+                if rooms::room_account(conn, at.room)
+                    .map_err(internal)?
+                    .is_none()
+                {
+                    return Err(no_room(at.room));
+                }
+                match at.thread {
+                    Some(root)
+                        if !rooms::event_in_room(conn, at.room, root).map_err(internal)? =>
+                    {
+                        Err(no_event(at.room, root))
+                    }
+                    _ => Ok(()),
+                }
             })
             .await
     }
