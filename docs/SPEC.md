@@ -273,6 +273,13 @@ home:
 
 # The calendar (§10.2): its week's hours also in these time zones (IANA
 # names), in columns left of the browser's own. None, without it.
+# Notifications (§12.16), and seen (§12.15): how many of each urgency
+# stand at once, and how long without the user's input a place shown
+# is no longer attended. Without it, these.
+notifications:
+  limit: 100
+  idle_minutes: 5
+
 calendar:
   time_zones:
     - label: Office
@@ -382,7 +389,7 @@ Account changes currently require a restart (logged and ignored, like
 re-reads its token file on every refresh, so re-running `uplink oauth
 init` needs no restart.
 | `server.bind` | **Restart required.** Logged as warning, ignored at runtime. |
-| `home` | The buckets are swapped; the notice `HomeChanged` (§5.5) has clients list home again. |
+| `home`, `notifications` | The buckets are swapped; the notice `HomeChanged` (§5.5) has clients list home again. |
 
 ### 3.4 Why not env vars / multiple files
 
@@ -3995,7 +4002,9 @@ account's security is loaded for it.
 (and `g z` to the history, §6.3). `g i` still goes to the Inbox. Above, the agenda: the events of now through tomorrow, from
 `ListEvents`, each a link to its day. Below, a row of the buckets'
 names and counts, which scroll to them, and the buckets, configured in
-`home` (§3.2), in order. `ListHome` says what they are: each bucket's
+`home` (§3.2), in order. `ListHome` says what they are, with
+`notifications` (§3.2, the windows' limit and the idle time, §12.16,
+§12.15), as they are configured together: each bucket's
 name, and its query less the items of every earlier bucket's
 (`(q₃) -has:(q₁) -has:(q₂)`), so an item is in the first bucket that
 matches it: `-(q₁)` is of each message, and a room with an unread
@@ -4152,7 +4161,7 @@ own, and never news.
 
 **A place is seen while it is attended:** shown in a visible tab of a
 focused window, the user having used it (a key, the pointer, a touch)
-within 5 minutes, as Slack and Discord take the user for away after a
+within 5 minutes (`notifications.idle_minutes`, §3.2), as Slack and Discord take the user for away after a
 while of nothing. Visible alone is not enough: a tab left on another
 screen, or under another window, is not looked at. The client tells
 the server what it attends (`Attend { place }`, `place` none once it
@@ -4247,15 +4256,15 @@ notified of at all, nor on their other devices, as Slack does not
 notify the phone while the desktop is in use.
 
 The client subscribes, for each urgency, to the unseen messages of its
-buckets (`of: unseen`, §5.7, a window of 100, the most a desktop shows
-at once): their queries, each as home has it (less the items of every
+buckets (`of: unseen`, §5.7, a window of 100, `notifications.limit`,
+§3.2, about the most a desktop shows at once): their queries, each as home has it (less the items of every
 earlier bucket), joined by `OR`. What the windows hold is what stands:
 the server keeps no notifications of its own. The first listing of a
 page's windows is what was there before it opened, and is not notified
 of, as the badges are what tells of it; after, what is new to a window
 is notified of, a message changed (an edit) updates its notification
 quietly, and one gone from it closes its notification, as does the
-oldest let go of more than 100. A new connection lists them anew
+oldest let go of more than the limit. A new connection lists them anew
 (§5.7), and what it lists is compared with what the page had: what is
 new is notified of, and what is gone closed.
 
