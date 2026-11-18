@@ -3,7 +3,7 @@
 -- as the hottest table should be. `desired`, `observed` and `desired_by`
 -- (its opinion) stay; `decision` replaces `refused`, as a `Decision`'s
 -- JSON; `push` holds the rest (the attempt, a straggler, a read-back
--- asked for, how often a push was not kept), NULL when there is none.
+-- asked for), NULL when there is none.
 -- `known_at` is the account's (`account.labels_known_at`): one task per
 -- account observes and pushes in turn, so the requests it sends are after
 -- all it has recorded.

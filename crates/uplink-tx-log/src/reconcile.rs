@@ -46,9 +46,6 @@ pub struct Field<V> {
     /// trusted, as recorded at this entry: the field is to be read back by
     /// a request sent after it.
     pub check: Option<TxLogId>,
-    /// How often an authoritative observation contradicted an applied
-    /// push of the current opinion.
-    pub not_kept: u8,
     /// Why the difference needs the user's decision, if it does.
     pub decision: Option<Decision>,
 }
@@ -93,7 +90,7 @@ impl Outcome {
 pub enum Decision {
     /// The provider refused it, saying why.
     Refused(String),
-    /// The provider accepted it but kept another value, twice.
+    /// The provider accepted it but kept another value.
     NotKept,
 }
 
@@ -132,7 +129,6 @@ impl<V: Clone + PartialEq> Field<V> {
             attempt: None,
             straggler: None,
             check: None,
-            not_kept: 0,
             decision: None,
         }
     }
@@ -190,7 +186,6 @@ impl<V: Clone + PartialEq> Field<V> {
     pub fn want(&mut self, value: V, by: TxLogId) {
         self.desired = value;
         self.opinion = Some(by);
-        self.not_kept = 0;
         // The user has decided.
         self.decision = None;
         self.settle();
@@ -336,17 +331,17 @@ impl<V: Clone + PartialEq> Field<V> {
         }
         if let Some(attempt) = self.attempt.take() {
             let applied = matches!(attempt.outcome, Outcome::Applied { .. });
-            // A straggler landing is no sign of the provider's.
+            // Seen after the provider accepted it, another value is the
+            // provider's, or another client's since: pushing it again would
+            // get the same, or override a later change; the user decides.
+            // A straggler landing is no sign of either.
             if applied
                 && self.straggler.is_none()
                 && Some(attempt.opinion) == self.opinion
                 && attempt.value == self.desired
                 && self.observed != attempt.value
             {
-                self.not_kept += 1;
-                if self.not_kept >= 2 {
-                    self.decision = Some(Decision::NotKept);
-                }
+                self.decision = Some(Decision::NotKept);
             }
         }
         if self.opinion.is_none() {
@@ -371,7 +366,6 @@ impl<V: Clone + PartialEq> Field<V> {
     fn settle(&mut self) {
         if self.attempt.is_none() && self.straggler.is_none() && self.desired == self.observed {
             self.opinion = None;
-            self.not_kept = 0;
             self.decision = None;
         }
     }

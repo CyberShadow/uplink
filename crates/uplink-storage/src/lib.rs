@@ -945,7 +945,7 @@ mod tests {
                                         membership_field, pinned)
                VALUES (1, 'mx', '!a:x', 'A', 0,
                        '{{"desired":"joined","opinion":null,"observed":"joined","known_at":0,
-                          "attempt":null,"straggler":null,"check":null,"not_kept":0,
+                          "attempt":null,"straggler":null,"check":null,
                           "decision":null}}',
                        '["$a","$b","$a"]');
                INSERT INTO tx_log (id, ts, description, op_type, op_json, inverse_type,

@@ -587,8 +587,8 @@ CREATE TABLE entry_label (
   -- the outbox's item it belongs to.
   desired_by INTEGER REFERENCES tx_log(id) DEFERRABLE INITIALLY DEFERRED,
   decision   TEXT,                 -- (V0073) a Decision's JSON: refused, …
-  push       TEXT,                 -- (V0073) {attempt, straggler, check,
-                                   -- not_kept}, NULL when none
+  push       TEXT,                 -- (V0073) {attempt, straggler, check},
+                                   -- NULL when none
   PRIMARY KEY (entry, label),
   CHECK (desired OR observed OR desired_by IS NOT NULL OR push IS NOT NULL),
   CHECK (desired_by IS NOT NULL OR (desired = observed AND decision IS NULL))
@@ -1502,8 +1502,9 @@ observation would be trusted.
 
 A provider that does not read its own writes (a replica behind) can
 still mislead an authoritative observation: while an opinion is pending,
-that only pushes again; once confirmed, a stale value is shown until the
-provider tells of the field again. Accepted (§6.6.7).
+that takes the push for not kept, for the user to decide though there was
+nothing to; once confirmed, a stale value is shown until the provider
+tells of the field again. Accepted (§6.6.7).
 
 #### 6.6.3 Pushes and how they end
 
@@ -1550,11 +1551,11 @@ The account records, as an observation, when its pushes start failing
 **Not kept.** A provider may accept a value and keep another: Gmail
 ignoring a change to some system labels, an IMAP server without the
 keyword among its `PERMANENTFLAGS`, a homeserver dropping an order it
-deems invalid. Or another client may keep setting its own. Either way,
-an authoritative observation contradicts an applied push of the same
-opinion. The first time, the local change wins and is pushed again; the
-second, the difference is *irreconcilable* ("not kept by the
-provider"), not pushed again until the user decides. Values are stored
+deems invalid. Or another client set its own since. Either way, an
+authoritative observation contradicts an applied push of the same
+opinion, and the difference is *irreconcilable* ("not kept by the
+provider"), not pushed again until the user decides: pushing again would
+get the same, or override a change later than the user's. Values are stored
 as the provider keeps them (§6.6.6), so that its spelling of a value is
 not mistaken for this.
 
@@ -1655,9 +1656,9 @@ apart, and are accepted rather than guessed at:
   once a change is confirmed, until it changes again;
 - a set written whole: another client's concurrent change to it lost
   (§6.6.4);
-- another client insisting on its own value: irreconcilable after the
-  second contradiction (§6.6.3), for the user to decide, rather than a
-  tug of war.
+- another client changing the value after a push of it: irreconcilable
+  (§6.6.3), for the user to decide, though the later change could have
+  been taken as such.
 
 #### 6.6.8 Remote changes and the outbox
 

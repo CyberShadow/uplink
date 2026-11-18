@@ -795,7 +795,6 @@ struct Push {
     attempt: Option<Attempt<bool>>,
     straggler: Option<i64>,
     check: Option<TxLogId>,
-    not_kept: u8,
 }
 
 /// An `entry_label` row's columns of its field.
@@ -831,7 +830,6 @@ impl Columns {
             attempt: push.attempt,
             straggler: push.straggler,
             check: push.check,
-            not_kept: push.not_kept,
             decision,
         })
     }
@@ -922,7 +920,6 @@ impl<'a> Labels<'a> {
             attempt: field.attempt.clone(),
             straggler: field.straggler,
             check: field.check,
-            not_kept: field.not_kept,
         };
         let empty = push == Push::default();
         // Cached: an op may set many, and each statement's triggers are

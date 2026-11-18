@@ -1364,13 +1364,14 @@ mod room_tags {
     /// The homeserver sets tags one by one, and a sync requested before
     /// it set one may tell of them as they were before: it does not undo
     /// them, but they are read back; read so, or synced after, they are
-    /// the homeserver's, a tag asked for winning until seen (SPEC §6.6.2).
+    /// the homeserver's, a tag asked for and pushed but not had waiting for
+    /// the user to decide (SPEC §6.6.2, §6.6.3).
     #[tokio::test]
     async fn tags_told_of_as_before_they_were_set_are_read_back() {
         let db = Db::new();
         db.sync_tags(&[LOW]).await;
         let room = db.room().await.id;
-        db.tag(&[FAV], &[]).await.unwrap();
+        let tagged = db.tag(&[FAV], &[]).await.unwrap();
         let before = db.as_of();
         db.push(LOW, Ended::Applied).await;
         db.push(FAV, Ended::Applied).await;
@@ -1380,7 +1381,7 @@ mod room_tags {
         assert_eq!(db.tags().await, [FAV]);
         assert!(db.stored(FAV).field.read_back());
         // Read back, they are the homeserver's: another client's, and the
-        // favourite not, so pushed again.
+        // favourite not, though pushed: not kept.
         let as_of = db.as_of();
         db.observe(Read::<Tags> {
             room,
@@ -1390,9 +1391,21 @@ mod room_tags {
         .await
         .unwrap();
         assert_eq!(db.tags().await, [FAV, "u.other"]);
-        assert_eq!(db.wanted_tags(), ["+m.favourite"]);
-        db.push(FAV, Ended::Applied).await;
-        db.sync_tags(&[FAV, "u.other"]).await;
+        assert!(db.wanted_tags().is_empty(), "not pushed again");
+        let [pending] = &db.pending_tags()[..] else {
+            panic!()
+        };
+        assert_eq!(
+            (pending.op.id, pending.refused.as_deref()),
+            (tagged, Some("the provider kept another value"))
+        );
+        // Undone, it is decided: not a favourite, and of low priority
+        // again, as before it.
+        db.dispatcher.undo(tagged).await.unwrap();
+        assert_eq!(db.tags().await, [LOW, "u.other"]);
+        assert_eq!(db.wanted_tags(), ["+m.lowpriority"]);
+        db.push(LOW, Ended::Applied).await;
+        db.sync_tags(&[LOW, "u.other"]).await;
         assert!(db.pending_tags().is_empty());
         // As is what a sync requested after tells of.
         db.sync_tags(&[LOW]).await;

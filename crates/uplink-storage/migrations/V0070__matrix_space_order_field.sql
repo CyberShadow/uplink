@@ -4,7 +4,7 @@
 -- has none, known so since the log's start.
 
 ALTER TABLE matrix_room ADD COLUMN space_order_field TEXT NOT NULL
-  DEFAULT '{"desired":null,"opinion":null,"observed":null,"known_at":0,"attempt":null,"straggler":null,"check":null,"not_kept":0,"decision":null}'
+  DEFAULT '{"desired":null,"opinion":null,"observed":null,"known_at":0,"attempt":null,"straggler":null,"check":null,"decision":null}'
   CHECK (json_valid(space_order_field));
 
 -- A change asked for is pending while it differs from what was had.
@@ -16,7 +16,6 @@ UPDATE matrix_room SET space_order_field = json_object(
     'attempt', NULL,
     'straggler', NULL,
     'check', NULL,
-    'not_kept', 0,
     'decision', CASE WHEN space_order_by IS NOT NULL AND space_order_desired IS NOT space_order
                       AND space_order_error IS NOT NULL
                      THEN json_object('refused', space_order_error) END);

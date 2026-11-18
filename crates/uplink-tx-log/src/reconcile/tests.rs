@@ -221,17 +221,17 @@ fn refusals_wait_for_a_decision() {
 }
 
 #[test]
-fn a_value_not_kept_twice_needs_a_decision() {
+fn a_value_not_kept_needs_a_decision() {
     let mut f = Log::new(0);
     f.want(3);
-    for round in 0..2 {
-        assert_eq!(f.claim(), 3, "round {round}");
-        f.applied();
-        let as_of = f.now();
-        f.observe(0, as_of);
-    }
+    assert_eq!(f.claim(), 3);
+    f.applied();
+    let as_of = f.now();
+    f.observe(0, as_of);
     assert_eq!(f.field.decision, Some(Decision::NotKept));
-    assert_eq!(f.field.wanted(), None);
+    assert_eq!(f.field.wanted(), None, "not pushed again");
+    f.want(3);
+    assert_eq!(f.field.wanted(), Some(&3), "decided: pushed again");
 }
 
 #[test]

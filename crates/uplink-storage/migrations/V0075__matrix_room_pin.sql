@@ -27,7 +27,7 @@ CREATE INDEX matrix_room_pin_pending ON matrix_room_pin(room) WHERE desired_by I
 INSERT INTO matrix_room_pin (room, event, field, pos)
 SELECT r.id, p.value, json_object(
     'desired', json('true'), 'opinion', NULL, 'observed', json('true'), 'known_at', 0,
-    'attempt', NULL, 'straggler', NULL, 'check', NULL, 'not_kept', 0, 'decision', NULL),
+    'attempt', NULL, 'straggler', NULL, 'check', NULL, 'decision', NULL),
   min(p.key)
 FROM matrix_room r, json_each(r.pinned) p
 WHERE p.type = 'text'
@@ -53,7 +53,7 @@ WHERE s.content ->> '$.type' = 'pin'
 INSERT INTO matrix_room_pin (room, event, field)
 SELECT a.room, a.event, json_object(
     'desired', json('true'), 'opinion', a.desired_by, 'observed', json('false'), 'known_at', 0,
-    'attempt', NULL, 'straggler', NULL, 'check', NULL, 'not_kept', 0,
+    'attempt', NULL, 'straggler', NULL, 'check', NULL,
     'decision', json(CASE WHEN a.error IS NULL THEN NULL ELSE json_object('refused', a.error) END))
 FROM pin_asked a
 WHERE a.desired

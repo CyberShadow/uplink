@@ -15,7 +15,6 @@ UPDATE calendar_event SET response_field = json_object(
     'attempt', NULL,
     'straggler', NULL,
     'check', NULL,
-    'not_kept', 0,
     'decision', CASE WHEN response_refused IS NOT NULL
                      THEN json_object('refused', response_refused) END);
 

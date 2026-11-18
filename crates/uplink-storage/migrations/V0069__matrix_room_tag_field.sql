@@ -28,7 +28,6 @@ SELECT t.room, t.tag, json_object(
     'attempt', NULL,
     'straggler', NULL,
     'check', NULL,
-    'not_kept', 0,
     'decision', CASE WHEN t.refused IS NULL THEN NULL ELSE json_object('refused', t.refused) END)
 FROM matrix_room_tag t JOIN matrix_room r ON r.id = t.room;
 

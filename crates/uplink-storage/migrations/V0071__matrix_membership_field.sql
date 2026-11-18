@@ -15,7 +15,6 @@ UPDATE matrix_room SET membership_field = json_object(
     'attempt', NULL,
     'straggler', NULL,
     'check', NULL,
-    'not_kept', 0,
     'decision', CASE WHEN desired IS NOT membership AND membership_error IS NOT NULL
                      THEN json_object('refused', membership_error) END);
 
