@@ -12,6 +12,30 @@ import { query } from './query'
 
 export const HISTORY_PAGE = 100
 
+/** The text the entry edits: a draft's, or what is written to a room;
+ * `null` if it edits none. */
+function edited(entry: LogEntry): string | null {
+  for (const event of entry.events) {
+    if (event.type === 'draft_edited') return `draft ${event.draft}`
+    if (event.type === 'room_draft_edited') return `room ${event.at.room} ${event.at.thread ?? ''}`
+  }
+  return null
+}
+
+/** The entries as listed (SPEC §7.3): each alone, but edits of one text
+ * that follow each other, which are a run, listed as one until opened. */
+export function runs(entries: readonly HistoryEntry[]): HistoryEntry[][] {
+  const runs: HistoryEntry[][] = []
+  let last: string | null = null
+  for (const h of entries) {
+    const text = edited(h.entry)
+    if (text !== null && text === last) runs[runs.length - 1].push(h)
+    else runs.push([h])
+    last = text
+  }
+  return runs
+}
+
 export class HistoryStore {
   /** `null` until loaded. */
   readonly entries = signal<readonly HistoryEntry[] | null>(null)

@@ -3487,6 +3487,33 @@ describe('history', () => {
     await waitFor(() => expect(subjects()).toEqual(['First', 'Second', 'Third']))
   })
 
+  it('lists edits of one text that follow each other as one, which opens', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const at = { room: room.id, thread: null }
+    const user = await start('/mail/work/INBOX')
+    await user.keyboard('e')
+    await waitFor(() => expect(subjects()).toEqual(['Second', 'Third']))
+    const archived = server.lastDescription()
+    server.editRoomDraftElsewhere(at, { offset: 0, delete: '', insert: 'Hel' })
+    server.editRoomDraftElsewhere(at, { offset: 3, delete: '', insert: 'lo' })
+    await user.keyboard('gz')
+    await screen.findByRole('list', { name: 'History' })
+    const descriptions = () => items().map((i) => i.querySelector('[class*=description]')!.textContent)
+    expect(descriptions()).toEqual(['Edited the draft 2 edits', archived])
+
+    // Opened by its button, or by Enter on its line: each is undone
+    // alone.
+    await user.keyboard('{Enter}')
+    expect(descriptions()).toEqual(['Edited the draft 2 edits', 'Edited the draft', 'Edited the draft', archived])
+    await user.click(within(items()[1]).getByRole('button', { name: 'Undo' }))
+    await waitFor(() => expect(server.roomDraft(at).text).toBe('Hel'))
+    // The undo is an edit of the text too: of the run.
+    expect(descriptions()[0]).toBe('Edited the draft 3 edits')
+    await user.click(within(items()[0]).getByRole('button', { name: 'Hide' }))
+    expect(descriptions()).toEqual(['Edited the draft 3 edits', archived])
+  })
+
   it('lists what is not yet at the providers above what was done, linked below the accounts', async () => {
     server.addMatrixAccount()
     const user = await start('/mail/work/INBOX')

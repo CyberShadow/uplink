@@ -1896,8 +1896,11 @@ connection resends them like queries.
 
 ### 7.3 History
 
-Runs of consecutive edits to the same draft are shown collapsed as one row
-in the log UI ("edited draft 'Re: lunch'"), expandable. Because undo is
+Runs of consecutive edits to the same text (a draft's, or what is written
+to a room, §7.6) are shown collapsed as one row in the history ("Edited
+draft 'Re: lunch'", and how many edits), which its button, or Enter on
+it, opens: the edits then follow it, each with its Undo. An undo of
+one is an edit of the text too, so of the run. Because undo is
 appended rather than destructive, the history of a draft is never lost —
 in the spirit of vim's and emacs' persistent undo.
 
@@ -4022,7 +4025,8 @@ as a native list does), `Enter` chooses and `Esc` closes.
   top: anything done since, in any tab, starts afresh from it. Presses
   are handled one after another, each from where the last got to. A
   failed undo is passed over too. Within the history (`g z`), `j`/`k`
-  move and `z` undoes, or redoes, the focused entry instead.
+  move and `z` undoes, or redoes, the focused entry instead; on a run of
+  edits (§7.3), `Enter` or `o` opens or closes it.
 - **No `;`/`:`, `m`, `b`, `.`:** uplink has no mute, snooze or "more
   actions" menu. No `n`/`p` (a conversation's next or previous message)
   yet.

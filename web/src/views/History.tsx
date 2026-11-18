@@ -1,28 +1,57 @@
 // The user's ops, newest first, each with its Undo (SPEC §6.3, §12.4),
 // below what of them is not yet at the providers: the outbox (§6.6).
-// Undoing an undo is a redo.
+// Undoing an undo is a redo. Edits of one text that follow each other
+// (a draft being typed) are listed as one, which opens (§7.3).
 
-import { useEffect, useRef, useState } from 'preact/hooks'
-import type { HistoryEntry } from '../generated/protocol'
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
+import type { HistoryEntry, TxLogId } from '../generated/protocol'
 import { useServices } from '../context'
+import { runs } from '../stores/history'
 import { useTitle } from '../title'
 import { keepFocus, lines, useKeymap } from '../keymap'
 import styles from './History.module.css'
 import { dateTime } from '../format'
 import { Outbox } from './Outgoing'
 
+/** A line of the list: an entry, alone or of a run that is open; or a
+ * run of them, of which the entries follow if it is open. */
+type Line =
+  | { type: 'entry'; history: HistoryEntry; inRun: boolean }
+  | { type: 'run'; run: readonly HistoryEntry[]; open: boolean }
+
+/** A run is known by its oldest entry, which stays as it grows. */
+const runId = (run: readonly HistoryEntry[]): TxLogId => run[run.length - 1].entry.id
+
 export function History() {
   useTitle('History')
   const { history, ops } = useServices()
   const entries = history.entries.value
+  // The runs opened.
+  const [opened, setOpened] = useState<ReadonlySet<TxLogId>>(new Set())
+  const listed = useMemo(
+    () =>
+      entries &&
+      runs(entries).flatMap((run): Line[] => {
+        if (run.length === 1) return [{ type: 'entry', history: run[0], inRun: false }]
+        const open = opened.has(runId(run))
+        const within: Line[] = open ? run.map((history) => ({ type: 'entry', history, inRun: true })) : []
+        return [{ type: 'run', run, open }, ...within]
+      }),
+    [entries, opened],
+  )
+  const toggle = (run: readonly HistoryEntry[]) => {
+    const next = new Set(opened)
+    if (!next.delete(runId(run))) next.add(runId(run))
+    setOpened(next)
+  }
   const [focus, setFocus] = useState(0)
   const focused = useRef<HTMLLIElement>(null)
   useEffect(() => {
     focused.current?.scrollIntoView({ block: 'nearest' })
   }, [focus])
-  const count = entries?.length ?? 0
+  const count = listed?.length ?? 0
 
-  const current = entries?.[focus]
+  const current = listed?.[focus]
   useKeymap({
     ...lines(
       () => {
@@ -31,7 +60,8 @@ export function History() {
       },
       () => setFocus((f) => Math.max(f - 1, 0)),
     ),
-    undo: () => current && current.undone_by === null && ops.undo(current.entry.id),
+    ...(current?.type === 'run' && { open: () => toggle(current.run) }),
+    undo: () => current?.type === 'entry' && current.history.undone_by === null && ops.undo(current.history.entry.id),
   })
 
   return (
@@ -48,49 +78,71 @@ export function History() {
       </section>
       <section aria-label="History">
         <h2 class={styles.heading}>History</h2>
-        <Entries entries={entries} focus={focus} focused={focused} setFocus={setFocus} />
+        {listed === null ? (
+          <p class={styles.placeholder}>Loading…</p>
+        ) : listed.length === 0 ? (
+          <p class={styles.placeholder}>Nothing done yet.</p>
+        ) : (
+          <ul class={styles.list} aria-label="History">
+            {listed.map((line, i) => {
+              const at = { focused: i === focus, itemRef: i === focus ? focused : undefined, onFocus: () => setFocus(i) }
+              return line.type === 'entry' ? (
+                <Item key={line.history.entry.id} history={line.history} inRun={line.inRun} {...at} />
+              ) : (
+                <Run key={`run ${runId(line.run)}`} run={line.run} open={line.open} toggle={() => toggle(line.run)} {...at} />
+              )
+            })}
+          </ul>
+        )}
       </section>
     </div>
   )
 }
 
-function Entries(props: {
-  entries: readonly HistoryEntry[] | null
-  focus: number
-  focused: preact.Ref<HTMLLIElement>
-  setFocus: (i: number) => void
-}) {
-  const { entries } = props
-  if (entries === null) return <p class={styles.placeholder}>Loading…</p>
-  if (entries.length === 0) return <p class={styles.placeholder}>Nothing done yet.</p>
-  return (
-    <ul class={styles.list} aria-label="History">
-      {entries.map((h, i) => (
-        <Item
-          key={h.entry.id}
-          history={h}
-          focused={i === props.focus}
-          itemRef={i === props.focus ? props.focused : undefined}
-          onFocus={() => props.setFocus(i)}
-        />
-      ))}
-    </ul>
-  )
-}
-
-function Item(props: {
-  history: HistoryEntry
+interface At {
   focused: boolean
   itemRef: preact.Ref<HTMLLIElement> | undefined
   onFocus: () => void
-}) {
+}
+
+/** Edits of one text that followed each other, as one line: what the
+ * latest did, and how many they are; opened, they follow it. */
+function Run(props: At & { run: readonly HistoryEntry[]; open: boolean; toggle: () => void }) {
+  const { entry } = props.run[0]
+  return (
+    <li
+      ref={props.itemRef}
+      class={[styles.item, props.focused && styles.focused].filter(Boolean).join(' ')}
+      aria-current={props.focused || undefined}
+      onClick={props.onFocus}
+    >
+      <time class={styles.time} dateTime={new Date(entry.ts).toISOString()}>
+        {dateTime(entry.ts)}
+      </time>
+      <span class={styles.description}>
+        {entry.description} <span class={styles.state}>{props.run.length} edits</span>
+      </span>
+      <button type="button" aria-expanded={props.open} onMouseDown={keepFocus} onClick={props.toggle}>
+        {props.open ? 'Hide' : 'Show'}
+      </button>
+    </li>
+  )
+}
+
+function Item(props: At & { history: HistoryEntry; inRun: boolean }) {
   const { ops } = useServices()
   const { entry, undone_by } = props.history
   const undone = undone_by !== null
   return (
     <li
       ref={props.itemRef}
-      class={[styles.item, props.focused && styles.focused, undone && styles.undone, entry.shown && styles.shown]
+      class={[
+        styles.item,
+        props.focused && styles.focused,
+        undone && styles.undone,
+        entry.shown && styles.shown,
+        props.inRun && styles.inRun,
+      ]
         .filter(Boolean)
         .join(' ')}
       // Done by a view being shown, which `z` passes over (SPEC §12.15).
