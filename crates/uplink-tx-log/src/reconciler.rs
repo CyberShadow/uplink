@@ -50,8 +50,9 @@ pub trait Kind: Sized + Send + Sync + 'static {
 
     fn fields<'t>(tx: &'t Transaction<'t>, account: &'t str) -> Result<Self::Fields<'t>>;
 
-    /// The account's fields uplink has an opinion of, or is to read back,
-    /// or awaits a push of.
+    /// The account's fields uplink has an opinion of, or is to read back
+    /// (a field awaiting a push, or its straggler, keeps its opinion till
+    /// then).
     fn reconciling(conn: &Connection, account: &str) -> Result<Vec<Stored<Self>>>;
 
     /// Whether the provider's key of the field's entity is known: a push
@@ -148,6 +149,12 @@ pub trait Provider<K: Kind>: Send + Sync {
     fn dispatcher(&self) -> &Dispatcher;
     fn reader(&self) -> &Arc<Mutex<Connection>>;
 
+    /// The time, in ms since the epoch: pushes of unknown outcome expire
+    /// by it.
+    fn now_ms(&self) -> i64 {
+        crate::now_ms()
+    }
+
     /// Pushes the fields in flight; how each request ended, of all of
     /// them, every failure classified (SPEC §6.6.3).
     fn push(&self, in_flight: Vec<Stored<K>>) -> impl Future<Output = Vec<PushEnded<K>>> + Send;
@@ -215,7 +222,7 @@ pub async fn push<K: Kind>(provider: &impl Provider<K>) -> Result<bool> {
     let mut later = BTreeSet::new();
     for _ in 0..ROUNDS {
         let fields = reconciling(provider).await?;
-        let now = crate::now_ms();
+        let now = provider.now_ms();
         let in_flight = fields.iter().any(Stored::in_flight);
         if in_flight || fields.iter().any(|f| f.field.expiring(now)) {
             observe(provider, Settled::<K>::new(now, in_flight)).await?;
@@ -448,3 +455,6 @@ pub fn joined(parts: impl IntoIterator<Item = String>) -> String {
     }
     joined
 }
+
+#[cfg(test)]
+mod tests;

@@ -1391,8 +1391,10 @@ reconciliation is in layers: one model of a field (§6.6.1) and of when
 what is seen of the provider can be trusted (§6.6.2); how pushes end
 (§6.6.3); the kinds of state built on fields (§6.6.4); the entities they
 are of (§6.6.5); and what each provider supplies (§6.6.6). The model is
-one pure module, tested by simulating providers that lag, reorder,
-time out and apply requests late (§15.10); the crates hold none of it.
+one pure module, and one reconciler drives it for every kind of field,
+given how the kind is stored and how its provider pushes and reads it
+back; both are tested by simulating providers that lag, reorder, time
+out and apply requests late (§15.10); the crates hold none of it.
 
 The model is Kubernetes' (desired *spec*, observed *status*, reconciled
 level by level, never trusting a cache older than one's own last write:
@@ -1691,7 +1693,8 @@ the providers, as last observed, match what the user has done.
 
 **Not yet so.** The crates predate this model, and each reconciles in
 its own way: the model is implemented, and simulated, as
-`uplink_tx_log::reconcile`, and Matrix room tags, pinned events, space
+`uplink_tx_log::reconcile`, driven by `uplink_tx_log::reconciler`, and
+Matrix room tags, pinned events, space
 orders (§9.5) and memberships (§9.7), calendar answers (§10.3) and mail
 labels (§8) use it, and an IMAP move re-keys its entry (§6.6.5); nothing
 uses limbo yet. The user's own events created, changed and deleted
@@ -5157,7 +5160,9 @@ flake is the source of truth.
   the provider must have the desired value of each reconciled one; and,
   unless another client wrote since, the user's last change must have
   won, or need the decision the provider's refusal or not keeping it
-  calls for.
+  calls for. The reconciler that drives the model is simulated so too,
+  itself, over a database: with the process stopping mid-push, and the
+  sync either taking turns with pushes or long-polling beside them.
 
 **Integration tests (NixOS VM tests, `pkgs.testers.nixosTest`)**
 
