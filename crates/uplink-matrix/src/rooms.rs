@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use uplink_protocol::{
     matrix::{
-        Encryption, EventEdit, GapId, MatrixSendsChanged, Membership, Reaction, Reactor,
+        Bridge, Encryption, EventEdit, GapId, MatrixSendsChanged, Membership, Reaction, Reactor,
         ReadMarker, RepliedEvent, Room, RoomEvent, RoomEventId, RoomHistory, RoomId, RoomPreview,
         RoomsChanged, ThreadSummary, TimelineAdded, TimelineChanged, TimelineFilled, TimelineGap,
         TimelinePage,
@@ -91,6 +91,8 @@ pub struct ObservedRoom {
     /// `mxc://` URI: the room's avatar, or of a direct chat without one,
     /// the other user's.
     pub avatar: Option<String>,
+    /// Of a bridged room, its network (`bridge::parse`).
+    pub bridge: Option<Bridge>,
     /// Of a space, the rooms it lists.
     pub children: Vec<SpaceChild>,
     /// Its MSC3230 order among the top-level spaces, if valid.
@@ -379,8 +381,8 @@ impl Observation for Synced {
 }
 
 /// The room's id, and whether it is new or its name, encryption,
-/// membership, type, avatar, topic, address, pinned events, power to
-/// pin, member count, space order or being a direct chat changed.
+/// membership, type, avatar, bridge, topic, address, pinned events, power
+/// to pin, member count, space order or being a direct chat changed.
 fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(RoomId, bool)> {
     let membership = membership_str(room.membership);
     type Stored = (
@@ -398,12 +400,18 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
         bool,
         Option<String>,
         Option<i64>,
+        Option<String>,
+        Option<String>,
     );
+    let (bridge_name, bridge_icon) = match &room.bridge {
+        Some(b) => (Some(&b.name), Some(&b.icon)),
+        None => (None, None),
+    };
     let pinned = serde_json::to_string(&room.pinned)?;
     let existing: Option<Stored> = tx
         .query_row(
             "SELECT id, name, encrypted, membership, space, avatar, topic, joined_members, pinned,
-                    may_pin, space_order, direct, alias, created
+                    may_pin, space_order, direct, alias, created, bridge_name, bridge_icon
              FROM matrix_room WHERE account_id = ?1 AND room_id = ?2",
             [account, &room.room_id],
             |r| {
@@ -422,6 +430,8 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                     r.get(11)?,
                     r.get(12)?,
                     r.get(13)?,
+                    r.get(14)?,
+                    r.get(15)?,
                 ))
             },
         )
@@ -442,6 +452,8 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
             direct,
             alias,
             created,
+            old_bridge_name,
+            old_bridge_icon,
         )) => {
             let changed = name != room.name
                 || encrypted != room.encrypted
@@ -455,7 +467,9 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                 || order != room.space_order
                 || direct != room.direct
                 || alias != room.alias
-                || created != room.created;
+                || created != room.created
+                || old_bridge_name.as_ref() != bridge_name
+                || old_bridge_icon.as_ref() != bridge_icon;
             if changed {
                 // A membership or space order asked for is had, however it
                 // came about.
@@ -464,6 +478,7 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                         "UPDATE matrix_room SET name = ?1, encrypted = ?2, membership = ?3,
                            space = ?4, avatar = ?5, topic = ?6, joined_members = ?7, pinned = ?9,
                            may_pin = ?10, direct = ?12, alias = ?13, created = ?14,
+                           bridge_name = ?15, bridge_icon = ?16,
                            membership_by = CASE WHEN desired = ?3 THEN NULL ELSE membership_by END,
                            membership_error =
                              CASE WHEN desired = ?3 THEN NULL ELSE membership_error END,
@@ -492,6 +507,8 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                         room.direct,
                         room.alias,
                         room.created,
+                        bridge_name,
+                        bridge_icon,
                     ],
                 )?;
             }
@@ -501,8 +518,9 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
             let id = tx.query_row(
                 "INSERT INTO matrix_room
                    (account_id, room_id, name, encrypted, membership, space, avatar, topic,
-                    joined_members, pinned, may_pin, space_order, direct, alias, created)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                    joined_members, pinned, may_pin, space_order, direct, alias, created,
+                    bridge_name, bridge_icon)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
                  RETURNING id",
                 params![
                     account,
@@ -520,6 +538,8 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
                     room.direct,
                     room.alias,
                     room.created,
+                    bridge_name,
+                    bridge_icon,
                 ],
                 |r| r.get(0),
             )?;
@@ -1246,7 +1266,7 @@ pub fn rooms(
                     p.id, p.sender, p.sender_name, p.type,
                     coalesce(json_extract(pe.raw_json, '$.content.\"m.new_content\".msgtype'), p.msgtype),
                     coalesce(json_extract(pe.raw_json, '$.content.\"m.new_content\".body'), p.body),
-                    {HISTORY_SINCE}, {fetched}, r.created
+                    {HISTORY_SINCE}, {fetched}, r.created, r.bridge_name, r.bridge_icon
              FROM {rooms} r
              -- Its preview: its latest message, and that's latest edit.
              LEFT JOIN matrix_event p ON p.id = (
@@ -1307,6 +1327,11 @@ pub fn rooms(
                     membership_error: r.get(10)?,
                     space: r.get(11)?,
                     avatar: r.get(12)?,
+                    bridge: match (r.get(38)?, r.get(39)?) {
+                        (Some(name), Some(icon)) => Some(Bridge { name, icon }),
+                        (None, None) => None,
+                        _ => unreachable!("a bridge has a name and an icon"),
+                    },
                     children: serde_json::from_str(&r.get::<_, String>(13)?)
                         .expect("json_group_array makes an array of strings"),
                     topic: r.get(14)?,
@@ -1356,13 +1381,17 @@ pub fn rooms(
         .collect::<Result<_, _>>()?)
 }
 
-/// The account a room is of and its avatar, if the room exists.
-pub fn room_avatar(conn: &Connection, room: RoomId) -> Result<Option<(String, Option<String>)>> {
+/// The account a room is of and the images it is shown by, its avatar
+/// and its bridge's icon (of those it has), if the room exists.
+pub fn room_images(conn: &Connection, room: RoomId) -> Result<Option<(String, Vec<String>)>> {
     Ok(conn
         .query_row(
-            "SELECT account_id, avatar FROM matrix_room WHERE id = ?1",
+            "SELECT account_id, avatar, bridge_icon FROM matrix_room WHERE id = ?1",
             [room.0],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| {
+                let images: [Option<String>; 2] = [r.get(1)?, r.get(2)?];
+                Ok((r.get(0)?, images.into_iter().flatten().collect()))
+            },
         )
         .optional()?)
 }

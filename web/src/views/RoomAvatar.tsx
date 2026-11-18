@@ -3,10 +3,16 @@ import type { Room } from '../generated/protocol'
 import { mxcPath } from '../matrix'
 import styles from './RoomAvatar.module.css'
 
-/** Where the server serves the room's avatar `mxc://server/media`. */
-export function avatarPath(room: Room): string | null {
-  const path = room.avatar === null ? null : mxcPath(room.avatar)
+/** Where the server serves the room's image `mxc://server/media`: its
+ * avatar or its bridge's icon. */
+function imagePath(room: Room, mxc: string): string | null {
+  const path = mxcPath(mxc)
   return path && `/api/rooms/${room.id}/avatar/${path}`
+}
+
+/** Where the server serves the room's avatar. */
+export function avatarPath(room: Room): string | null {
+  return room.avatar === null ? null : imagePath(room, room.avatar)
 }
 
 /** What a room without an avatar shows, as Element does: its name's first
@@ -24,8 +30,31 @@ export function colour(roomId: string): number {
   return sum % COLOURS
 }
 
-/** The room's avatar: round, or of a space, a rounded square. */
+/** The room's avatar: round, or of a space, a rounded square; of a
+ * bridged room, with its network's icon as a badge at its corner, as
+ * SchildiChat's room list has it. */
 export function RoomAvatar(props: { room: Room; class?: string }) {
+  const { room } = props
+  const { bridge } = room
+  const badge = bridge && imagePath(room, bridge.icon)
+  const [failedBadge, setFailedBadge] = useState<string | null>(null)
+  if (!bridge || !badge || failedBadge === badge) return <Avatar room={room} class={props.class} />
+  return (
+    <span class={[styles.badged, props.class].filter(Boolean).join(' ')}>
+      <Avatar room={room} />
+      <img
+        class={styles.badge}
+        src={badge}
+        alt=""
+        title={bridge.name}
+        loading="lazy"
+        onError={() => setFailedBadge(badge)}
+      />
+    </span>
+  )
+}
+
+function Avatar(props: { room: Room; class?: string }) {
   const { room } = props
   const path = avatarPath(room)
   const [failed, setFailed] = useState<string | null>(null)

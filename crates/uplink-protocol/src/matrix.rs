@@ -91,6 +91,8 @@ pub struct Room {
     /// one, the other user's. Served at
     /// `/api/rooms/{id}/avatar/{server}/{media}`.
     pub avatar: Option<String>,
+    /// Of a bridged room, its network, if the bridge gives it an icon.
+    pub bridge: Option<Bridge>,
     /// Of a space, the Matrix ids of the rooms it lists, joined or not, in
     /// the space's order.
     pub children: Vec<String>,
@@ -134,6 +136,17 @@ pub enum Encryption {
     Decrypted,
     /// Encrypted, and uplink has not got the key.
     Undecryptable,
+}
+
+/// A bridged room's network, by the bridge's state (`m.bridge`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Bridge {
+    /// The protocol's display name, else its id.
+    pub name: String,
+    /// `mxc://server/media`: the protocol's icon. Served, as the room's
+    /// avatar is, at `/api/rooms/{id}/avatar/{server}/{media}`.
+    pub icon: String,
 }
 
 /// A room's latest message in its main timeline, as last edited: of

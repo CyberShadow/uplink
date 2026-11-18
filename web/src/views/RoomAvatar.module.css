@@ -17,6 +17,26 @@
   border-radius: 5px;
 }
 
+/* An avatar with its bridge's icon at the bottom-right corner, ringed in
+   the background so that it stands apart from the avatar. */
+.badged {
+  flex: none;
+  position: relative;
+  display: inline-flex;
+}
+
+.badge {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--bg);
+  box-shadow: 0 0 0 1px var(--bg);
+}
+
 /* Element's avatar colours. */
 .c0 { background: #0dbd8b; }
 .c1 { background: #368bd6; }

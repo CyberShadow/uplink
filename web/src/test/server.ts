@@ -535,6 +535,7 @@ export class FakeServer implements Requester, Subscriber, Blobs {
       direct: false,
       latest: null,
       avatar: null,
+      bridge: null,
       children: [],
       topic: null,
       alias: null,

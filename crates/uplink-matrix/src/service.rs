@@ -104,8 +104,8 @@ impl Matrix {
     }
 
     /// A thumbnail of the room's avatar `mxc`, and its media type: only of
-    /// its current one, so that the client cannot have the server fetch
-    /// whatever it names.
+    /// its current one or its bridge's icon, so that the client cannot have
+    /// the server fetch whatever it names.
     pub async fn avatar(
         &self,
         room: RoomId,
@@ -115,11 +115,11 @@ impl Matrix {
             .reader
             .read({
                 let mxc = mxc.clone();
-                move |conn| match rooms::room_avatar(conn, room).map_err(internal)? {
-                    Some((account, Some(avatar))) if avatar == mxc => Ok(account),
+                move |conn| match rooms::room_images(conn, room).map_err(internal)? {
+                    Some((account, images)) if images.contains(&mxc) => Ok(account),
                     Some(_) => Err(error(
                         ErrorCode::NotFound,
-                        format!("{mxc} is not the avatar of room {}", room.0),
+                        format!("{mxc} is not an image of room {}", room.0),
                     )),
                     None => Err(no_room(room)),
                 }

@@ -73,6 +73,7 @@ fn declarations() -> String {
         MatrixDevice,
         ReadMarker,
         RoomPreview,
+        Bridge,
         RoomHistory,
         GapId,
         TimelineGap,

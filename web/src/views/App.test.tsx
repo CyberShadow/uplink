@@ -1474,6 +1474,26 @@ describe('matrix', () => {
     }
   })
 
+  it("badges a bridged room's avatar with its network's icon", async () => {
+    server.addMatrixAccount()
+    const group = server.addRoom('Group')
+    group.bridge = { name: 'Signal', icon: 'mxc://example.org/signal' }
+    server.addRoom('Plain')
+    await start()
+    const nav = screen.getByRole('navigation')
+    const link = await within(nav).findByRole('link', { name: 'Group' })
+    const badge = within(link).getByTitle('Signal')
+    expect(badge.getAttribute('src')).toBe(`/api/rooms/${group.id}/avatar/example.org/signal`)
+    // Without an avatar of its own, the room still shows its initial.
+    expect(badge.parentElement?.textContent).toBe('G')
+    // A badge that fails to load is dropped.
+    fireEvent.error(badge)
+    expect(within(link).queryByTitle('Signal')).toBeNull()
+    within(link).getByText('G')
+    const plain = within(nav).getByRole('link', { name: 'Plain' })
+    expect(plain.querySelector('img')).toBeNull()
+  })
+
   it('nests rooms in their spaces, which fold, with the marks of what is in them', async () => {
     server.addMatrixAccount()
     const general = server.addRoom('General')

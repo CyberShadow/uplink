@@ -9,7 +9,7 @@
 //! and fetch rooms' history (`crawl`).
 
 use crate::{
-    client,
+    bridge, client,
     crawl::Crawler,
     image_packs, markdown,
     membership::{self, MembershipChanged},
@@ -67,8 +67,8 @@ use tokio::sync::{
 use uplink_config::MatrixAccountConfig;
 use uplink_protocol::{
     matrix::{
-        Encryption, MatrixContent, MemberAction, Membership, MembershipChange, ReceiptsChanged,
-        RoomMember, SecurityChanged, TextFormat, Typing,
+        Bridge, Encryption, MatrixContent, MemberAction, Membership, MembershipChange,
+        ReceiptsChanged, RoomMember, SecurityChanged, TextFormat, Typing,
     },
     LogEntry, Notice, Source, TxLogId,
 };
@@ -519,6 +519,7 @@ impl Syncer {
             space: room.is_space(),
             direct: room.is_direct().await?,
             avatar: avatar(&room).await?,
+            bridge: bridge(&room).await?,
             children: space_children(&room).await?,
             space_order: order(&room).await?,
             tags: tags(&room).await?,
@@ -616,6 +617,35 @@ async fn avatar(room: &Room) -> Result<Option<String>> {
         .get_member_no_sync(user)
         .await?
         .and_then(|member| member.avatar_url().map(ToString::to_string)))
+}
+
+/// The room's bridge: of its bridge state, by type then state key, the
+/// first that tells of one (`bridge::parse`); of a room invited to, as its
+/// stripped state has it.
+async fn bridge(room: &Room) -> Result<Option<Bridge>> {
+    for kind in bridge::EVENT_TYPES {
+        let mut events = vec![];
+        for event in room.get_state_events(StateEventType::from(kind)).await? {
+            let raw = match &event {
+                RawAnySyncOrStrippedState::Sync(raw) => raw.json().get(),
+                RawAnySyncOrStrippedState::Stripped(raw) => raw.json().get(),
+            };
+            let event: serde_json::Value = serde_json::from_str(raw)?;
+            let key = event["state_key"]
+                .as_str()
+                .context("a state event without a state key")?
+                .to_owned();
+            events.push((key, event));
+        }
+        events.sort_by(|a, b| a.0.cmp(&b.0));
+        if let Some(bridge) = events
+            .iter()
+            .find_map(|(_, event)| bridge::parse(&event["content"]))
+        {
+            return Ok(Some(bridge));
+        }
+    }
+    Ok(None)
 }
 
 /// The rooms a space lists (none, of a room that is not a space).

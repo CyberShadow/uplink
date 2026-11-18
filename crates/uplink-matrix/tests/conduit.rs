@@ -874,6 +874,58 @@ async fn spaces_list_their_rooms_and_avatars_and_packs_are_served() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_bridged_room_has_its_networks_icon_which_is_served() {
+    let dir = tempfile::tempdir().unwrap();
+    let homeserver = Homeserver::start(dir.path()).await;
+    let alice_phone = homeserver.register(dir.path(), "alice").await;
+    let room = alice_phone
+        .create_room(matrix_sdk::ruma::api::client::room::create_room::v3::Request::new())
+        .await
+        .unwrap();
+    let uplink = Uplink::new(&homeserver);
+    let _sync = uplink.pair_and_sync().await;
+    let listed = eventually("uplink to see the room", || uplink.room(room.room_id())).await;
+    assert_eq!(listed.bridge, None);
+
+    // As a bridge tells of itself once it bridges the room.
+    let icon = alice_phone
+        .media()
+        .upload(&"image/png".parse().unwrap(), PNG.to_vec(), None)
+        .await
+        .unwrap()
+        .content_uri;
+    room.send_state_event_raw(
+        "uk.half-shot.bridge",
+        "fi.mau.signal://signal/a-group",
+        json!({
+            "bridgebot": "@signalbot:localhost",
+            "protocol": { "id": "signal", "displayname": "Signal", "avatar_url": icon },
+            "channel": { "id": "a-group" },
+        }),
+    )
+    .await
+    .unwrap();
+    let bridge = eventually("uplink to see the bridge", || async {
+        uplink.room(room.room_id()).await?.bridge
+    })
+    .await;
+    assert_eq!(
+        bridge,
+        uplink_protocol::matrix::Bridge {
+            name: "Signal".into(),
+            icon: icon.to_string(),
+        }
+    );
+    let (mime, image) = uplink
+        .matrix
+        .avatar(listed.id, icon.to_string())
+        .await
+        .unwrap();
+    assert_eq!(mime, "image/png");
+    assert!(!image.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn spaces_are_ordered_as_other_clients_order_them() {
     use matrix_sdk::ruma::{
         api::client::room::create_room::v3::{CreationContent, Request as CreateRoom},

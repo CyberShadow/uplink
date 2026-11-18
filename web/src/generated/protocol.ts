@@ -199,6 +199,20 @@ kind: string, msgtype: string | null,
 body: string | null, };
 
 /**
+ * A bridged room's network, by the bridge's state (`m.bridge`).
+ */
+export type Bridge = { 
+/**
+ * The protocol's display name, else its id.
+ */
+name: string, 
+/**
+ * `mxc://server/media`: the protocol's icon. Served, as the room's
+ * avatar is, at `/api/rooms/{id}/avatar/{server}/{media}`.
+ */
+icon: string, };
+
+/**
  * How much of a room's history is stored.
  */
 export type RoomHistory = { "type": "whole" } | { "type": "fetching", since: number, created: number | null, } | { "type": "partial", since: number, };
@@ -1040,6 +1054,10 @@ direct: boolean,
  */
 avatar: string | null, 
 /**
+ * Of a bridged room, its network, if the bridge gives it an icon.
+ */
+bridge: Bridge | null, 
+/**
  * Of a space, the Matrix ids of the rooms it lists, joined or not, in
  * the space's order.
  */
@@ -1635,4 +1653,4 @@ export type EventChangeKind = "create" | "update" | "delete";
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "25106870498b8fe9"
+export const PROTOCOL_VERSION = "c59528d07c9369e5"

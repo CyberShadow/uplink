@@ -87,6 +87,7 @@ impl Db {
                         space: false,
                         direct: false,
                         avatar: None,
+                        bridge: None,
                         children: vec![],
                         space_order: None,
                         tags: vec![],

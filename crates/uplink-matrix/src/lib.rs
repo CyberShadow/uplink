@@ -3,6 +3,7 @@
 //! and messages sent.
 
 pub mod backfill;
+pub mod bridge;
 pub mod client;
 pub mod crawl;
 pub mod html;

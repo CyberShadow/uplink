@@ -2954,6 +2954,14 @@ which a verified device gives.
   PNG, JPEG, GIF and WebP, by their signatures. A room without one, or
   whose thumbnail fails, shows its name's first letter on one of six
   colours, by its id, as Element does.
+- Bridges: a bridged room's avatar has a badge of its network, as
+  SchildiChat's room list does: the icon of the bridge's protocol
+  (`protocol.avatar_url` of its `m.bridge` state, else of
+  `uk.half-shot.bridge`, as bridges still send it; the first, by state
+  key, whose protocol has an id and an `mxc://` icon), titled by the
+  protocol's display name, else its id. The room's avatar path serves
+  that icon too (as the room's current images are all it serves). A
+  bridge without an icon has no badge.
 - Others' read receipts are the SDK's, as its store keeps them:
   `ListReceipts` gives each joined member's (but the account's; those
   the client knows, as members are lazily loaded) latest `m.read`
