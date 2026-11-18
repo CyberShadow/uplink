@@ -952,13 +952,18 @@ fn newest(tx: &Transaction, scope: &ListScope, condition: Condition) -> Result<(
     };
     // The fewest candidates a conjunct is met by, if it is of an index:
     // `FROM … WHERE …`, naming the entries `c`. Each is counted by its
-    // index alone (a label's rows are of entries), and only as far as it
-    // may be the fewest.
+    // index alone (a label's rows are of entries), as far as to know if
+    // it is few enough to sort; of more, a label is told by the
+    // conversations kept counted of it (V0017), not counted again.
     let mut fewest: Option<(i64, usize, String, String)> = None;
-    // Those of the conversations of some entries first: they are few, and
-    // then bound how far each other is counted.
+    // Those of the conversations of some entries first, then labels: the
+    // fewest bound how far a text match is counted.
     let mut order: Vec<usize> = (0..conjuncts.len()).collect();
-    order.sort_by_key(|&at| !matches!(conjuncts[at], Condition::Conversations(_)));
+    order.sort_by_key(|&at| match conjuncts[at] {
+        Condition::Conversations(_) => 0,
+        Condition::Label(_) => 1,
+        _ => 2,
+    });
     for at in order {
         let conjunct = &conjuncts[at];
         let (counted, from, condition) = match conjunct {
@@ -979,23 +984,38 @@ fn newest(tx: &Transaction, scope: &ListScope, condition: Condition) -> Result<(
             ),
             _ => continue,
         };
-        let limit = fewest.as_ref().map_or(i64::MAX, |(least, ..)| *least);
-        let count: i64 = tx.query_row(
+        let least = fewest.as_ref().map_or(i64::MAX, |(least, ..)| *least);
+        let limit = match conjunct {
+            Condition::Label(_) => least.min(SORT_AT_MOST + 1),
+            _ => least,
+        };
+        let mut count: i64 = tx.query_row(
             &format!(
                 "SELECT count(*) FROM (SELECT 1 FROM {counted} WHERE {condition} LIMIT {limit})"
             ),
             [],
             |r| r.get(0),
         )?;
-        if count < limit {
+        if let (Condition::Label(labels), true) = (conjunct, count > SORT_AT_MOST) {
+            count = tx.query_row(
+                &format!(
+                    "SELECT max(sum(conversations), {}) FROM label WHERE id IN ({})",
+                    SORT_AT_MOST + 1,
+                    ids(labels)
+                ),
+                [],
+                |r| r.get(0),
+            )?;
+        }
+        if count < least {
             fewest = Some((count, at, from.to_owned(), condition));
         }
     }
     // Of the fewest, those that meet the other conjuncts too, up to one
-    // too many.
-    let candidates = |at: usize, from: &str, condition: &str| -> Result<i64> {
+    // too many: once, to sort them, not walked again.
+    let candidates = |at: usize, from: &str, condition: &str| -> Result<Vec<i64>> {
         // Not those of the conversation, which cost a look through its
-        // thread each: of more, the count is too many, and they are walked.
+        // thread each: of more, there are too many, and they are walked.
         let rest: Vec<String> = conjuncts
             .iter()
             .enumerate()
@@ -1003,30 +1023,35 @@ fn newest(tx: &Transaction, scope: &ListScope, condition: Condition) -> Result<(
             .map(|(_, c)| format!("({})", c.sql("c")))
             .chain(std::iter::once("1".to_owned()))
             .collect();
-        Ok(tx.query_row(
-            &format!(
-                "SELECT count(*) FROM (SELECT 1 FROM {from} WHERE {condition} AND {rest} AND {scope}
-                                       LIMIT {limit})",
+        Ok(tx
+            .prepare(&format!(
+                "SELECT c.id FROM {from} WHERE {condition} AND {rest} AND {scope}
+                 LIMIT {limit}",
                 rest = rest.join(" AND "),
                 scope = scope_sql("c"),
                 limit = SORT_AT_MOST + 1,
-            ),
-            [],
-            |r| r.get(0),
-        )?)
+            ))?
+            .query_map([], |r| r.get(0))?
+            .collect::<Result<_, _>>()?)
     };
-    let sorted = match &fewest {
-        Some((count, ..)) if *count <= SORT_AT_MOST => fewest,
-        Some((_, at, from, condition))
-            if conjuncts.len() > 1 && candidates(*at, from, condition)? <= SORT_AT_MOST =>
-        {
-            fewest
+    let sorted = match fewest {
+        Some((count, at, from, condition)) if count <= SORT_AT_MOST => Some((at, from, condition)),
+        Some((_, at, from, condition)) if conjuncts.len() > 1 => {
+            let found = candidates(at, &from, &condition)?;
+            (found.len() as i64 <= SORT_AT_MOST).then(|| {
+                let found: Vec<String> = found.iter().map(i64::to_string).collect();
+                (
+                    at,
+                    "mail_entry c".to_owned(),
+                    format!("c.id IN ({})", found.join(", ")),
+                )
+            })
         }
         _ => None,
     };
     let (from, condition) = match sorted {
         // The conversations of the candidates, by their newest entries.
-        Some((_, at, from, condition)) => {
+        Some((at, from, condition)) => {
             conjuncts.remove(at);
             let rest = Condition::And(conjuncts);
             (
