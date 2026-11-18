@@ -16,16 +16,13 @@ use crate::{
         self, build_message, now_ms, Due, File, ReplyContext, SendFailed, SendNotFound,
         SendOutcome, SendStarted, SendSucceeded, SentCopy,
     },
-    mailbox::{
-        self, kind_at, LabelChange, LabelsClaimed, LabelsPushed, LabelsSettled, NewKey,
-        ObservedLabel, Pushed, Reconciling,
-    },
+    mailbox::{kind_at, MailLabels, ObservedLabel, Reconciling},
     parse::{parse, Parsed},
 };
 use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::HashSet,
     future::Future,
     path::Path,
     sync::{Arc, Mutex},
@@ -41,7 +38,8 @@ use uplink_storage::rusqlite::{params, Connection, OptionalExtension};
 use uplink_storage::store::{Store, VariantHash};
 use uplink_tx_log::{
     push::{self, PushFailing},
-    reconcile::{Ended, Outcome},
+    reconcile::Ended,
+    reconciler::{self, NewKey, Push},
     Conflict, Dispatcher, Observation,
 };
 
@@ -156,22 +154,23 @@ pub struct Account {
     pub blobs: Store,
 }
 
-/// How a provider's request pushing `changes` ended; and why, if it
+/// How a provider's request pushing `fields` ended; and why, if it
 /// failed for a reason that may pass.
 #[derive(Debug)]
 pub struct PushEnded {
-    pub changes: Vec<LabelChange>,
+    /// Each entry's label pushed.
+    pub fields: Vec<(EntryId, LabelId)>,
     pub ended: Ended,
     pub error: Option<anyhow::Error>,
     /// The entry's key, if the request changed it.
-    pub rekeyed: Option<NewKey>,
+    pub rekeyed: Option<NewKey<EntryId>>,
 }
 
 impl PushEnded {
     /// All of `pending`'s changes, which ended so.
     pub fn of(pending: &[Pending], ended: Ended, error: Option<anyhow::Error>) -> Self {
         Self {
-            changes: pending.iter().map(Pending::change).collect(),
+            fields: pending.iter().map(|p| (p.entry, p.label)).collect(),
             ended,
             error,
             rekeyed: None,
@@ -183,7 +182,7 @@ impl PushEnded {
     pub fn rekeyed(pending: &[Pending], external_id: Option<String>) -> Self {
         Self {
             rekeyed: Some(NewKey {
-                entry: pending[0].entry,
+                entity: pending[0].entry,
                 external_id,
             }),
             ..Self::of(pending, Ended::Applied, None)
@@ -222,16 +221,6 @@ pub struct Pending {
     pub kind: LabelKind,
     /// The value to push.
     pub desired: bool,
-}
-
-impl Pending {
-    fn change(&self) -> LabelChange {
-        LabelChange {
-            entry: self.entry,
-            label: self.label,
-            desired: self.desired,
-        }
-    }
 }
 
 impl Account {
@@ -306,13 +295,6 @@ impl Account {
             )
         })
         .await
-    }
-
-    /// The account's labels its reconciler has to do with.
-    async fn reconciling(&self) -> Result<Vec<Reconciling>> {
-        let account = self.id.clone();
-        self.read(move |conn| mailbox::reconciling(conn, &account))
-            .await
     }
 
     /// External ids of the labels the entry should have.
@@ -493,109 +475,14 @@ impl<P: Provider> SyncTask<P> {
     }
 
     /// Reads back what the step's sync left to confirm, then pushes the
-    /// label changes the user made (SPEC §6.6.6): until nothing is left to
-    /// push, but for what waits on the next sync (a push not applied).
-    /// Whether a push was applied, or one of unknown outcome expired: the
-    /// next sync, sent at once, confirms what it tells of, and the step
-    /// after it reads back the rest. Every push claimed ends recorded,
-    /// though some fail; then the first failure, that may pass, is
-    /// returned, for the step to be retried with backoff.
+    /// label changes the user made (SPEC §6.6.6); whether a push was
+    /// applied, or one of unknown outcome expired: the next sync, sent at
+    /// once, confirms what it tells of, and the step after it reads back
+    /// the rest. An incremental sync tells only of what changed, and may
+    /// not mention an entry a push left as it was.
     async fn reconcile(&self) -> Result<bool> {
-        // An incremental sync tells only of what changed, and may not
-        // mention an entry a push left as it was; what it did not confirm
-        // is read. An entry not found waits on the next sync too: it may
-        // have moved.
-        let mut read: Vec<(EntryId, String)> = self
-            .account
-            .reconciling()
-            .await?
-            .into_iter()
-            .filter(|f| f.key_known && f.field.read_back())
-            .map(|f| (f.entry, f.external_id))
-            .collect();
-        read.dedup();
-        if !read.is_empty() {
-            self.provider.read(&self.account, read).await?;
-        }
-        // Each round pushes or settles; few are needed.
-        const ROUNDS: usize = 8;
-        let mut confirm = false;
-        let mut later = BTreeSet::new();
-        for _ in 0..ROUNDS {
-            let fields = self.account.reconciling().await?;
-            let now = now_ms();
-            let in_flight = fields.iter().any(|f| {
-                f.field
-                    .attempt
-                    .as_ref()
-                    .is_some_and(|a| a.outcome == Outcome::InFlight)
-            });
-            // One push at a time: one in flight stopped without its
-            // outcome (the step failed, or the process stopped).
-            if in_flight || fields.iter().any(|f| f.field.expiring(now)) {
-                self.account
-                    .observe(LabelsSettled {
-                        now_ms: now,
-                        interrupted: in_flight,
-                    })
-                    .await?;
-                confirm |= !in_flight;
-                continue;
-            }
-            let wanted: Vec<(EntryId, LabelId)> = fields
-                .iter()
-                .filter(|f| f.key_known && !later.contains(&f.entry) && f.field.wanted().is_some())
-                .map(|f| (f.entry, f.label))
-                .collect();
-            if wanted.is_empty() {
-                return Ok(confirm);
-            }
-            self.account
-                .observe(LabelsClaimed { changes: wanted })
-                .await?;
-            let claimed: Vec<Pending> = self
-                .account
-                .reconciling()
-                .await?
-                .into_iter()
-                .filter_map(|f| {
-                    let attempt = f.field.attempt.filter(|a| a.outcome == Outcome::InFlight)?;
-                    Some(Pending {
-                        entry: f.entry,
-                        external_id: f.external_id,
-                        label: f.label,
-                        label_external_id: f.label_external_id,
-                        kind: f.kind,
-                        desired: attempt.value,
-                    })
-                })
-                .collect();
-            let mut failed = None;
-            let mut pushes = vec![];
-            for pushed in self.provider.push(&self.account, claimed).await {
-                match pushed.ended {
-                    Ended::Applied => confirm = true,
-                    Ended::NotApplied { refused: Some(_) } => {}
-                    // Not applied, or maybe: pushed again after the next
-                    // sync, rather than at once.
-                    _ => later.extend(pushed.changes.iter().map(|c| c.entry)),
-                }
-                if let Some(e) = pushed.error {
-                    failed.get_or_insert(e.context("pushing label changes"));
-                }
-                pushes.push(Pushed {
-                    changes: pushed.changes,
-                    ended: pushed.ended,
-                    rekeyed: pushed.rekeyed,
-                });
-            }
-            // All ended by now: recorded as one.
-            self.account.observe(LabelsPushed { pushes }).await?;
-            if let Some(e) = failed {
-                return Err(e);
-            }
-        }
-        anyhow::bail!("label changes still to push after {ROUNDS} rounds")
+        reconciler::read_back::<MailLabels>(self).await?;
+        reconciler::push::<MailLabels>(self).await
     }
 
     /// Settles the sends whose outcome was unknown, attempted long enough
@@ -818,5 +705,55 @@ impl<P: Provider> SyncTask<P> {
             // will be, once synced.
             .map_err(|e| SendError::Unknown(e.context("storing sent mail")))?;
         Ok((variant, parsed, size_bytes, copy))
+    }
+}
+
+/// The account's labels, pushed and read back by its provider.
+impl<P: Provider> reconciler::Provider<MailLabels> for SyncTask<P> {
+    fn account(&self) -> &str {
+        &self.account.id
+    }
+
+    fn dispatcher(&self) -> &Dispatcher {
+        &self.account.dispatcher
+    }
+
+    fn reader(&self) -> &Arc<Mutex<Connection>> {
+        &self.account.reader
+    }
+
+    async fn push(&self, in_flight: Vec<Reconciling>) -> Vec<reconciler::PushEnded<MailLabels>> {
+        let claimed = in_flight
+            .into_iter()
+            .map(|f| Pending {
+                entry: f.key.0,
+                label: f.key.1,
+                external_id: f.target.external_id,
+                label_external_id: f.target.label_external_id,
+                kind: f.target.kind,
+                desired: f.field.attempt.expect("in flight").value,
+            })
+            .collect();
+        self.provider
+            .push(&self.account, claimed)
+            .await
+            .into_iter()
+            .map(|pushed| reconciler::PushEnded {
+                push: Push {
+                    fields: pushed.fields,
+                    ended: pushed.ended,
+                    rekeyed: pushed.rekeyed,
+                },
+                error: pushed.error.map(|e| e.context("pushing label changes")),
+            })
+            .collect()
+    }
+
+    async fn read(&self, entries: Vec<Reconciling>) -> Result<()> {
+        let entries = entries
+            .into_iter()
+            .map(|f| (f.key.0, f.target.external_id))
+            .collect();
+        self.provider.read(&self.account, entries).await
     }
 }

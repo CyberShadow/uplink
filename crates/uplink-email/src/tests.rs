@@ -1,7 +1,7 @@
 use crate::{
     mailbox::{
-        self, EntryLabels, LabelChange, LabelsClaimed, LabelsPushed, MailboxObserved, NewEntry,
-        ObservedLabel, Pushed, SetLabels,
+        self, EntryLabels, LabelChange, MailLabels, MailboxObserved, NewEntry, ObservedLabel,
+        SetLabels,
     },
     parse::parse,
 };
@@ -15,8 +15,16 @@ use uplink_realtime::Hub;
 use uplink_storage::rusqlite::{params, Connection};
 use uplink_storage::store::Store;
 use uplink_tx_log::{
-    push::PushFailing, reconcile::Ended, Conflict, Dispatcher, Registry, UndoError,
+    push::PushFailing,
+    reconcile::Ended,
+    reconciler::{Claimed, NewKey, Push, Pushed},
+    Conflict, Dispatcher, Registry, UndoError,
 };
+
+/// The fields of `changes`.
+fn keys(changes: &[LabelChange]) -> Vec<(EntryId, LabelId)> {
+    changes.iter().map(|c| (c.entry, c.label)).collect()
+}
 
 /// The identities of an account of `address` alone, unnamed.
 pub(crate) fn own(address: &str) -> Vec<uplink_protocol::mail::Identity> {
@@ -101,18 +109,16 @@ impl Db {
         self.dispatcher
             .observe(
                 account.to_owned(),
-                LabelsClaimed {
-                    changes: changes.iter().map(|c| (c.entry, c.label)).collect(),
-                },
+                Claimed::<MailLabels>::new(changes.iter().map(|c| (c.entry, c.label)).collect()),
             )
             .await
             .unwrap();
         self.dispatcher
             .observe(
                 account.to_owned(),
-                LabelsPushed {
-                    pushes: vec![Pushed {
-                        changes,
+                Pushed::<MailLabels> {
+                    pushes: vec![Push {
+                        fields: keys(&changes),
                         ended,
                         rekeyed: None,
                     }],
@@ -882,9 +888,7 @@ async fn pushed_changes_become_observed_as_read_back() {
     db.dispatcher
         .observe(
             "a".into(),
-            LabelsClaimed {
-                changes: claimed.iter().map(|c| (c.entry, c.label)).collect(),
-            },
+            Claimed::<MailLabels>::new(claimed.iter().map(|c| (c.entry, c.label)).collect()),
         )
         .await
         .unwrap();
@@ -898,9 +902,9 @@ async fn pushed_changes_become_observed_as_read_back() {
     db.dispatcher
         .observe(
             "a".into(),
-            LabelsPushed {
-                pushes: vec![Pushed {
-                    changes: claimed,
+            Pushed::<MailLabels> {
+                pushes: vec![Push {
+                    fields: keys(&claimed),
                     ended: Ended::Applied,
                     rekeyed: None,
                 }],
@@ -923,7 +927,7 @@ async fn pushed_changes_become_observed_as_read_back() {
     let reconciling = mailbox::reconciling(&db.reader(), "a").unwrap();
     let wanted: Vec<_> = reconciling
         .iter()
-        .filter_map(|r| r.field.wanted().map(|w| (r.label, *w)))
+        .filter_map(|r| r.field.wanted().map(|w| (r.key.1, *w)))
         .collect();
     assert_eq!(wanted, [(starred, false)]);
 }
@@ -1071,7 +1075,7 @@ fn wanted(db: &Db) -> Vec<(EntryId, LabelId, bool)> {
     mailbox::reconciling(&db.reader(), "a")
         .unwrap()
         .iter()
-        .filter_map(|r| r.field.wanted().map(|w| (r.entry, r.label, *w)))
+        .filter_map(|r| r.field.wanted().map(|w| (r.key.0, r.key.1, *w)))
         .collect()
 }
 
@@ -1139,9 +1143,7 @@ async fn a_failing_push_keeps_the_outcomes_of_those_before() {
     db.dispatcher
         .observe(
             "a".into(),
-            LabelsClaimed {
-                changes: vec![(m1, inbox), (m2, inbox)],
-            },
+            Claimed::<MailLabels>::new(vec![(m1, inbox), (m2, inbox)]),
         )
         .await
         .unwrap();
@@ -1152,9 +1154,9 @@ async fn a_failing_push_keeps_the_outcomes_of_those_before() {
         db.dispatcher
             .observe(
                 "a".into(),
-                LabelsPushed {
-                    pushes: vec![Pushed {
-                        changes: vec![change(entry, false)],
+                Pushed::<MailLabels> {
+                    pushes: vec![Push {
+                        fields: keys(&[change(entry, false)]),
                         ended,
                         rekeyed: None,
                     }],
@@ -1180,8 +1182,8 @@ async fn an_entry_moved_to_an_unknown_key_waits_for_a_sync() {
         db.label("a", "INBOX"),
         db.label("a", "STARRED"),
     );
-    let key = |external_id: Option<&str>| mailbox::NewKey {
-        entry: m1,
+    let key = |external_id: Option<&str>| NewKey {
+        entity: m1,
         external_id: external_id.map(str::to_owned),
     };
     let change = |desired| LabelChange {
@@ -1194,20 +1196,15 @@ async fn an_entry_moved_to_an_unknown_key_waits_for_a_sync() {
         let dispatcher = db.dispatcher.clone();
         async move {
             dispatcher
-                .observe(
-                    "a".into(),
-                    LabelsClaimed {
-                        changes: vec![(m1, inbox)],
-                    },
-                )
+                .observe("a".into(), Claimed::<MailLabels>::new(vec![(m1, inbox)]))
                 .await
                 .unwrap();
             dispatcher
                 .observe(
                     "a".into(),
-                    LabelsPushed {
-                        pushes: vec![Pushed {
-                            changes: vec![change(desired)],
+                    Pushed::<MailLabels> {
+                        pushes: vec![Push {
+                            fields: keys(&[change(desired)]),
                             ended: Ended::Applied,
                             rekeyed: Some(key(to)),
                         }],
@@ -1230,7 +1227,7 @@ async fn an_entry_moved_to_an_unknown_key_waits_for_a_sync() {
         })
         .await
         .unwrap();
-    assert!(reconciling().iter().all(|r| !r.key_known));
+    assert!(reconciling().iter().all(|r| !r.target.key_known));
     // Found again by a sync: known, and the star is wanted.
     db.observe(
         "a",
@@ -1243,7 +1240,7 @@ async fn an_entry_moved_to_an_unknown_key_waits_for_a_sync() {
         },
     )
     .await;
-    assert!(reconciling().iter().all(|r| r.key_known));
+    assert!(reconciling().iter().all(|r| r.target.key_known));
     assert_eq!(wanted(&db), [(m1, starred, true)]);
 
     // A move that tells the key re-keys the entry at once.
@@ -1259,7 +1256,7 @@ async fn an_entry_moved_to_an_unknown_key_waits_for_a_sync() {
         db.query::<String>("SELECT external_id FROM mail_entry"),
         ["m1''"]
     );
-    assert!(reconciling().iter().all(|r| r.key_known));
+    assert!(reconciling().iter().all(|r| r.target.key_known));
 }
 
 /// An account's failing pushes are recorded from when they start, and
@@ -3663,7 +3660,7 @@ impl crate::account::Provider for Telling {
             .await?
             .into_iter()
             .filter(|f| f.field.attempt.is_some())
-            .map(|f| (f.entry, f.external_id))
+            .map(|f| (f.key.0, f.target.external_id))
             .collect();
         read_as_desired(account, pushed).await?;
         Ok(false)

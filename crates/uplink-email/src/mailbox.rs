@@ -6,8 +6,8 @@
 //! (what the provider last reported). Ops want a value, recording which op
 //! did (`desired_by`, for the outbox); observations record what the
 //! provider has, and desired follows unless uplink has an opinion; the
-//! account's reconciler claims pushes, records how each ended, and reads
-//! back what it pushed.
+//! account's reconciler (`uplink_tx_log::reconciler`, of [`MailLabels`])
+//! claims pushes, records how each ended, and reads back what it pushed.
 
 use crate::{
     compose,
@@ -28,6 +28,7 @@ use uplink_storage::rusqlite::{self, params, OptionalExtension, Row, Transaction
 use uplink_storage::store::{Store, VariantHash};
 use uplink_tx_log::{
     reconcile::{Attempt, Decision, Ended, Field},
+    reconciler::{self, Changed, Kind, Values},
     this_entry, Applied, Conflict, Inverse, Observation, Observed, Op, Registry,
 };
 
@@ -332,85 +333,106 @@ impl Observation for MailboxObserved {
     }
 }
 
-/// The labels whose pushes the account's reconciler claims, in one entry
-/// (SPEC §6.6.3): those still wanted of `changes`.
-#[derive(Debug, Serialize)]
-pub struct LabelsClaimed {
-    pub changes: Vec<(EntryId, LabelId)>,
+/// Entries' labels, of which each is a field (SPEC §6.6), keyed by the
+/// entry and the label; the provider's request pushes an entry's.
+pub struct MailLabels;
+
+/// What pushing or reading back a label of an entry takes: their ids at
+/// the provider.
+#[derive(Debug, Clone)]
+pub struct Located {
+    /// The entry's.
+    pub external_id: String,
+    pub label_external_id: String,
+    pub kind: LabelKind,
+    /// Whether `external_id` is the entry's key still: a push that moved
+    /// it without telling the new one leaves it unknown (SPEC §6.6.5).
+    pub key_known: bool,
 }
 
-impl Observation for LabelsClaimed {
-    const KIND: &'static str = "mail.claimed";
-
-    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
-        let labels = Labels::of(tx, account)?;
-        let mut entries = BTreeSet::new();
-        for (entry, label) in self.changes {
-            let mut field = labels.load(entry, label)?;
-            // Unless an op settled it meanwhile.
-            if field.wanted().is_some() {
-                field.claim()?;
-                labels.store(entry, label, &field)?;
-                entries.insert(entry);
-            }
-        }
-        Ok(Observed {
-            description: format!("Pushing label changes on {}", messages(entries.len())),
-            events: vec![],
+impl reconciler::Fields<MailLabels> for Labels<'_> {
+    fn load(&self, &(entry, label): &(EntryId, LabelId)) -> Result<Option<Label>> {
+        Ok(match self.exists(entry, label)? {
+            true => Some(Labels::load(self, entry, label)?),
+            false => None,
         })
+    }
+
+    /// A push applied, or expired, is as of its entry: the account's
+    /// labels are known as of it, and conservatively the rest.
+    fn store(&mut self, &(entry, label): &(EntryId, LabelId), field: &Label) -> Result<()> {
+        Labels::store(self, entry, label, field)?;
+        self.known(field.known_at)
     }
 }
 
-/// How a round of pushes of label changes ended: each request's, as its
-/// provider sent them.
-#[derive(Debug, Serialize)]
-pub struct LabelsPushed {
-    pub pushes: Vec<Pushed>,
-}
+impl Kind for MailLabels {
+    type Key = (EntryId, LabelId);
+    type Value = bool;
+    type Entity = EntryId;
+    type Target = Located;
+    type Fields<'t> = Labels<'t>;
 
-/// How a request pushing label changes ended: each the value pushed
-/// (`desired`). A change of an entry or label gone meanwhile went with it.
-#[derive(Debug, Serialize)]
-pub struct Pushed {
-    pub changes: Vec<LabelChange>,
-    pub ended: Ended,
-    /// The entry's key, if the push, applied, changed it (SPEC §6.6.5).
-    pub rekeyed: Option<NewKey>,
-}
+    const CLAIMED: &'static str = "mail.claimed";
+    const PUSHED: &'static str = "mail.pushed";
+    const SETTLED: &'static str = "mail.settled";
 
-/// An entry's key after a push changed it: `None` if unknown, the
-/// provider not telling, until a sync finds it again.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct NewKey {
-    pub entry: EntryId,
-    pub external_id: Option<String>,
-}
+    fn entity(&(entry, _): &(EntryId, LabelId)) -> EntryId {
+        entry
+    }
 
-impl Observation for LabelsPushed {
-    const KIND: &'static str = "mail.pushed";
+    fn fields<'t>(tx: &'t Transaction<'t>, account: &'t str) -> Result<Labels<'t>> {
+        Labels::of(tx, account)
+    }
 
-    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
-        let mut labels = Labels::of(tx, account)?;
-        let at = labels.at;
-        let mut outbox = false;
-        let mut applied = false;
+    fn reconciling(conn: &rusqlite::Connection, account: &str) -> Result<Vec<Reconciling>> {
+        reconciling(conn, account)
+    }
+
+    fn located(located: &Located) -> bool {
+        located.key_known
+    }
+
+    fn rekey(
+        tx: &Transaction,
+        account: &str,
+        entry: EntryId,
+        external_id: Option<&str>,
+    ) -> Result<()> {
+        // Unless removed meanwhile.
+        tx.execute(
+            "UPDATE mail_entry SET external_id = coalesce(?2, external_id),
+                                   key_unknown = ?2 IS NULL
+             WHERE id = ?1 AND account_id = ?3",
+            params![entry.0, external_id, account],
+        )?;
+        Ok(())
+    }
+
+    fn events(
+        _tx: &Transaction,
+        account: &str,
+        changed: &[Changed<Self>],
+    ) -> Result<Vec<ServerEvent>> {
+        Ok(match changed.iter().any(Changed::pending) {
+            true => vec![outbox_changed(account)],
+            false => vec![],
+        })
+    }
+
+    fn claimed(_tx: &Transaction, claimed: &[(EntryId, LabelId)]) -> Result<String> {
+        let entries: BTreeSet<EntryId> = claimed.iter().map(|&(entry, _)| entry).collect();
+        Ok(format!(
+            "Pushing label changes on {}",
+            messages(entries.len())
+        ))
+    }
+
+    fn pushed(_tx: &Transaction, pushes: &[(Ended, Values<Self>)]) -> Result<String> {
         // The entries pushed, by how: in the order first ended so.
         let mut by_outcome: Vec<(Outcome, BTreeSet<EntryId>)> = vec![];
-        for push in self.pushes {
-            ensure!(
-                push.rekeyed.is_none() || push.ended == Ended::Applied,
-                "re-keyed by a push not applied"
-            );
-            if let Some(key) = &push.rekeyed {
-                // Unless removed meanwhile.
-                tx.execute(
-                    "UPDATE mail_entry SET external_id = coalesce(?2, external_id),
-                                           key_unknown = ?2 IS NULL
-                     WHERE id = ?1 AND account_id = ?3",
-                    params![key.entry.0, key.external_id, account],
-                )?;
-            }
-            let outcome = Outcome::of(&push.ended);
+        for (ended, fields) in pushes {
+            let outcome = Outcome::of(ended);
             let i = match by_outcome.iter().position(|(o, _)| *o == outcome) {
                 Some(i) => i,
                 None => {
@@ -418,39 +440,28 @@ impl Observation for LabelsPushed {
                     by_outcome.len() - 1
                 }
             };
-            for change in &push.changes {
-                if !labels.exists(change.entry, change.label)? {
-                    continue;
-                }
-                let mut field = labels.load(change.entry, change.label)?;
-                let before = pending_of(&field);
-                field.ended(push.ended.clone(), at)?;
-                outbox |= pending_of(&field) != before;
-                labels.store(change.entry, change.label, &field)?;
-                by_outcome[i].1.insert(change.entry);
-            }
-            applied |= push.ended == Ended::Applied;
-        }
-        if applied {
-            labels.known(at)?;
+            by_outcome[i]
+                .1
+                .extend(fields.iter().map(|&((entry, _), _)| entry));
         }
         let description = by_outcome
             .iter()
             .filter(|(_, entries)| !entries.is_empty())
             .map(|(outcome, entries)| outcome.describe(entries.len()))
             .collect::<Vec<_>>();
-        Ok(Observed {
-            description: if description.is_empty() {
-                "Pushed no label changes".to_owned()
-            } else {
-                capitalize(&description.join("; "))
-            },
-            events: if outbox {
-                vec![outbox_changed(account)]
-            } else {
-                vec![]
-            },
+        Ok(if description.is_empty() {
+            "Pushed no label changes".to_owned()
+        } else {
+            capitalize(&description.join("; "))
         })
+    }
+
+    fn settled(settled: usize, interrupted: bool) -> String {
+        if interrupted {
+            format!("Whether {settled} label changes were pushed is unknown")
+        } else {
+            format!("Took {settled} label changes pushed or not for good")
+        }
     }
 }
 
@@ -486,64 +497,9 @@ impl Outcome {
     }
 }
 
-/// Pushes whose outcome became unknown, as of `now_ms`: those in flight,
-/// as a push stopped without telling how they ended (`interrupted`), else
-/// those so long enough to expire (SPEC §6.6.3).
-#[derive(Debug, Serialize)]
-pub struct LabelsSettled {
-    pub now_ms: i64,
-    pub interrupted: bool,
-}
-
-impl Observation for LabelsSettled {
-    const KIND: &'static str = "mail.settled";
-
-    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
-        let mut labels = Labels::of(tx, account)?;
-        let at = labels.at;
-        let mut settled = 0;
-        for stored in reconciling(tx, account)? {
-            let mut field = labels.load(stored.entry, stored.label)?;
-            let before = field.clone();
-            if self.interrupted {
-                field.interrupted(self.now_ms);
-            } else if field.expiring(self.now_ms) {
-                field.expire(self.now_ms, at)?;
-            }
-            if field != before {
-                labels.store(stored.entry, stored.label, &field)?;
-                settled += 1;
-            }
-        }
-        if !self.interrupted && settled > 0 {
-            labels.known(at)?;
-        }
-        Ok(Observed {
-            description: if self.interrupted {
-                format!("Whether {settled} label changes were pushed is unknown")
-            } else {
-                format!("Took {settled} label changes pushed or not for good")
-            },
-            events: vec![],
-        })
-    }
-}
-
 /// A label of an entry the account's reconciler has to do with: one
 /// uplink has an opinion of, or a push of which it awaits.
-#[derive(Debug, Clone)]
-pub struct Reconciling {
-    pub entry: EntryId,
-    /// The entry's id at the provider.
-    pub external_id: String,
-    pub label: LabelId,
-    pub label_external_id: String,
-    pub kind: LabelKind,
-    /// Whether `external_id` is the entry's key still: a push that moved
-    /// it without telling the new one leaves it unknown (SPEC §6.6.5).
-    pub key_known: bool,
-    pub field: Label,
-}
+pub type Reconciling = reconciler::Stored<MailLabels>;
 
 /// The account's labels its reconciler has to do with, by entry.
 pub fn reconciling(conn: &rusqlite::Connection, account: &str) -> Result<Vec<Reconciling>> {
@@ -560,12 +516,13 @@ pub fn reconciling(conn: &rusqlite::Connection, account: &str) -> Result<Vec<Rec
     .query_map([account], |r| {
         Ok((
             Reconciling {
-                entry: EntryId(r.get(0)?),
-                external_id: r.get(1)?,
-                label: LabelId(r.get(2)?),
-                label_external_id: r.get(3)?,
-                kind: kind_at(r, 4)?,
-                key_known: !r.get::<_, bool>(10)?,
+                key: (EntryId(r.get(0)?), LabelId(r.get(2)?)),
+                target: Located {
+                    external_id: r.get(1)?,
+                    label_external_id: r.get(3)?,
+                    kind: kind_at(r, 4)?,
+                    key_known: !r.get::<_, bool>(10)?,
+                },
                 field: Field::new(false, known_at),
             },
             Columns {
@@ -855,7 +812,7 @@ fn labels_known_at(conn: &rusqlite::Connection, account: &str) -> Result<TxLogId
 /// order it fetched, and pushes in turn, so what it observes was fetched
 /// after the observations before, and as fresh as those recorded with it.
 /// Only this writes `entry_label`, so that rows are as fields are.
-struct Labels<'a> {
+pub struct Labels<'a> {
     tx: &'a Transaction<'a>,
     account: String,
     known_at: TxLogId,
