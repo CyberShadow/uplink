@@ -1494,6 +1494,21 @@ describe('matrix', () => {
     expect(plain.querySelector('img')).toBeNull()
   })
 
+  it("badges no room whose avatar is its bridge's icon, as the bridge's space", async () => {
+    server.addMatrixAccount()
+    const space = server.addRoom('Signal (Alice)')
+    space.space = true
+    space.avatar = 'mxc://example.org/signal'
+    space.bridge = { name: 'Signal', icon: 'mxc://example.org/signal' }
+    await start()
+    const nav = screen.getByRole('navigation')
+    const row = (await within(nav).findByText('Signal (Alice)')).closest('li')!
+    expect([...row.querySelectorAll('img')].map((img) => img.getAttribute('src'))).toEqual([
+      `/api/rooms/${space.id}/avatar/example.org/signal`,
+    ])
+    expect(within(row).queryByTitle('Signal')).toBeNull()
+  })
+
   it('nests rooms in their spaces, which fold, with the marks of what is in them', async () => {
     server.addMatrixAccount()
     const general = server.addRoom('General')

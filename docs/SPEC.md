@@ -2976,7 +2976,8 @@ which a verified device gives.
   key, whose protocol has an id and an `mxc://` icon), titled by the
   protocol's display name, else its id. The room's avatar path serves
   that icon too (as the room's current images are all it serves). A
-  bridge without an icon has no badge.
+  bridge without an icon has no badge, nor one whose icon is the room's
+  avatar (as of the space a mautrix bridge gathers a login's rooms in).
 - Others' read receipts are the SDK's, as its store keeps them:
   `ListReceipts` gives each joined member's (but the account's; those
   the client knows, as members are lazily loaded) latest `m.read`

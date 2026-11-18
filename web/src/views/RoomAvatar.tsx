@@ -32,10 +32,11 @@ export function colour(roomId: string): number {
 
 /** The room's avatar: round, or of a space, a rounded square; of a
  * bridged room, with its network's icon as a badge at its corner, as
- * SchildiChat's room list has it. */
+ * SchildiChat's room list has it, unless that icon is its avatar (as of
+ * the space a bridge gathers its rooms in): the same image twice. */
 export function RoomAvatar(props: { room: Room; class?: string }) {
   const { room } = props
-  const { bridge } = room
+  const bridge = room.bridge?.icon === room.avatar ? null : room.bridge
   const badge = bridge && imagePath(room, bridge.icon)
   const [failedBadge, setFailedBadge] = useState<string | null>(null)
   if (!bridge || !badge || failedBadge === badge) return <Avatar room={room} class={props.class} />
