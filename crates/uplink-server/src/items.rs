@@ -1128,6 +1128,140 @@ mod tests {
         }
     }
 
+    /// A log entry's windows and badges are checked again by what it
+    /// names, of the rooms as the writer keeps them (SPEC §5.7, §9.5): the
+    /// work of a message to one room is as much however many rooms there
+    /// are, not of listing them all again for each window.
+    #[tokio::test]
+    async fn a_message_costs_its_windows_as_much_however_many_rooms() {
+        use uplink_storage::work::Work;
+
+        let message = |id: String| {
+            let raw = serde_json::json!({
+                "type": "m.room.message",
+                "event_id": id,
+                "sender": "@bob:x",
+                "origin_server_ts": now(),
+                "content": { "msgtype": "m.text", "body": "hi" },
+            });
+            uplink_matrix::rooms::ObservedEvent::parse(
+                &raw.to_string(),
+                None,
+                uplink_protocol::matrix::Encryption::None,
+            )
+            .unwrap()
+        };
+        // Of `rooms` rooms of a few unread messages each, the work of
+        // one more to one of them.
+        let work_of = |rooms: usize| async move {
+            let dir = tempfile::tempdir().unwrap();
+            let mut registry = Registry::new();
+            uplink_matrix::register(&mut registry);
+            crate::seen::register(&mut registry);
+            let hub = Arc::new(Hub::new(64));
+            let dispatcher = Dispatcher::new(
+                uplink_storage::open(dir.path()).unwrap(),
+                registry,
+                hub.clone(),
+            );
+            let synced = Synced {
+                rooms: (0..rooms)
+                    .flat_map(|r| {
+                        let events = (0..3).map(|m| message(format!("$e{r}-{m}"))).collect();
+                        room(&format!("!r{r}:x"), Membership::Joined, events).rooms
+                    })
+                    .collect(),
+                ..room("!r0:x", Membership::Joined, vec![])
+            };
+            dispatcher.observe("mx".into(), synced).await.unwrap();
+            let reader = uplink_storage::open_reader(dir.path()).unwrap();
+            let work = Work::default();
+            work.count_on(&reader);
+            let items = Items::new(
+                vec![reader],
+                vec![],
+                RoomsView::kept(
+                    &dispatcher,
+                    vec![uplink_matrix::service::ConfiguredAccount {
+                        id: "mx".into(),
+                        mxid: "@me:x".into(),
+                        history_members: 2,
+                    }],
+                )
+                .unwrap(),
+                [
+                    ("Urgent", "is:mention OR is:invite", Badge::Alert),
+                    ("Unread", "is:unread", Badge::Dot),
+                ]
+                .map(|(name, query, badge)| HomeBucket {
+                    name: name.into(),
+                    query: query.into(),
+                    badge: Some(badge),
+                })
+                .into(),
+            );
+            let queries = [
+                "is:unread",
+                "is:mention OR is:invite",
+                "is:unread -is:mention",
+            ];
+            let mut windows = vec![];
+            for query in queries {
+                let held = uplink_realtime::Held {
+                    items: vec![],
+                    more: false,
+                };
+                let listing = items
+                    .window(
+                        query.into(),
+                        UnknownNames::False,
+                        20,
+                        held,
+                        Changed::everything(),
+                    )
+                    .await
+                    .unwrap();
+                windows.push(listing);
+            }
+            let (badged, first) = items.badged(None).await.unwrap();
+            let mut entries = hub.subscribe();
+            let more = room(
+                &format!("!r{}:x", rooms / 2),
+                Membership::Joined,
+                vec![message("$more".into())],
+            );
+            dispatcher.observe("mx".into(), more).await.unwrap();
+            let mut changed = Changed::default();
+            while let Ok(entry) = entries.try_recv() {
+                changed.came(&entry);
+            }
+            let before = work.steps();
+            for (query, listing) in queries.iter().zip(windows) {
+                let held = uplink_realtime::Held {
+                    items: listing.items,
+                    more: listing.more,
+                };
+                items
+                    .window(
+                        (*query).into(),
+                        UnknownNames::False,
+                        20,
+                        held,
+                        changed.clone(),
+                    )
+                    .await
+                    .unwrap();
+            }
+            items.rebadged(badged, changed, first.since).await.unwrap();
+            work.steps() - before
+        };
+        let (few, many) = (work_of(40).await, work_of(160).await);
+        assert!(
+            (many as f64) < 1.5 * few as f64,
+            "of 40 rooms {few} steps, of 160 {many}"
+        );
+    }
+
     /// Kept by checking again what each log entry names, the badges are
     /// as derived anew, what each bucket holds too, and what came; and
     /// windows are as listed anew.

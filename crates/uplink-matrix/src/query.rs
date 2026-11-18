@@ -49,7 +49,34 @@ pub struct Rooms {
     /// Of each `has:(…)` matched, the rooms its query matches: a room's
     /// own term then, found once for as many queries as name it (each
     /// bucket of home names those before it).
-    has: RefCell<Vec<(Query, HashSet<i64>)>>,
+    has: RefCell<Vec<Has>>,
+}
+
+/// Of a `has:(…)`'s query, the rooms it matches, of those it was asked
+/// of: all, or some (a log entry's, checked again).
+struct Has {
+    query: Query,
+    of: Option<HashSet<i64>>,
+    rooms: HashSet<i64>,
+}
+
+impl Has {
+    fn of(&self, room: i64) -> bool {
+        self.of.as_ref().is_none_or(|of| of.contains(&room))
+    }
+}
+
+/// The rooms of those `query` is among, if it is: it holds no others,
+/// whatever else it says.
+fn scope(query: &Query) -> Option<Vec<i64>> {
+    let among = |q: &Query| match q {
+        Query::Term(Term::Among(among)) => Some(among.rooms.clone()),
+        _ => None,
+    };
+    match query {
+        Query::And(all) => all.iter().find_map(among),
+        q => among(q),
+    }
 }
 
 /// A room a query matches: by its own terms, or by its messages, which
@@ -95,19 +122,40 @@ impl Rooms {
         self.as_of
     }
 
-    /// Finds the rooms of each `has:(…)` of `query` not yet found.
-    fn resolve(&self, tx: &Transaction, query: &Query) -> Result<()> {
+    /// Finds, of the rooms `of` (all, if not given), those of each
+    /// `has:(…)` of `query` not yet found: of those `query` is to be
+    /// matched against alone, as a log entry's are, not of every room's
+    /// messages.
+    fn resolve(&self, tx: &Transaction, query: &Query, of: Option<&[i64]>) -> Result<()> {
         for term in outer_terms(query) {
             let Term::Has(inner) = term else { continue };
-            if self.has.borrow().iter().any(|(q, _)| q == &**inner) {
+            let found = |has: &Has| {
+                has.query == **inner
+                    && match of {
+                        Some(of) => of.iter().all(|room| has.of(*room)),
+                        None => has.of.is_none(),
+                    }
+            };
+            if self.has.borrow().iter().any(found) {
                 continue;
             }
+            let asked = match of {
+                Some(rooms) => (**inner).clone().among(uplink_query::Among {
+                    rooms: rooms.to_vec(),
+                    ..Default::default()
+                }),
+                None => (**inner).clone(),
+            };
             let rooms = self
-                .matching(tx, inner)?
+                .matching(tx, &asked)?
                 .into_iter()
                 .map(|group| group.room.id.0)
                 .collect();
-            self.has.borrow_mut().push(((**inner).clone(), rooms));
+            self.has.borrow_mut().push(Has {
+                query: (**inner).clone(),
+                of: of.map(|of| of.iter().copied().collect()),
+                rooms,
+            });
         }
         Ok(())
     }
@@ -119,7 +167,7 @@ impl Rooms {
 
     /// Those `query` matches, the most recently active first.
     pub fn matching(&self, tx: &Transaction, query: &Query) -> Result<Vec<Group>> {
-        self.resolve(tx, query)?;
+        self.resolve(tx, query, scope(query).as_deref())?;
         let (mut groups, undecided) = self.decided(query);
         if let Some(mut search) = self.search(query, &undecided, true) {
             let sql = format!(
@@ -161,11 +209,13 @@ impl Rooms {
     }
 
     /// Those `query` matches by their own terms, and those whose messages
-    /// decide.
+    /// decide: of those it is among, if it is.
     fn decided(&self, query: &Query) -> (Vec<Group>, Vec<&Room>) {
         let mut groups = vec![];
         let mut undecided = vec![];
-        for room in self.listed() {
+        let scope = scope(query);
+        let scoped = |room: &&Room| scope.as_ref().is_none_or(|s| s.contains(&room.id.0));
+        for room in self.listed().filter(scoped) {
             match uplink_query::decides(query, &|term| self.of_room(room, term)) {
                 Some(true) => groups.push(Group {
                     room: room.clone(),
@@ -181,7 +231,7 @@ impl Rooms {
     /// Of the rooms whose messages `query` looks through, those of which
     /// not the whole history is stored (SPEC §9.2): it may miss some.
     pub fn partly_searched(&self, tx: &Transaction, query: &Query) -> Result<Vec<RoomId>> {
-        self.resolve(tx, query)?;
+        self.resolve(tx, query, scope(query).as_deref())?;
         let (_, undecided) = self.decided(query);
         Ok(match self.search(query, &undecided, true) {
             Some(_) => undecided
@@ -223,7 +273,7 @@ impl Rooms {
         before: Option<RoomEventId>,
         limit: u32,
     ) -> Result<(Vec<RoomEvent>, bool)> {
-        self.resolve(tx, query)?;
+        self.resolve(tx, query, Some(&[room.id.0]))?;
         let Some(mut search) = self.search(query, &[room], false) else {
             return Ok((vec![], false));
         };
@@ -260,6 +310,8 @@ impl Rooms {
         sent_after: i64,
     ) -> Result<Vec<(RoomId, RoomEventId)>> {
         let rooms: Vec<&Room> = self.listed().filter(|r| rooms.contains(&r.id)).collect();
+        let ids: Vec<i64> = rooms.iter().map(|room| room.id.0).collect();
+        self.resolve(tx, query, Some(&ids))?;
         let Some(mut search) = self.search(query, &rooms, true) else {
             return Ok(vec![]);
         };
@@ -320,9 +372,9 @@ impl Rooms {
                 self.has
                     .borrow()
                     .iter()
-                    .find(|(q, _)| q == &**query)
-                    .expect("a query's has:(…) are resolved before it is matched")
-                    .1
+                    .find(|has| has.query == **query && has.of(room.id.0))
+                    .expect("a query's has:(…) are resolved of a room before it is matched")
+                    .rooms
                     .contains(&room.id.0),
             ),
             _ => of_room(room, term, &self.spaces, &self.accounts),

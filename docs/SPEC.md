@@ -453,10 +453,12 @@ level. With `~1 M` messages that's ~4 K files per dir, fine for ext4/btrfs.
   virtual machine on the connections a test opens (a progress handler),
   which are as many each run, however busy the machine. A test so
   measures it over a database and one some times larger, and holds the
-  ratio to what the design says: as much (a page of the fewest's
-  candidates, of however large a mailbox; the rooms, of however long
-  their histories),
-  or as many times more (the rooms, of as many times more rooms).
+  ratio to what the design says: as much (a log entry's windows and
+  badges, of however many rooms; a page of the fewest's candidates, of
+  however large a mailbox; the rooms, of however long their histories),
+  or as many times more (the rooms, of as many times more rooms). The
+  writer's is not counted: as tests write, it lists the rooms anew after
+  each entry, to check those it keeps.
 
 **Why rusqlite over sqlx**: no compile-time DB schema dependency (sqlx
 verifies queries against a live DB at build time, which is brittle for an
@@ -1999,7 +2001,9 @@ of its messages matches what it holds (and of a to-do or an event, its
 own one, as `is:done` would list it). A room's `has:(…)` is found once,
 as the rooms its query matches, of as many queries as name it (one
 `Rooms` load: each bucket of home names those before it), and is then
-one of the room's own terms. A message's words match its text or an edit's (as a
+one of the room's own terms: of the rooms asked of, those a query is
+among (a log entry's, checked again), or a room searched, not of every
+room's messages. A message's words match its text or an edit's (as a
 substring, as a room's search does, §12.11), `from:` its sender's id or
 name, `from:me` the accounts' own; `is:unread` is of one after the
 room's read marker, of the main timeline and not the account's (as the
