@@ -9,10 +9,11 @@ import type {
   Badges,
   CalendarEvent,
   HomeBucket,
-  ListedUnseen,
+  Listed,
   LogEntry,
   Notifications,
   Notifying,
+  Unseen,
   Urgency,
 } from '../generated/protocol'
 import type { Requester, Subscriber } from '../connection'
@@ -27,8 +28,8 @@ export const BUCKET_LIMIT = 20
  * was first listed) and what is now (SPEC §12.16). */
 export type UnseenListener = (
   urgency: Urgency,
-  before: ReadonlyMap<string, ListedUnseen> | null,
-  now: ReadonlyMap<string, ListedUnseen>,
+  before: ReadonlyMap<string, Listed<Unseen>> | null,
+  now: ReadonlyMap<string, Listed<Unseen>>,
 ) => void
 
 /** As home is configured: its buckets, and what notifies. */

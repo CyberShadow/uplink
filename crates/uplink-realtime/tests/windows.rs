@@ -14,7 +14,7 @@ use uplink_protocol::{
     ServerResponse, Source, SubscriptionId, TxLogId, UnknownNames, Unseen, WindowChange,
     WsClientMsg, WsServerMsg,
 };
-use uplink_realtime::{run_session, Answer, Backend, Held, Hub, Listing, Replay, UnseenListing};
+use uplink_realtime::{run_session, Answer, Backend, Held, Hub, Listing, Replay};
 
 /// What every query matches, the most recently active first, as of the
 /// last entry published.
@@ -47,11 +47,11 @@ impl Backend for Lists {
         limit: u32,
         _held: Held,
         _changed: Changed,
-    ) -> Result<Listing, ServerError> {
+    ) -> Result<Listing<Item>, ServerError> {
         let state = self.0.lock().unwrap();
         Ok(Listing {
             as_of: TxLogId(state.head),
-            items: state.items.iter().take(limit as usize).cloned().collect(),
+            listed: state.items.iter().take(limit as usize).cloned().collect(),
             more: state.items.len() > limit as usize,
             scope: ListScope::Except { labels: vec![] },
             partial_rooms: vec![],
@@ -64,17 +64,18 @@ impl Backend for Lists {
         _query: String,
         _unknown: UnknownNames,
         limit: u32,
-    ) -> Result<UnseenListing, ServerError> {
+    ) -> Result<Listing<Unseen>, ServerError> {
         let state = self.0.lock().unwrap();
         let attended = !self.1.attended().borrow().is_empty();
         let unseen: Vec<Unseen> = match attended {
             true => vec![],
             false => state.unseen.clone(),
         };
-        Ok(UnseenListing {
+        Ok(Listing {
             as_of: TxLogId(state.head),
             more: unseen.len() > limit as usize,
-            unseen: unseen.into_iter().take(limit as usize).collect(),
+            listed: unseen.into_iter().take(limit as usize).collect(),
+            scope: (),
             partial_rooms: vec![],
         })
     }
@@ -177,7 +178,7 @@ fn entry(id: i64, event: ServerEvent) -> LogEntry {
     }
 }
 
-fn keys(change: &WindowChange) -> (Vec<&str>, Vec<&str>) {
+fn keys<T>(change: &WindowChange<T>) -> (Vec<&str>, Vec<&str>) {
     (
         change.upserted.iter().map(|l| l.key.0.as_str()).collect(),
         change.removed.iter().map(|k| k.0.as_str()).collect(),
@@ -377,10 +378,7 @@ async fn windows_of_the_unseen_follow_what_is_attended() {
     else {
         panic!("expected the window")
     };
-    let keys = |upserted: &[uplink_protocol::ListedUnseen]| -> Vec<String> {
-        upserted.iter().map(|l| l.key.0.clone()).collect()
-    };
-    assert_eq!(keys(&change.upserted), ["invite:1"]);
+    assert_eq!(keys(&change).0, ["invite:1"]);
 
     let (mut other, mut answers) = connect(addr).await;
     other(WsClientMsg::Request {
@@ -410,5 +408,5 @@ async fn windows_of_the_unseen_follow_what_is_attended() {
     let WsServerMsg::UnseenChanged { change, .. } = recv().await else {
         panic!("expected what is unseen again")
     };
-    assert_eq!(keys(&change.upserted), ["invite:1"]);
+    assert_eq!(keys(&change).0, ["invite:1"]);
 }

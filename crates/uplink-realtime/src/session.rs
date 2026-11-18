@@ -1,5 +1,5 @@
 use crate::hub::Hub;
-use crate::window::{Held, Listing, Subscribed, UnseenListing, Window, Windows};
+use crate::window::{of_window, Held, Listable, Listing, Subscribed, Window, Windows};
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use futures_util::{stream::FuturesUnordered, StreamExt};
 use std::{convert::Infallible, future::Future, sync::Arc, time::Duration};
@@ -9,8 +9,8 @@ use tokio::{
     time::{interval_at, Instant, MissedTickBehavior},
 };
 use uplink_protocol::{
-    Changed, ClientRequest, ErrorCode, LogEntry, Of, Place, ServerError, ServerResponse,
-    SubscriptionId, TxLogId, UnknownNames, WsClientMsg, WsServerMsg, MAX_PAGE,
+    Changed, ClientRequest, ErrorCode, Item, LogEntry, Of, Place, ServerError, ServerResponse,
+    SubscriptionId, TxLogId, UnknownNames, Unseen, WsClientMsg, WsServerMsg, MAX_PAGE,
 };
 
 /// WebSocket subprotocol spoken by [`run_session`] (SPEC §5.1).
@@ -55,7 +55,7 @@ pub trait Backend: Send + Sync {
         limit: u32,
         held: Held,
         changed: Changed,
-    ) -> impl Future<Output = Result<Listing, ServerError>> + Send;
+    ) -> impl Future<Output = Result<Listing<Item>, ServerError>> + Send;
 
     /// What a window of the unseen lists (SPEC §5.7): the first `limit`
     /// unseen messages `query` matches.
@@ -64,7 +64,7 @@ pub trait Backend: Send + Sync {
         query: String,
         unknown: UnknownNames,
         limit: u32,
-    ) -> impl Future<Output = Result<UnseenListing, ServerError>> + Send;
+    ) -> impl Future<Output = Result<Listing<Unseen>, ServerError>> + Send;
 
     /// `session` attends `to` rather than `from` (SPEC §12.15): one of
     /// them, at least. Failing, it attends none.
@@ -338,28 +338,13 @@ async fn subscription(
                     message: format!("subscription {} exists", subscription.0),
                 });
             }
-            let (window, response) = match of {
-                Of::Items => {
-                    let mut window = Window::new(query, unknown, limit);
-                    let listing = backend
-                        .window(
-                            window.query.clone(),
-                            unknown,
-                            limit,
-                            window.held(),
-                            Changed::everything(),
-                        )
-                        .await?;
-                    let response = listed(&mut window, listing);
-                    (Subscribed::Items(window), response)
-                }
-                Of::Unseen => {
-                    let mut window = Window::new(query, unknown, limit);
-                    let listing = backend.unseen(window.query.clone(), unknown, limit).await?;
-                    let response = listed_unseen(&mut window, listing);
-                    (Subscribed::Unseen(window), response)
-                }
+            let mut window = match of {
+                Of::Items => Subscribed::Items(Window::new(query, unknown, limit)),
+                Of::Unseen => Subscribed::Unseen(Window::new(query, unknown, limit)),
             };
+            let response = of_window!(&mut window, window => {
+                list(backend, window, window.limit, Changed::everything()).await?
+            });
             windows.insert(subscription, window);
             Ok(response)
         }
@@ -373,30 +358,8 @@ async fn subscription(
             let (window, changed) = windows
                 .take_changed(subscription)
                 .ok_or_else(|| not_found(subscription))?;
-            Ok(match window {
-                Subscribed::Items(window) => {
-                    let limit = window.limit + limit;
-                    let listing = backend
-                        .window(
-                            window.query.clone(),
-                            window.unknown,
-                            limit,
-                            window.held(),
-                            changed,
-                        )
-                        .await?;
-                    window.limit = limit;
-                    listed(window, listing)
-                }
-                // Listed whole, whatever changed.
-                Subscribed::Unseen(window) => {
-                    let limit = window.limit + limit;
-                    let listing = backend
-                        .unseen(window.query.clone(), window.unknown, limit)
-                        .await?;
-                    window.limit = limit;
-                    listed_unseen(window, listing)
-                }
+            of_window!(window, window => {
+                list(backend, window, window.limit + limit, changed).await
             })
         }
         ClientRequest::Unsubscribe { subscription } => {
@@ -426,24 +389,18 @@ async fn attend(
     Ok(ServerResponse::Done)
 }
 
-/// The response of a window of the unseen, with what changed of it.
-fn listed_unseen(
-    window: &mut Window<uplink_protocol::Unseen>,
-    listing: UnseenListing,
-) -> ServerResponse {
-    ServerResponse::UnseenWindow {
-        as_of: listing.as_of,
-        change: window.update(listing.unseen, listing.more, listing.partial_rooms),
-    }
-}
-
-/// The window's response, with what changed of it.
-fn listed(window: &mut Window<uplink_protocol::Item>, listing: Listing) -> ServerResponse {
-    ServerResponse::Window {
-        as_of: listing.as_of,
-        change: window.update(listing.items, listing.more, listing.partial_rooms),
-        scope: listing.scope,
-    }
+/// Lists `window`'s first `limit`, now that `changed` since it was last
+/// listed: its response, with what changed of it.
+async fn list<T: Listable>(
+    backend: &impl Backend,
+    window: &mut Window<T>,
+    limit: u32,
+    changed: Changed,
+) -> Response {
+    let listing = T::list(backend, window, limit, changed).await?;
+    window.limit = limit;
+    let change = window.update(listing.listed, listing.more, listing.partial_rooms);
+    Ok(T::response(listing.as_of, change, listing.scope))
 }
 
 /// Lists the window due the longest again, if any, and sends what
@@ -459,60 +416,41 @@ async fn refresh(
         // Due as time passed, of none.
         return Ok(());
     };
+    of_window!(window, window => {
+        relist(socket, backend, live, followed, subscription, window, changed).await
+    })
+}
+
+/// Lists `window` again, now that `changed`, and sends what changed of
+/// it, after the entries it reflects.
+async fn relist<T: Listable>(
+    socket: &mut WebSocket,
+    backend: &impl Backend,
+    live: &mut Receiver<Arc<LogEntry>>,
+    followed: &mut Followed,
+    subscription: SubscriptionId,
+    window: &mut Window<T>,
+    changed: Changed,
+) -> Result<(), End> {
     let started = Instant::now();
     // It listed fine before: what fails now is the server's (or a label
     // gone, which the client hears of as it subscribes again).
-    let failed = |e: ServerError| End::Close {
-        code: CLOSE_INTERNAL_ERROR,
-        reason: format!("listing subscription {}: {}", subscription.0, e.message),
-    };
-    let (limit, message) = match window {
-        Subscribed::Items(window) => {
-            let listing = backend
-                .window(
-                    window.query.clone(),
-                    window.unknown,
-                    window.limit,
-                    window.held(),
-                    changed,
-                )
-                .await
-                .map_err(failed)?;
-            catch_up(socket, live, followed, listing.as_of).await?;
-            let change = window.changed(listing.items, listing.more, listing.partial_rooms);
-            (
-                window.limit,
-                change.map(|change| WsServerMsg::WindowChanged {
-                    subscription,
-                    change,
-                }),
-            )
-        }
-        // Listed whole, whatever changed.
-        Subscribed::Unseen(window) => {
-            let listing = backend
-                .unseen(window.query.clone(), window.unknown, window.limit)
-                .await
-                .map_err(failed)?;
-            catch_up(socket, live, followed, listing.as_of).await?;
-            let change = window.changed(listing.unseen, listing.more, listing.partial_rooms);
-            (
-                window.limit,
-                change.map(|change| WsServerMsg::UnseenChanged {
-                    subscription,
-                    change,
-                }),
-            )
-        }
-    };
+    let listing = T::list(backend, window, window.limit, changed)
+        .await
+        .map_err(|e| End::Close {
+            code: CLOSE_INTERNAL_ERROR,
+            reason: format!("listing subscription {}: {}", subscription.0, e.message),
+        })?;
+    catch_up(socket, live, followed, listing.as_of).await?;
+    let change = window.changed(listing.listed, listing.more, listing.partial_rooms);
     tracing::debug!(
         "ws: subscription {} of {} listed again in {:?}",
         subscription.0,
-        limit,
+        window.limit,
         started.elapsed()
     );
-    if let Some(message) = message {
-        send(socket, &message).await?;
+    if let Some(change) = change {
+        send(socket, &T::changed(subscription, change)).await?;
     }
     Ok(())
 }

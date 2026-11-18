@@ -53,17 +53,17 @@ export function useNotifications(route: (path: string) => void) {
         for (const [key, listed] of now) {
           if (was.has(key)) continue
           told.add(key)
-          tags.add(tagOf(listed.unseen))
+          tags.add(tagOf(listed.item))
         }
         for (const [key, listed] of was) {
           if (JSON.stringify(now.get(key)) === JSON.stringify(listed)) continue
           if (!now.has(key)) told.delete(key)
-          tags.add(tagOf(listed.unseen))
+          tags.add(tagOf(listed.item))
         }
         if (!supported() || Notification.permission !== 'granted') return
         for (const tag of tags) {
           const newest = [...now.values()]
-            .filter((listed) => told.has(listed.key) && tagOf(listed.unseen) === tag)
+            .filter((listed) => told.has(listed.key) && tagOf(listed.item) === tag)
             .sort((a, b) => before(a.position, b.position))[0]
           const stands = standing.get(tag)
           if (newest === undefined) {
@@ -74,7 +74,7 @@ export function useNotifications(route: (path: string) => void) {
           // As it was, of what it shows.
           if (stands?.key === newest.key && JSON.stringify(was.get(newest.key)) === JSON.stringify(newest)) continue
           // Of what came before, edited or standing again: quietly.
-          const notification = notify(urgency, was.has(newest.key), newest.unseen, tag, route)
+          const notification = notify(urgency, was.has(newest.key), newest.item, tag, route)
           standing.set(tag, { key: newest.key, notification })
         }
       }),

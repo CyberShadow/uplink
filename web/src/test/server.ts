@@ -7,7 +7,6 @@ import type { Requester, Subscriber, Subscription, UnseenListener, WindowListene
 import { RequestError } from '../connection'
 import type {
   Attachment,
-  ListedUnseen,
   Unseen,
   Urgency,
   RoomPreview,
@@ -78,7 +77,6 @@ import type {
   MessageId,
   UrlPreview,
   UnknownNames,
-  UnseenChange,
 } from '../generated/protocol'
 import type { Client } from '../stores/client'
 import { ruleKey } from '../stores/mail'
@@ -132,7 +130,7 @@ interface FakeWindow {
   unknown: UnknownNames
   limit: number
   listener: WindowListener
-  items: Map<string, Listed>
+  items: Map<string, Listed<Item>>
   more: boolean
   partialRooms: RoomId[]
 }
@@ -141,7 +139,24 @@ interface FakeWindow {
 interface FakeUnseenWindow {
   query: string
   listener: UnseenListener
-  listed: Map<string, ListedUnseen>
+  listed: Map<string, Listed<Unseen>>
+}
+
+/** What changed of a window that `had` what it lists now, `listed`, as
+ * the server says it. */
+function difference<T>(
+  had: ReadonlyMap<string, Listed<T>>,
+  listed: Listed<T>[],
+  more: boolean,
+  partial_rooms: RoomId[],
+): WindowChange<T> {
+  const now = new Set(listed.map((l) => l.key))
+  return {
+    removed: [...had.keys()].filter((key) => !now.has(key)),
+    upserted: listed.filter((l) => JSON.stringify(had.get(l.key)) !== JSON.stringify(l)),
+    more,
+    partial_rooms,
+  }
 }
 
 /** What notifies, of each urgency, as the fake's home has it. */
@@ -924,18 +939,12 @@ export class FakeServer implements Requester, Subscriber, Blobs {
   }
 
   /** What changed of the window of the unseen, which it then has. */
-  private unseenChange(window: FakeUnseenWindow): UnseenChange {
+  private unseenChange(window: FakeUnseenWindow): WindowChange<Unseen> {
     const urgency = (Object.keys(NOTIFYING) as Urgency[]).find((u) => NOTIFYING[u] === window.query)!
     const listed = (this.unseenOf.get(urgency) ?? []).map(
-      (unseen): ListedUnseen => ({ key: unseenKey(unseen), position: unseenPosition(unseen), unseen }),
+      (item): Listed<Unseen> => ({ key: unseenKey(item), position: unseenPosition(item), item }),
     )
-    const now = new Set(listed.map((l) => l.key))
-    const change: UnseenChange = {
-      removed: [...window.listed.keys()].filter((key) => !now.has(key)),
-      upserted: listed.filter((l) => JSON.stringify(window.listed.get(l.key)) !== JSON.stringify(l)),
-      more: false,
-      partial_rooms: [],
-    }
+    const change = difference(window.listed, listed, false, [])
     window.listed = new Map(listed.map((l) => [l.key, l]))
     return change
   }
@@ -971,18 +980,12 @@ export class FakeServer implements Requester, Subscriber, Blobs {
 
   /** What changed of the window, as the server says it, which it then
    * has. */
-  private windowChange(window: FakeWindow): { change: WindowChange; scope: ListScope } {
+  private windowChange(window: FakeWindow): { change: WindowChange<Item>; scope: ListScope } {
     const response =
       window.unknown === 'false' ? this.listBucket(window.query, window.limit) : this.listItems(window.query, null, window.limit)
     if (response.type !== 'items') throw new Error('items are listed as items')
-    const listed = response.items.map((item): Listed => ({ key: keyOf(item), position: positionOf(item), item }))
-    const now = new Set(listed.map((l) => l.key))
-    const change: WindowChange = {
-      removed: [...window.items.keys()].filter((key) => !now.has(key)),
-      upserted: listed.filter((l) => JSON.stringify(window.items.get(l.key)) !== JSON.stringify(l)),
-      more: response.next !== null,
-      partial_rooms: response.partial_rooms,
-    }
+    const listed = response.items.map((item): Listed<Item> => ({ key: keyOf(item), position: positionOf(item), item }))
+    const change = difference(window.items, listed, response.next !== null, response.partial_rooms)
     window.items = new Map(listed.map((l) => [l.key, l]))
     window.more = change.more
     window.partialRooms = change.partial_rooms

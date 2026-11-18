@@ -6,10 +6,10 @@ use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use tokio_tungstenite::tungstenite::Message;
 use uplink_protocol::{
-    Badges, Changed, ClientRequest, Mark, Marks, Place, ServerError, ServerResponse, TxLogId,
-    UnknownNames, WsClientMsg, WsServerMsg,
+    Badges, Changed, ClientRequest, Item, Mark, Marks, Place, ServerError, ServerResponse, TxLogId,
+    UnknownNames, Unseen, WsClientMsg, WsServerMsg,
 };
-use uplink_realtime::{run_session, Answer, Backend, Held, Hub, Listing, Replay, UnseenListing};
+use uplink_realtime::{run_session, Answer, Backend, Held, Hub, Listing, Replay};
 
 struct Idle;
 
@@ -32,7 +32,7 @@ impl Backend for Idle {
         _limit: u32,
         _held: Held,
         _changed: Changed,
-    ) -> Result<Listing, ServerError> {
+    ) -> Result<Listing<Item>, ServerError> {
         unreachable!("nothing is subscribed to")
     }
 
@@ -41,7 +41,7 @@ impl Backend for Idle {
         _query: String,
         _unknown: UnknownNames,
         _limit: u32,
-    ) -> Result<UnseenListing, ServerError> {
+    ) -> Result<Listing<Unseen>, ServerError> {
         unreachable!("no window of the unseen is subscribed to")
     }
 

@@ -6,10 +6,10 @@ use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio_tungstenite::tungstenite::Message;
 use uplink_protocol::{
-    Changed, ClientRequest, Place, ServerError, ServerResponse, TxLogId, UnknownNames, WsClientMsg,
-    WsServerMsg,
+    Changed, ClientRequest, Item, Place, ServerError, ServerResponse, TxLogId, UnknownNames,
+    Unseen, WsClientMsg, WsServerMsg,
 };
-use uplink_realtime::{run_session, Answer, Backend, Held, Hub, Listing, Replay, UnseenListing};
+use uplink_realtime::{run_session, Answer, Backend, Held, Hub, Listing, Replay};
 
 /// Answers `list_rooms` later, once `release` is notified; anything else
 /// at once.
@@ -45,7 +45,7 @@ impl Backend for Slow {
         _limit: u32,
         _held: Held,
         _changed: Changed,
-    ) -> Result<Listing, ServerError> {
+    ) -> Result<Listing<Item>, ServerError> {
         unreachable!("nothing is subscribed to")
     }
 
@@ -54,7 +54,7 @@ impl Backend for Slow {
         _query: String,
         _unknown: UnknownNames,
         _limit: u32,
-    ) -> Result<UnseenListing, ServerError> {
+    ) -> Result<Listing<Unseen>, ServerError> {
         unreachable!("no window of the unseen is subscribed to")
     }
 

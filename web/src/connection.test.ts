@@ -3,10 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BACKOFF_MS, Connection, ConnectionLost, HEARTBEAT_MS } from './connection'
 import {
   PROTOCOL_VERSION,
+  type Item,
   type Listed,
   type ListScope,
-  type UnseenChange,
   type LogEntry,
+  type Unseen,
   type WindowChange,
   type WsClientMsg,
   type WsServerMsg,
@@ -57,7 +58,7 @@ function entry(id: number): LogEntry {
   }
 }
 
-function todo(id: number): Listed {
+function todo(id: number): Listed<Item> {
   const item = {
     kind: 'todo' as const,
     todo: { id, title: `to-do ${id}`, notes: '', due: null, done_at: null, message: null, created_at: 0, updated_at: id },
@@ -65,11 +66,11 @@ function todo(id: number): Listed {
   return { key: `todo:${id}`, position: { at: id, kind: 'todo', id }, item }
 }
 
-function change(upserted: Listed[], more: boolean): WindowChange {
+function change(upserted: Listed<Item>[], more: boolean): WindowChange<Item> {
   return { upserted, removed: [], more, partial_rooms: [] }
 }
 
-function window(as_of: number, upserted: Listed[], more: boolean, scope: ListScope) {
+function window(as_of: number, upserted: Listed<Item>[], more: boolean, scope: ListScope) {
   return { type: 'window' as const, as_of, change: change(upserted, more), scope }
 }
 
@@ -306,7 +307,7 @@ describe('Connection', () => {
     expect(subscribe.body).toEqual({ type: 'subscribe', subscription: 1, query: 'in:inbox', unknown: 'false', limit: 100, of: 'unseen' })
     const attend = await first.peer.next('request')
     expect(attend.body).toEqual({ type: 'attend', place: { kind: 'home' } })
-    const none: UnseenChange = { upserted: [], removed: [], more: false, partial_rooms: [] }
+    const none: WindowChange<Unseen> = { upserted: [], removed: [], more: false, partial_rooms: [] }
     first.peer.send({ type: 'response', request_id: subscribe.request_id, body: { type: 'unseen_window', as_of: 1, change: none } })
     await vi.waitFor(() => expect(listener.reset).toHaveBeenCalledWith(none))
     const gone = { ...none, removed: ['mail:1'] }

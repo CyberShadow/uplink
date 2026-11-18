@@ -227,7 +227,7 @@ export class MailStore {
   /** The conversation open, as last listed, once its window no longer
    * has it: it stays listed until closed, as Gmail keeps one read in a
    * search of the unread. */
-  private held: Listed | null = null
+  private held: Listed<ListedItem> | null = null
   /** Where the list on show was scrolled, as its view last said: to
    * scroll back to as it shows again, from a conversation, or as a list
    * kept. */

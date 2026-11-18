@@ -29,7 +29,7 @@ use uplink_protocol::{
     Urgency,
 };
 use uplink_query::{Kind, Query, Term};
-use uplink_realtime::{Attended, Listing, UnseenListing};
+use uplink_realtime::{Attended, Listing};
 use uplink_storage::rusqlite::{Connection, Transaction};
 use uplink_tx_log::answer::{error, internal, Reader, Response};
 
@@ -469,12 +469,12 @@ impl Items {
         limit: u32,
         held: uplink_realtime::Held,
         changed: Changed,
-    ) -> Result<Listing, ServerError> {
+    ) -> Result<Listing<Item>, ServerError> {
         if changed.everything {
             let (as_of, page, partial_rooms) = self.read_page(query, unknown, None, limit).await?;
             return Ok(Listing {
                 as_of,
-                items: page.items,
+                listed: page.items,
                 more: page.next.is_some(),
                 scope: page.scope,
                 partial_rooms,
@@ -552,7 +552,7 @@ impl Items {
                 };
                 Ok(Listing {
                     as_of,
-                    items,
+                    listed: items,
                     more,
                     scope,
                     partial_rooms: rooms.partly_searched(&tx, &query).map_err(internal)?,
@@ -718,7 +718,7 @@ impl Items {
         query: String,
         unknown: UnknownNames,
         limit: u32,
-    ) -> Result<UnseenListing, ServerError> {
+    ) -> Result<Listing<Unseen>, ServerError> {
         let now = now();
         let query = uplink_query::parse(&query, now).map_err(|e| invalid(e.0))?;
         let this = self.clone();
@@ -773,10 +773,11 @@ impl Items {
                 unseen.sort_by_key(Unseen::position);
                 let more = mail_more || rooms_more || unseen.len() > limit as usize;
                 unseen.truncate(limit as usize);
-                Ok(UnseenListing {
+                Ok(Listing {
                     as_of: rooms.as_of(),
-                    unseen,
+                    listed: unseen,
                     more,
+                    scope: (),
                     partial_rooms: rooms.partly_searched(&tx, &query).map_err(internal)?,
                 })
             })
@@ -1159,7 +1160,7 @@ mod tests {
             let before = work.steps();
             for (query, listing) in queries.iter().zip(windows) {
                 let held = uplink_realtime::Held {
-                    items: listing.items,
+                    items: listing.listed,
                     more: listing.more,
                 };
                 items
@@ -1424,25 +1425,25 @@ mod tests {
             assert!(!changed.everything, "step {step}");
             for (query, limit, listing) in &mut windows {
                 let held = uplink_realtime::Held {
-                    items: listing.items.clone(),
+                    items: listing.listed.clone(),
                     more: listing.more,
                 };
                 let kept = window(query, *limit, held, changed.clone()).await.unwrap();
                 let listed = window(query, *limit, anew(), Changed::everything())
                     .await
                     .unwrap();
-                let keys = |l: &Listing| l.items.iter().map(Item::key).collect::<Vec<_>>();
+                let keys = |l: &Listing<Item>| l.listed.iter().map(Item::key).collect::<Vec<_>>();
                 assert_eq!(keys(&kept), keys(&listed), "{query}, step {step}");
-                assert_eq!(kept.items, listed.items, "{query}, step {step}");
+                assert_eq!(kept.listed, listed.listed, "{query}, step {step}");
                 assert_eq!(kept.more, listed.more, "{query}, step {step}");
                 assert_eq!(
                     kept.partial_rooms, listed.partial_rooms,
                     "{query}, step {step}"
                 );
                 left += listing
-                    .items
+                    .listed
                     .iter()
-                    .filter(|item| !kept.items.iter().any(|k| k.key() == item.key()))
+                    .filter(|item| !kept.listed.iter().any(|k| k.key() == item.key()))
                     .count();
                 *listing = kept;
             }
@@ -1460,7 +1461,7 @@ mod tests {
         let listing = window("label:SPAM", 2, anew(), Changed::everything())
             .await
             .unwrap();
-        assert!(listing.items.is_empty());
+        assert!(listing.listed.is_empty());
         let added = (0..3)
             .map(|n| entry(&format!("s{n}"), &format!("s{n}"), &["SPAM"]))
             .collect();
@@ -1473,11 +1474,11 @@ mod tests {
             changed.came(&entry);
         }
         let held = uplink_realtime::Held {
-            items: listing.items,
+            items: listing.listed,
             more: listing.more,
         };
         let kept = window("label:SPAM", 2, held, changed).await.unwrap();
-        assert_eq!(kept.items.len(), 2);
+        assert_eq!(kept.listed.len(), 2);
         assert!(kept.more);
     }
 
@@ -1590,13 +1591,13 @@ mod tests {
             .unwrap();
         for (query, listing) in queries.iter().zip(listed) {
             let held = uplink_realtime::Held {
-                items: listing.items.clone(),
+                items: listing.listed.clone(),
                 more: listing.more,
             };
             let kept = window(query, held, Changed::time()).await.unwrap();
             let anew = window(query, anew(), Changed::everything()).await.unwrap();
-            assert_ne!(kept.items, listing.items, "{query}: time moved it");
-            assert_eq!(kept.items, anew.items, "{query}");
+            assert_ne!(kept.listed, listing.listed, "{query}: time moved it");
+            assert_eq!(kept.listed, anew.listed, "{query}");
         }
         let (kept, badges) = items.rebadged(badged, Changed::time()).await.unwrap();
         let (anew, badges_anew) = items.badged().await.unwrap();
@@ -1732,7 +1733,7 @@ mod tests {
                 .unwrap();
             assert!(!listing.more);
             listing
-                .unseen
+                .listed
                 .iter()
                 .map(|unseen| match unseen {
                     Unseen::Mail { entry, .. } => entry.subject.clone().unwrap(),
@@ -1978,7 +1979,7 @@ mod tests {
         }
         let listed: Vec<_> = windows
             .iter()
-            .map(|(name_of, w)| (*name_of, w.items.iter().map(name).collect::<Vec<_>>()))
+            .map(|(name_of, w)| (*name_of, w.listed.iter().map(name).collect::<Vec<_>>()))
             .collect();
         assert_eq!(
             listed,
@@ -2028,7 +2029,7 @@ mod tests {
         );
 
         // The badged ones' marks, each kind apart.
-        let Item::Room { room, .. } = &windows[0].1.items[0] else {
+        let Item::Room { room, .. } = &windows[0].1.listed[0] else {
             panic!()
         };
         let room = room.id;

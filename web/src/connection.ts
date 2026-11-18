@@ -11,9 +11,10 @@ import type {
   Place,
   ServerError,
   ServerResponse,
+  Item,
   TxLogId,
   UnknownNames,
-  UnseenChange,
+  Unseen,
   WindowChange,
   WsClientMsg,
   WsServerMsg,
@@ -70,9 +71,9 @@ export interface Requester {
 export interface WindowListener {
   /** The window, from nothing: at first, and again on a new connection,
    * as what it had is void then. */
-  reset(change: WindowChange, scope: ListScope): void
+  reset(change: WindowChange<Item>, scope: ListScope): void
   /** What changed of it since. */
-  change(change: WindowChange): void
+  change(change: WindowChange<Item>): void
   /** The server refused it: it is told of nothing more. */
   failed(error: Error): void
 }
@@ -80,8 +81,8 @@ export interface WindowListener {
 /** Told of a window of the unseen (SPEC §5.7), as it changes. */
 export interface UnseenListener {
   /** The window, from nothing: at first, and again on a new connection. */
-  reset(change: UnseenChange): void
-  change(change: UnseenChange): void
+  reset(change: WindowChange<Unseen>): void
+  change(change: WindowChange<Unseen>): void
   failed(error: Error): void
 }
 

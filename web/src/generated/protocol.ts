@@ -24,7 +24,7 @@ export type WsServerMsg = { "type": "pong", seq: number, } | { "type": "welcome"
 /**
  * The most recent entry at the time of `Hello`.
  */
-cursor: TxLogId, resumed: boolean, } | { "type": "response", request_id: number, body: ServerResponse, } | { "type": "request_failed", request_id: number, error: ServerError, } | { "type": "entry", entry: LogEntry, } | { "type": "badges", badges: Badges, } | { "type": "notice", notice: Notice, } | { "type": "window_changed", subscription: SubscriptionId, change: WindowChange, } | { "type": "unseen_changed", subscription: SubscriptionId, change: UnseenChange, };
+cursor: TxLogId, resumed: boolean, } | { "type": "response", request_id: number, body: ServerResponse, } | { "type": "request_failed", request_id: number, error: ServerError, } | { "type": "entry", entry: LogEntry, } | { "type": "badges", badges: Badges, } | { "type": "notice", notice: Notice, } | { "type": "window_changed", subscription: SubscriptionId, change: WindowChange<Item>, } | { "type": "unseen_changed", subscription: SubscriptionId, change: WindowChange<Unseen>, };
 
 /**
  * A notice of the moment (SPEC §5.5).
@@ -307,11 +307,11 @@ scope: ListScope,
  * the whole history is stored (`Room::history`): it may not have
  * found all it would.
  */
-partial_rooms: Array<RoomId>, } | { "type": "window", as_of: TxLogId, change: WindowChange, 
+partial_rooms: Array<RoomId>, } | { "type": "window", as_of: TxLogId, change: WindowChange<Item>, 
 /**
  * Of its conversations.
  */
-scope: ListScope, } | { "type": "unseen_window", as_of: TxLogId, change: UnseenChange, } | { "type": "message", message: MessageContent, } | { "type": "drafts", as_of: TxLogId, drafts: Array<Draft>, } | { "type": "outbox", as_of: TxLogId, accounts: Array<AccountOutbox>, } | { "type": "rooms", as_of: TxLogId, accounts: Array<MatrixAccount>, rooms: Array<Room>, } | { "type": "timeline", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, 
+scope: ListScope, } | { "type": "unseen_window", as_of: TxLogId, change: WindowChange<Unseen>, } | { "type": "message", message: MessageContent, } | { "type": "drafts", as_of: TxLogId, drafts: Array<Draft>, } | { "type": "outbox", as_of: TxLogId, accounts: Array<AccountOutbox>, } | { "type": "rooms", as_of: TxLogId, accounts: Array<MatrixAccount>, rooms: Array<Room>, } | { "type": "timeline", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, 
 /**
  * Whether there are earlier events than those listed.
  */
@@ -429,17 +429,17 @@ export type SubscriptionId = number;
 export type UnknownNames = "invalid" | "false";
 
 /**
- * What changed of a subscription's window (SPEC §5.7): applied to the
- * items the client has of it, it gives those the window has now, in
- * their order, `position`'s.
+ * What changed of a subscription's window (SPEC §5.7): applied to what
+ * the client has of it, it gives what the window has now, in their
+ * order, `position`'s. Of items, or of the unseen (`Of`).
  */
-export type WindowChange = { 
+export type WindowChange<T> = { 
 /**
- * Items new to the window, or changed (moved, too).
+ * Those new to the window, or changed (moved, too).
  */
-upserted: Array<Listed>, 
+upserted: Array<Listed<T>>, 
 /**
- * Items gone from it.
+ * Those gone from it.
  */
 removed: Array<ItemKey>, 
 /**
@@ -453,9 +453,9 @@ more: boolean,
 partial_rooms: Array<RoomId>, };
 
 /**
- * An item, as a window lists it.
+ * An item, or a message unseen, as a window lists it.
  */
-export type Listed = { key: ItemKey, position: ItemPosition, item: Item, };
+export type Listed<T> = { key: ItemKey, position: ItemPosition, item: T, };
 
 /**
  * A room's messages a query matches (SPEC §8.7).
@@ -494,16 +494,6 @@ export type Of = "items" | "unseen";
  * A message unseen (SPEC §5.7, §12.15), as a notification shows it.
  */
 export type Unseen = { "kind": "mail", conversation: ItemKey, entry: Entry, } | { "kind": "message", room: RoomId, name: string, event: RoomEvent, } | { "kind": "invite", room: RoomId, name: string, invitation: Invitation, };
-
-/**
- * As [`WindowChange`], of a window of the unseen.
- */
-export type UnseenChange = { upserted: Array<ListedUnseen>, removed: Array<ItemKey>, more: boolean, partial_rooms: Array<RoomId>, };
-
-/**
- * A message unseen, as a window lists it.
- */
-export type ListedUnseen = { key: ItemKey, position: ItemPosition, unseen: Unseen, };
 
 /**
  * An invitation to a room (SPEC §9.5): of the stripped `m.room.member`
@@ -1710,4 +1700,4 @@ export type EventChangeKind = "create" | "update" | "delete";
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "8b6313ecbc57c8f0"
+export const PROTOCOL_VERSION = "f1464891278e8153"

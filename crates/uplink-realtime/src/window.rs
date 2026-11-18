@@ -1,31 +1,25 @@
 //! Subscriptions' windows (SPEC §5.7): what the client has of each, so
 //! that only what changed of it is sent.
 
-use std::collections::{hash_map::Entry, HashMap, HashSet, VecDeque};
+use crate::session::Backend;
+use std::{
+    collections::{hash_map::Entry, HashMap, HashSet, VecDeque},
+    future::Future,
+};
 use uplink_protocol::{
-    mail::ListScope, matrix::RoomId, Changed, Item, ItemKey, Listed, ListedUnseen, SubscriptionId,
-    TxLogId, UnknownNames, Unseen, UnseenChange, WindowChange,
+    mail::ListScope, matrix::RoomId, Changed, Item, ItemKey, ItemPosition, Listed, ServerError,
+    ServerResponse, SubscriptionId, TxLogId, UnknownNames, Unseen, WindowChange, WsServerMsg,
 };
 
-/// What a window of items lists, as of a log position.
-pub struct Listing {
+/// What a window lists, as of a log position.
+pub struct Listing<T: Listable> {
     pub as_of: TxLogId,
-    /// The first items of what the query matches, the most recently
-    /// active first.
-    pub items: Vec<Item>,
+    /// The first of what the query matches, in their order.
+    pub listed: Vec<T>,
     /// Whether it matches more.
     pub more: bool,
-    pub scope: ListScope,
+    pub scope: T::Scope,
     /// The rooms it looked through not whole ([`WindowChange`]'s).
-    pub partial_rooms: Vec<RoomId>,
-}
-
-/// What a window of the unseen lists, as of a log position.
-pub struct UnseenListing {
-    pub as_of: TxLogId,
-    /// The first unseen messages the query matches, the newest first.
-    pub unseen: Vec<Unseen>,
-    pub more: bool,
     pub partial_rooms: Vec<RoomId>,
 }
 
@@ -38,69 +32,105 @@ pub struct Held {
     pub more: bool,
 }
 
-/// What a window lists: items, or the unseen.
-pub trait Listable: Clone + PartialEq {
-    /// What the client is sent of what changed of a window.
-    type Change;
+/// What a window lists (`Of`): items, or the unseen. Of each the same,
+/// but for how it is listed, and what the client is sent of it.
+pub trait Listable: Clone + PartialEq + Send + Sync + Sized + 'static {
+    /// What its listing says besides: of items, their conversations'
+    /// scope.
+    type Scope: Send;
+
     fn key(&self) -> ItemKey;
-    fn change(
-        upserted: Vec<Self>,
-        removed: Vec<ItemKey>,
-        more: bool,
-        partial_rooms: Vec<RoomId>,
-    ) -> Self::Change;
+
+    fn position(&self) -> ItemPosition;
+
+    /// The first `limit` of what `window`'s query matches, now that
+    /// `changed` since it was last listed.
+    fn list(
+        backend: &impl Backend,
+        window: &Window<Self>,
+        limit: u32,
+        changed: Changed,
+    ) -> impl Future<Output = Result<Listing<Self>, ServerError>> + Send;
+
+    /// Of `Subscribe` and `Extend`: what changed of the window.
+    fn response(as_of: TxLogId, change: WindowChange<Self>, scope: Self::Scope) -> ServerResponse;
+
+    /// What changed of the window, as it changes.
+    fn changed(subscription: SubscriptionId, change: WindowChange<Self>) -> WsServerMsg;
 }
 
 impl Listable for Item {
-    type Change = WindowChange;
+    type Scope = ListScope;
+
     fn key(&self) -> ItemKey {
         Item::key(self)
     }
-    fn change(
-        upserted: Vec<Self>,
-        removed: Vec<ItemKey>,
-        more: bool,
-        partial_rooms: Vec<RoomId>,
-    ) -> WindowChange {
-        WindowChange {
-            upserted: upserted
-                .into_iter()
-                .map(|item| Listed {
-                    key: item.key(),
-                    position: item.position(),
-                    item,
-                })
-                .collect(),
-            removed,
-            more,
-            partial_rooms,
+
+    fn position(&self) -> ItemPosition {
+        Item::position(self)
+    }
+
+    /// Of what it holds, but for what changed.
+    fn list(
+        backend: &impl Backend,
+        window: &Window<Self>,
+        limit: u32,
+        changed: Changed,
+    ) -> impl Future<Output = Result<Listing<Self>, ServerError>> + Send {
+        backend.window(
+            window.query.clone(),
+            window.unknown,
+            limit,
+            window.held(),
+            changed,
+        )
+    }
+
+    fn response(as_of: TxLogId, change: WindowChange<Self>, scope: ListScope) -> ServerResponse {
+        ServerResponse::Window {
+            as_of,
+            change,
+            scope,
+        }
+    }
+
+    fn changed(subscription: SubscriptionId, change: WindowChange<Self>) -> WsServerMsg {
+        WsServerMsg::WindowChanged {
+            subscription,
+            change,
         }
     }
 }
 
 impl Listable for Unseen {
-    type Change = UnseenChange;
+    type Scope = ();
+
     fn key(&self) -> ItemKey {
         Unseen::key(self)
     }
-    fn change(
-        upserted: Vec<Self>,
-        removed: Vec<ItemKey>,
-        more: bool,
-        partial_rooms: Vec<RoomId>,
-    ) -> UnseenChange {
-        UnseenChange {
-            upserted: upserted
-                .into_iter()
-                .map(|unseen| ListedUnseen {
-                    key: unseen.key(),
-                    position: unseen.position(),
-                    unseen,
-                })
-                .collect(),
-            removed,
-            more,
-            partial_rooms,
+
+    fn position(&self) -> ItemPosition {
+        Unseen::position(self)
+    }
+
+    /// Whole, whatever changed.
+    fn list(
+        backend: &impl Backend,
+        window: &Window<Self>,
+        limit: u32,
+        _changed: Changed,
+    ) -> impl Future<Output = Result<Listing<Self>, ServerError>> + Send {
+        backend.unseen(window.query.clone(), window.unknown, limit)
+    }
+
+    fn response(as_of: TxLogId, change: WindowChange<Self>, (): ()) -> ServerResponse {
+        ServerResponse::UnseenWindow { as_of, change }
+    }
+
+    fn changed(subscription: SubscriptionId, change: WindowChange<Self>) -> WsServerMsg {
+        WsServerMsg::UnseenChanged {
+            subscription,
+            change,
         }
     }
 }
@@ -111,14 +141,17 @@ pub enum Subscribed {
     Unseen(Window<Unseen>),
 }
 
-impl Subscribed {
-    fn changed_mut(&mut self) -> &mut Changed {
-        match self {
-            Subscribed::Items(window) => &mut window.changed,
-            Subscribed::Unseen(window) => &mut window.changed,
+/// `$body`, of the window `$subscribed` is, named `$window`, whichever
+/// it lists.
+macro_rules! of_window {
+    ($subscribed:expr, $window:ident => $body:expr) => {
+        match $subscribed {
+            $crate::window::Subscribed::Items($window) => $body,
+            $crate::window::Subscribed::Unseen($window) => $body,
         }
-    }
+    };
 }
+pub(crate) use of_window;
 
 /// A session's windows, by subscription, and those due to be listed
 /// again, in turn.
@@ -153,7 +186,7 @@ impl Windows {
     /// last listed.
     pub fn came(&mut self, changed: &Changed) {
         for (&subscription, window) in &mut self.windows {
-            window.changed_mut().merge(changed.clone());
+            of_window!(window, window => window.changed.merge(changed.clone()));
             if !self.due.contains(&subscription) {
                 self.due.push_back(subscription);
             }
@@ -182,7 +215,7 @@ impl Windows {
     ) -> Option<(&mut Subscribed, Changed)> {
         let window = self.windows.get_mut(&subscription)?;
         self.due.retain(|&due| due != subscription);
-        let changed = std::mem::take(window.changed_mut());
+        let changed = of_window!(&mut *window, window => std::mem::take(&mut window.changed));
         Some((window, changed))
     }
 
@@ -198,7 +231,7 @@ impl Windows {
             .windows
             .get_mut(&subscription)
             .expect("due windows are");
-        let changed = std::mem::take(window.changed_mut());
+        let changed = of_window!(&mut *window, window => std::mem::take(&mut window.changed));
         Some((subscription, window, changed))
     }
 }
@@ -231,7 +264,12 @@ impl<T: Listable> Window<T> {
     }
 
     /// Takes what it lists now: what changed of it for the client.
-    pub fn update(&mut self, listed: Vec<T>, more: bool, partial_rooms: Vec<RoomId>) -> T::Change {
+    pub fn update(
+        &mut self,
+        listed: Vec<T>,
+        more: bool,
+        partial_rooms: Vec<RoomId>,
+    ) -> WindowChange<T> {
         self.difference(listed, more, partial_rooms).1
     }
 
@@ -241,7 +279,7 @@ impl<T: Listable> Window<T> {
         listed: Vec<T>,
         more: bool,
         partial_rooms: Vec<RoomId>,
-    ) -> Option<T::Change> {
+    ) -> Option<WindowChange<T>> {
         let (more_was, partial_was) = (self.more, self.partial_rooms.clone());
         let (same, change) = self.difference(listed, more, partial_rooms);
         (!(same && self.more == more_was && self.partial_rooms == partial_was)).then_some(change)
@@ -254,7 +292,7 @@ impl<T: Listable> Window<T> {
         listed: Vec<T>,
         more: bool,
         partial_rooms: Vec<RoomId>,
-    ) -> (bool, T::Change) {
+    ) -> (bool, WindowChange<T>) {
         let keys: HashSet<ItemKey> = listed.iter().map(T::key).collect();
         let removed: Vec<ItemKey> = self
             .listed
@@ -276,7 +314,21 @@ impl<T: Listable> Window<T> {
         self.more = more;
         self.partial_rooms.clone_from(&partial_rooms);
         let same = upserted.is_empty() && removed.is_empty();
-        (same, T::change(upserted, removed, more, partial_rooms))
+        let upserted = upserted
+            .into_iter()
+            .map(|item| Listed {
+                key: item.key(),
+                position: item.position(),
+                item,
+            })
+            .collect();
+        let change = WindowChange {
+            upserted,
+            removed,
+            more,
+            partial_rooms,
+        };
+        (same, change)
     }
 }
 
@@ -312,7 +364,7 @@ mod tests {
         }
     }
 
-    fn keys(listed: &[Listed]) -> Vec<&str> {
+    fn keys(listed: &[Listed<Item>]) -> Vec<&str> {
         listed.iter().map(|l| l.key.0.as_str()).collect()
     }
 

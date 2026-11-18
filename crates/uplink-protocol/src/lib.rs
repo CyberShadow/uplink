@@ -95,12 +95,12 @@ pub enum WsServerMsg {
     /// the entries it reflects.
     WindowChanged {
         subscription: SubscriptionId,
-        change: WindowChange,
+        change: WindowChange<Item>,
     },
     /// As `WindowChanged`, of a window of the unseen (`Of::Unseen`).
     UnseenChanged {
         subscription: SubscriptionId,
-        change: UnseenChange,
+        change: WindowChange<Unseen>,
     },
 }
 
@@ -597,14 +597,14 @@ pub enum ServerResponse {
     /// nothing at first.
     Window {
         as_of: TxLogId,
-        change: WindowChange,
+        change: WindowChange<Item>,
         /// Of its conversations.
         scope: mail::ListScope,
     },
     /// As `Window`, of a window of the unseen (`Of::Unseen`).
     UnseenWindow {
         as_of: TxLogId,
-        change: UnseenChange,
+        change: WindowChange<Unseen>,
     },
     Message {
         message: Box<mail::MessageContent>,
@@ -961,15 +961,15 @@ pub struct SubscriptionId(pub u64);
 /// The most items a page, or a window's widening, may ask for.
 pub const MAX_PAGE: u32 = 500;
 
-/// What changed of a subscription's window (SPEC §5.7): applied to the
-/// items the client has of it, it gives those the window has now, in
-/// their order, `position`'s.
+/// What changed of a subscription's window (SPEC §5.7): applied to what
+/// the client has of it, it gives what the window has now, in their
+/// order, `position`'s. Of items, or of the unseen (`Of`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
-pub struct WindowChange {
-    /// Items new to the window, or changed (moved, too).
-    pub upserted: Vec<Listed>,
-    /// Items gone from it.
+pub struct WindowChange<T> {
+    /// Those new to the window, or changed (moved, too).
+    pub upserted: Vec<Listed<T>>,
+    /// Those gone from it.
     pub removed: Vec<ItemKey>,
     /// Whether the query matches more than the window has.
     pub more: bool,
@@ -978,32 +978,13 @@ pub struct WindowChange {
     pub partial_rooms: Vec<matrix::RoomId>,
 }
 
-/// As [`WindowChange`], of a window of the unseen.
+/// An item, or a message unseen, as a window lists it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
-pub struct UnseenChange {
-    pub upserted: Vec<ListedUnseen>,
-    pub removed: Vec<ItemKey>,
-    pub more: bool,
-    pub partial_rooms: Vec<matrix::RoomId>,
-}
-
-/// A message unseen, as a window lists it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct ListedUnseen {
+pub struct Listed<T> {
     pub key: ItemKey,
     pub position: ItemPosition,
-    pub unseen: Unseen,
-}
-
-/// An item, as a window lists it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct Listed {
-    pub key: ItemKey,
-    pub position: ItemPosition,
-    pub item: Item,
+    pub item: T,
 }
 
 /// The kinds of item, in the order items as recently active are listed.

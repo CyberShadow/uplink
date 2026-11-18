@@ -35,10 +35,10 @@ use uplink_email::{gmail, imap, jmap, m365, pop3, query::ConfiguredAccount, serv
 use uplink_matrix::{room_view::RoomsView, service::Matrix};
 use uplink_protocol::{
     mail::{ConversationAction, ConversationSet, MailProvider},
-    Changed, ClientRequest, ErrorCode, Notice, Place, ServerError, ServerResponse, TxLogId,
-    UnknownNames,
+    Changed, ClientRequest, ErrorCode, Item, Notice, Place, ServerError, ServerResponse, TxLogId,
+    UnknownNames, Unseen,
 };
-use uplink_realtime::{Answer, Backend, Held, Hub, Listing, Replay, UnseenListing};
+use uplink_realtime::{Answer, Backend, Held, Hub, Listing, Replay};
 use uplink_storage::seal::MasterKey;
 use uplink_todos::service::Todos;
 use uplink_tx_log::{Dispatcher, LogReader, Registry, UndoError};
@@ -1363,7 +1363,7 @@ impl Backend for Services {
         limit: u32,
         held: Held,
         changed: Changed,
-    ) -> Result<Listing, ServerError> {
+    ) -> Result<Listing<Item>, ServerError> {
         self.items
             .window(query, unknown, limit, held, changed)
             .await
@@ -1374,7 +1374,7 @@ impl Backend for Services {
         query: String,
         unknown: UnknownNames,
         limit: u32,
-    ) -> Result<UnseenListing, ServerError> {
+    ) -> Result<Listing<Unseen>, ServerError> {
         self.items.unseen(query, unknown, limit).await
     }
 
@@ -1389,20 +1389,21 @@ impl Backend for Services {
         to: Option<Place>,
     ) -> Result<(), ServerError> {
         let hub = self.dispatcher.hub();
-        if let Some(place) = from {
-            if let Err(e) = self.see(place).await {
-                hub.attend(session, None);
-                return Err(e);
+        let seen = async {
+            if let Some(place) = from {
+                self.see(place).await?;
             }
-        }
-        hub.attend(session, to.clone());
-        if let Some(place) = to {
-            if let Err(e) = self.see(place).await {
-                hub.attend(session, None);
-                return Err(e);
+            hub.attend(session, to.clone());
+            if let Some(place) = to {
+                self.see(place).await?;
             }
+            Ok(())
         }
-        Ok(())
+        .await;
+        if seen.is_err() {
+            hub.attend(session, None);
+        }
+        seen
     }
 }
 
