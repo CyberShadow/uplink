@@ -119,29 +119,10 @@ impl Db {
             next_batch: "next".into(),
             packs: None,
             rooms: vec![ObservedRoom {
-                room_id: ROOM.into(),
-                name: "Room".into(),
-                encrypted: false,
-                membership: Membership::Joined,
-                events,
-                limited: false,
                 own_receipts: own_receipts.iter().map(|r| r.to_string()).collect(),
                 fully_read: fully_read.map(str::to_owned),
-                image_packs: vec![],
-                space: false,
-                direct: false,
-                avatar: None,
-                bridge: None,
-                children: vec![],
-                space_order: None,
-                tags: vec![],
-                topic: None,
-                alias: None,
                 pinned: pinned.iter().map(|p| p.to_string()).collect(),
-                may_pin: true,
-                joined_members: 2,
-                created: None,
-                version: "11".into(),
+                ..joined(ROOM, events)
             }],
         })
         .await
@@ -288,6 +269,36 @@ impl Db {
 
 /// The account's configuration: of rooms of at most two members, the whole
 /// history is fetched.
+/// The room `room_id`, joined, named "Room", as a sync tells of it
+/// with `events`.
+fn joined(room_id: &str, events: Vec<ObservedEvent>) -> ObservedRoom {
+    ObservedRoom {
+        room_id: room_id.into(),
+        name: "Room".into(),
+        encrypted: false,
+        membership: Membership::Joined,
+        events,
+        limited: false,
+        own_receipts: vec![],
+        fully_read: None,
+        image_packs: vec![],
+        space: false,
+        direct: false,
+        avatar: None,
+        bridge: None,
+        children: vec![],
+        space_order: None,
+        tags: vec![],
+        topic: None,
+        alias: None,
+        pinned: vec![],
+        may_pin: true,
+        joined_members: 2,
+        created: None,
+        version: "11".into(),
+    }
+}
+
 fn account() -> ConfiguredAccount {
     ConfiguredAccount {
         id: "mx".into(),
@@ -2896,4 +2907,67 @@ async fn sends_not_retractable_need_a_decision() {
     assert!(db.take_backs().is_empty());
     db.dispatcher.undo(cancel).await.unwrap();
     assert!(db.sends().await.is_empty());
+}
+
+/// Listing the rooms works through each room's messages by its indexes
+/// (SPEC §9.5): as much however long its history, if read, and as
+/// many times more as there are rooms, not more.
+#[tokio::test]
+async fn listing_rooms_costs_as_the_rooms_not_their_history() {
+    use uplink_storage::work::Work;
+
+    // `rooms` rooms of `messages` messages each from others, every
+    // other room read to its latest, the others with two unread.
+    async fn work_of(rooms: usize, messages: usize) -> u64 {
+        let db = Db::new();
+        let synced = (0..rooms)
+            .map(|r| {
+                let events: Vec<ObservedEvent> = (0..messages)
+                    .map(|m| {
+                        let raw = json!({
+                            "type": "m.room.message",
+                            "event_id": format!("$e{r}-{m}"),
+                            "sender": "@bob:example.org",
+                            "origin_server_ts": 1_700_000_000_000_i64 + (m * rooms + r) as i64,
+                            "content": { "msgtype": "m.text", "body": "hi" },
+                        });
+                        ObservedEvent::parse(&raw.to_string(), None, Encryption::None).unwrap()
+                    })
+                    .collect();
+                let read = messages - if r % 2 == 0 { 1 } else { 3 };
+                ObservedRoom {
+                    own_receipts: vec![format!("$e{r}-{read}")],
+                    fully_read: Some(format!("$e{r}-{read}")),
+                    ..joined(&format!("!r{r}:example.org"), events)
+                }
+            })
+            .collect();
+        db.observe(Synced {
+            requested: FRESH,
+            next_batch: "next".into(),
+            packs: None,
+            rooms: synced,
+        })
+        .await
+        .unwrap();
+        // With the statistics a database of them has (SPEC §4.2).
+        uplink_storage::open(db._dir.path()).unwrap();
+        let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
+        let work = Work::default();
+        work.count_on(&conn);
+        let tx = conn.transaction().unwrap();
+        let (steps, listed) = work.of(|| crate::rooms::rooms(&tx, &account(), None).unwrap());
+        assert_eq!(listed.len(), rooms);
+        steps
+    }
+    let base = work_of(20, 20).await;
+    let (longer, more) = (work_of(20, 80).await, work_of(80, 20).await);
+    assert!(
+        (longer as f64) < 1.5 * base as f64,
+        "of 20 rooms of 20 messages {base} steps, of 80 messages {longer}"
+    );
+    assert!(
+        (more as f64) < 5.0 * base as f64,
+        "of 20 rooms of 20 messages {base} steps, of 80 rooms {more}"
+    );
 }

@@ -454,7 +454,9 @@ level. With `~1 M` messages that's ~4 K files per dir, fine for ext4/btrfs.
   which are as many each run, however busy the machine. A test so
   measures it over a database and one some times larger, and holds the
   ratio to what the design says: as much (a page of the fewest's
-  candidates, of however large a mailbox).
+  candidates, of however large a mailbox; the rooms, of however long
+  their histories),
+  or as many times more (the rooms, of as many times more rooms).
 
 **Why rusqlite over sqlx**: no compile-time DB schema dependency (sqlx
 verifies queries against a live DB at build time, which is brittle for an
@@ -2901,7 +2903,9 @@ which a verified device gives.
   actions, of an encrypted event once decrypted, also late; V0032:
   `matrix_event.notify`, `highlight`; events stored before are
   neither). Only news notifies or highlights: what was sent once uplink
-  began to sync the account (`account.news_since`, §12.15),. The
+  began to sync the account (`account.news_since`, §12.15), found by
+  position after the marker (its index), the time only checked: since
+  news began is most of a room, as it is used. The
   history a first sync, a gap's filling or decryption stores, however
   late, is neither, though the push rules evaluate it as any; V0060
   cleared it of what was stored before. The nav does not count them as

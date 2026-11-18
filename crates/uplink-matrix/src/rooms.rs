@@ -1896,10 +1896,12 @@ pub(crate) fn marked(me: &str, filter: &str) -> String {
 /// Of a message `e` of room `r` (of [`marked`]), whether it is after
 /// `r`'s `marker`, of others than `me` (SQL of the room's account's
 /// Matrix id), and news: the history stored of before uplink synced the
-/// account is no more unread, or new, than it notifies.
+/// account is no more unread, or new, than it notifies. Found by
+/// position, after the marker (few), its time only checked (`+`, not of
+/// an index): since news began is most of the room, as it is used.
 pub(crate) fn after(marker: Marker, me: &str) -> String {
     format!(
-        "(e.pos > {pos} AND e.sender != {me} AND e.ts >= r.news_since)",
+        "(e.pos > {pos} AND e.sender != {me} AND +e.ts >= r.news_since)",
         pos = marker.pos()
     )
 }
