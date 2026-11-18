@@ -129,7 +129,8 @@
 }
 
 .row:hover,
-.row:focus-within {
+.row:focus-within,
+.row:has(.actions [aria-expanded='true']) {
   background: var(--hover);
 }
 
@@ -655,6 +656,14 @@ button.sender:hover .name {
 
 .row:hover .actions,
 .row:focus-within .actions {
+  display: flex;
+}
+
+/* With its menu or picker open, they stay, wherever the pointer goes
+   (to them, over the lines they open on), above other lines' actions;
+   and its line stays marked. */
+.actions:has([aria-expanded='true']) {
+  z-index: 2;
   display: flex;
 }
 
