@@ -580,16 +580,15 @@ async fn answers_meeting_requests() {
     setup.sync.step(NOW).await.unwrap();
     assert_eq!(outbox(), []);
     let log = setup.log();
-    // Each given, then confirmed by the sync after, not read back:
-    // declined, it leaves the calendar, as Exchange moves it to Deleted
-    // Items.
+    // Given, recorded as one, then confirmed by the sync after, not read
+    // back: declined, it leaves the calendar, as Exchange moves it to
+    // Deleted Items.
     assert_eq!(
-        log[log.len() - 5..],
+        log[log.len() - 3..],
         [
             "Giving 3 answers to the provider",
-            "Accepted 'Planning' at the provider",
-            "Tentatively accepted 'Retro' at the provider",
-            "Declined 'Offsite' at the provider",
+            "Accepted 'Planning' at the provider; tentatively accepted 'Retro' at the \
+             provider; declined 'Offsite' at the provider",
             "Calendar: 2 events changed, 1 event removed",
         ]
     );

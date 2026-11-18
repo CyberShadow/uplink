@@ -10,12 +10,13 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use uplink_protocol::{
     calendar::{CalendarChanged, EventId, EventResponse, PendingResponse},
-    compose::PendingOp,
+    compose::{OutboxChanged, PendingOp},
     ServerEvent, TxLogId,
 };
 use uplink_storage::rusqlite::{params, Connection, OptionalExtension, Transaction};
 use uplink_tx_log::{
     reconcile::{Ended, Field},
+    reconciler::{self, Changed, Kind, Values},
     this_entry, Applied, Conflict, Inverse, Observation, Observed, Op,
 };
 
@@ -164,13 +165,8 @@ impl Op for Respond {
     }
 }
 
-/// An event's answer, as stored, of an account.
-#[derive(Debug, Clone)]
-pub struct Stored {
-    pub event: EventId,
-    pub external_id: String,
-    pub field: Answer,
-}
+/// An event's answer, as stored.
+pub type Stored = reconciler::Stored<Answers>;
 
 /// The account's answers uplink has an opinion of, or is to read back.
 pub fn reconciling(conn: &Connection, account: &str) -> Result<Vec<Stored>> {
@@ -187,8 +183,8 @@ pub fn reconciling(conn: &Connection, account: &str) -> Result<Vec<Stored>> {
     .map(|row| {
         let (event, external_id, json) = row?;
         Ok(Stored {
-            event,
-            external_id,
+            key: event,
+            target: external_id,
             field: parse_field(&json)?,
         })
     })
@@ -208,80 +204,101 @@ fn subject(tx: &Transaction, event: EventId) -> Result<String> {
         .unwrap_or_default())
 }
 
-/// The answers whose pushes the calendar sync claims, in one entry (SPEC
-/// §6.6.3): those still wanted of `events`.
-#[derive(Debug, Serialize)]
-pub struct AnswersClaimed {
-    pub events: Vec<EventId>,
+/// Events' answers, a field of each event (SPEC §6.6): pushed by giving
+/// the answer, and read back by `GET /events/{id}`.
+pub struct Answers;
+
+/// The account's answers, in a transaction.
+pub struct AnswersIn<'t> {
+    tx: &'t Transaction<'t>,
 }
 
-impl Observation for AnswersClaimed {
-    const KIND: &'static str = "calendar.answers_claimed";
+impl reconciler::Fields<Answers> for AnswersIn<'_> {
+    fn load(&self, event: &EventId) -> Result<Option<Answer>> {
+        load(self.tx, *event)
+    }
 
-    fn apply(self, _account: &str, tx: &Transaction) -> Result<Observed> {
-        let mut claimed = 0;
-        for &event in &self.events {
-            // Unless gone, or settled by an op, meanwhile.
-            let Some(mut field) = load(tx, event)? else {
-                continue;
-            };
-            if field.wanted().is_some() {
-                field.claim()?;
-                store(tx, event, &field)?;
-                claimed += 1;
-            }
-        }
-        Ok(Observed {
-            description: format!("Giving {claimed} answers to the provider"),
-            events: vec![],
-        })
+    fn store(&mut self, event: &EventId, field: &Answer) -> Result<()> {
+        store(self.tx, *event, field)
     }
 }
 
-/// How giving the user's answer to the event, `response`, ended.
-#[derive(Debug, Serialize)]
-pub struct ResponseGiven {
-    pub event: EventId,
-    pub response: EventResponse,
-    pub ended: Ended,
-}
+impl Kind for Answers {
+    type Key = EventId;
+    type Value = EventResponse;
+    type Entity = EventId;
+    /// The event's id at Graph.
+    type Target = String;
+    type Fields<'t> = AnswersIn<'t>;
 
-impl Observation for ResponseGiven {
-    const KIND: &'static str = "calendar.response_given";
+    const CLAIMED: &'static str = "calendar.answers_claimed";
+    const PUSHED: &'static str = "calendar.response_given";
+    const SETTLED: &'static str = "calendar.answers_settled";
 
-    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
-        let subject = subject(tx, self.event)?;
-        let mut events = vec![];
-        crate::telling_outbox(tx, account, &mut events, || {
-            // Gone since, by a sync: its answer went with it.
-            let Some(mut field) = load(tx, self.event)? else {
-                return Ok(());
-            };
-            field.ended(self.ended.clone(), this_entry(tx)?)?;
-            store(tx, self.event, &field)
-        })?;
-        let verb = verb(self.response);
-        let description = match &self.ended {
-            Ended::Applied => format!("{verb} '{subject}' at the provider"),
-            Ended::NotApplied {
-                refused: Some(reason),
-            } => format!(
-                "The provider refused to answer '{subject}' ({}): {reason}",
-                verb.to_lowercase()
-            ),
-            Ended::NotApplied { refused: None } => format!(
-                "Could not answer '{subject}' ({}) at the provider",
-                verb.to_lowercase()
-            ),
-            Ended::Unknown { .. } => format!(
-                "Whether the provider has the answer to '{subject}' ({}) is unknown",
-                verb.to_lowercase()
-            ),
-        };
-        Ok(Observed {
-            description,
-            events,
+    fn entity(event: &EventId) -> EventId {
+        *event
+    }
+
+    fn fields<'t>(tx: &'t Transaction<'t>, _account: &'t str) -> Result<AnswersIn<'t>> {
+        Ok(AnswersIn { tx })
+    }
+
+    fn reconciling(conn: &Connection, account: &str) -> Result<Vec<Stored>> {
+        reconciling(conn, account)
+    }
+
+    fn events(
+        _tx: &Transaction,
+        account: &str,
+        changed: &[Changed<Self>],
+    ) -> Result<Vec<ServerEvent>> {
+        Ok(if changed.iter().any(Changed::pending) {
+            vec![ServerEvent::OutboxChanged(OutboxChanged {
+                accounts: vec![account.to_owned()],
+            })]
+        } else {
+            vec![]
         })
+    }
+
+    fn claimed(_tx: &Transaction, claimed: &[EventId]) -> Result<String> {
+        Ok(format!("Giving {} answers to the provider", claimed.len()))
+    }
+
+    fn pushed(tx: &Transaction, pushes: &[(Ended, Values<Self>)]) -> Result<String> {
+        let mut parts = vec![];
+        for (ended, answers) in pushes {
+            for &(event, response) in answers {
+                let subject = subject(tx, event)?;
+                let verb = verb(response);
+                parts.push(match ended {
+                    Ended::Applied => format!("{verb} '{subject}' at the provider"),
+                    Ended::NotApplied {
+                        refused: Some(reason),
+                    } => format!(
+                        "The provider refused to answer '{subject}' ({}): {reason}",
+                        verb.to_lowercase()
+                    ),
+                    Ended::NotApplied { refused: None } => format!(
+                        "Could not answer '{subject}' ({}) at the provider",
+                        verb.to_lowercase()
+                    ),
+                    Ended::Unknown { .. } => format!(
+                        "Whether the provider has the answer to '{subject}' ({}) is unknown",
+                        verb.to_lowercase()
+                    ),
+                });
+            }
+        }
+        Ok(reconciler::joined(parts))
+    }
+
+    fn settled(settled: usize, interrupted: bool) -> String {
+        if interrupted {
+            format!("Whether the provider has {settled} answers is unknown")
+        } else {
+            format!("Took {settled} answers given or not for good")
+        }
     }
 }
 
@@ -316,45 +333,6 @@ impl Observation for ResponseRead {
                 None => format!("'{subject}' is no longer on the calendar"),
             },
             events,
-        })
-    }
-}
-
-/// Answers whose outcome became unknown, as of `now_ms`: those in flight,
-/// as the process stopped (`interrupted`), else those so long enough to
-/// expire (SPEC §6.6.3).
-#[derive(Debug, Serialize)]
-pub struct AnswersSettled {
-    pub now_ms: i64,
-    pub interrupted: bool,
-}
-
-impl Observation for AnswersSettled {
-    const KIND: &'static str = "calendar.answers_settled";
-
-    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
-        let at = this_entry(tx)?;
-        let mut settled = 0;
-        for mut stored in reconciling(tx, account)? {
-            let field = &mut stored.field;
-            let before = field.clone();
-            if self.interrupted {
-                field.interrupted(self.now_ms);
-            } else if field.expiring(self.now_ms) {
-                field.expire(self.now_ms, at)?;
-            }
-            if *field != before {
-                store(tx, stored.event, field)?;
-                settled += 1;
-            }
-        }
-        Ok(Observed {
-            description: if self.interrupted {
-                format!("Whether the provider has {settled} answers is unknown")
-            } else {
-                format!("Took {settled} answers given or not for good")
-            },
-            events: vec![],
         })
     }
 }

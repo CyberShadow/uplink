@@ -11,9 +11,7 @@
 //! created, changed and deleted (§10.4).
 
 use crate::{
-    respond::{
-        self, AnswersClaimed, AnswersSettled, ResponseGiven, ResponseRead, CANNOT_TAKE_BACK,
-    },
+    respond::{self, Answers, ResponseRead, CANNOT_TAKE_BACK},
     write::{self, EventWritten, Request},
     CalendarObserved, ObservedEvent, ObservedSeries,
 };
@@ -34,7 +32,8 @@ use uplink_protocol::{
 };
 use uplink_storage::rusqlite::{Connection, OptionalExtension};
 use uplink_tx_log::{
-    reconcile::{Ended, Outcome},
+    reconcile::Ended,
+    reconciler::{self, Push, PushEnded, Stored},
     Dispatcher, Observation,
 };
 
@@ -174,25 +173,12 @@ impl CalendarSync {
     }
 
     /// Runs until the process exits, retrying failures with backoff; at
-    /// once when the user changes the calendar. First, answers being
-    /// given as the process last stopped are of unknown outcome.
+    /// once when the user changes the calendar.
     pub async fn run(self) {
         let mut wake = self.dispatcher.hub().subscribe();
         let mut backoff = Duration::from_secs(1);
-        let mut recovered = false;
         loop {
-            let step = async {
-                if !recovered {
-                    self.observe(AnswersSettled {
-                        now_ms: now_ms(),
-                        interrupted: true,
-                    })
-                    .await?;
-                    recovered = true;
-                }
-                self.step(now_ms()).await
-            };
-            match step.await {
+            match self.step(now_ms()).await {
                 Ok(()) => {
                     backoff = Duration::from_secs(1);
                     self.wait(&mut wake).await;
@@ -214,7 +200,7 @@ impl CalendarSync {
         self.sync(now).await?;
         if self.push().await? {
             self.sync(now).await?;
-            self.read_back().await?;
+            reconciler::read_back::<Answers>(self).await?;
         }
         Ok(())
     }
@@ -243,125 +229,10 @@ impl CalendarSync {
     /// anything for a sync to show or confirm: an event written, an answer
     /// given, or one of unknown outcome expired.
     pub async fn push(&self) -> Result<bool> {
-        self.read_back().await?;
-        let answered = self.reconcile().await?;
+        reconciler::read_back::<Answers>(self).await?;
+        let answered = reconciler::push::<Answers>(self).await?;
         let wrote = self.write().await?;
         Ok(answered || wrote)
-    }
-
-    /// Reads back the answers an applied push, or one of unknown outcome
-    /// expired, is to be confirmed by, or an untrusted observation
-    /// doubted: an incremental sync tells only of events that changed.
-    async fn read_back(&self) -> Result<()> {
-        let account = self.account.clone();
-        let answers = self
-            .query(move |conn| respond::reconciling(conn, &account))
-            .await?;
-        for stored in answers.into_iter().filter(|a| a.field.read_back()) {
-            let as_of = self.query(uplink_tx_log::as_of).await?;
-            let path = format!("/events/{}?$select=responseStatus", stored.external_id);
-            let read: Option<Answered> = self.graph.get(&self.graph.url(&path)).await?;
-            self.observe(ResponseRead {
-                event: stored.event,
-                response: read.map(|a| a.response_status.response),
-                as_of,
-            })
-            .await?;
-        }
-        Ok(())
-    }
-
-    /// Gives Graph the answers to meeting requests the user asked for
-    /// (SPEC §6.6): until nothing is left to give; whether any was given,
-    /// or one of unknown outcome expired, for a sync to confirm. Every
-    /// answer claimed is given and its outcome recorded, though one fails;
-    /// then the first failure, that may pass, is returned, for the step to
-    /// be retried with backoff.
-    pub async fn reconcile(&self) -> Result<bool> {
-        // Each round gives or settles; few are needed.
-        const ROUNDS: usize = 8;
-        let mut confirm = false;
-        for _ in 0..ROUNDS {
-            let account = self.account.clone();
-            let answers = self
-                .query(move |conn| respond::reconciling(conn, &account))
-                .await?;
-            let now = now_ms();
-            if answers.iter().any(|a| a.field.expiring(now)) {
-                self.observe(AnswersSettled {
-                    now_ms: now,
-                    interrupted: false,
-                })
-                .await?;
-                confirm = true;
-                continue;
-            }
-            let wanted: Vec<_> = answers
-                .iter()
-                .filter(|a| a.field.wanted().is_some())
-                .map(|a| a.event)
-                .collect();
-            if wanted.is_empty() {
-                return Ok(confirm);
-            }
-            self.observe(AnswersClaimed { events: wanted }).await?;
-            confirm |= self.give().await?;
-        }
-        bail!("answers still to give after {ROUNDS} rounds")
-    }
-
-    /// Gives the answers claimed, recording each outcome as it ends;
-    /// whether any was applied.
-    async fn give(&self) -> Result<bool> {
-        let account = self.account.clone();
-        let answers = self
-            .query(move |conn| respond::reconciling(conn, &account))
-            .await?;
-        let mut failed = None;
-        let mut applied = false;
-        for stored in answers {
-            let Some(attempt) = stored
-                .field
-                .attempt
-                .filter(|a| a.outcome == Outcome::InFlight)
-            else {
-                continue;
-            };
-            let response = attempt.value;
-            let refused = |reason: &str| Ended::NotApplied {
-                refused: Some(reason.to_owned()),
-            };
-            let ended = match respond::action(response) {
-                None => refused(CANNOT_TAKE_BACK),
-                Some(action) => {
-                    let path = format!("/events/{}/{action}", stored.external_id);
-                    let body = serde_json::json!({ "sendResponse": true });
-                    match self.graph.act(&path, &body).await {
-                        Ok(Changed::Done) => Ended::Applied,
-                        Ok(Changed::Gone) => refused("the event is no longer on the calendar"),
-                        Ok(Changed::Refused(reason)) => refused(&reason),
-                        Err(e) => {
-                            let ended = match e {
-                                Failed::NotDone(_) => Ended::NotApplied { refused: None },
-                                Failed::Unknown(_) => Ended::Unknown { at_ms: now_ms() },
-                            };
-                            failed.get_or_insert(
-                                anyhow::Error::from(e).context("answering a meeting request"),
-                            );
-                            ended
-                        }
-                    }
-                }
-            };
-            applied |= ended == Ended::Applied;
-            self.observe(ResponseGiven {
-                event: stored.event,
-                response,
-                ended,
-            })
-            .await?;
-        }
-        failed.map_or(Ok(applied), Err)
     }
 
     /// Gives Graph the events written, recording what it made of each;
@@ -645,4 +516,76 @@ fn now_ms() -> i64 {
         .as_millis()
         .try_into()
         .expect("fits")
+}
+
+/// The calendar's answers, given to Graph and read back from it (SPEC
+/// §10.3).
+impl reconciler::Provider<Answers> for CalendarSync {
+    fn account(&self) -> &str {
+        &self.account
+    }
+
+    fn dispatcher(&self) -> &Dispatcher {
+        &self.dispatcher
+    }
+
+    fn reader(&self) -> &Arc<Mutex<Connection>> {
+        &self.reader
+    }
+
+    async fn push(&self, in_flight: Vec<Stored<Answers>>) -> Vec<PushEnded<Answers>> {
+        let mut ended = vec![];
+        for stored in in_flight {
+            let response = stored.field.attempt.expect("in flight").value;
+            let refused = |reason: &str| Ended::NotApplied {
+                refused: Some(reason.to_owned()),
+            };
+            let mut error = None;
+            let outcome = match respond::action(response) {
+                None => refused(CANNOT_TAKE_BACK),
+                Some(action) => {
+                    let path = format!("/events/{}/{action}", stored.target);
+                    let body = serde_json::json!({ "sendResponse": true });
+                    match self.graph.act(&path, &body).await {
+                        Ok(Changed::Done) => Ended::Applied,
+                        Ok(Changed::Gone) => refused("the event is no longer on the calendar"),
+                        Ok(Changed::Refused(reason)) => refused(&reason),
+                        Err(e) => {
+                            let outcome = match e {
+                                Failed::NotDone(_) => Ended::NotApplied { refused: None },
+                                Failed::Unknown(_) => Ended::Unknown { at_ms: now_ms() },
+                            };
+                            error =
+                                Some(anyhow::Error::from(e).context("answering a meeting request"));
+                            outcome
+                        }
+                    }
+                }
+            };
+            ended.push(PushEnded {
+                push: Push {
+                    fields: vec![stored.key],
+                    ended: outcome,
+                    rekeyed: None,
+                },
+                error,
+            });
+        }
+        ended
+    }
+
+    async fn read(&self, events: Vec<Stored<Answers>>) -> Result<()> {
+        for stored in events {
+            let as_of = self.query(uplink_tx_log::as_of).await?;
+            let path = format!("/events/{}?$select=responseStatus", stored.target);
+            let read: Option<Answered> = self.graph.get(&self.graph.url(&path)).await?;
+            self.observe(ResponseRead {
+                event: stored.key,
+                response: read.map(|a| a.response_status.response),
+                as_of,
+            })
+            .await?;
+        }
+        Ok(())
+    }
 }

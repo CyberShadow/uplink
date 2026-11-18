@@ -1,8 +1,4 @@
-use crate::{
-    respond::{AnswersClaimed, ResponseGiven},
-    service::Calendar,
-    CalendarObserved, ObservedEvent,
-};
+use crate::{respond::Answers, service::Calendar, CalendarObserved, ObservedEvent};
 use std::sync::Arc;
 use uplink_protocol::{
     calendar::{CalendarEvent, EventId, EventResponse, ShowAs},
@@ -10,7 +6,11 @@ use uplink_protocol::{
     ErrorCode, ServerEvent, ServerResponse, TxLogId,
 };
 use uplink_realtime::Hub;
-use uplink_tx_log::{reconcile::Ended, Dispatcher, Registry};
+use uplink_tx_log::{
+    reconcile::Ended,
+    reconciler::{Claimed, Push, Pushed},
+    Dispatcher, Registry,
+};
 
 const HOUR: i64 = 3_600_000;
 
@@ -103,25 +103,22 @@ impl Db {
     /// The sync claims the push of the event's answer.
     async fn claim(&self, event: EventId) {
         self.dispatcher
-            .observe(
-                "work".to_owned(),
-                AnswersClaimed {
-                    events: vec![event],
-                },
-            )
+            .observe("work".to_owned(), Claimed::<Answers>::new(vec![event]))
             .await
             .unwrap();
     }
 
-    /// The push of the event's answer, `response`, ended so.
-    async fn given(&self, event: EventId, response: EventResponse, ended: Ended) {
+    /// The push of the event's answer ended so.
+    async fn given(&self, event: EventId, ended: Ended) {
         self.dispatcher
             .observe(
                 "work".to_owned(),
-                ResponseGiven {
-                    event,
-                    response,
-                    ended,
+                Pushed::<Answers> {
+                    pushes: vec![Push {
+                        fields: vec![event],
+                        ended,
+                        rekeyed: None,
+                    }],
                 },
             )
             .await
@@ -467,7 +464,7 @@ async fn a_listing_older_than_an_answer_does_not_undo_it() {
     respond(&db, id, EventResponse::Accepted).await;
     let before = db.as_of();
     db.claim(id).await;
-    db.given(id, EventResponse::Accepted, Ended::Applied).await;
+    db.given(id, Ended::Applied).await;
     db.observing_as_of(
         false,
         vec![ObservedEvent {
@@ -497,7 +494,7 @@ async fn an_undo_while_answering_is_asked_for_after_it() {
     db.claim(id).await;
     db.dispatcher.undo(accept).await.unwrap();
     assert_eq!(db.events().await[0].response, EventResponse::NotResponded);
-    db.given(id, EventResponse::Accepted, Ended::Applied).await;
+    db.given(id, Ended::Applied).await;
     let [answer] = &db.answers()[..] else {
         panic!()
     };
