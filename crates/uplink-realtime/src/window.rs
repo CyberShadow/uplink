@@ -1,17 +1,22 @@
-//! Subscriptions' windows (SPEC §5.7): what the client has of each, so
-//! that only what changed of it is sent.
+//! Subscriptions' windows (SPEC §5.7): of each, what the client has of
+//! the listing it is of, so that only what changed of it is sent.
 
-use crate::session::Backend;
+use crate::{
+    session::Backend,
+    shared::{Sender, Snapshot, State, Subscription},
+};
+use futures_util::future::{select_all, FutureExt};
 use std::{
-    collections::{hash_map::Entry, HashMap, HashSet, VecDeque},
+    collections::{hash_map::Entry, HashMap, HashSet},
     future::Future,
 };
+use tokio::sync::watch;
 use uplink_protocol::{
-    mail::ListScope, matrix::RoomId, Changed, Item, ItemKey, ItemPosition, Listed, ServerError,
+    mail::ListScope, matrix::RoomId, Changed, Item, ItemKey, ItemPosition, Listed, Of, ServerError,
     ServerResponse, SubscriptionId, TxLogId, UnknownNames, Unseen, WindowChange, WsServerMsg,
 };
 
-/// What a window lists, as of a log position.
+/// What a query lists, as of a log position.
 pub struct Listing<T: Listable> {
     pub as_of: TxLogId,
     /// The first of what the query matches, in their order.
@@ -23,8 +28,8 @@ pub struct Listing<T: Listable> {
     pub partial_rooms: Vec<RoomId>,
 }
 
-/// What a window of items holds, as the client was last sent it: to be
-/// listed again from, checking again only what changed.
+/// What a listing of items held when last listed: to be listed again
+/// from, checking again only what changed.
 pub struct Held {
     /// The most recently active first.
     pub items: Vec<Item>,
@@ -35,23 +40,30 @@ pub struct Held {
 /// What a window lists (`Of`): items, or the unseen. Of each the same,
 /// but for how it is listed, and what the client is sent of it.
 pub trait Listable: Clone + PartialEq + Send + Sync + Sized + 'static {
+    const OF: Of;
+
     /// What its listing says besides: of items, their conversations'
     /// scope.
-    type Scope: Send;
+    type Scope: Clone + PartialEq + Send + Sync;
 
     fn key(&self) -> ItemKey;
 
     fn position(&self) -> ItemPosition;
 
-    /// Whether `changed` may change what a window of it lists.
+    /// Whether `changed` may change what a listing of it lists.
     fn moved_by(changed: &Changed) -> bool;
 
-    /// The first `limit` of what `window`'s query matches, now that
-    /// `changed` since it was last listed.
+    /// Of a listing's watch, that of its kind.
+    fn sender(sender: &Sender) -> &watch::Sender<State<Self>>;
+
+    /// The first `limit` of what `query` matches, now that `changed`
+    /// since it `held` these (of everything, if it held none).
     fn list(
         backend: &impl Backend,
-        window: &Window<Self>,
+        query: &str,
+        unknown: UnknownNames,
         limit: u32,
+        held: Option<&Snapshot<Self>>,
         changed: Changed,
     ) -> impl Future<Output = Result<Listing<Self>, ServerError>> + Send;
 
@@ -63,6 +75,8 @@ pub trait Listable: Clone + PartialEq + Send + Sync + Sized + 'static {
 }
 
 impl Listable for Item {
+    const OF: Of = Of::Items;
+
     type Scope = ListScope;
 
     fn key(&self) -> ItemKey {
@@ -78,20 +92,27 @@ impl Listable for Item {
         changed.of_items()
     }
 
-    /// Of what it holds, but for what changed.
+    fn sender(sender: &Sender) -> &watch::Sender<State<Self>> {
+        match sender {
+            Sender::Items(sender) => sender,
+            Sender::Unseen(_) => unreachable!("a listing of items is of items"),
+        }
+    }
+
+    /// Of what it held, but for what changed.
     fn list(
         backend: &impl Backend,
-        window: &Window<Self>,
+        query: &str,
+        unknown: UnknownNames,
         limit: u32,
+        held: Option<&Snapshot<Self>>,
         changed: Changed,
     ) -> impl Future<Output = Result<Listing<Self>, ServerError>> + Send {
-        backend.window(
-            window.query.clone(),
-            window.unknown,
-            limit,
-            window.held(),
-            changed,
-        )
+        let held = Held {
+            items: held.map(|held| held.listed.clone()).unwrap_or_default(),
+            more: held.is_some_and(|held| held.more),
+        };
+        backend.window(query.to_owned(), unknown, limit, held, changed)
     }
 
     fn response(as_of: TxLogId, change: WindowChange<Self>, scope: ListScope) -> ServerResponse {
@@ -111,6 +132,8 @@ impl Listable for Item {
 }
 
 impl Listable for Unseen {
+    const OF: Of = Of::Unseen;
+
     type Scope = ();
 
     fn key(&self) -> ItemKey {
@@ -125,14 +148,23 @@ impl Listable for Unseen {
         !changed.is_empty()
     }
 
+    fn sender(sender: &Sender) -> &watch::Sender<State<Self>> {
+        match sender {
+            Sender::Unseen(sender) => sender,
+            Sender::Items(_) => unreachable!("a listing of the unseen is of the unseen"),
+        }
+    }
+
     /// Whole, whatever changed.
     fn list(
         backend: &impl Backend,
-        window: &Window<Self>,
+        query: &str,
+        unknown: UnknownNames,
         limit: u32,
+        _held: Option<&Snapshot<Self>>,
         _changed: Changed,
     ) -> impl Future<Output = Result<Listing<Self>, ServerError>> + Send {
-        backend.unseen(window.query.clone(), window.unknown, limit)
+        backend.unseen(query.to_owned(), unknown, limit)
     }
 
     fn response(as_of: TxLogId, change: WindowChange<Self>, (): ()) -> ServerResponse {
@@ -165,19 +197,10 @@ macro_rules! of_window {
 }
 pub(crate) use of_window;
 
-/// Whether `changed` may change what `window` lists.
-fn moved_by<L: Listable>(_window: &Window<L>, changed: &Changed) -> bool {
-    L::moved_by(changed)
-}
-
-/// A session's windows, by subscription, and those due to be listed
-/// again, in turn.
+/// A session's windows, by subscription.
 #[derive(Default)]
 pub struct Windows {
     windows: HashMap<SubscriptionId, Subscribed>,
-    /// Of `windows`, those that may have changed since last listed, the
-    /// longest due first: each once.
-    due: VecDeque<SubscriptionId>,
 }
 
 impl Windows {
@@ -193,104 +216,63 @@ impl Windows {
         self.windows.contains_key(&subscription)
     }
 
+    pub fn get_mut(&mut self, subscription: SubscriptionId) -> Option<&mut Subscribed> {
+        self.windows.get_mut(&subscription)
+    }
+
     pub fn remove(&mut self, subscription: SubscriptionId) -> Option<Subscribed> {
-        self.due.retain(|&due| due != subscription);
         self.windows.remove(&subscription)
     }
 
-    /// What changed may change what windows list: each it may change is
-    /// due, after those due already, to check again what changed since it
-    /// was last listed.
-    pub fn came(&mut self, changed: &Changed) {
-        for (&subscription, window) in &mut self.windows {
-            let moved = of_window!(window, window => {
-                let moved = moved_by(window, changed);
-                if moved {
-                    window.changed.merge(changed.clone());
-                }
-                moved
-            });
-            if moved && !self.due.contains(&subscription) {
-                self.due.push_back(subscription);
-            }
+    /// Once the listing of a window was listed anew, since last looked
+    /// at: which; never, of none.
+    pub async fn changed(&mut self) -> SubscriptionId {
+        if self.windows.is_empty() {
+            return std::future::pending().await;
         }
-    }
-
-    /// What changed since the window was last listed, as it is listed
-    /// now, outside of its turn.
-    pub fn take_changed(
-        &mut self,
-        subscription: SubscriptionId,
-    ) -> Option<(&mut Subscribed, Changed)> {
-        let window = self.windows.get_mut(&subscription)?;
-        self.due.retain(|&due| due != subscription);
-        let changed = of_window!(&mut *window, window => std::mem::take(&mut window.changed));
-        Some((window, changed))
-    }
-
-    pub fn any_due(&self) -> bool {
-        !self.due.is_empty()
-    }
-
-    /// The window due the longest, no longer due, and what changed since
-    /// it was last listed.
-    pub fn next_due(&mut self) -> Option<(SubscriptionId, &mut Subscribed, Changed)> {
-        let subscription = self.due.pop_front()?;
-        let window = self
-            .windows
-            .get_mut(&subscription)
-            .expect("due windows are");
-        let changed = of_window!(&mut *window, window => std::mem::take(&mut window.changed));
-        Some((subscription, window, changed))
+        let changes = self.windows.iter_mut().map(|(&subscription, window)| {
+            async move {
+                of_window!(window, window => window.subscription.changed().await);
+                subscription
+            }
+            .boxed()
+        });
+        select_all(changes).await.0
     }
 }
 
-/// A subscription's window: its query's first `limit` of what it lists,
-/// as the client was last sent them.
+/// A subscription's window: its listing's first `limit`, as the client
+/// was last sent them.
 pub struct Window<T: Listable> {
-    pub query: String,
-    pub unknown: UnknownNames,
-    pub limit: u32,
+    pub subscription: Subscription<T>,
     listed: HashMap<ItemKey, T>,
     more: bool,
     partial_rooms: Vec<RoomId>,
-    /// What changed since it was last listed.
-    changed: Changed,
 }
 
 impl<T: Listable> Window<T> {
     /// Of nothing, as the client has it before its first change.
-    pub fn new(query: String, unknown: UnknownNames, limit: u32) -> Self {
+    pub fn new(subscription: Subscription<T>) -> Self {
         Self {
-            query,
-            unknown,
-            limit,
+            subscription,
             listed: HashMap::new(),
             more: false,
             partial_rooms: vec![],
-            changed: Changed::default(),
         }
     }
 
-    /// Takes what it lists now: what changed of it for the client.
-    pub fn update(
-        &mut self,
-        listed: Vec<T>,
-        more: bool,
-        partial_rooms: Vec<RoomId>,
-    ) -> WindowChange<T> {
-        self.difference(listed, more, partial_rooms).1
+    /// Takes what `snapshot` lists of it: what changed of it for the
+    /// client.
+    pub fn update(&mut self, snapshot: &Snapshot<T>) -> WindowChange<T> {
+        let (listed, more) = snapshot.first(self.subscription.limit());
+        self.difference(listed, more, &snapshot.partial_rooms).1
     }
 
     /// As `update`, but nothing if nothing changed.
-    pub fn changed(
-        &mut self,
-        listed: Vec<T>,
-        more: bool,
-        partial_rooms: Vec<RoomId>,
-    ) -> Option<WindowChange<T>> {
+    pub fn changed(&mut self, snapshot: &Snapshot<T>) -> Option<WindowChange<T>> {
+        let (listed, more) = snapshot.first(self.subscription.limit());
         let (more_was, partial_was) = (self.more, self.partial_rooms.clone());
-        let (same, change) = self.difference(listed, more, partial_rooms);
+        let (same, change) = self.difference(listed, more, &snapshot.partial_rooms);
         (!(same && self.more == more_was && self.partial_rooms == partial_was)).then_some(change)
     }
 
@@ -298,9 +280,9 @@ impl<T: Listable> Window<T> {
     /// removed, and what changed of it for the client.
     fn difference(
         &mut self,
-        listed: Vec<T>,
+        listed: &[T],
         more: bool,
-        partial_rooms: Vec<RoomId>,
+        partial_rooms: &[RoomId],
     ) -> (bool, WindowChange<T>) {
         let keys: HashSet<ItemKey> = listed.iter().map(T::key).collect();
         let removed: Vec<ItemKey> = self
@@ -315,13 +297,13 @@ impl<T: Listable> Window<T> {
         let mut upserted = vec![];
         for one in listed {
             let key = one.key();
-            if self.listed.get(&key) != Some(&one) {
+            if self.listed.get(&key) != Some(one) {
                 upserted.push(one.clone());
-                self.listed.insert(key, one);
+                self.listed.insert(key, one.clone());
             }
         }
         self.more = more;
-        self.partial_rooms.clone_from(&partial_rooms);
+        self.partial_rooms = partial_rooms.to_vec();
         let same = upserted.is_empty() && removed.is_empty();
         let upserted = upserted
             .into_iter()
@@ -335,27 +317,17 @@ impl<T: Listable> Window<T> {
             upserted,
             removed,
             more,
-            partial_rooms,
+            partial_rooms: partial_rooms.to_vec(),
         };
         (same, change)
-    }
-}
-
-impl Window<Item> {
-    /// What it holds.
-    pub fn held(&self) -> Held {
-        let mut items: Vec<Item> = self.listed.values().cloned().collect();
-        items.sort_by_key(Item::position);
-        Held {
-            items,
-            more: self.more,
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::Shared;
+    use std::sync::Arc;
     use uplink_protocol::todos::{Todo, TodoId};
 
     fn todo(id: i64, updated_at: i64, title: &str) -> Item {
@@ -377,21 +349,38 @@ mod tests {
         listed.iter().map(|l| l.key.0.as_str()).collect()
     }
 
+    fn snapshot(limit: u32, listed: Vec<Item>, more: bool) -> Snapshot<Item> {
+        Snapshot {
+            limit,
+            as_of: TxLogId(0),
+            listed,
+            more,
+            scope: ListScope::Except { labels: vec![] },
+            partial_rooms: vec![],
+        }
+    }
+
     #[test]
     fn only_what_changed_is_sent() {
-        let mut window = Window::<Item>::new("q".into(), UnknownNames::Invalid, 2);
-        let first = window.update(vec![todo(1, 20, "a"), todo(2, 10, "b")], true, vec![]);
+        let shared = Arc::new(Shared::default());
+        let mut window =
+            Window::<Item>::new(shared.subscribe("q".into(), UnknownNames::Invalid, 2));
+        let first = window.update(&snapshot(2, vec![todo(1, 20, "a"), todo(2, 10, "b")], true));
         assert_eq!(keys(&first.upserted), ["todo:1", "todo:2"]);
         assert!(first.removed.is_empty() && first.more);
 
         assert_eq!(
-            window.changed(vec![todo(1, 20, "a"), todo(2, 10, "b")], true, vec![]),
+            window.changed(&snapshot(2, vec![todo(1, 20, "a"), todo(2, 10, "b")], true)),
             None
         );
 
         // 2 changes, 1 leaves, 3 comes in; then there is no more.
         let change = window
-            .changed(vec![todo(2, 30, "b!"), todo(3, 5, "c")], false, vec![])
+            .changed(&snapshot(
+                2,
+                vec![todo(2, 30, "b!"), todo(3, 5, "c")],
+                false,
+            ))
             .unwrap();
         assert_eq!(keys(&change.upserted), ["todo:2", "todo:3"]);
         assert_eq!(change.upserted[0].position.at, 30);
@@ -400,80 +389,19 @@ mod tests {
 
         // That there is more is news too.
         let change = window
-            .changed(vec![todo(2, 30, "b!"), todo(3, 5, "c")], true, vec![])
+            .changed(&snapshot(2, vec![todo(2, 30, "b!"), todo(3, 5, "c")], true))
             .unwrap();
         assert!(change.upserted.is_empty() && change.removed.is_empty() && change.more);
-    }
 
-    /// What is seen changes what is unseen, not what items are: windows
-    /// of the unseen are due of it, of items not (SPEC §12.15).
-    #[test]
-    fn what_is_seen_is_of_windows_of_the_unseen() {
-        let mut windows = Windows::default();
-        windows.insert(
-            SubscriptionId(1),
-            Subscribed::Items(Window::new("q".into(), UnknownNames::Invalid, 1)),
-        );
-        windows.insert(
-            SubscriptionId(2),
-            Subscribed::Unseen(Window::new("q".into(), UnknownNames::Invalid, 1)),
-        );
-        windows.came(&Changed::seen());
-        let (due, _, changed) = windows.next_due().unwrap();
-        assert_eq!((due.0, changed), (2, Changed::seen()));
-        assert!(windows.next_due().is_none());
-        // Of what items are too, both are due, of all of it.
-        let mut both = Changed::time();
-        both.merge(Changed::seen());
-        windows.came(&both);
-        let mut due: Vec<_> =
-            std::iter::from_fn(|| windows.next_due().map(|(id, _, changed)| (id.0, changed)))
-                .collect();
-        due.sort_by_key(|(id, _)| *id);
-        assert_eq!(due, [(1, both.clone()), (2, both)]);
-    }
-
-    #[test]
-    fn windows_are_listed_in_turn_of_what_changed_since() {
-        let mut windows = Windows::default();
-        for id in 1..=3 {
-            windows.insert(
-                SubscriptionId(id),
-                Subscribed::Items(Window::new("q".into(), UnknownNames::Invalid, 1)),
-            );
-        }
-        let next =
-            |windows: &mut Windows| windows.next_due().map(|(id, _, changed)| (id.0, changed));
-        let todos = |ids: &[i64]| Changed {
-            todos: ids.iter().map(|&id| TodoId(id)).collect(),
-            ..Changed::default()
-        };
-        assert_eq!(next(&mut windows), None);
-        windows.came(&todos(&[1]));
-        let (first, changed) = next(&mut windows).unwrap();
-        assert_eq!(changed, todos(&[1]));
-        // Due again before the others are listed, it is listed after them,
-        // and they of all that changed since they were.
-        windows.came(&todos(&[2]));
-        let mut rest = vec![next(&mut windows).unwrap(), next(&mut windows).unwrap()];
-        assert!(rest
-            .iter()
-            .all(|(id, changed)| *id != first && *changed == todos(&[1, 2])));
-        assert_eq!(next(&mut windows), Some((first, todos(&[2]))));
-        assert_eq!(next(&mut windows), None);
-        // Listed out of turn, it is due no more.
-        windows.came(&todos(&[3]));
-        let (_, changed) = windows.take_changed(SubscriptionId(first)).unwrap();
-        assert_eq!(changed, todos(&[3]));
-        // Gone, it is due no more.
-        windows.came(&todos(&[4]));
-        windows.remove(SubscriptionId(first));
-        rest.sort_by_key(|(id, _)| *id);
-        let mut listed = vec![next(&mut windows).unwrap(), next(&mut windows).unwrap()];
-        listed.sort_by_key(|(id, _)| *id);
-        let ids = |l: &[(u64, Changed)]| l.iter().map(|(id, _)| *id).collect::<Vec<_>>();
-        assert_eq!(ids(&listed), ids(&rest));
-        assert!(listed.iter().all(|(_, changed)| *changed == todos(&[3, 4])));
-        assert!(!windows.any_due());
+        // Of a listing of more than it shows, its first: what is past them
+        // is that there is more.
+        let change = window
+            .changed(&snapshot(
+                3,
+                vec![todo(2, 30, "b!"), todo(3, 5, "c"), todo(4, 1, "d")],
+                false,
+            ))
+            .map(|change| change.more);
+        assert_eq!(change, None);
     }
 }

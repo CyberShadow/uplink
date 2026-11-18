@@ -1,8 +1,8 @@
 // The home view (SPEC §12.13): the configured buckets' items, and the
-// agenda, of now through tomorrow. The buckets are windows the server
-// keeps current from the first connection, so home shows at once, as it
-// is; the agenda is queried then, as home shows, and as the calendar
-// changes.
+// agenda, of now through tomorrow. The buckets are windows of what the
+// server keeps listed, subscribed to from the first connection, so home
+// shows at once, as it is; the agenda is queried then, as home shows,
+// and as the calendar changes.
 
 import { batch, computed, signal } from '@preact/signals'
 import type {
@@ -21,9 +21,6 @@ import { rowOf, type Row } from '../items'
 import { Loader, query } from './query'
 import { LiveWindow, UnseenWindow } from './window'
 
-/** Rows a bucket shows at most; the rest are a search away. */
-export const BUCKET_LIMIT = 20
-
 /** Told, of an urgency, what of its buckets was unseen (`null` before it
  * was first listed) and what is now (SPEC §12.16). */
 export type UnseenListener = (
@@ -32,9 +29,11 @@ export type UnseenListener = (
   now: ReadonlyMap<string, Listed<Unseen>>,
 ) => void
 
-/** As home is configured: its buckets, and what notifies. */
+/** As home is configured: its buckets, how many of each it shows, and
+ * what notifies. */
 interface Configured {
   buckets: HomeBucket[]
+  limit: number
   notifications: Notifications
   notifying: Notifying[]
 }
@@ -76,8 +75,8 @@ export class HomeStore {
   private configuration = new Loader(async () => {
     let configured: Configured
     try {
-      const { buckets, notifications, notifying } = await query(this.server, { type: 'list_home' }, 'home')
-      configured = { buckets, notifications, notifying }
+      const { buckets, limit, notifications, notifying } = await query(this.server, { type: 'list_home' }, 'home')
+      configured = { buckets, limit, notifications, notifying }
     } catch (error) {
       this.error.value = (error as Error).message
       return
@@ -96,7 +95,7 @@ export class HomeStore {
     })
     this.windows.forEach(({ window }) => window.close())
     this.windows = configured.buckets.map((bucket) => {
-      const window = new LiveWindow(this.server, bucket.query, 'false', BUCKET_LIMIT, (error) => {
+      const window = new LiveWindow(this.server, bucket.query, 'false', configured.limit, (error) => {
         this.error.value = error.message
       })
       window.listener = () => this.showBuckets()

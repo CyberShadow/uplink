@@ -613,6 +613,9 @@ pub enum ServerResponse {
     /// Of `ListHome`: of the configuration, not the log.
     Home {
         buckets: Vec<HomeBucket>,
+        /// How many items of each bucket home shows, of a window of as
+        /// many: the server keeps those listed (SPEC §5.7).
+        limit: u32,
         notifications: Notifications,
         /// Of each urgency that some bucket notifies with, the query of
         /// its buckets (as `buckets` has them, joined by `OR`), whose
@@ -851,7 +854,7 @@ pub struct Notifying {
 }
 
 /// What a window lists (SPEC §5.7).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum Of {
     /// The items the query matches.
@@ -863,7 +866,7 @@ pub enum Of {
 
 /// What a query's names of labels, tags or accounts that no kind has
 /// mean.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum UnknownNames {
     /// The query is `Invalid`, as a search's is: the name is misspelt.

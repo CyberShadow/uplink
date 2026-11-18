@@ -1,4 +1,5 @@
 use crate::hub::Hub;
+use crate::shared::State;
 use crate::window::{of_window, Held, Listable, Listing, Subscribed, Window, Windows};
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use futures_util::{stream::FuturesUnordered, StreamExt};
@@ -6,7 +7,7 @@ use std::{convert::Infallible, future::Future, sync::Arc, time::Duration};
 use tokio::{
     sync::broadcast::{error::RecvError, Receiver},
     task::JoinHandle,
-    time::{interval_at, Instant, MissedTickBehavior},
+    time::Instant,
 };
 use uplink_protocol::{
     Changed, ClientRequest, ErrorCode, Item, LogEntry, Of, Place, ServerError, ServerResponse,
@@ -30,11 +31,8 @@ const CLOSE_INTERNAL_ERROR: u16 = 1011;
 /// build, and should load anew.
 const CLOSE_PROTOCOL_VERSION: u16 = 4002;
 
-/// Time alone changes what queries match, into `due:today` or out of
-/// `newer_than:`: windows are listed again this often.
-const WINDOWS_EVERY: Duration = Duration::from_secs(60);
-
-/// What sessions need from the rest of the server.
+/// What sessions, and the keeper of their windows, need from the rest of
+/// the server.
 pub trait Backend: Send + Sync {
     /// Executes a client request (SPEC §5.6). A session handles its
     /// requests one at a time, in order, so this must not wait on anything
@@ -210,7 +208,6 @@ async fn session(
     let mut live = hub.subscribe();
     let mut notices = hub.notices();
     let mut badges = hub.badges();
-    let mut attended = hub.attended();
     let replay = backend.replay(since).await.map_err(|e| End::Close {
         code: CLOSE_INTERNAL_ERROR,
         reason: format!("reading log: {e:#}"),
@@ -228,21 +225,16 @@ async fn session(
     for entry in replay.entries.into_iter().flatten() {
         send(socket, &WsServerMsg::Entry { entry }).await?;
     }
-    let mut followed = Followed {
-        cursor: replay.head,
-        changed: Changed::default(),
-    };
+    // The last entry sent.
+    let mut cursor = replay.head;
     // Requests answered later, by their ids.
     let mut answers = FuturesUnordered::new();
     let mut windows = Windows::default();
-    let mut minute = interval_at(Instant::now() + WINDOWS_EVERY, WINDOWS_EVERY);
-    minute.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
-            // Windows are listed again once the entries that came are
-            // sent, and the requests answered: one at a time, so that a
-            // request waits for one at most.
+            // What changed of the windows is sent once the entries that
+            // came are, and the requests answered.
             biased;
             msg = recv(socket, &mut deadline) => match msg? {
                 WsClientMsg::Ping { seq } => send(socket, &WsServerMsg::Pong { seq }).await?,
@@ -251,16 +243,16 @@ async fn session(
                     ClientRequest::Subscribe { .. }
                     | ClientRequest::Extend { .. }
                     | ClientRequest::Unsubscribe { .. } => {
-                        let response = subscription(backend, &mut windows, body).await;
-                        respond(socket, &mut live, &mut followed, request_id, response).await?;
+                        let response = subscription(hub, &mut windows, body).await;
+                        respond(socket, &mut live, &mut cursor, request_id, response).await?;
                     }
                     ClientRequest::Attend { place } => {
                         let response = attend(backend, id, attending, place).await;
-                        respond(socket, &mut live, &mut followed, request_id, response).await?;
+                        respond(socket, &mut live, &mut cursor, request_id, response).await?;
                     }
                     body => match backend.handle(body).await {
                         Answer::Now(response) => {
-                            respond(socket, &mut live, &mut followed, request_id, response).await?;
+                            respond(socket, &mut live, &mut cursor, request_id, response).await?;
                         }
                         later @ Answer::Later(_) => answers.push(async move {
                             (request_id, later.response().await)
@@ -269,9 +261,9 @@ async fn session(
                 },
             },
             Some((request_id, response)) = answers.next(), if !answers.is_empty() => {
-                respond(socket, &mut live, &mut followed, request_id, response).await?;
+                respond(socket, &mut live, &mut cursor, request_id, response).await?;
             }
-            published = live.recv() => forward(socket, published, &mut followed).await?,
+            published = live.recv() => forward(socket, published, &mut cursor).await?,
             notice = notices.recv() => match notice {
                 Ok(notice) => send(socket, &WsServerMsg::Notice { notice: (*notice).clone() }).await?,
                 // Of the moment: those missed are past.
@@ -283,36 +275,18 @@ async fn session(
                 let current = (**badges.borrow_and_update()).clone();
                 send(socket, &WsServerMsg::Badges { badges: current }).await?;
             }
-            changed = attended.changed() => {
-                changed.expect("hub outlives its sessions");
-                attended.borrow_and_update();
-                // What is unseen.
-                followed.changed.merge(Changed::seen());
-            }
-            _ = minute.tick() => followed.changed.merge(Changed::time()),
-            () = std::future::ready(()), if !followed.changed.is_empty() || windows.any_due() => {
-                windows.came(&std::mem::take(&mut followed.changed));
-                refresh(socket, backend, &mut live, &mut followed, &mut windows).await?;
+            subscription = windows.changed() => {
+                let window = windows.get_mut(subscription).expect("a window changed is");
+                of_window!(window, window => {
+                    publish(socket, &mut live, &mut cursor, subscription, window).await?
+                });
             }
         }
     }
 }
 
-/// How far the client follows the log.
-struct Followed {
-    /// The last entry sent.
-    cursor: TxLogId,
-    /// What changed of what the windows list, by the entries sent (or
-    /// time) since they were last told.
-    changed: Changed,
-}
-
 /// Does a request of subscriptions (SPEC §5.7).
-async fn subscription(
-    backend: &impl Backend,
-    windows: &mut Windows,
-    request: ClientRequest,
-) -> Response {
+async fn subscription(hub: &Hub, windows: &mut Windows, request: ClientRequest) -> Response {
     let page = |limit: u32| match (1..=MAX_PAGE).contains(&limit) {
         true => Ok(limit),
         false => Err(ServerError {
@@ -339,13 +313,16 @@ async fn subscription(
                     message: format!("subscription {} exists", subscription.0),
                 });
             }
+            let shared = hub.windows();
             let mut window = match of {
-                Of::Items => Subscribed::Items(Window::new(query, unknown, limit)),
-                Of::Unseen => Subscribed::Unseen(Window::new(query, unknown, limit)),
+                Of::Items => {
+                    Subscribed::Items(Window::new(shared.subscribe(query, unknown, limit)))
+                }
+                Of::Unseen => {
+                    Subscribed::Unseen(Window::new(shared.subscribe(query, unknown, limit)))
+                }
             };
-            let response = of_window!(&mut window, window => {
-                list(backend, window, window.limit, Changed::everything()).await?
-            });
+            let response = of_window!(&mut window, window => listed(window).await?);
             windows.insert(subscription, window);
             Ok(response)
         }
@@ -354,13 +331,13 @@ async fn subscription(
             limit,
         } => {
             let limit = page(limit)?;
-            // Of what changed since it was listed too, so that what it
-            // holds is current, to list more after.
-            let (window, changed) = windows
-                .take_changed(subscription)
+            let window = windows
+                .get_mut(subscription)
                 .ok_or_else(|| not_found(subscription))?;
             of_window!(window, window => {
-                list(backend, window, window.limit + limit, changed).await
+                let limit = window.subscription.limit() + limit;
+                window.subscription.widen(limit);
+                listed(window).await
             })
         }
         ClientRequest::Unsubscribe { subscription } => {
@@ -390,70 +367,42 @@ async fn attend(
     Ok(ServerResponse::Done)
 }
 
-/// Lists `window`'s first `limit`, now that `changed` since it was last
-/// listed: its response, with what changed of it.
-async fn list<T: Listable>(
-    backend: &impl Backend,
-    window: &mut Window<T>,
-    limit: u32,
-    changed: Changed,
-) -> Response {
-    let listing = T::list(backend, window, limit, changed).await?;
-    window.limit = limit;
-    let change = window.update(listing.listed, listing.more, listing.partial_rooms);
-    Ok(T::response(listing.as_of, change, listing.scope))
+/// Once `window`'s listing lists as many as it is of: its response,
+/// with what changed of it.
+async fn listed<T: Listable>(window: &mut Window<T>) -> Response {
+    let snapshot = window.subscription.listed().await?;
+    let change = window.update(&snapshot);
+    Ok(T::response(snapshot.as_of, change, snapshot.scope.clone()))
 }
 
-/// Lists the window due the longest again, if any, and sends what
-/// changed of it, after the entries it reflects.
-async fn refresh(
+/// Sends what changed of `window`, now that its listing was listed
+/// anew, after the entries it reflects.
+async fn publish<T: Listable>(
     socket: &mut WebSocket,
-    backend: &impl Backend,
     live: &mut Receiver<Arc<LogEntry>>,
-    followed: &mut Followed,
-    windows: &mut Windows,
-) -> Result<(), End> {
-    let Some((subscription, window, changed)) = windows.next_due() else {
-        // Due as time passed, of none.
-        return Ok(());
-    };
-    of_window!(window, window => {
-        relist(socket, backend, live, followed, subscription, window, changed).await
-    })
-}
-
-/// Lists `window` again, now that `changed`, and sends what changed of
-/// it, after the entries it reflects.
-async fn relist<T: Listable>(
-    socket: &mut WebSocket,
-    backend: &impl Backend,
-    live: &mut Receiver<Arc<LogEntry>>,
-    followed: &mut Followed,
+    cursor: &mut TxLogId,
     subscription: SubscriptionId,
     window: &mut Window<T>,
-    changed: Changed,
 ) -> Result<(), End> {
-    let started = Instant::now();
-    // It listed fine before: what fails now is the server's (or a label
-    // gone, which the client hears of as it subscribes again).
-    let listing = T::list(backend, window, window.limit, changed)
-        .await
-        .map_err(|e| End::Close {
+    match window.subscription.current() {
+        State::Listed(snapshot) if snapshot.limit >= window.subscription.limit() => {
+            catch_up(socket, live, cursor, snapshot.as_of).await?;
+            if let Some(change) = window.changed(&snapshot) {
+                send(socket, &T::changed(subscription, change)).await?;
+            }
+            Ok(())
+        }
+        // Of fewer than it is widened to, as listed before it was: a
+        // listing of as many is to come.
+        State::Listed(_) => Ok(()),
+        State::Unlisted => unreachable!("a window's listing listed"),
+        // It listed fine before: what fails now is the server's (or a
+        // label gone, which the client hears of as it subscribes again).
+        State::Failed(e) => Err(End::Close {
             code: CLOSE_INTERNAL_ERROR,
             reason: format!("listing subscription {}: {}", subscription.0, e.message),
-        })?;
-    catch_up(socket, live, followed, listing.as_of).await?;
-    let change = window.changed(listing.listed, listing.more, listing.partial_rooms);
-    tracing::debug!(
-        "ws: subscription {} of {} listed again in {:?}",
-        subscription.0,
-        window.limit,
-        started.elapsed()
-    );
-    if let Some(change) = change {
-        send(socket, &T::changed(subscription, change)).await?;
+        }),
     }
-    Ok(())
 }
 
 /// Answers the request `request_id`. The entries a response reflects go
@@ -462,14 +411,14 @@ async fn relist<T: Listable>(
 async fn respond(
     socket: &mut WebSocket,
     live: &mut Receiver<Arc<LogEntry>>,
-    followed: &mut Followed,
+    cursor: &mut TxLogId,
     request_id: u64,
     response: Response,
 ) -> Result<(), End> {
     let reply = match response {
         Ok(body) => {
             if let Some(position) = body.position() {
-                catch_up(socket, live, followed, position).await?;
+                catch_up(socket, live, cursor, position).await?;
             }
             WsServerMsg::Response { request_id, body }
         }
@@ -482,11 +431,11 @@ async fn respond(
 async fn catch_up(
     socket: &mut WebSocket,
     live: &mut Receiver<Arc<LogEntry>>,
-    followed: &mut Followed,
+    cursor: &mut TxLogId,
     position: TxLogId,
 ) -> Result<(), End> {
-    while followed.cursor < position {
-        forward(socket, live.recv().await, followed).await?;
+    while *cursor < position {
+        forward(socket, live.recv().await, cursor).await?;
     }
     Ok(())
 }
@@ -495,13 +444,12 @@ async fn catch_up(
 async fn forward(
     socket: &mut WebSocket,
     published: Result<Arc<LogEntry>, RecvError>,
-    followed: &mut Followed,
+    cursor: &mut TxLogId,
 ) -> Result<(), End> {
     match published {
-        Ok(entry) if entry.id <= followed.cursor => Ok(()),
+        Ok(entry) if entry.id <= *cursor => Ok(()),
         Ok(entry) => {
-            followed.cursor = entry.id;
-            followed.changed.came(&entry);
+            *cursor = entry.id;
             send(
                 socket,
                 &WsServerMsg::Entry {

@@ -1,3 +1,4 @@
+use crate::shared::Shared;
 use std::collections::{HashMap, HashSet};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -11,7 +12,8 @@ pub type Attended = Arc<HashSet<Place>>;
 
 /// Fans newly committed log entries out to all connected sessions,
 /// notices of the moment, which are not logged, and the badges as they
-/// are (SPEC §12.14).
+/// are (SPEC §12.14); and keeps their windows' listings, shared (SPEC
+/// §5.7).
 ///
 /// Entries must be published in commit order. Sessions catch up on
 /// anything older from the log itself (see [`crate::Backend::replay`]).
@@ -25,6 +27,7 @@ pub struct Hub {
     attending: Mutex<HashMap<u64, Place>>,
     attended: watch::Sender<Attended>,
     sessions: AtomicU64,
+    windows: Arc<Shared>,
 }
 
 /// How many notices a session may fall behind by; it misses those older.
@@ -41,7 +44,13 @@ impl Hub {
             attending: Mutex::new(HashMap::new()),
             attended: watch::channel(Attended::default()).0,
             sessions: AtomicU64::new(0),
+            windows: Arc::default(),
         }
+    }
+
+    /// The windows' listings, kept by [`crate::keep_windows`].
+    pub fn windows(&self) -> &Arc<Shared> {
+        &self.windows
     }
 
     /// A number for a session, of none other.

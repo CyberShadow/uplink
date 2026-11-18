@@ -287,7 +287,12 @@ next: ListPosition | null,
  * The entries the list's conversations are made of, as label
  * changes move entries into and out of them.
  */
-scope: ListScope, } | { "type": "entries", as_of: TxLogId, entries: Array<Entry>, } | { "type": "conversation_count", count: number, } | { "type": "home", buckets: Array<HomeBucket>, notifications: Notifications, 
+scope: ListScope, } | { "type": "entries", as_of: TxLogId, entries: Array<Entry>, } | { "type": "conversation_count", count: number, } | { "type": "home", buckets: Array<HomeBucket>, 
+/**
+ * How many items of each bucket home shows, of a window of as
+ * many: the server keeps those listed (SPEC §5.7).
+ */
+limit: number, notifications: Notifications, 
 /**
  * Of each urgency that some bucket notifies with, the query of
  * its buckets (as `buckets` has them, joined by `OR`), whose
@@ -1785,4 +1790,4 @@ export type EventChangeKind = "create" | "update" | "delete";
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "bd205a67e6c1baad"
+export const PROTOCOL_VERSION = "4c15d7dda0489080"

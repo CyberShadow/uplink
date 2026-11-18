@@ -14,7 +14,9 @@ use uplink_protocol::{
     ServerResponse, Source, SubscriptionId, TxLogId, UnknownNames, Unseen, WindowChange,
     WsClientMsg, WsServerMsg,
 };
-use uplink_realtime::{run_session, Answer, Backend, Held, Hub, Listing, Replay};
+use uplink_realtime::{
+    keep_windows, run_session, Answer, Backend, Held, Hub, Key, Listing, Replay,
+};
 
 /// What every query matches, the most recently active first, as of the
 /// last entry published.
@@ -24,6 +26,8 @@ struct State {
     items: Vec<Item>,
     /// What is unseen while nothing is attended.
     unseen: Vec<Unseen>,
+    /// How many times windows of items were listed.
+    listings: u32,
 }
 
 struct Lists(Arc<Mutex<State>>, Arc<Hub>);
@@ -48,7 +52,8 @@ impl Backend for Lists {
         _held: Held,
         _changed: Changed,
     ) -> Result<Listing<Item>, ServerError> {
-        let state = self.0.lock().unwrap();
+        let mut state = self.0.lock().unwrap();
+        state.listings += 1;
         Ok(Listing {
             as_of: TxLogId(state.head),
             listed: state.items.iter().take(limit as usize).cloned().collect(),
@@ -106,8 +111,10 @@ fn todo(id: i64, updated_at: i64) -> Item {
     }
 }
 
-/// Serves sessions of `state`, at the address returned.
+/// Serves sessions of `state`, at the address returned, their windows
+/// kept.
 async fn serve(state: Arc<Mutex<State>>, hub: Arc<Hub>) -> std::net::SocketAddr {
+    tokio::spawn(keep_windows(hub.clone(), Lists(state.clone(), hub.clone())));
     let backend = Arc::new(Lists(state, hub.clone()));
     let app = Router::new().route(
         "/ws",
@@ -191,6 +198,7 @@ async fn windows_are_sent_what_changed_of_them() {
         head: 0,
         items: vec![todo(1, 30), todo(2, 20), todo(3, 10)],
         unseen: vec![],
+        listings: 0,
     }));
     let hub = Arc::new(Hub::new(16));
     let addr = serve(state.clone(), hub.clone()).await;
@@ -356,6 +364,7 @@ async fn windows_of_the_unseen_follow_what_is_attended() {
         head: 0,
         items: vec![],
         unseen: vec![invite],
+        listings: 0,
     }));
     let hub = Arc::new(Hub::new(16));
     let addr = serve(state, hub).await;
@@ -409,4 +418,150 @@ async fn windows_of_the_unseen_follow_what_is_attended() {
         panic!("expected what is unseen again")
     };
     assert_eq!(keys(&change).0, ["invite:1"]);
+}
+
+/// Subscribe to `query`'s items, of `limit`: the window.
+fn subscribe(request_id: u64, subscription: u64, query: &str, limit: u32) -> WsClientMsg {
+    WsClientMsg::Request {
+        request_id,
+        body: ClientRequest::Subscribe {
+            subscription: SubscriptionId(subscription),
+            query: query.into(),
+            unknown: UnknownNames::False,
+            limit,
+            of: Of::Items,
+        },
+    }
+}
+
+/// Sessions subscribed to the same query share its listing: it is listed
+/// once for all, as they subscribe and as it changes; and, pinned, it is
+/// listed before any subscribes, and kept while none is.
+#[tokio::test]
+async fn windows_of_a_query_share_its_listing() {
+    let state = Arc::new(Mutex::new(State {
+        head: 0,
+        items: vec![todo(1, 30), todo(2, 20), todo(3, 10)],
+        unseen: vec![],
+        listings: 0,
+    }));
+    let hub = Arc::new(Hub::new(16));
+    hub.windows().pin(vec![(
+        Key {
+            of: Of::Items,
+            query: "pinned".into(),
+            unknown: UnknownNames::False,
+        },
+        2,
+    )]);
+    let addr = serve(state.clone(), hub.clone()).await;
+    let (mut send, mut recv) = connect(addr).await;
+    let (mut other, mut answers) = connect(addr).await;
+    let window = |msg: WsServerMsg| match msg {
+        WsServerMsg::Response {
+            body: ServerResponse::Window { change, .. },
+            ..
+        } => change,
+        other => panic!("expected a window, got {other:?}"),
+    };
+
+    // The pinned is listed before it is subscribed to, of as many as
+    // pinned.
+    send(subscribe(1, 1, "pinned", 1)).await;
+    assert_eq!(keys(&window(recv().await)), (vec!["todo:1"], vec![]));
+    other(subscribe(1, 1, "pinned", 2)).await;
+    assert_eq!(
+        keys(&window(answers().await)),
+        (vec!["todo:1", "todo:2"], vec![])
+    );
+    assert_eq!(state.lock().unwrap().listings, 1);
+
+    // Another query is listed as it is subscribed to, once for both.
+    send(subscribe(2, 2, "q", 2)).await;
+    window(recv().await);
+    other(subscribe(2, 2, "q", 1)).await;
+    assert_eq!(keys(&window(answers().await)), (vec!["todo:1"], vec![]));
+    assert_eq!(state.lock().unwrap().listings, 2);
+
+    // A change is listed once of each query, and sent to each window as
+    // it changed of it.
+    {
+        let mut state = state.lock().unwrap();
+        state.head = 1;
+        state.items = vec![todo(2, 20), todo(3, 10)];
+    }
+    hub.publish(entry(
+        1,
+        ServerEvent::TodosChanged(TodosChanged {
+            todos: vec![TodoId(1)],
+        }),
+    ));
+    let mut changes = vec![];
+    for _ in 0..3 {
+        match recv().await {
+            WsServerMsg::Entry { entry } => assert_eq!(entry.id, TxLogId(1)),
+            WsServerMsg::WindowChanged {
+                subscription,
+                change,
+            } => changes.push((
+                subscription.0,
+                keys(&change).0.join(","),
+                keys(&change).1.join(","),
+            )),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    changes.sort();
+    assert_eq!(
+        changes,
+        [
+            (1, "todo:2".to_owned(), "todo:1".to_owned()),
+            (2, "todo:3".to_owned(), "todo:1".to_owned()),
+        ]
+    );
+    assert_eq!(state.lock().unwrap().listings, 4);
+
+    // Unsubscribed by both, a query is listed no more; the pinned is.
+    drop((other, answers));
+    send(WsClientMsg::Request {
+        request_id: 3,
+        body: ClientRequest::Unsubscribe {
+            subscription: SubscriptionId(2),
+        },
+    })
+    .await;
+    assert!(matches!(
+        recv().await,
+        WsServerMsg::Response { request_id: 3, .. }
+    ));
+    send(WsClientMsg::Request {
+        request_id: 4,
+        body: ClientRequest::Unsubscribe {
+            subscription: SubscriptionId(1),
+        },
+    })
+    .await;
+    assert!(matches!(
+        recv().await,
+        WsServerMsg::Response { request_id: 4, .. }
+    ));
+    {
+        let mut state = state.lock().unwrap();
+        state.head = 2;
+        state.items = vec![todo(3, 10)];
+    }
+    hub.publish(entry(
+        2,
+        ServerEvent::TodosChanged(TodosChanged {
+            todos: vec![TodoId(2)],
+        }),
+    ));
+    assert!(matches!(recv().await, WsServerMsg::Entry { entry } if entry.id == TxLogId(2)));
+    // Kept, the pinned is listed again, and subscribed to as listed.
+    while state.lock().unwrap().listings < 5 {
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    send(subscribe(5, 3, "pinned", 2)).await;
+    assert_eq!(keys(&window(recv().await)), (vec!["todo:3"], vec![]));
+    assert_eq!(state.lock().unwrap().listings, 5);
 }

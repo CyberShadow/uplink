@@ -1197,14 +1197,23 @@ whether the query matches more than it has, and, as `Items` says, the
 rooms it looked through of which not the whole history is stored
 (`partial_rooms`), which change as it is fetched. Applied to what the client
 had, it gives what the window has now; the client orders the items by
-position. The session keeps, of each window, its query, its size, the
-items it last sent, and what changed of the items since (`Changed`, of
-the events of the entries it sent: mail by its entries, rooms, to-dos;
-the events, named only by their calendars, whole; of none, a draft's
-keystrokes). Once the entries that came meanwhile are sent, it lists
-each window again as of then, and sends `WindowChanged { subscription,
-change }` for those that changed, after the entries it reflects. Of what
-it held, it checks again only what changed: what the query matches of
+position.
+
+A window is of a listing, which the server shares: of each query (with
+its `unknown`, and what it lists, `of`), one, of as many items as the
+widest window of it, kept current once however many sessions, or tabs,
+subscribe to it, and gone with the last of them. Home's windows (§12.13)
+are pinned: listed from the server's start, and kept while no session
+subscribes, so that a window of one is answered at once, as it is.
+The server keeps, of each listing, its query, its size, the items it
+lists, and what changed of the items since (`Changed`, of the events of
+the entries committed: mail by its entries, rooms, to-dos; the events,
+named only by their calendars, whole; of none, a draft's keystrokes);
+the session keeps, of each window, its size and the items it last sent.
+As entries come, the server lists each listing again as of then, and,
+for each window of it that changed, the session sends `WindowChanged {
+subscription, change }`, of the window's first items, after the entries
+it reflects. Of what it held, it checks again only what changed: what the query matches of
 it (of mail, of the conversations of the entries named; of a query
 naming a space, its rooms whole, as a room changed may change which
 rooms it holds) takes its place, of as many as the window holds (and
@@ -1216,9 +1225,9 @@ whole, and of a query bounded by a time (`newer_than:`), its mail and
 rooms whole too. After an event the log does not name items by (entries
 removed, a label list changed, a place seen, §12.15), it lists each
 whole. It
-lists them one at a time, in turn, those due longest first, each due
-once however many entries came: a request waits for one listing at
-most, and a listing reads what changed, not the window. So the client
+lists them one at a time, in turn, those wanted first (new, or
+widened), then those due longest, each due once however many entries
+came; a listing reads what changed, not the window. So the client
 needs no reloads, and neither judges what a query matches, nor
 truncates what it has paged through: a window has exactly the first
 items it was widened to, whatever comes and goes before them; an item
@@ -1240,8 +1249,9 @@ message, and what is read, archived, redacted or seen leaves.
 
 Windows are of their connection. On a new one, resumed or not, the
 client subscribes anew, from the first page: what it had of them is
-void, and replaced. One that fails to list again, as a label it names
-was deleted, ends the session (1011); subscribing anew is then
+void, and replaced (from the listing, if it is kept). A listing that
+fails to list again, as a label it names was deleted, ends the sessions
+of its windows (1011); subscribing anew lists anew, and is then
 `Invalid`, which the client shows.
 
 ## 6. Transaction log & undo
@@ -4418,7 +4428,8 @@ account's security is loaded for it.
 (and `g z` to the history, §6.3). `g i` still goes to the Inbox. Above, the agenda: the events of now through tomorrow, from
 `ListEvents`, each a link to its day. Below, a row of the buckets'
 names and counts, which scroll to them, and the buckets, configured in
-`home` (§3.2), in order. `ListHome` says what they are, with
+`home` (§3.2), in order. `ListHome` says what they are, how many of
+each home shows (`limit`, 20), with
 `notifications` (§3.2, the windows' limit and the idle time, §12.16,
 §12.15) and `notifying` (of each urgency, its buckets' queries joined,
 §12.16), as they are configured together: each bucket's
@@ -4427,7 +4438,7 @@ name, and its query less the items of every earlier bucket's
 matches it: `-(q₁)` is of each message, and a room with an unread
 message that notifies and one that does not (a bridge bot's notices)
 would be in Unread and in Other too. The client
-subscribes to each (§5.7), a window of 20, with `unknown: false`:
+subscribes to each (§5.7), a window of `limit`, with `unknown: false`:
 unlike a search, a label or tag no kind has is false rather than an
 error, since the default buckets name Gmail's labels and Element's tags,
 which some accounts lack. A bucket's
@@ -4435,7 +4446,7 @@ rows are its items as a search lists them, the most recently active
 first (a room's row says, as mail's its subject and snippet, what is
 new — `3 new`, `2 mentioning you` — and its latest message, `Bob:
 Lunch?`, as last edited: `Room.preview`; found by its messages, how
-many, and the latest of them, as a search of particular messages has them); it shows 20 at most (the client's
+many, and the latest of them, as a search of particular messages has them); it shows 20 at most (the
 `limit`), its count saying `20+` when there are more, with a link "Show all"
 to the bucket's query as a search; its heading links there too, however
 many it shows, to work through the bucket as a list. Mail opens within that search, so `j`
@@ -4448,9 +4459,12 @@ back (a row that goes gives it to the next one shown, or else the last), `o`/Ent
 read up to its latest event, `Room.latest`, or finishes a to-do), `s`
 stars mail or favourites a room, and `l` labels mail or tags a room.
 Rooms show what is unread, mentions, or an invitation; to-dos past due
-show it. The buckets are subscribed to from the first connection,
-on show or not, so home shows at once, as it is; `HomeChanged` says they
-were configured anew, and they are subscribed to anew if they changed.
+show it. The buckets, and the windows of the unseen that notify, are
+listings the server keeps (pinned, §5.7), and the client subscribes to
+them from the first connection, on show or not, so home shows at once,
+as it is, a tab loaded anew too; `HomeChanged` says they were configured
+anew (the server pins them anew), and they are subscribed to anew if
+they changed.
 The agenda is listed then, as home shows, and as calendars change.
 
 The default buckets (§3.2) go by how the user is reached, not by kind,

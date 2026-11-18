@@ -394,7 +394,16 @@ pub async fn serve_with_listener(
         .await
         .map_err(|e| anyhow::anyhow!("reading the badges: {}", e.message))?;
     hub.set_badges(badges);
-    tokio::spawn(badges::keep(state.services.items.clone(), hub, badged));
+    tokio::spawn(badges::keep(
+        state.services.items.clone(),
+        hub.clone(),
+        badged,
+    ));
+    tokio::spawn(uplink_realtime::keep_windows(
+        hub.clone(),
+        state.services.clone(),
+    ));
+    hub.windows().pin(state.services.items.pins());
 
     let app = build_app(state);
 
@@ -522,7 +531,9 @@ async fn handle_config_changed(
                 services
                     .items
                     .configure_home(cfg.home, cfg.notifications.into());
-                services.dispatcher.hub().notify(Notice::HomeChanged);
+                let hub = services.dispatcher.hub();
+                hub.windows().pin(services.items.pins());
+                hub.notify(Notice::HomeChanged);
                 info!("config: home reloaded");
             }
             Err(e) => {

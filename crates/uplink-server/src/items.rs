@@ -25,16 +25,20 @@ use uplink_protocol::{
     matrix::{InvitationId, RoomEventId, RoomId},
     todos::Todo,
     Badge, Badges, Changed, ErrorCode, Item, ItemKey, ItemKind, ItemPosition, Mark, Marks,
-    Notifications, Notifying, Place, ServerError, ServerResponse, TxLogId, UnknownNames, Unseen,
-    Urgency,
+    Notifications, Notifying, Of, Place, ServerError, ServerResponse, TxLogId, UnknownNames,
+    Unseen, Urgency,
 };
 use uplink_query::{Kind, Query, Term};
-use uplink_realtime::{Attended, Listing};
+use uplink_realtime::{Attended, Key, Listing};
 use uplink_storage::rusqlite::{Connection, Transaction};
 use uplink_tx_log::answer::{error, internal, Reader, Response};
 
 /// The most items a page may ask for, as a list of mail.
 const MAX_LIMIT: u32 = uplink_email::service::MAX_LIMIT;
+
+/// How many items of each bucket home shows (SPEC §12.13); the rest are
+/// a search away.
+const HOME_LIMIT: u32 = 20;
 
 #[derive(Clone)]
 pub struct Items {
@@ -600,20 +604,7 @@ impl Items {
     /// and Element's tags, which an account may lack.
     pub fn home(&self) -> Response {
         let buckets = self.buckets(now());
-        let notifying = [Urgency::Interrupting, Urgency::Quiet]
-            .into_iter()
-            .filter_map(|urgency| {
-                let of: Vec<String> = buckets
-                    .iter()
-                    .filter(|bucket| bucket.badge.and_then(Badge::urgency) == Some(urgency))
-                    .map(|bucket| format!("({})", bucket.text))
-                    .collect();
-                (!of.is_empty()).then(|| Notifying {
-                    urgency,
-                    query: of.join(" OR "),
-                })
-            })
-            .collect();
+        let notifying = notifying(&buckets);
         Ok(ServerResponse::Home {
             buckets: buckets
                 .into_iter()
@@ -622,9 +613,34 @@ impl Items {
                     query: bucket.text,
                 })
                 .collect(),
+            limit: HOME_LIMIT,
             notifications: **self.notifications.load(),
             notifying,
         })
+    }
+
+    /// The windows home subscribes to, as `home` says them, of as many as
+    /// it shows: kept listed, so that home shows at once (SPEC §12.13).
+    pub fn pins(&self) -> Vec<(Key, u32)> {
+        let buckets = self.buckets(now());
+        let limit = self.notifications.load().limit;
+        notifying(&buckets)
+            .into_iter()
+            .map(|notifying| (Of::Unseen, notifying.query, limit))
+            .chain(
+                buckets
+                    .into_iter()
+                    .map(|bucket| (Of::Items, bucket.text, HOME_LIMIT)),
+            )
+            .map(|(of, query, limit)| {
+                let key = Key {
+                    of,
+                    query,
+                    unknown: UnknownNames::False,
+                };
+                (key, limit)
+            })
+            .collect()
     }
 
     /// What the badged buckets hold (SPEC §12.14), as `home` lists them,
@@ -944,6 +960,25 @@ impl Items {
         }
         Ok(())
     }
+}
+
+/// Of each urgency that some bucket notifies with, the query of its
+/// buckets, joined (SPEC §12.16).
+fn notifying(buckets: &[Bucket]) -> Vec<Notifying> {
+    [Urgency::Interrupting, Urgency::Quiet]
+        .into_iter()
+        .filter_map(|urgency| {
+            let of: Vec<String> = buckets
+                .iter()
+                .filter(|bucket| bucket.badge.and_then(Badge::urgency) == Some(urgency))
+                .map(|bucket| format!("({})", bucket.text))
+                .collect();
+            (!of.is_empty()).then(|| Notifying {
+                urgency,
+                query: of.join(" OR "),
+            })
+        })
+        .collect()
 }
 
 fn others(
@@ -2017,12 +2052,30 @@ mod tests {
         );
         let ServerResponse::Home {
             buckets,
+            limit,
             notifications,
             notifying,
         } = items.home().unwrap()
         else {
             panic!()
         };
+        // Kept listed, the windows home subscribes to, of as many.
+        let pinned = |of, query: &str, limit| {
+            let key = Key {
+                of,
+                query: query.to_owned(),
+                unknown: UnknownNames::False,
+            };
+            (key, limit)
+        };
+        assert_eq!(
+            items.pins(),
+            notifying
+                .iter()
+                .map(|n| pinned(Of::Unseen, &n.query, notifications.limit))
+                .chain(buckets.iter().map(|b| pinned(Of::Items, &b.query, limit)))
+                .collect::<Vec<_>>()
+        );
         let mut windows = vec![];
         for bucket in &buckets {
             let window = items

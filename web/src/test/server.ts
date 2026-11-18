@@ -1150,6 +1150,7 @@ export class FakeServer implements Requester, Subscriber, Blobs {
         return {
           type: 'home',
           buckets: this.homeBuckets().map(({ name, query }) => ({ name, query })),
+          limit: 20,
           notifications: { limit: 100, idle_minutes: this.idleMinutes },
           notifying: (Object.keys(NOTIFYING) as Urgency[]).map((urgency) => ({ urgency, query: NOTIFYING[urgency] })),
         }
