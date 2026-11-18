@@ -14,7 +14,10 @@ use crate::{
     image_packs, markdown,
     membership::{self, MembershipChanged},
     room_tags::{self, RoomTagSet, RoomTagsRead},
-    rooms::{self, Decrypted, ObservedEvent, ObservedRoom, Push, ReceiptSent, SpaceChild, Synced},
+    rooms::{
+        self, Decrypted, ObservedEvent, ObservedInvitation, ObservedRoom, Push, ReceiptSent,
+        SpaceChild, Synced,
+    },
     send::{
         self, SendFailed, SendStarted, SendSucceeded, TakeBackFailed, TakeBackStarted,
         TakeBackSucceeded,
@@ -547,6 +550,10 @@ impl Syncer {
             own_receipts,
             fully_read: room.fully_read_event_id().map(|e| e.to_string()),
             image_packs: image_packs(&room).await?,
+            invitation: match membership {
+                Membership::Invited => Some(invitation(&room).await?),
+                Membership::Joined | Membership::Left => None,
+            },
         })
     }
 
@@ -577,6 +584,18 @@ impl Syncer {
                 .unwrap_or_default(),
         })
     }
+}
+
+/// Of a room invited to, who invited the account: the sender of its own
+/// `m.room.member` in the stripped state.
+async fn invitation(room: &Room) -> Result<ObservedInvitation> {
+    let invite = room.invite_details().await?;
+    Ok(ObservedInvitation {
+        inviter: invite.inviter_id.to_string(),
+        inviter_name: invite
+            .inviter
+            .and_then(|member| member.display_name().map(str::to_owned)),
+    })
 }
 
 /// The room's image packs, by state key, in its order: of a room invited

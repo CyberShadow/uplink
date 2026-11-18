@@ -2,6 +2,7 @@ import { createContext } from 'preact'
 import { useContext } from 'preact/hooks'
 import type { ReadonlySignal } from '@preact/signals'
 import type { Status } from './connection'
+import type { Place } from './generated/protocol'
 import type { CalendarStore } from './stores/calendar'
 import type { DraftStore } from './stores/drafts'
 import type { HistoryStore } from './stores/history'
@@ -21,6 +22,8 @@ export interface Services {
   calendar: CalendarStore
   home: HomeStore
   status: ReadonlySignal<Status>
+  /** Says what the tab attends (SPEC §12.15). */
+  attend(place: Place | null): void
 }
 
 export const ServicesContext = createContext<Services | null>(null)

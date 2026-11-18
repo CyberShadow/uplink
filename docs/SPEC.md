@@ -2939,9 +2939,10 @@ which a verified device gives.
   (§12.16): of a room's messages that the bucket's query matches, as
   messages, and of its invitation. An invited room has one message: the
   invitation, the stripped `m.room.member` event of the account that
-  sync gives (the SDK's `invite_details`), stored as the room's event,
-  its sender the inviter. It has no `ts` (stripped state has none), so
-  it is positioned by when it was stored, and is news unless the
+  sync gives (the SDK's `invite_details`), its sender the inviter,
+  stored apart from the room's events (V0068 `matrix_invitation`), as
+  it has no event id. It has no `ts` (stripped state has none), so it
+  is positioned by when it was stored, seen by its own watermark, and is news unless the
   account's first sync stored it. The
   default buckets ask the push rules (`is:notifying`) of every message
   but mentions, so what the push rules mute does not notify, and what
@@ -4004,7 +4005,8 @@ account's security is loaded for it.
 names and counts, which scroll to them, and the buckets, configured in
 `home` (§3.2), in order. `ListHome` says what they are, with
 `notifications` (§3.2, the windows' limit and the idle time, §12.16,
-§12.15), as they are configured together: each bucket's
+§12.15) and `notifying` (of each urgency, its buckets' queries joined,
+§12.16), as they are configured together: each bucket's
 name, and its query less the items of every earlier bucket's
 (`(q₃) -has:(q₁) -has:(q₂)`), so an item is in the first bucket that
 matches it: `-(q₁)` is of each message, and a room with an unread
@@ -4156,13 +4158,12 @@ listing of the mailbox, which may take days, stores the account's
 history with ids as new as any, and that is not news, however late it
 is stored. So with a room's messages: those sent (`ts`) before uplink
 began to sync the Matrix account, which a first sync and the filling of
-gaps store, neither notify nor highlight (§9.5). A to-do is the user's
-own, and never news.
+gaps store, neither notify nor highlight (§9.5).
 
 **A place is seen while it is attended:** shown in a visible tab of a
 focused window, the user having used it (a key, the pointer, a touch)
-within 5 minutes (`notifications.idle_minutes`, §3.2), as Slack and Discord take the user for away after a
-while of nothing. Visible alone is not enough: a tab left on another
+within 5 minutes (`notifications.idle_minutes`, §3.2), as Slack and
+Discord take the user for away after a while of nothing. Visible alone is not enough: a tab left on another
 screen, or under another window, is not looked at. The client tells
 the server what it attends (`Attend { place }`, `place` none once it
 no longer does, of the moment as `SetTyping` is, §5.5: it answers
@@ -4257,8 +4258,9 @@ notify the phone while the desktop is in use.
 
 The client subscribes, for each urgency, to the unseen messages of its
 buckets (`of: unseen`, §5.7, a window of 100, `notifications.limit`,
-§3.2, about the most a desktop shows at once): their queries, each as home has it (less the items of every
-earlier bucket), joined by `OR`. What the windows hold is what stands:
+§3.2, about the most a desktop shows at once): their queries, each as
+home has it (less the items of every earlier bucket), joined by `OR`,
+as `ListHome` says them (`notifying`). What the windows hold is what stands:
 the server keeps no notifications of its own. The first listing of a
 page's windows is what was there before it opened, and is not notified
 of, as the badges are what tells of it; after, what is new to a window

@@ -1,9 +1,7 @@
 //! The badges (SPEC §12.14): what the badged home buckets hold, kept
-//! current in the hub, which sends them to every session; and what comes
-//! into them from others, and what of it is no news any more, which it
-//! sends as notices (SPEC §12.16).
+//! current in the hub, which sends them to every session.
 
-use crate::items::{Badged, Items, Since};
+use crate::items::{Badged, Items};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::time::{interval_at, Instant, MissedTickBehavior};
@@ -13,15 +11,16 @@ use uplink_realtime::Hub;
 /// Time alone moves items, into `due:today` or out of `newer_than:`.
 const EVERY: Duration = Duration::from_secs(60);
 
-/// Keeps the hub's badges, `badged` derived as of `since`:
-/// after log entries (those that come while they are kept, at once), by
-/// checking again what they name, and each minute what time moves; and
-/// derived anew when the buckets are configured anew, and after entries
-/// missed.
-pub async fn keep(items: Items, hub: Arc<Hub>, badged: Badged, mut since: Since) {
+/// Keeps the hub's badges, `badged` derived: after log entries (those
+/// that come while they are kept, at once), by checking again what they
+/// name, and each minute what time moves; and derived anew when the
+/// buckets are configured anew, as what is attended changes (what is
+/// unseen, SPEC §12.15), and after entries missed.
+pub async fn keep(items: Items, hub: Arc<Hub>, badged: Badged) {
     let mut badged = Some(badged);
     let mut entries = hub.subscribe();
     let mut notices = hub.notices();
+    let mut attended = hub.attended();
     let mut minute = interval_at(Instant::now() + EVERY, EVERY);
     minute.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
@@ -40,6 +39,11 @@ pub async fn keep(items: Items, hub: Arc<Hub>, badged: Badged, mut since: Since)
                 Err(RecvError::Lagged(_)) => changed.everything = true,
                 Err(RecvError::Closed) => unreachable!("the hub outlives the server"),
             },
+            attention = attended.changed() => {
+                attention.expect("the hub outlives the server");
+                attended.borrow_and_update();
+                changed.everything = true;
+            }
             _ = minute.tick() => changed.time = true,
         }
         // Those that came meanwhile are checked with these.
@@ -52,21 +56,14 @@ pub async fn keep(items: Items, hub: Arc<Hub>, badged: Badged, mut since: Since)
             }
         }
         let derived = match badged.take() {
-            Some(kept) => items.rebadged(kept, changed, since.clone()).await,
+            Some(kept) => items.rebadged(kept, changed).await,
             // What it held was lost with a failure: anew.
-            None => items.badged(Some(since.clone())).await,
+            None => items.badged().await,
         };
         match derived {
-            Ok((kept, derived)) => {
+            Ok((kept, badges)) => {
                 badged = Some(kept);
-                hub.set_badges(derived.badges);
-                for arrival in derived.arrivals {
-                    hub.notify(Notice::Arrival(arrival));
-                }
-                for item in derived.recalls {
-                    hub.notify(Notice::Recall { item });
-                }
-                since = derived.since;
+                hub.set_badges(badges);
             }
             Err(e) => tracing::error!("badges: reading them failed: {}", e.message),
         }

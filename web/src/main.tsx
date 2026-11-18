@@ -9,6 +9,8 @@ const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}
 const client = new Client({
   request: (body) => connection.request(body),
   subscribe: (query, unknown, limit, listener) => connection.subscribe(query, unknown, limit, listener),
+  subscribeUnseen: (query, limit, listener) => connection.subscribeUnseen(query, limit, listener),
+  attend: (place) => connection.attend(place),
   ...httpBlobs,
 })
 const connection = new Connection(url, {

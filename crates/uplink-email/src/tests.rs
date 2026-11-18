@@ -1578,7 +1578,7 @@ pub(crate) mod service {
             let unknown = || crate::query::Unknown::False;
             let count = crate::query::count(&tx, &accounts, &query, unknown()).unwrap();
             let mut matching = crate::query::matching(&tx, &accounts, &query, unknown()).unwrap();
-            let placed = crate::query::placed(&tx, &accounts, &query, unknown(), false).unwrap();
+            let placed = crate::query::placed(&tx, &accounts, &query, unknown(), None).unwrap();
             // Of some of them, those the query matches, as it places them.
             let some: Vec<i64> = placed
                 .iter()
@@ -1597,14 +1597,9 @@ pub(crate) mod service {
                 entries: some.clone(),
                 ..Default::default()
             };
-            let restricted = crate::query::placed(
-                &tx,
-                &accounts,
-                &query.clone().among(among),
-                unknown(),
-                false,
-            )
-            .unwrap();
+            let restricted =
+                crate::query::placed(&tx, &accounts, &query.clone().among(among), unknown(), None)
+                    .unwrap();
             assert_eq!(
                 restricted,
                 placed.iter().step_by(2).cloned().collect::<Vec<_>>(),
@@ -1616,7 +1611,7 @@ pub(crate) mod service {
                 &accounts,
                 &query.clone().among(uplink_query::Among::default()),
                 unknown(),
-                false,
+                None,
             )
             .unwrap();
             assert_eq!(of_none, vec![], "{list}");
@@ -1671,16 +1666,30 @@ pub(crate) mod service {
                 identities: own("a@x"),
                 provider: uplink_protocol::mail::MailProvider::Gmail,
             }];
-            let places = |unseen| {
+            let places = |unseen: Option<&crate::query::Seen>| {
                 let mut conn = db.reader();
                 let tx = conn.transaction().unwrap();
                 let unknown = crate::query::Unknown::False;
                 totals(&crate::query::placed(&tx, &accounts, &query, unknown, unseen).unwrap())
             };
-            let all = places(false);
+            // Of each entry unseen, its conversation's key.
+            let unseen = |seen: &crate::query::Seen| {
+                let mut conn = db.reader();
+                let tx = conn.transaction().unwrap();
+                let unknown = crate::query::Unknown::False;
+                let (unseen, more) =
+                    crate::query::unseen(&tx, &accounts, &query, unknown, seen, 500).unwrap();
+                assert!(!more);
+                let mut keys: Vec<String> = unseen.into_iter().map(|(key, _)| key).collect();
+                keys.sort();
+                keys
+            };
+            let none_seen = crate::query::Seen::new();
+            let all = places(None);
             // Mail that reached the provider before uplink began to sync
             // the account is history, not news, however late it is stored.
-            assert_eq!(places(true), (vec![], vec![]));
+            assert_eq!(places(Some(&none_seen)), (vec![], vec![]));
+            assert_eq!(unseen(&none_seen), Vec::<String>::new());
             let news_since = |at: i64| {
                 uplink_storage::open(db.dir.path())
                     .unwrap()
@@ -1688,19 +1697,60 @@ pub(crate) mod service {
                     .unwrap();
             };
             news_since(0);
-            assert_eq!(places(true), all);
-            let inbox = db.label("a", "INBOX");
-            uplink_storage::open(db.dir.path())
+            assert_eq!(places(Some(&none_seen)), all);
+            // Each entry of each conversation listed, by its conversation.
+            let mut conn = db.reader();
+            let tx = conn.transaction().unwrap();
+            let unknown = crate::query::Unknown::False;
+            let mut every: Vec<String> = crate::query::matching(&tx, &accounts, &query, unknown)
                 .unwrap()
-                .execute(
-                    "INSERT INTO seen SELECT 'label:' || ?1, max(id), 0, 0, 0 FROM mail_entry",
-                    [inbox.0],
-                )
+                .into_iter()
+                .flat_map(|entries| {
+                    let keys = crate::query::conversation_keys(&tx, &entries[..1]).unwrap();
+                    std::iter::repeat_n(keys[0].clone(), entries.len())
+                })
+                .collect();
+            every.sort();
+            drop(tx);
+            assert_eq!(unseen(&none_seen), every);
+            let inbox = db.label("a", "INBOX");
+            let latest: i64 = db
+                .reader()
+                .query_row("SELECT max(id) FROM mail_entry", [], |r| r.get(0))
                 .unwrap();
+            let seen = crate::query::Seen::from([(format!("label:{}", inbox.0), latest)]);
             let in_inbox = all.0.iter().find(|(l, _)| *l == inbox).unwrap().1;
-            let unseen = places(true);
-            assert!(unseen.0.iter().all(|(l, _)| *l != inbox));
-            assert_eq!(unseen.1, [("a".to_owned(), all.1[0].1 - in_inbox)]);
+            let unseen_placed = places(Some(&seen));
+            assert!(unseen_placed.0.iter().all(|(l, _)| *l != inbox));
+            assert_eq!(unseen_placed.1, [("a".to_owned(), all.1[0].1 - in_inbox)]);
+            // Of a conversation in the Inbox, no entry is unseen, though not
+            // in it itself; of others, every one.
+            let left = unseen(&seen);
+            assert!(!left.is_empty() && left.len() < every.len());
+            let mut conn = db.reader();
+            let tx = conn.transaction().unwrap();
+            let in_inbox: std::collections::HashSet<String> = crate::query::placed(
+                &tx,
+                &accounts,
+                &uplink_query::parse("account:a label:INBOX", 0).unwrap(),
+                crate::query::Unknown::False,
+                None,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|p| p.key)
+            .collect();
+            assert_eq!(
+                left,
+                every
+                    .iter()
+                    .filter(|key| !in_inbox.contains(*key))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            );
+            // Seen in Home, none is.
+            let home = crate::query::Seen::from([("home".to_owned(), latest)]);
+            assert_eq!(unseen(&home), Vec::<String>::new());
         }
         // Senders once each, as first seen; attachments of any.
         let ServerResponse::Conversations { conversations, .. } =
@@ -1753,68 +1803,6 @@ pub(crate) mod service {
             .find(|l| l.external_id == "INBOX")
             .unwrap();
         assert_eq!((inbox.total, inbox.unread), (3, 1));
-    }
-
-    /// What came of a conversation is its newest entry stored since, and
-    /// received since, that is not the user's own.
-    #[tokio::test]
-    async fn what_came_is_from_others_and_recent() {
-        use uplink_protocol::mail::Conversation;
-        let db = Db::new();
-        let store = db.store();
-        // (id, thread, labels, sender, received_at)
-        let observe = |mail: &[(&str, &str, &[&str], &str, i64)]| {
-            let entries = mail
-                .iter()
-                .map(|&(id, thread, labels, from, received_at)| {
-                    let raw = raw(&format!("{id}@x"), from, DATE, id, "body");
-                    let mut e = new_entry(&store, id, labels, &raw);
-                    e.thread_id = Some(thread.into());
-                    e.received_at = received_at;
-                    e
-                })
-                .collect();
-            let labels = labels(&["INBOX", "SENT", "DRAFT"]);
-            db.observe("a", observed(labels, entries, vec![], &[]))
-        };
-        let latest = || {
-            db.reader()
-                .query_row("SELECT max(id) FROM mail_entry", [], |r| r.get(0))
-                .map(EntryId)
-                .unwrap()
-        };
-        observe(&[("x1", "t1", &["INBOX"], "Alice <alice@x>", 1000)]).await;
-        let since = latest();
-        observe(&[
-            ("x2", "t1", &["INBOX"], "Bob <bob@x>", 3000),
-            ("x3", "t1", &["SENT"], "a@x", 4000),
-            ("x4", "t1", &["DRAFT"], "a@x", 5000),
-            // Received long before: stored only now.
-            ("y1", "t2", &["INBOX"], "Carol <carol@x>", 1500),
-        ])
-        .await;
-        let ServerResponse::Conversations { conversations, .. } = mail_of(&db)
-            .list_entries("account:a".into(), None, 10)
-            .await
-            .unwrap()
-        else {
-            panic!()
-        };
-        let mut conn = db.reader();
-        let tx = conn.transaction().unwrap();
-        let arrived = |since: EntryId| -> Vec<Option<String>> {
-            conversations
-                .iter()
-                .map(|c: &Conversation| {
-                    let entry = crate::query::arrived(&tx, c, since, 2000).unwrap()?;
-                    let external = "SELECT external_id FROM mail_entry WHERE id = ?1";
-                    Some(tx.query_row(external, [entry.0], |r| r.get(0)).unwrap())
-                })
-                .collect()
-        };
-        // Bob's, not the user's reply or draft after it; not Carol's.
-        assert_eq!(arrived(since), [Some("x2".to_owned()), None]);
-        assert_eq!(arrived(latest()), [None, None]);
     }
 
     #[tokio::test]

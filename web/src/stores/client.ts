@@ -2,7 +2,7 @@
 
 import type { Blobs } from '../blobs'
 import type { Requester, Subscriber } from '../connection'
-import type { LogEntry, Notice } from '../generated/protocol'
+import type { LogEntry, Notice, Place } from '../generated/protocol'
 import { CalendarStore } from './calendar'
 import { DraftStore } from './drafts'
 import { HistoryStore } from './history'
@@ -21,8 +21,11 @@ export class Client {
   readonly history: HistoryStore
   readonly calendar: CalendarStore
   readonly home: HomeStore
+  /** Says what the tab attends (SPEC §12.15). */
+  readonly attend: (place: Place | null) => void
 
   constructor(server: Requester & Subscriber & Blobs) {
+    this.attend = (place) => server.attend(place)
     this.ops = new Ops(server)
     this.mail = new MailStore(server, this.ops)
     this.drafts = new DraftStore(server, this.ops)
@@ -67,10 +70,6 @@ export class Client {
       case 'receipts_changed':
       case 'security_changed':
         this.matrix.notice(notice)
-        break
-      case 'arrival':
-      case 'recall':
-        this.home.told(notice)
         break
     }
   }

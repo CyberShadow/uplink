@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
-pub use uplink_protocol::{calendar::TimeZone, mail::Identity, Badge};
+pub use uplink_protocol::{calendar::TimeZone, mail::Identity, Badge, Notifications};
 
 // ── Config schema (SPEC §3.2) ─────────────────────────────────────────────────
 
@@ -24,9 +24,53 @@ pub struct Config {
     #[serde(default = "default_home")]
     pub home: Vec<HomeBucket>,
     #[serde(default)]
+    pub notifications: NotificationsConfig,
+    #[serde(default)]
     pub calendar: CalendarConfig,
     #[serde(default)]
     pub remote_images: RemoteImagesConfig,
+}
+
+/// How many notifications stand, and when the user is away (SPEC
+/// §12.15, §12.16).
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotificationsConfig {
+    /// Of each urgency, at once.
+    #[serde(default = "default_notifications_limit")]
+    pub limit: u32,
+    /// How long without the user's input a place shown is no longer
+    /// attended.
+    #[serde(default = "default_idle_minutes")]
+    pub idle_minutes: u32,
+}
+
+impl Default for NotificationsConfig {
+    fn default() -> Self {
+        Self {
+            limit: default_notifications_limit(),
+            idle_minutes: default_idle_minutes(),
+        }
+    }
+}
+
+impl From<NotificationsConfig> for Notifications {
+    fn from(config: NotificationsConfig) -> Self {
+        Notifications {
+            limit: config.limit,
+            idle_minutes: config.idle_minutes,
+        }
+    }
+}
+
+/// About the most a desktop shows at once.
+fn default_notifications_limit() -> u32 {
+    100
+}
+
+/// As Slack and Discord take the user for away.
+fn default_idle_minutes() -> u32 {
+    5
 }
 
 /// How the calendar shows (SPEC §10.2).
@@ -701,6 +745,7 @@ impl Config {
                 .with_context(|| format!("in account {}", account.id()))?;
         }
         config.check_home().context("in home")?;
+        config.check_notifications().context("in notifications")?;
         config.check_calendar().context("in calendar")?;
         Ok(config)
     }
@@ -716,6 +761,20 @@ impl Config {
             jiff::tz::TimeZone::get(&zone.zone)
                 .with_context(|| format!("time zone {:?}", zone.zone))?;
         }
+        Ok(())
+    }
+
+    /// Fails on a limit no window has (SPEC §5.7), or no idle time.
+    fn check_notifications(&self) -> Result<()> {
+        let max = uplink_protocol::MAX_PAGE;
+        anyhow::ensure!(
+            (1..=max).contains(&self.notifications.limit),
+            "limit must be between 1 and {max}"
+        );
+        anyhow::ensure!(
+            self.notifications.idle_minutes > 0,
+            "idle_minutes must be more than 0"
+        );
         Ok(())
     }
 
@@ -788,7 +847,8 @@ pub fn diff_config_sections(old: &Config, new: &Config) -> Vec<ConfigSection> {
     if old.server.basic_auth != new.server.basic_auth {
         changed.push(ConfigSection::BasicAuth);
     }
-    if old.home != new.home {
+    // Configured together, as home lists them.
+    if old.home != new.home || old.notifications != new.notifications {
         changed.push(ConfigSection::Home);
     }
     if old.calendar != new.calendar {
@@ -1490,6 +1550,15 @@ accounts:
             .home;
         assert_eq!(badged[0].badge, Some(Badge::Count));
         assert!(load("home: []\n").unwrap().home.is_empty());
+        let notifications = load("").unwrap().notifications;
+        assert_eq!((notifications.limit, notifications.idle_minutes), (100, 5));
+        let notifications = load("notifications:\n  idle_minutes: 2\n")
+            .unwrap()
+            .notifications;
+        assert_eq!((notifications.limit, notifications.idle_minutes), (100, 2));
+        let refused_of = |yaml: &str| format!("{:#}", load(yaml).unwrap_err());
+        assert!(refused_of("notifications:\n  limit: 0\n").contains("limit must be"));
+        assert!(refused_of("notifications:\n  idle_minutes: 0\n").contains("idle_minutes"));
         let refused = |home: &str| format!("{:#}", load(home).unwrap_err());
         assert!(
             refused("home:\n  - name: A\n    query: x\n  - name: A\n    query: y\n")
@@ -1541,6 +1610,7 @@ data_dir: /tmp/uplink
             send_delay_secs: 10,
             accounts: vec![],
             home: default_home(),
+            notifications: NotificationsConfig::default(),
             calendar: CalendarConfig::default(),
             remote_images: RemoteImagesConfig::default(),
         }

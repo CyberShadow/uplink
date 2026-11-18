@@ -18,6 +18,25 @@ pub struct RoomEventId(pub i64);
 #[serde(transparent)]
 pub struct MatrixSendId(pub i64);
 
+/// An invitation to a room, as uplink numbers it: in the order stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
+#[serde(transparent)]
+pub struct InvitationId(pub i64);
+
+/// An invitation to a room (SPEC §9.5): of the stripped `m.room.member`
+/// event of the account that sync gives, which has no id of its own, nor
+/// time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Invitation {
+    pub id: InvitationId,
+    /// Who invited the account, by Matrix id.
+    pub inviter: String,
+    pub inviter_name: Option<String>,
+    /// When it was stored, ms since the Unix epoch.
+    pub stored_at: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct MatrixAccount {

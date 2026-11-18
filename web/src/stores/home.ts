@@ -5,18 +5,38 @@
 // changes.
 
 import { batch, computed, signal } from '@preact/signals'
-import type { Badges, CalendarEvent, HomeBucket, LogEntry, Notice } from '../generated/protocol'
+import type {
+  Badges,
+  CalendarEvent,
+  HomeBucket,
+  ListedUnseen,
+  LogEntry,
+  Notifications,
+  Notifying,
+  Urgency,
+} from '../generated/protocol'
 import type { Requester, Subscriber } from '../connection'
 import { rowOf, type Row } from '../items'
 import { Loader, query } from './query'
-import { LiveWindow } from './window'
+import { LiveWindow, UnseenWindow } from './window'
 
 /** Rows a bucket shows at most; the rest are a search away. */
 export const BUCKET_LIMIT = 20
 
-/** What comes from others into the badged buckets, and what of it is no
- * news any more (SPEC §12.16). */
-export type News = Extract<Notice, { type: 'arrival' | 'recall' }>
+/** Told, of an urgency, what of its buckets was unseen (`null` before it
+ * was first listed) and what is now (SPEC §12.16). */
+export type UnseenListener = (
+  urgency: Urgency,
+  before: ReadonlyMap<string, ListedUnseen> | null,
+  now: ReadonlyMap<string, ListedUnseen>,
+) => void
+
+/** As home is configured: its buckets, and what notifies. */
+interface Configured {
+  buckets: HomeBucket[]
+  notifications: Notifications
+  notifying: Notifying[]
+}
 
 export interface Bucket {
   bucket: HomeBucket
@@ -40,24 +60,41 @@ export class HomeStore {
   /** What the badged buckets hold, as the server last said (SPEC
    * §12.14); `null` until it first has. */
   readonly badges = signal<Badges | null>(null)
+  /** How notifications are configured; `null` until listed. */
+  readonly notifications = signal<Notifications | null>(null)
   /** The buckets' windows, in order, as last configured. */
   private windows: { bucket: HomeBucket; window: LiveWindow }[] = []
-  /** Those told the news. */
-  private listeners = new Set<(news: News) => void>()
+  /** Of each urgency that notifies, the unseen of its buckets. */
+  private unseen: { urgency: Urgency; window: UnseenWindow }[] = []
+  /** As last configured. */
+  private configured: Configured | null = null
+  /** Those told what is unseen. */
+  private listeners = new Set<UnseenListener>()
 
   /** The buckets as configured, subscribed to anew if they changed. */
   private configuration = new Loader(async () => {
-    let buckets: HomeBucket[]
+    let configured: Configured
     try {
-      buckets = (await query(this.server, { type: 'list_home' }, 'home')).buckets
+      const { buckets, notifications, notifying } = await query(this.server, { type: 'list_home' }, 'home')
+      configured = { buckets, notifications, notifying }
     } catch (error) {
       this.error.value = (error as Error).message
       return
     }
     // As they were, their windows are current: the connection keeps them.
-    if (JSON.stringify(buckets) === JSON.stringify(this.windows.map((w) => w.bucket))) return
+    if (JSON.stringify(configured) === JSON.stringify(this.configured)) return
+    this.configured = configured
+    this.notifications.value = configured.notifications
+    this.unseen.forEach(({ window }) => window.close())
+    this.unseen = configured.notifying.map(({ urgency, query }) => {
+      const window = new UnseenWindow(this.server, query, configured.notifications.limit, (error) => {
+        this.error.value = error.message
+      })
+      window.listener = (before, now) => this.listeners.forEach((listener) => listener(urgency, before, now))
+      return { urgency, window }
+    })
     this.windows.forEach(({ window }) => window.close())
-    this.windows = buckets.map((bucket) => {
+    this.windows = configured.buckets.map((bucket) => {
       const window = new LiveWindow(this.server, bucket.query, 'false', BUCKET_LIMIT, (error) => {
         this.error.value = error.message
       })
@@ -103,14 +140,11 @@ export class HomeStore {
     this.configuration.invalidate()
   }
 
-  /** Tells `listener` the news, until the returned function is called. */
-  onNews(listener: (news: News) => void): () => void {
+  /** Tells `listener` what is unseen as it changes, until the returned
+   * function is called. */
+  onUnseen(listener: UnseenListener): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
-  }
-
-  told(news: News) {
-    this.listeners.forEach((listener) => listener(news))
   }
 
   /** Moves the focus `by` rows. */

@@ -4,6 +4,6 @@ mod hub;
 mod session;
 mod window;
 
-pub use hub::Hub;
+pub use hub::{Attended, Hub};
 pub use session::{run_session, Answer, Backend, Replay, Response, PROTOCOL};
-pub use window::{Held, Listing};
+pub use window::{Held, Listing, UnseenListing};

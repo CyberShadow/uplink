@@ -35,9 +35,10 @@ use uplink_email::{gmail, imap, jmap, m365, pop3, query::ConfiguredAccount, serv
 use uplink_matrix::{room_view::RoomsView, service::Matrix};
 use uplink_protocol::{
     mail::{ConversationAction, ConversationSet, MailProvider},
-    Changed, ClientRequest, ErrorCode, Notice, ServerError, ServerResponse, TxLogId, UnknownNames,
+    Changed, ClientRequest, ErrorCode, Notice, Place, ServerError, ServerResponse, TxLogId,
+    UnknownNames,
 };
-use uplink_realtime::{Answer, Backend, Held, Hub, Listing, Replay};
+use uplink_realtime::{Answer, Backend, Held, Hub, Listing, Replay, UnseenListing};
 use uplink_storage::seal::MasterKey;
 use uplink_todos::service::Todos;
 use uplink_tx_log::{Dispatcher, LogReader, Registry, UndoError};
@@ -308,6 +309,8 @@ pub fn open(config: &Config, mut registry: Registry) -> Result<Services> {
             mail_accounts.clone(),
             rooms.clone(),
             config.home.clone(),
+            config.notifications.into(),
+            dispatcher.hub().attended(),
         ),
         todos: Todos::new(dispatcher.clone(), uplink_storage::open_reader(root)?),
         calendar: Calendar::new(
@@ -384,19 +387,14 @@ pub async fn serve_with_listener(
 
     // Set before any session is served, which is sent them at once.
     let hub = state.services.dispatcher.hub().clone();
-    let (badged, derived) = state
+    let (badged, badges) = state
         .services
         .items
-        .badged(None)
+        .badged()
         .await
         .map_err(|e| anyhow::anyhow!("reading the badges: {}", e.message))?;
-    hub.set_badges(derived.badges);
-    tokio::spawn(badges::keep(
-        state.services.items.clone(),
-        hub,
-        badged,
-        derived.since,
-    ));
+    hub.set_badges(badges);
+    tokio::spawn(badges::keep(state.services.items.clone(), hub, badged));
 
     let app = build_app(state);
 
@@ -521,7 +519,9 @@ async fn handle_config_changed(
         },
         ConfigSection::Home => match Config::load(config_path) {
             Ok(cfg) => {
-                services.items.configure_home(cfg.home);
+                services
+                    .items
+                    .configure_home(cfg.home, cfg.notifications.into());
                 services.dispatcher.hub().notify(Notice::HomeChanged);
                 info!("config: home reloaded");
             }
@@ -1140,8 +1140,9 @@ impl Backend for Services {
         let response = match request {
             ClientRequest::Subscribe { .. }
             | ClientRequest::Extend { .. }
-            | ClientRequest::Unsubscribe { .. } => {
-                unreachable!("sessions keep their subscriptions themselves")
+            | ClientRequest::Unsubscribe { .. }
+            | ClientRequest::Attend { .. } => {
+                unreachable!("sessions keep their subscriptions and attention themselves")
             }
             ClientRequest::Undo { tx_log_id } => self
                 .dispatcher
@@ -1243,9 +1244,6 @@ impl Backend for Services {
             }
             ClientRequest::CancelMatrixSend { item } => self.matrix.cancel_send(item).await,
             ClientRequest::KeepMatrixSent { item } => self.matrix.keep_sent(item).await,
-            ClientRequest::MarkSeen { place } => {
-                self.dispatcher.answer(seen::MarkSeen { place }).await
-            }
             ClientRequest::MarkRoomRead {
                 room,
                 event,
@@ -1369,6 +1367,52 @@ impl Backend for Services {
         self.items
             .window(query, unknown, limit, held, changed)
             .await
+    }
+
+    async fn unseen(
+        &self,
+        query: String,
+        unknown: UnknownNames,
+        limit: u32,
+    ) -> Result<UnseenListing, ServerError> {
+        self.items.unseen(query, unknown, limit).await
+    }
+
+    /// What is attended is seen, as of then, as attention to it ends,
+    /// before what comes after is unseen again; and as it begins, as
+    /// attention is not kept (SPEC §12.15). Failing, `session` attends
+    /// none.
+    async fn attend(
+        &self,
+        session: u64,
+        from: Option<Place>,
+        to: Option<Place>,
+    ) -> Result<(), ServerError> {
+        let hub = self.dispatcher.hub();
+        if let Some(place) = from {
+            if let Err(e) = self.see(place).await {
+                hub.attend(session, None);
+                return Err(e);
+            }
+        }
+        hub.attend(session, to.clone());
+        if let Some(place) = to {
+            if let Err(e) = self.see(place).await {
+                hub.attend(session, None);
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Services {
+    /// Records `place` seen, if anything was stored since it last was.
+    async fn see(&self, place: Place) -> Result<(), ServerError> {
+        if self.items.stale(place.clone()).await? {
+            self.dispatcher.answer(seen::MarkSeen { place }).await?;
+        }
+        Ok(())
     }
 }
 
@@ -1529,7 +1573,14 @@ mod tests {
                     uplink_storage::store::Store::blobs(dir.path()),
                 ),
                 outbox: Outbox::new(reader()),
-                items: items::Items::new(vec![reader()], vec![], rooms, vec![]),
+                items: items::Items::new(
+                    vec![reader()],
+                    vec![],
+                    rooms,
+                    vec![],
+                    uplink_config::NotificationsConfig::default().into(),
+                    dispatcher.hub().attended(),
+                ),
                 todos: Todos::new(dispatcher.clone(), reader()),
                 calendar: Calendar::new(dispatcher.clone(), reader(), vec![]),
                 reader: Arc::new(LogReader::new(reader(), 16)),

@@ -150,10 +150,11 @@ MVP:
 - WebSocket transport with app-level heartbeat and exponential reconnect.
 - Server-arbitrated compare-and-swap edits for sync'd client state (drafts) using `(hash(old_value), edit_operation)`.
 - IndexedDB client-side write-through for draft text resilience.
-- Browser notifications of what comes from others into the home buckets
-  that notify (mail, messages, invitations), interrupting or quiet as
-  their badges say, taken back once no news: read, deleted or answered,
-  here or elsewhere (SPEC §12.16).
+- Browser notifications of what is unseen in the home buckets that
+  notify (mail, messages, invitations), interrupting or quiet as their
+  badges say, one per conversation or room, taken back once seen, read
+  or deleted, here or elsewhere; none of what the user is attending,
+  on any device (SPEC §12.15, §12.16).
 
 Deferred:
 - Web Push: notifications with no client open (SPEC §12.16 needs one).

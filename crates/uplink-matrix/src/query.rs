@@ -13,11 +13,14 @@ use std::{
     sync::Arc,
 };
 use uplink_protocol::matrix::{
-    Membership, Room, RoomEvent, RoomEventId, RoomHistory, RoomHits, RoomId,
+    Invitation, InvitationId, Membership, Room, RoomEvent, RoomEventId, RoomHistory, RoomHits,
+    RoomId,
 };
 use uplink_protocol::TxLogId;
 use uplink_query::{text_matches, Fields, Kind, Query, Term};
-use uplink_storage::rusqlite::{params_from_iter, types::Value, Transaction};
+use uplink_storage::rusqlite::{
+    params, params_from_iter, types::Value, OptionalExtension, Transaction,
+};
 
 use crate::{
     room_tags,
@@ -298,38 +301,160 @@ impl Rooms {
         Ok((events, more))
     }
 
-    /// What came of `rooms` (SPEC §12.16): of each, its newest message that
-    /// `query` matches, as a message, stored after `since`, sent after
-    /// `sent_after` (ms since the Unix epoch), and not the accounts' own.
-    pub fn arrived(
+    /// The messages `query` matches, as messages (its rooms' own terms
+    /// holding of each), that are unseen (SPEC §12.15): sent once uplink
+    /// began to sync their account, and stored after their room was last
+    /// seen, by `seen` (Home's) and `rooms` (a room's own, as seen as of
+    /// its events). The newest first, up to `limit`, with their rooms;
+    /// and whether there are more.
+    pub fn unseen(
         &self,
         tx: &Transaction,
         query: &Query,
-        rooms: &[RoomId],
-        since: RoomEventId,
-        sent_after: i64,
-    ) -> Result<Vec<(RoomId, RoomEventId)>> {
-        let rooms: Vec<&Room> = self.listed().filter(|r| rooms.contains(&r.id)).collect();
-        let ids: Vec<i64> = rooms.iter().map(|room| room.id.0).collect();
-        self.resolve(tx, query, Some(&ids))?;
-        let Some(mut search) = self.search(query, &rooms, true) else {
-            return Ok(vec![]);
+        seen: RoomEventId,
+        rooms: &HashMap<RoomId, RoomEventId>,
+        limit: u32,
+    ) -> Result<(Vec<(&Room, RoomEvent)>, bool)> {
+        // Of the rooms with messages stored since they were seen alone, so
+        // that it costs as much however many rooms there are.
+        // By the range of ids (`+room`: not by an index of rooms, which
+        // walks every message).
+        let mut stored =
+            tx.prepare("SELECT room, max(id) FROM matrix_event WHERE id > ?1 GROUP BY +room")?;
+        let since: Vec<i64> = stored
+            .query_map([seen.0], |r| {
+                Ok((RoomId(r.get(0)?), RoomEventId(r.get(1)?)))
+            })?
+            .filter_map(|row| match row {
+                Ok((room, latest)) => rooms
+                    .get(&room)
+                    .is_none_or(|own| latest > *own)
+                    .then_some(Ok(room.0)),
+                Err(e) => Some(Err(e)),
+            })
+            .collect::<Result<_, _>>()?;
+        let listed: Vec<&Room> = self.listed().filter(|r| since.contains(&r.id.0)).collect();
+        if listed.is_empty() {
+            return Ok((vec![], false));
+        }
+        let query = query.clone().among(uplink_query::Among {
+            rooms: since.clone(),
+            ..Default::default()
+        });
+        self.resolve(tx, &query, Some(&since))?;
+        let Some(mut search) = self.search(&query, &listed, true) else {
+            return Ok((vec![], false));
         };
         let from = search.from();
-        let since = search.sql.param(since.0);
-        let sent_after = search.sql.param(sent_after);
-        let mine = search.sql.mine();
-        let arrived = tx
+        let seen = search.sql.param(seen.0);
+        let rooms_seen: HashMap<String, i64> = rooms
+            .iter()
+            .map(|(room, event)| (room.0.to_string(), event.0))
+            .collect();
+        let rooms_seen = search.sql.param(serde_json::to_string(&rooms_seen)?);
+        let one_more = search.sql.param(limit + 1);
+        let found: Vec<(RoomId, RoomEventId)> = tx
             .prepare(&format!(
-                "SELECT e.room, max(e.id) {from}
-                   AND e.id > {since} AND e.ts > {sent_after} AND e.sender NOT IN {mine}
-                 GROUP BY e.room"
+                "SELECT e.room, e.id {from}
+                   AND e.id > {seen}
+                   AND e.id > coalesce(
+                     (SELECT s.value FROM json_each({rooms_seen}) s
+                      WHERE CAST(s.key AS INTEGER) = e.room), 0)
+                   AND e.ts >= (SELECT a.news_since FROM matrix_room n
+                                JOIN account a ON a.id = n.account_id WHERE n.id = e.room)
+                 ORDER BY e.ts DESC, e.id DESC
+                 LIMIT {one_more}"
             ))?
             .query_map(params_from_iter(search.sql.params.iter()), |r| {
                 Ok((RoomId(r.get(0)?), RoomEventId(r.get(1)?)))
             })?
             .collect::<Result<_, _>>()?;
-        Ok(arrived)
+        let more = found.len() > limit as usize;
+        let mut events: HashMap<RoomEventId, RoomEvent> = HashMap::new();
+        let mut by_room: HashMap<RoomId, Vec<RoomEventId>> = HashMap::new();
+        for (room, event) in found.iter().take(limit as usize) {
+            by_room.entry(*room).or_default().push(*event);
+        }
+        for (room, ids) in by_room {
+            events.extend(
+                rooms::listed_events(tx, room, &ids)?
+                    .into_iter()
+                    .map(|event| (event.id, event)),
+            );
+        }
+        let unseen = found
+            .into_iter()
+            .take(limit as usize)
+            .map(|(room, event)| {
+                let room = *listed
+                    .iter()
+                    .find(|r| r.id == room)
+                    .expect("messages are found of the rooms searched");
+                let event = events.remove(&event).expect("a message found is listed");
+                (room, event)
+            })
+            .collect();
+        Ok((unseen, more))
+    }
+
+    /// The invitations of the rooms `query` matches that are unseen (SPEC
+    /// §12.15): news, and stored after their room was last seen, by `seen`
+    /// (Home's) and `rooms` (a room's own, as seen as of invitations).
+    pub fn unseen_invitations(
+        &self,
+        tx: &Transaction,
+        query: &Query,
+        seen: InvitationId,
+        rooms: &HashMap<RoomId, InvitationId>,
+    ) -> Result<Vec<(&Room, Invitation)>> {
+        // Of the rooms with invitations stored since they were seen alone.
+        let mut stored =
+            tx.prepare("SELECT room, id FROM matrix_invitation WHERE news AND id > ?1")?;
+        let since: Vec<i64> = stored
+            .query_map([seen.0], |r| {
+                Ok((RoomId(r.get(0)?), InvitationId(r.get(1)?)))
+            })?
+            .filter_map(|row| match row {
+                Ok((room, id)) => rooms
+                    .get(&room)
+                    .is_none_or(|own| id > *own)
+                    .then_some(Ok(room.0)),
+                Err(e) => Some(Err(e)),
+            })
+            .collect::<Result<_, _>>()?;
+        if since.is_empty() {
+            return Ok(vec![]);
+        }
+        let query = query.clone().among(uplink_query::Among {
+            rooms: since,
+            ..Default::default()
+        });
+        let invited: HashSet<RoomId> = self
+            .matching(tx, &query)?
+            .into_iter()
+            .filter(|group| group.room.membership == Membership::Invited)
+            .map(|group| group.room.id)
+            .collect();
+        let mut stmt = tx.prepare(
+            "SELECT id, inviter, inviter_name, stored_at FROM matrix_invitation
+             WHERE room = ?1 AND news AND id > ?2",
+        )?;
+        let mut unseen = vec![];
+        for room in self.listed().filter(|room| invited.contains(&room.id)) {
+            let after = rooms.get(&room.id).map_or(seen, |own| (*own).max(seen));
+            let invitation = stmt
+                .query_row(params![room.id.0, after.0], |r| {
+                    Ok(Invitation {
+                        id: InvitationId(r.get(0)?),
+                        inviter: r.get(1)?,
+                        inviter_name: r.get(2)?,
+                        stored_at: r.get(3)?,
+                    })
+                })
+                .optional()?;
+            unseen.extend(invitation.map(|invitation| (room, invitation)));
+        }
+        Ok(unseen)
     }
 
     /// What `query` asks of the messages of `rooms`, those it leaves to
@@ -417,15 +542,6 @@ pub fn tag_known(tx: &Transaction, name: &str) -> Result<bool> {
         .chain(tags.iter().map(String::as_str))
         .any(|tag| names_tag(name, tag));
     Ok(known)
-}
-
-/// Whether the stored message `event` is not deleted (redacted).
-pub fn kept(tx: &Transaction, event: RoomEventId) -> Result<bool> {
-    Ok(tx.query_row(
-        "SELECT NOT redacted FROM matrix_event WHERE id = ?1",
-        [event.0],
-        |r| r.get(0),
-    )?)
 }
 
 /// The spaces each room is in, however deeply, by name.

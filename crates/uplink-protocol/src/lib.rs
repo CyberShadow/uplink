@@ -97,6 +97,11 @@ pub enum WsServerMsg {
         subscription: SubscriptionId,
         change: WindowChange,
     },
+    /// As `WindowChanged`, of a window of the unseen (`Of::Unseen`).
+    UnseenChanged {
+        subscription: SubscriptionId,
+        change: UnseenChange,
+    },
 }
 
 /// A notice of the moment (SPEC §5.5).
@@ -111,22 +116,6 @@ pub enum Notice {
     ReceiptsChanged(matrix::ReceiptsChanged),
     /// The account's devices, their trust or its key backup changed.
     SecurityChanged(matrix::SecurityChanged),
-    Arrival(Arrival),
-    /// What an arrival told of is no news any more (SPEC §12.16): the
-    /// client takes back its notification of it, if it stands.
-    Recall {
-        item: Arrived,
-    },
-}
-
-/// What came from others into a home bucket that notifies (SPEC §12.16):
-/// the client notifies of it, as urgently as the bucket's badge says.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct Arrival {
-    pub bucket: String,
-    pub urgency: Urgency,
-    pub item: Arrived,
 }
 
 /// How a notification calls for the user (SPEC §12.16).
@@ -137,19 +126,6 @@ pub enum Urgency {
     Interrupting,
     /// It goes by, silently.
     Quiet,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Arrived {
-    /// Of a conversation, its newest entry that came.
-    Mail { entry: EntryId },
-    /// Of a room, its newest message that came, as the bucket's query
-    /// matches it.
-    Message { room: RoomId, event: RoomEventId },
-    /// An invitation to a room, by its name: the client may not have it
-    /// listed yet.
-    Invite { room: RoomId, name: String },
 }
 
 // ── requests ──────────────────────────────────────────────────────────────
@@ -188,13 +164,16 @@ pub enum ClientRequest {
     /// Keeps the client's copy of what `query` matches, as `ListItems`
     /// lists it, current (SPEC §5.7): its first `limit` items, its
     /// window, answered `Window`; then `WindowChanged` as they change,
-    /// until `Unsubscribe` or the connection's end. `subscription` is the
-    /// client's name for it, of none other on the connection.
+    /// until `Unsubscribe` or the connection's end. Of `Of::Unseen`, its
+    /// unseen messages instead, answered `UnseenWindow`, then
+    /// `UnseenChanged`. `subscription` is the client's name for it, of
+    /// none other on the connection.
     Subscribe {
         subscription: SubscriptionId,
         query: String,
         unknown: UnknownNames,
         limit: u32,
+        of: Of,
     },
     /// Widens the subscription's window by `limit` items, answered
     /// `Window`.
@@ -356,9 +335,11 @@ pub enum ClientRequest {
     KeepMatrixSent {
         item: MatrixSendId,
     },
-    /// The place has been looked at (SPEC §12.15): what is in it is seen.
-    MarkSeen {
-        place: Place,
+    /// What the client attends (SPEC §12.15): the place shown in a
+    /// visible tab of a focused window, its user active; none once it no
+    /// longer does. Of the moment: answered `Done`, and not logged.
+    Attend {
+        place: Option<Place>,
     },
     /// Move the room's read marker to `event`: it and everything before
     /// it are read.
@@ -594,6 +575,11 @@ pub enum ServerResponse {
     /// Of `ListHome`: of the configuration, not the log.
     Home {
         buckets: Vec<HomeBucket>,
+        notifications: Notifications,
+        /// Of each urgency that some bucket notifies with, the query of
+        /// its buckets (as `buckets` has them, joined by `OR`), whose
+        /// unseen messages notify (SPEC §12.16).
+        notifying: Vec<Notifying>,
     },
     Items {
         as_of: TxLogId,
@@ -614,6 +600,11 @@ pub enum ServerResponse {
         change: WindowChange,
         /// Of its conversations.
         scope: mail::ListScope,
+    },
+    /// As `Window`, of a window of the unseen (`Of::Unseen`).
+    UnseenWindow {
+        as_of: TxLogId,
+        change: UnseenChange,
     },
     Message {
         message: Box<mail::MessageContent>,
@@ -752,6 +743,7 @@ impl ServerResponse {
             | Self::Entries { as_of, .. }
             | Self::Items { as_of, .. }
             | Self::Window { as_of, .. }
+            | Self::UnseenWindow { as_of, .. }
             | Self::Drafts { as_of, .. }
             | Self::Outbox { as_of, .. }
             | Self::Rooms { as_of, .. }
@@ -794,6 +786,36 @@ pub struct HomeBucket {
     /// ([`UnknownNames::False`]): its query, less what earlier buckets
     /// list.
     pub query: String,
+}
+
+/// How notifications are configured (SPEC §3.2, §12.16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Notifications {
+    /// How many of each urgency stand at once: its window's limit.
+    pub limit: u32,
+    /// How long without the user's input a place shown is no longer
+    /// attended (SPEC §12.15).
+    pub idle_minutes: u32,
+}
+
+/// What notifies of an urgency: the unseen messages of `query`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Notifying {
+    pub urgency: Urgency,
+    pub query: String,
+}
+
+/// What a window lists (SPEC §5.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum Of {
+    /// The items the query matches.
+    Items,
+    /// The unseen messages it matches, each as it matches it within its
+    /// item (SPEC §12.15): what notifications are of (SPEC §12.16).
+    Unseen,
 }
 
 /// What a query's names of labels, tags or accounts that no kind has
@@ -870,6 +892,62 @@ impl Item {
     }
 }
 
+/// A message unseen (SPEC §5.7, §12.15), as a notification shows it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Unseen {
+    /// An entry, of its conversation (`Item::key`'s).
+    Mail {
+        conversation: ItemKey,
+        entry: mail::Entry,
+    },
+    /// A room's message, as last edited.
+    Message {
+        room: RoomId,
+        name: String,
+        event: Box<matrix::RoomEvent>,
+    },
+    /// A room's invitation.
+    Invite {
+        room: RoomId,
+        name: String,
+        invitation: matrix::Invitation,
+    },
+}
+
+impl Unseen {
+    /// Identifies it while it changes, as an edit does.
+    pub fn key(&self) -> ItemKey {
+        ItemKey(match self {
+            Unseen::Mail { entry, .. } => format!("mail:{}", entry.id.0),
+            Unseen::Message { event, .. } => format!("event:{}", event.id.0),
+            Unseen::Invite { invitation, .. } => format!("invite:{}", invitation.id.0),
+        })
+    }
+
+    /// The key of its item, as `Item::key` has it.
+    pub fn item(&self) -> ItemKey {
+        match self {
+            Unseen::Mail { conversation, .. } => conversation.clone(),
+            Unseen::Message { room, .. } | Unseen::Invite { room, .. } => {
+                ItemKey(format!("room:{}", room.0))
+            }
+        }
+    }
+
+    /// Where it is listed: by its own time, the newest first.
+    pub fn position(&self) -> ItemPosition {
+        let (at, kind, id) = match self {
+            Unseen::Mail { entry, .. } => (entry.received_at, ItemKind::Mail, entry.id.0),
+            Unseen::Message { event, .. } => (event.ts, ItemKind::Room, event.id.0),
+            Unseen::Invite { invitation, .. } => {
+                (invitation.stored_at, ItemKind::Room, invitation.id.0)
+            }
+        };
+        ItemPosition { at, kind, id }
+    }
+}
+
 /// What identifies an item of a list while it changes ([`Item::key`]).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(transparent)]
@@ -898,6 +976,25 @@ pub struct WindowChange {
     /// As `Items`' (`ListItems`): the rooms whose messages the query
     /// looked through, of which not the whole history is stored.
     pub partial_rooms: Vec<matrix::RoomId>,
+}
+
+/// As [`WindowChange`], of a window of the unseen.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct UnseenChange {
+    pub upserted: Vec<ListedUnseen>,
+    pub removed: Vec<ItemKey>,
+    pub more: bool,
+    pub partial_rooms: Vec<matrix::RoomId>,
+}
+
+/// A message unseen, as a window lists it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ListedUnseen {
+    pub key: ItemKey,
+    pub position: ItemPosition,
+    pub unseen: Unseen,
 }
 
 /// An item, as a window lists it.
@@ -978,7 +1075,7 @@ pub struct Badges {
 }
 
 /// A place of the nav, where items are (SPEC §12.14).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Place {
     Home,

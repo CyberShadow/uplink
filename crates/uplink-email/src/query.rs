@@ -2,6 +2,7 @@
 //! in one read transaction and reports the log position it reflects.
 
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use uplink_protocol::{
     compose::Failing,
     mail::{
@@ -607,57 +608,6 @@ pub fn label_known(tx: &Transaction, name: &str) -> Result<bool> {
         .is_some())
 }
 
-/// Whether `entry` is not deleted: still stored, and in neither Trash
-/// nor Spam (what is in either is shown only there, SPEC §8.1).
-pub fn kept(tx: &Transaction, entry: EntryId) -> Result<bool> {
-    Ok(tx.query_row(
-        "SELECT EXISTS (
-           SELECT 1 FROM mail_entry e WHERE id = ?1 AND NOT EXISTS (
-             SELECT 1 FROM entry_label el JOIN label l ON l.id = el.label
-             WHERE el.entry = e.id AND el.desired AND l.external_id IN ('TRASH', 'SPAM')))",
-        [entry.0],
-        |r| r.get(0),
-    )?)
-}
-
-/// Of the conversation's entries, the newest that came from others: is
-/// stored after `since`, was received after `received_after` (ms since
-/// the Unix epoch), and is not the user's own (in Sent or Drafts).
-pub fn arrived(
-    tx: &Transaction,
-    conversation: &Conversation,
-    since: EntryId,
-    received_after: i64,
-) -> Result<Option<EntryId>> {
-    let entries: Vec<i64> = std::iter::once(conversation.latest.id)
-        .chain(conversation.earlier.iter().map(|m| m.id))
-        .filter(|entry| *entry > since)
-        .map(|entry| entry.0)
-        .collect();
-    if entries.is_empty() {
-        return Ok(None);
-    }
-    Ok(tx
-        .query_row(
-            &format!(
-                "SELECT e.id FROM mail_entry e
-                 WHERE e.id IN ({}) AND e.received_at > ?1
-                   AND NOT EXISTS (
-                     SELECT 1 FROM entry_label el JOIN label l ON l.id = el.label
-                     WHERE el.entry = e.id AND el.desired AND l.external_id IN ('SENT', 'DRAFT'))
-                 ORDER BY e.id DESC LIMIT 1",
-                entries
-                    .iter()
-                    .map(i64::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            [received_after],
-            |r| r.get(0).map(EntryId),
-        )
-        .optional()?)
-}
-
 /// The conversations `query` lists, newest first, after `after`: up to
 /// `limit`, and where the next page is, if there are more.
 pub fn conversations(
@@ -724,18 +674,22 @@ pub struct Placed {
     pub labels: Vec<LabelId>,
 }
 
+/// When each place was last seen (SPEC §12.15), by its key (`home`,
+/// `account:<id>`, `label:<id>`): the latest entry stored then.
+pub type Seen = HashMap<String, i64>;
+
 /// The conversations `query` lists, where each is. If `unseen`, only
 /// those whose latest entry came after each of their places was last
-/// seen (§12.15: the `seen` table's, of Home, their account's All Mail
-/// and their labels), and is news: reached the provider after uplink
-/// began to sync its account (`account.news_since`), not stored by a
-/// listing however late.
+/// seen, as it has them (of Home, their account's All Mail and their
+/// labels), and is news: reached the provider after uplink began to sync
+/// its account (`account.news_since`), not stored by a listing however
+/// late.
 pub fn placed(
     tx: &Transaction,
     accounts: &[ConfiguredAccount],
     query: &Query,
     unknown: Unknown,
-    unseen: bool,
+    unseen: Option<&Seen>,
 ) -> Result<Vec<Placed>, ListError> {
     let (condition, scope) = compile(tx, accounts, query, unknown)?;
     if matches!(condition, Condition::Const(false)) {
@@ -745,27 +699,25 @@ pub fn placed(
     // Home holds every conversation of its buckets, so those it showed
     // are seen: the unseen are only those after (and the rest is not
     // walked, which may be most of the mailbox).
-    let (after, unseen) = match unseen {
-        false => (0, "1".to_owned()),
-        true => (
-            tx.query_row(
-                "SELECT coalesce(max(mail), 0) FROM seen WHERE place = 'home'",
-                [],
-                |r| r.get::<_, i64>(0),
-            )?,
+    let (after, unseen, seen) = match unseen {
+        None => (0, "1".to_owned(), Seen::new()),
+        Some(seen) => (
+            seen.get("home").copied().unwrap_or(0),
             // News, after their account's All Mail and each of their
             // labels.
             "n.received_at >= (SELECT a.news_since FROM account a WHERE a.id = n.account_id)
              AND n.id > max(
-               coalesce((SELECT s.mail FROM seen s WHERE s.place = 'account:' || n.account_id), 0),
+               coalesce((SELECT s.mail FROM seen_mail s WHERE s.place = 'account:' || n.account_id), 0),
                coalesce((SELECT ls.mark FROM label_seen ls WHERE ls.conversation = n.id), 0))"
                 .to_owned(),
+            seen.clone(),
         ),
     };
     // The conversations once, by their newest entries; their entries by
     // their thread (by its index); and their labels.
     let mut stmt = tx.prepare(&format!(
-        "WITH newest AS MATERIALIZED (
+        "WITH seen_mail (place, mail) AS (SELECT key, value FROM json_each(?1)),
+         newest AS MATERIALIZED (
            SELECT e.id, e.account_id, e.thread_id, e.received_at FROM {from}
            WHERE e.id > {after} AND ({condition})),
          members (conversation, entry) AS (
@@ -779,7 +731,7 @@ pub fn placed(
            JOIN entry_label el ON el.entry = mb.entry AND el.desired),
          label_seen AS MATERIALIZED (
            SELECT l.conversation, max(s.mail) AS mark FROM labelled l
-           JOIN seen s ON s.place = 'label:' || l.label
+           JOIN seen_mail s ON s.place = 'label:' || l.label
            GROUP BY l.conversation),
          counted AS MATERIALIZED (
            SELECT n.id, n.account_id, n.thread_id FROM newest n WHERE {unseen})
@@ -788,7 +740,8 @@ pub fn placed(
          ORDER BY c.id, l.label",
         scope = in_scope(&scope, "m"),
     ))?;
-    let mut rows = stmt.query([])?;
+    let mut rows =
+        stmt.query([serde_json::to_string(&seen).expect("a map of numbers serializes")])?;
     let mut placed: Vec<Placed> = vec![];
     let mut last = None;
     while let Some(row) = rows.next()? {
@@ -815,6 +768,73 @@ pub fn placed(
         }
     }
     Ok(placed)
+}
+
+/// The entries `query` matches, each as it matches it within its
+/// conversation (`has:(…)` of it), that are unseen (SPEC §12.15): news,
+/// and stored after each place of its conversation was last seen, as
+/// `seen` has them (Home, its account's All Mail, its conversation's
+/// labels). The newest first, up to `limit`, each with its
+/// conversation's key (`Item::key`'s); and whether there are more.
+pub fn unseen(
+    tx: &Transaction,
+    accounts: &[ConfiguredAccount],
+    query: &Query,
+    unknown: Unknown,
+    seen: &Seen,
+    limit: u32,
+) -> Result<(Vec<(String, Entry)>, bool), ListError> {
+    let (condition, scope) = compile(tx, accounts, query, unknown)?;
+    if matches!(condition, Condition::Const(false)) {
+        return Ok((vec![], false));
+    }
+    // Home holds them all: those after it only, by the key's index.
+    let home = seen.get("home").copied().unwrap_or(0);
+    let mut stmt = tx.prepare(&format!(
+        "WITH seen_mail (place, mail) AS (SELECT key, value FROM json_each(?1))
+         SELECT {ENTRY_COLUMNS} FROM mail_entry e JOIN message m ON m.id = e.message
+         WHERE e.id > ?2 AND {scope_e} AND ({condition_e})
+           AND e.received_at >= (SELECT a.news_since FROM account a WHERE a.id = e.account_id)
+           AND e.id > coalesce(
+             (SELECT s.mail FROM seen_mail s WHERE s.place = 'account:' || e.account_id), 0)
+           AND NOT EXISTS (
+             SELECT 1 FROM mail_entry c
+             JOIN entry_label el ON el.entry = c.id AND el.desired
+             JOIN seen_mail s ON s.place = 'label:' || el.label
+             WHERE (c.id = e.id OR (c.account_id = e.account_id AND c.thread_id = e.thread_id))
+               AND {scope_c} AND s.mail >= e.id)
+         ORDER BY e.received_at DESC, e.id DESC
+         LIMIT ?3",
+        scope_e = in_scope(&scope, "e"),
+        condition_e = condition.sql("e"),
+        scope_c = in_scope(&scope, "c"),
+    ))?;
+    let entries = stmt
+        .query_map(
+            params![
+                serde_json::to_string(seen).expect("a map of numbers serializes"),
+                home,
+                limit + 1
+            ],
+            entry_row,
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut entries = with_labels(tx, entries)?;
+    let more = entries.len() > limit as usize;
+    entries.truncate(limit as usize);
+    Ok((
+        entries
+            .into_iter()
+            .map(|entry| {
+                let key = match &entry.thread_id {
+                    Some(thread) => format!("{}/{thread}", entry.account),
+                    None => format!("#{}", entry.id.0),
+                };
+                (key, entry)
+            })
+            .collect(),
+        more,
+    ))
 }
 
 /// The keys (as `Item::key` has them) of the conversations of these

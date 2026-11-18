@@ -82,7 +82,7 @@ describe('HistoryStore', () => {
     for (const title of ['One', 'Two']) await client.todos.create(title)
     client.reset()
     await vi.waitFor(() => expect(listed()).toHaveLength(2))
-    const see = () => client.ops.dispatch({ type: 'mark_seen', place: { kind: 'todos' } }, true)
+    const see = () => server.see({ kind: 'todos' })
     await see()
     await client.history.undoLast()
     expect(listed()).toEqual([

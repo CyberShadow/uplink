@@ -1,20 +1,18 @@
-// Browser notifications (SPEC §12.16): of what comes from others into
-// the home buckets that notify, as urgently as their badges say, which a
-// click opens, taken back once no news; and reminders of events (SPEC
-// §10.2), as Outlook's, which a click opens.
+// Browser notifications (SPEC §12.16): of what is unseen in the home
+// buckets that notify, as urgently as their badges say, one per
+// conversation or room, which a click opens, taken back once it is not;
+// and reminders of events (SPEC §10.2), as Outlook's, which a click opens.
 
 import { useEffect, useRef, useState } from 'preact/hooks'
-import type { Arrived, CalendarEvent, Entry, RoomEvent, Urgency } from '../generated/protocol'
-import type { News } from '../stores/home'
+import type { CalendarEvent, Unseen, Urgency } from '../generated/protocol'
 import { useServices } from '../context'
 import { displayName, shown } from '../matrix'
+import { before } from '../items'
 import { Icon } from './Icon'
 import { roomPath } from './Room'
 import { calendarPath, defaultView } from './Calendar'
 import { allMailPath } from './App'
-import { messagePath } from './Todos'
 import { date, time } from '../format'
-import { shows } from './Nav'
 import styles from './Nav.module.css'
 
 /** Uplink's icon, on each notification: the title and body are only the
@@ -24,126 +22,127 @@ const ICON = '/logo-192.png'
 
 /** How a notification calls for the user: interrupting, as what needs
  * the user, it stays until dismissed, with the system's sound; quiet, as
- * what is to be kept up with, it goes by, silently. */
-function options(urgency: Urgency): NotificationOptions {
+ * what is to be kept up with, it goes by, silently. One of what came
+ * before, as an edit, is silent either way. */
+function options(urgency: Urgency, quietly: boolean): NotificationOptions {
   switch (urgency) {
     case 'interrupting':
-      return { requireInteraction: true, silent: false }
+      return { requireInteraction: true, silent: quietly }
     case 'quiet':
       return { requireInteraction: false, silent: true }
   }
 }
 
-/** A notification to show: one per `tag`, a later one replacing it. */
-interface Shown {
-  title: string
-  body: string
-  tag: string
-  open: () => void
+/** Notifies of what is unseen in the buckets that notify (SPEC §12.16),
+ * one notification per conversation or room (`tag`), of its newest
+ * message standing; and takes it back once none is. What was unseen as
+ * the page opened is not notified of: the badges tell of it. */
+export function useNotifications(route: (path: string) => void) {
+  const { home } = useServices()
+  // Of each urgency: the messages that came since the page opened, which
+  // may be told of; and of each tag, its notification, and the message
+  // it tells of.
+  const of = useRef(new Map<Urgency, { told: Set<string>; standing: Map<string, Standing> }>())
+  useEffect(
+    () =>
+      home.onUnseen((urgency, was, now) => {
+        if (was === null) return
+        if (!of.current.has(urgency)) of.current.set(urgency, { told: new Set(), standing: new Map() })
+        const { told, standing } = of.current.get(urgency)!
+        const tags = new Set<string>()
+        for (const [key, listed] of now) {
+          if (was.has(key)) continue
+          told.add(key)
+          tags.add(tagOf(listed.unseen))
+        }
+        for (const [key, listed] of was) {
+          if (JSON.stringify(now.get(key)) === JSON.stringify(listed)) continue
+          if (!now.has(key)) told.delete(key)
+          tags.add(tagOf(listed.unseen))
+        }
+        if (!supported() || Notification.permission !== 'granted') return
+        for (const tag of tags) {
+          const newest = [...now.values()]
+            .filter((listed) => told.has(listed.key) && tagOf(listed.unseen) === tag)
+            .sort((a, b) => before(a.position, b.position))[0]
+          const stands = standing.get(tag)
+          if (newest === undefined) {
+            stands?.notification.close()
+            standing.delete(tag)
+            continue
+          }
+          // As it was, of what it shows.
+          if (stands?.key === newest.key && JSON.stringify(was.get(newest.key)) === JSON.stringify(newest)) continue
+          // Of what came before, edited or standing again: quietly.
+          const notification = notify(urgency, was.has(newest.key), newest.unseen, tag, route)
+          standing.set(tag, { key: newest.key, notification })
+        }
+      }),
+    [home, route],
+  )
 }
 
-/** Notifies of what comes into the badged buckets, but what is on show;
- * and takes a notification back once what it tells of is no news. */
-export function useNotifications(path: string, route: (path: string) => void) {
-  const { home, mail, matrix } = useServices()
-  const where = useRef(path)
-  where.current = path
-  // Of each tag, its notification, and what it tells of.
-  const standing = useRef(new Map<string, { told: string; notification: Notification }>())
-  useEffect(() => {
-    /** What to show of `item`, unless it is on show. */
-    const shown = async (item: Arrived): Promise<Shown | null> => {
-      switch (item.kind) {
-        case 'mail': {
-          const entries = await mail.conversation(item.entry)
-          if (!document.hidden && entries.some((e) => showsEntry(where.current, e))) return null
-          const entry = entries.find((e) => e.id === item.entry)!
-          const sender = entry.from_name ?? entry.from_addr ?? '(unknown sender)'
-          return {
-            title: `${sender}: ${entry.subject ?? '(no subject)'}`,
-            body: entry.snippet,
-            tag: `mail-${entry.account}-${entry.thread_id ?? entry.id}`,
-            open: () => route(allMailPath(entry.account, entry.id)),
-          }
-        }
-        case 'message': {
-          if (!document.hidden && shows(where.current, roomPath(item.room))) return null
-          const event = await matrix.event(item.room, item.event)
-          // Redacted since.
-          if (event === null) return null
-          const room = matrix.rooms.value!.find((r) => r.id === item.room)!
-          return {
-            title: room.name,
-            body: body(event),
-            tag: `room-${item.room}`,
-            open: () => route(roomPath(item.room)),
-          }
-        }
-        case 'invite':
-          if (!document.hidden && shows(where.current, roomPath(item.room))) return null
-          return {
-            title: item.name,
-            body: 'Invites you',
-            tag: `room-${item.room}`,
-            open: () => route(roomPath(item.room)),
-          }
-      }
-    }
-    return home.onNews(async (news: News) => {
-      switch (news.type) {
-        case 'arrival': {
-          if (!supported() || Notification.permission !== 'granted') return
-          const show = await shown(news.item)
-          if (show === null) return
-          const notification = notify(news.urgency, show.title, show.body, show.tag, show.open)
-          standing.current.set(show.tag, { told: told(news.item), notification })
-          return
-        }
-        case 'recall':
-          for (const [tag, { told: of, notification }] of standing.current) {
-            if (of !== told(news.item)) continue
-            notification.close()
-            standing.current.delete(tag)
-          }
-          return
-      }
-    })
-  }, [home, mail, matrix, route])
+/** A notification shown, and the key of the message it tells of. */
+interface Standing {
+  key: string
+  notification: Notification
 }
 
-/** What an arrival tells of, as a recall names it. */
-function told(item: Arrived): string {
-  switch (item.kind) {
+/** One notification per conversation or room. */
+function tagOf(unseen: Unseen): string {
+  switch (unseen.kind) {
     case 'mail':
-      return `mail-${item.entry}`
+      return `mail-${unseen.conversation}`
     case 'message':
-      return `message-${item.event}`
     case 'invite':
-      return `invite-${item.room}`
+      return `room-${unseen.room}`
   }
 }
 
-/** Of each list of mail, how many segments its path has with an entry
- * opened, the last (as `App`'s routes have them). */
-const OPENED_IN: Record<string, number> = { inbox: 2, all: 3, search: 3, mail: 4 }
-
-/** Whether `path` shows the entry's conversation, opened by it. */
-function showsEntry(path: string, entry: Entry): boolean {
-  const segments = path.split('/').slice(1)
-  const opened = OPENED_IN[segments[0]] === segments.length && segments.at(-1) === String(entry.id)
-  return opened || path === messagePath(entry.message)
-}
-
-function body(event: RoomEvent): string {
-  return `${displayName(event.sender, event.sender_name)}: ${shown(event).body ?? event.kind}`
+/** Its title and body, and where a click goes. */
+function shownOf(unseen: Unseen): { title: string; body: string; path: string } {
+  switch (unseen.kind) {
+    case 'mail': {
+      const { entry } = unseen
+      const sender = entry.from_name ?? entry.from_addr ?? '(unknown sender)'
+      return {
+        title: `${sender}: ${entry.subject ?? '(no subject)'}`,
+        body: entry.snippet,
+        path: allMailPath(entry.account, entry.id),
+      }
+    }
+    case 'message': {
+      const { event } = unseen
+      return {
+        title: unseen.name,
+        body: `${displayName(event.sender, event.sender_name)}: ${shown(event).body ?? event.kind}`,
+        path: roomPath(unseen.room),
+      }
+    }
+    case 'invite': {
+      const { invitation } = unseen
+      return {
+        title: unseen.name,
+        body: `${displayName(invitation.inviter, invitation.inviter_name)} invites you`,
+        path: roomPath(unseen.room),
+      }
+    }
+  }
 }
 
 /** One per `tag`: a later one replaces it. */
-function notify(urgency: Urgency, title: string, body: string, tag: string, open: () => void): Notification {
-  const notification = new Notification(title, { body, tag, icon: ICON, ...options(urgency) })
+function notify(
+  urgency: Urgency,
+  quietly: boolean,
+  unseen: Unseen,
+  tag: string,
+  route: (path: string) => void,
+): Notification {
+  const { title, body, path } = shownOf(unseen)
+  const notification = new Notification(title, { body, tag, icon: ICON, ...options(urgency, quietly) })
   notification.onclick = () => {
     window.focus()
-    open()
+    route(path)
     notification.close()
   }
   return notification
@@ -185,7 +184,7 @@ function notifyOf(event: CalendarEvent, route: (path: string) => void) {
     body,
     tag: `event-${event.id}`,
     icon: ICON,
-    ...options('interrupting'),
+    ...options('interrupting', false),
   })
   notification.onclick = () => {
     window.focus()

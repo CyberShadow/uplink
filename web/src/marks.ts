@@ -1,7 +1,7 @@
 // The marks of the nav's places (SPEC §12.14), as the server pushes them,
 // and their being seen (§12.15).
 
-import { useEffect, useRef, useState } from 'preact/hooks'
+import { useEffect, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import { useServices } from './context'
 import type { Account, Badges, Mark, Place } from './generated/protocol'
@@ -84,23 +84,50 @@ export function useVisible(): boolean {
   return visible
 }
 
-/** Sees the place on show, in a visible tab, while its mark has a dot:
- * once shown, and again as something new comes to it. Once for each
- * push of the badges, which the server pushes anew once it is seen. */
-export function useSeen() {
-  const { home, mail, ops } = useServices()
+/** Attends the place on show (SPEC §12.15), which sees what is in it:
+ * while the tab is visible, its window focused, and the user has used it
+ * (a key, the pointer, a touch) within the idle time; none otherwise.
+ * Shows nothing: a component of its own, so that its changes render
+ * nothing else. */
+export function Attention() {
+  const { home, mail, attend } = useServices()
   const { path } = useLocation()
-  const visible = useVisible()
-  const accounts = mail.accounts.value ?? []
-  const place = placeOf(path, accounts)
-  const badges = home.badges.value
-  const dot = place !== null && markOf(badges, place, accounts).dot
-  const key = JSON.stringify(place)
-  // The place last seen, and as of which push.
-  const sent = useRef<{ key: string; badges: Badges | null } | null>(null)
+  const place = placeOf(path, mail.accounts.value ?? [])
+  const active = useActive(home.notifications.value?.idle_minutes ?? null)
+  const attended = JSON.stringify(active ? place : null)
+  useEffect(() => attend(JSON.parse(attended) as Place | null), [attended, attend])
+  return null
+}
+
+/** What the user does by using a page. */
+const USES = ['keydown', 'pointerdown', 'pointermove', 'wheel', 'touchstart'] as const
+
+/** Whether the user is using the tab: it is visible, its window focused,
+ * and they used it within `idleMinutes`; not before that is known. */
+function useActive(idleMinutes: number | null): boolean {
+  const [active, setActive] = useState(false)
   useEffect(() => {
-    if (!visible || !dot || (sent.current?.key === key && sent.current.badges === badges)) return
-    sent.current = { key, badges }
-    void ops.dispatch({ type: 'mark_seen', place: JSON.parse(key) as Place }, true)
-  }, [visible, dot, badges, key, ops])
+    if (idleMinutes === null) return
+    let idle: ReturnType<typeof setTimeout> | undefined
+    // Coming back to it, as by focusing it, is using it.
+    const used = () => {
+      clearTimeout(idle)
+      const looking = document.visibilityState === 'visible' && document.hasFocus()
+      setActive(looking)
+      if (looking) idle = setTimeout(() => setActive(false), idleMinutes * 60_000)
+    }
+    used()
+    for (const use of USES) window.addEventListener(use, used, { capture: true, passive: true })
+    window.addEventListener('focus', used)
+    window.addEventListener('blur', used)
+    document.addEventListener('visibilitychange', used)
+    return () => {
+      clearTimeout(idle)
+      for (const use of USES) window.removeEventListener(use, used, { capture: true })
+      window.removeEventListener('focus', used)
+      window.removeEventListener('blur', used)
+      document.removeEventListener('visibilitychange', used)
+    }
+  }, [idleMinutes])
+  return active
 }

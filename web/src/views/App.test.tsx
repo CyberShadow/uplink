@@ -2,7 +2,7 @@ import { signal } from '@preact/signals'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/preact'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Badges, Entry, Marks, MemberState } from '../generated/protocol'
+import type { Badges, Entry, Marks, MemberState, RoomEvent, Unseen } from '../generated/protocol'
 import { Client } from '../stores/client'
 import { conversationKey, PAGE } from '../stores/mail'
 import { TIMELINE_PAGE } from '../stores/matrix'
@@ -425,21 +425,30 @@ describe('mail', () => {
     expect(within(nav).getByRole('button', { name: /^work@example.com/ }).querySelector('[title="Needs your attention"]')!.textContent).toBe('2')
   })
 
-  it('sees a place on show while it has a dot, once each time the server says', async () => {
+  it('attends the place on show while the tab is looked at and used, none once idle', async () => {
     const inbox = server.labelId('work', 'INBOX')
+    server.idleMinutes = 0.002
     const user = await start('/mail/work/INBOX')
-    // Nothing new: not seen.
-    client.home.badges.value = badges({ labels: [[inbox, { alert: 2, count: 0, dot: false }]] })
-    const nav = screen.getByRole('navigation')
-    await waitFor(() => expect(within(nav).getByRole('link', { name: /^Inbox/ }).textContent).toBe('Inbox32'))
+    await waitFor(() => expect(server.attended.at(-1)).toEqual({ kind: 'label', label: inbox }))
+    // Home, once gone to.
+    await user.click(within(screen.getByRole('navigation')).getByRole('link', { name: /^Home/ }))
+    await waitFor(() => expect(server.attended.at(-1)).toEqual({ kind: 'home' }))
+    // Idle: none; used again, it again.
+    await waitFor(() => expect(server.attended.at(-1)).toBeNull())
+    await user.keyboard('{Shift}')
+    await waitFor(() => expect(server.attended.at(-1)).toEqual({ kind: 'home' }))
+    // Its window not focused: none, however used.
+    const focus = vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    try {
+      window.dispatchEvent(new FocusEvent('blur'))
+      await waitFor(() => expect(server.attended.at(-1)).toBeNull())
+      await user.keyboard('{Shift}')
+      expect(server.attended.at(-1)).toBeNull()
+    } finally {
+      focus.mockRestore()
+    }
+    // Nothing is seen by the page itself: the server sees what is attended.
     expect(server.seen).toEqual([])
-    client.home.badges.value = badges({ home: { alert: 0, count: 0, dot: true }, labels: [[inbox, { alert: 0, count: 0, dot: true }]] })
-    await waitFor(() => expect(server.seen).toEqual([{ kind: 'label', label: inbox }]))
-    // Quietly.
-    expect(screen.queryByRole('status')).toBeNull()
-    // Home has the dot of whatever is unseen.
-    await user.click(within(nav).getByRole('link', { name: /^Home/ }))
-    await waitFor(() => expect(server.seen).toEqual([{ kind: 'label', label: inbox }, { kind: 'home' }]))
   })
 
   it('names in the window title what is open', async () => {
@@ -1355,7 +1364,7 @@ describe('matrix', () => {
     expect(screen.queryByRole('status')).toBeNull()
   })
 
-  it('notifies of what comes into the badged buckets, as urgently as they say, but what is on show', async () => {
+  it('notifies of what is unseen in the buckets that notify, as urgently as they say, one per conversation', async () => {
     const shown: Array<{ title: string; options: NotificationOptions; onclick: (() => void) | null; closes: number }> =
       []
     class FakeNotification {
@@ -1377,12 +1386,17 @@ describe('matrix', () => {
       server.addAccount('a')
       server.addMatrixAccount()
       const lounge = server.addRoom('Lounge')
+      // Unseen as the page opens: told by the badges, not notified of.
+      const old = server.receive(lounge.id, { body: 'Earlier' })
+      const message = (event: RoomEvent): Unseen => ({ kind: 'message', room: lounge.id, name: 'Lounge', event })
+      server.unseen('quiet', [message(old)])
       await start('/todos')
       await within(screen.getByRole('navigation')).findByRole('link', { name: 'Lounge' })
+      await waitFor(() => expect(server.requests.some((r) => r.type === 'subscribe' && r.of === 'unseen')).toBe(true))
 
-      // Of a dot bucket's: it goes by, silently.
+      // Of a quiet bucket's: it goes by, silently.
       const lunch = server.receive(lounge.id, { body: 'Lunch?' })
-      server.arrive('Upkeep', 'quiet', { kind: 'message', room: lounge.id, event: lunch.id })
+      server.unseen('quiet', [message(old), message(lunch)])
       await waitFor(() => expect(shown).toHaveLength(1))
       expect(shown[0].title).toBe('Lounge')
       expect(shown[0].options).toEqual({
@@ -1393,9 +1407,10 @@ describe('matrix', () => {
         silent: true,
       })
 
-      // Of a count bucket's: it stays until dismissed.
+      // Of an interrupting bucket's: it stays until dismissed, with sound.
+      const mail = (entry: Entry): Unseen => ({ kind: 'mail', conversation: 'a-t1', entry })
       const rent = server.deliver('a', 'Rent', ['INBOX', 'UNREAD'], 't1')
-      server.arrive('Immediate', 'interrupting', { kind: 'mail', entry: rent.id })
+      server.unseen('interrupting', [mail(rent)])
       await waitFor(() => expect(shown).toHaveLength(2))
       expect(shown[1].title).toBe('Bob: Rent')
       expect(shown[1].options).toEqual({
@@ -1406,44 +1421,47 @@ describe('matrix', () => {
         silent: false,
       })
 
-      // A click opens it; then a reply to it, on show, is not news.
-      shown[1].onclick!()
-      await screen.findByRole('heading', { name: 'Rent' })
+      // A reply replaces it, as news; edited, it is shown again, quietly.
       const reply = server.deliver('a', 'Re: Rent', ['INBOX', 'UNREAD'], 't1')
-      server.arrive('Immediate', 'interrupting', { kind: 'mail', entry: reply.id })
-      await new Promise((resolve) => setTimeout(resolve, 50))
-      expect(shown).toHaveLength(2)
-      // Nor is the room's on show; but the next mail elsewhere is.
-      shown[0].onclick!()
-      await within(await screen.findByRole('list', { name: 'Timeline' })).findByText('Lunch?')
-      const again = server.receive(lounge.id, { body: 'Now?' })
-      server.arrive('Upkeep', 'quiet', { kind: 'message', room: lounge.id, event: again.id })
-      const other = server.deliver('a', 'Other', ['INBOX', 'UNREAD'])
-      server.arrive('Upkeep', 'quiet', { kind: 'mail', entry: other.id })
+      server.unseen('interrupting', [mail(rent), mail(reply)])
       await waitFor(() => expect(shown).toHaveLength(3))
-      expect(shown[2].title).toBe('Bob: Other')
-
-      // Once no news, it is taken back; but not for what was not shown,
-      // though of its conversation (the reply to Rent, clicked).
-      server.recall({ kind: 'mail', entry: reply.id })
-      server.recall({ kind: 'mail', entry: other.id })
-      await waitFor(() => expect(shown[2].closes).toBe(1))
-      expect(shown.map((n) => n.closes)).toEqual([1, 1, 1])
-
-      // An invitation, of a room not yet listed, by its name; a click
-      // opens it.
-      const party = server.addRoom('Party', false, 'invited')
-      server.arrive('Urgent', 'interrupting', { kind: 'invite', room: party.id, name: 'Party' })
+      expect([shown[2].title, shown[2].options.tag, shown[2].options.silent]).toEqual(['Bob: Re: Rent', 'mail-a-t1', false])
+      server.unseen('interrupting', [mail(rent), mail({ ...reply, snippet: 'Edited' })])
       await waitFor(() => expect(shown).toHaveLength(4))
-      expect(shown[3].title).toBe('Party')
-      expect(shown[3].options).toEqual({
-        body: 'Invites you',
+      expect([shown[3].options.body, shown[3].options.silent]).toEqual(['Edited', true])
+      // Seen: the conversation's message before stands again, quietly;
+      // then none does, and it is taken back.
+      server.unseen('interrupting', [mail(rent)])
+      await waitFor(() => expect(shown).toHaveLength(5))
+      expect([shown[4].title, shown[4].options.silent]).toEqual(['Bob: Rent', true])
+      server.unseen('interrupting', [])
+      await waitFor(() => expect(shown[4].closes).toBe(1))
+      // Of the room: what was unseen as the page opened is not told of.
+      server.unseen('quiet', [message(old)])
+      await waitFor(() => expect(shown[0].closes).toBe(1))
+      expect(shown).toHaveLength(5)
+
+      // A click opens it.
+      const again = server.receive(lounge.id, { body: 'Now?' })
+      server.unseen('quiet', [message(again)])
+      await waitFor(() => expect(shown).toHaveLength(6))
+      shown[5].onclick!()
+      await waitFor(() => expect(location.pathname).toBe(`/rooms/${lounge.id}`))
+
+      // An invitation, of a room not yet listed, by its name and inviter.
+      const party = server.addRoom('Party', false, 'invited')
+      const invitation = { id: 1, inviter: '@carol:example.org', inviter_name: 'Carol', stored_at: 0 }
+      server.unseen('interrupting', [{ kind: 'invite', room: party.id, name: 'Party', invitation }])
+      await waitFor(() => expect(shown).toHaveLength(7))
+      expect(shown[6].title).toBe('Party')
+      expect(shown[6].options).toEqual({
+        body: 'Carol invites you',
         tag: `room-${party.id}`,
         icon: '/logo-192.png',
         requireInteraction: true,
         silent: false,
       })
-      shown[3].onclick!()
+      shown[6].onclick!()
       await waitFor(() => expect(location.pathname).toBe(`/rooms/${party.id}`))
     } finally {
       vi.unstubAllGlobals()

@@ -8,11 +8,13 @@ use tokio_tungstenite::tungstenite::Message;
 use uplink_protocol::{
     compose::{DraftId, DraftsChanged},
     mail::ListScope,
+    matrix::{Invitation, InvitationId, RoomId},
     todos::{Todo, TodoId, TodosChanged},
-    Changed, ClientRequest, ErrorCode, Item, LogEntry, ServerError, ServerEvent, ServerResponse,
-    Source, SubscriptionId, TxLogId, UnknownNames, WindowChange, WsClientMsg, WsServerMsg,
+    Changed, ClientRequest, ErrorCode, Item, LogEntry, Of, Place, ServerError, ServerEvent,
+    ServerResponse, Source, SubscriptionId, TxLogId, UnknownNames, Unseen, WindowChange,
+    WsClientMsg, WsServerMsg,
 };
-use uplink_realtime::{run_session, Answer, Backend, Held, Hub, Listing, Replay};
+use uplink_realtime::{run_session, Answer, Backend, Held, Hub, Listing, Replay, UnseenListing};
 
 /// What every query matches, the most recently active first, as of the
 /// last entry published.
@@ -20,9 +22,11 @@ use uplink_realtime::{run_session, Answer, Backend, Held, Hub, Listing, Replay};
 struct State {
     head: i64,
     items: Vec<Item>,
+    /// What is unseen while nothing is attended.
+    unseen: Vec<Unseen>,
 }
 
-struct Lists(Arc<Mutex<State>>);
+struct Lists(Arc<Mutex<State>>, Arc<Hub>);
 
 impl Backend for Lists {
     async fn handle(&self, _request: ClientRequest) -> Answer {
@@ -53,6 +57,37 @@ impl Backend for Lists {
             partial_rooms: vec![],
         })
     }
+
+    /// Of none while anything is attended: it is all in Home.
+    async fn unseen(
+        &self,
+        _query: String,
+        _unknown: UnknownNames,
+        limit: u32,
+    ) -> Result<UnseenListing, ServerError> {
+        let state = self.0.lock().unwrap();
+        let attended = !self.1.attended().borrow().is_empty();
+        let unseen: Vec<Unseen> = match attended {
+            true => vec![],
+            false => state.unseen.clone(),
+        };
+        Ok(UnseenListing {
+            as_of: TxLogId(state.head),
+            more: unseen.len() > limit as usize,
+            unseen: unseen.into_iter().take(limit as usize).collect(),
+            partial_rooms: vec![],
+        })
+    }
+
+    async fn attend(
+        &self,
+        session: u64,
+        _from: Option<Place>,
+        to: Option<Place>,
+    ) -> Result<(), ServerError> {
+        self.1.attend(session, to);
+        Ok(())
+    }
 }
 
 fn todo(id: i64, updated_at: i64) -> Item {
@@ -68,6 +103,65 @@ fn todo(id: i64, updated_at: i64) -> Item {
             updated_at,
         },
     }
+}
+
+/// Serves sessions of `state`, at the address returned.
+async fn serve(state: Arc<Mutex<State>>, hub: Arc<Hub>) -> std::net::SocketAddr {
+    let backend = Arc::new(Lists(state, hub.clone()));
+    let app = Router::new().route(
+        "/ws",
+        get(move |ws: WebSocketUpgrade| async move {
+            ws.on_upgrade(move |socket| async move { run_session(socket, &hub, &*backend).await })
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
+}
+
+type Connection = (
+    futures_util::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        Message,
+    >,
+    futures_util::stream::SplitStream<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    >,
+);
+
+/// A session said hello to, welcomed: how to send to it, and receive.
+async fn connect(
+    addr: std::net::SocketAddr,
+) -> (
+    impl AsyncFnMut(WsClientMsg),
+    impl AsyncFnMut() -> WsServerMsg,
+) {
+    let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+        .await
+        .unwrap();
+    let (mut tx, mut rx): Connection = ws.split();
+    let mut send = async move |msg: WsClientMsg| {
+        tx.send(Message::text(serde_json::to_string(&msg).unwrap()))
+            .await
+            .unwrap();
+    };
+    let mut recv = async move || match rx.next().await.unwrap().unwrap() {
+        Message::Text(text) => serde_json::from_str::<WsServerMsg>(&text).unwrap(),
+        other => panic!("expected a text frame, got {other:?}"),
+    };
+    send(WsClientMsg::Hello {
+        version: uplink_protocol::typescript::version().to_owned(),
+        since: None,
+    })
+    .await;
+    assert!(matches!(recv().await, WsServerMsg::Welcome { .. }));
+    assert!(matches!(recv().await, WsServerMsg::Badges { .. }));
+    (send, recv)
 }
 
 fn entry(id: i64, event: ServerEvent) -> LogEntry {
@@ -95,43 +189,11 @@ async fn windows_are_sent_what_changed_of_them() {
     let state = Arc::new(Mutex::new(State {
         head: 0,
         items: vec![todo(1, 30), todo(2, 20), todo(3, 10)],
+        unseen: vec![],
     }));
-    let backend = Arc::new(Lists(state.clone()));
     let hub = Arc::new(Hub::new(16));
-    let session_hub = hub.clone();
-    let app = Router::new().route(
-        "/ws",
-        get(move |ws: WebSocketUpgrade| async move {
-            ws.on_upgrade(move |socket| async move {
-                run_session(socket, &session_hub, &*backend).await
-            })
-        }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-
-    let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
-        .await
-        .unwrap();
-    let (mut tx, mut rx) = ws.split();
-    let mut send = async |msg: WsClientMsg| {
-        tx.send(Message::text(serde_json::to_string(&msg).unwrap()))
-            .await
-            .unwrap();
-    };
-    let mut recv = async || match rx.next().await.unwrap().unwrap() {
-        Message::Text(text) => serde_json::from_str::<WsServerMsg>(&text).unwrap(),
-        other => panic!("expected a text frame, got {other:?}"),
-    };
-
-    send(WsClientMsg::Hello {
-        version: uplink_protocol::typescript::version().to_owned(),
-        since: None,
-    })
-    .await;
-    assert!(matches!(recv().await, WsServerMsg::Welcome { .. }));
-    assert!(matches!(recv().await, WsServerMsg::Badges { .. }));
+    let addr = serve(state.clone(), hub.clone()).await;
+    let (mut send, mut recv) = connect(addr).await;
 
     let one = SubscriptionId(1);
     send(WsClientMsg::Request {
@@ -141,6 +203,7 @@ async fn windows_are_sent_what_changed_of_them() {
             query: "q".into(),
             unknown: UnknownNames::Invalid,
             limit: 2,
+            of: Of::Items,
         },
     })
     .await;
@@ -226,6 +289,7 @@ async fn windows_are_sent_what_changed_of_them() {
             query: "q".into(),
             unknown: UnknownNames::Invalid,
             limit: 2,
+            of: Of::Items,
         },
     })
     .await;
@@ -271,4 +335,80 @@ async fn windows_are_sent_what_changed_of_them() {
         recv().await,
         WsServerMsg::RequestFailed { request_id: 5, error } if error.code == ErrorCode::NotFound
     ));
+}
+
+/// What another session attends is seen: a window of the unseen is
+/// listed again as attention begins, and as it ends with its session.
+#[tokio::test]
+async fn windows_of_the_unseen_follow_what_is_attended() {
+    let invite = Unseen::Invite {
+        room: RoomId(1),
+        name: "Party".into(),
+        invitation: Invitation {
+            id: InvitationId(1),
+            inviter: "@bob:x".into(),
+            inviter_name: None,
+            stored_at: 10,
+        },
+    };
+    let state = Arc::new(Mutex::new(State {
+        head: 0,
+        items: vec![],
+        unseen: vec![invite],
+    }));
+    let hub = Arc::new(Hub::new(16));
+    let addr = serve(state, hub).await;
+    let (mut send, mut recv) = connect(addr).await;
+    send(WsClientMsg::Request {
+        request_id: 1,
+        body: ClientRequest::Subscribe {
+            subscription: SubscriptionId(1),
+            query: "q".into(),
+            unknown: UnknownNames::False,
+            limit: 10,
+            of: Of::Unseen,
+        },
+    })
+    .await;
+    let WsServerMsg::Response {
+        request_id: 1,
+        body: ServerResponse::UnseenWindow { change, .. },
+    } = recv().await
+    else {
+        panic!("expected the window")
+    };
+    let keys = |upserted: &[uplink_protocol::ListedUnseen]| -> Vec<String> {
+        upserted.iter().map(|l| l.key.0.clone()).collect()
+    };
+    assert_eq!(keys(&change.upserted), ["invite:1"]);
+
+    let (mut other, mut answers) = connect(addr).await;
+    other(WsClientMsg::Request {
+        request_id: 1,
+        body: ClientRequest::Attend {
+            place: Some(Place::Home),
+        },
+    })
+    .await;
+    assert_eq!(
+        answers().await,
+        WsServerMsg::Response {
+            request_id: 1,
+            body: ServerResponse::Done
+        }
+    );
+    let WsServerMsg::UnseenChanged { change, .. } = recv().await else {
+        panic!("expected what is seen gone")
+    };
+    assert_eq!(
+        change.removed,
+        [uplink_protocol::ItemKey("invite:1".into())]
+    );
+
+    // Its session ends, and so its attention.
+    drop((other, answers));
+    let WsServerMsg::UnseenChanged { change, .. } = recv().await else {
+        panic!("expected what is unseen again")
+    };
+    assert_eq!(keys(&change.upserted), ["invite:1"]);
 }

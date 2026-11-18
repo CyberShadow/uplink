@@ -1,6 +1,13 @@
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, Mutex,
+};
 use tokio::sync::{broadcast, watch};
-use uplink_protocol::{Badges, LogEntry, Notice};
+use uplink_protocol::{Badges, LogEntry, Notice, Place};
+
+/// The places some session attends (SPEC §12.15).
+pub type Attended = Arc<HashSet<Place>>;
 
 /// Fans newly committed log entries out to all connected sessions,
 /// notices of the moment, which are not logged, and the badges as they
@@ -13,6 +20,11 @@ pub struct Hub {
     notices: broadcast::Sender<Arc<Notice>>,
     /// Of no bucket until the server first sets them, before it serves.
     badges: watch::Sender<Arc<Badges>>,
+    /// What each session attends, by its number; and the places of all,
+    /// as they change.
+    attending: Mutex<HashMap<u64, Place>>,
+    attended: watch::Sender<Attended>,
+    sessions: AtomicU64,
 }
 
 /// How many notices a session may fall behind by; it misses those older.
@@ -26,7 +38,37 @@ impl Hub {
             live: broadcast::channel(capacity).0,
             notices: broadcast::channel(NOTICES).0,
             badges: watch::channel(Arc::new(Badges::default())).0,
+            attending: Mutex::new(HashMap::new()),
+            attended: watch::channel(Attended::default()).0,
+            sessions: AtomicU64::new(0),
         }
+    }
+
+    /// A number for a session, of none other.
+    pub fn session(&self) -> u64 {
+        self.sessions.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// `session` attends `place` now, or none.
+    pub fn attend(&self, session: u64, place: Option<Place>) {
+        let mut attending = self.attending.lock().expect("no holder panics");
+        match place {
+            Some(place) => attending.insert(session, place),
+            None => attending.remove(&session),
+        };
+        let places: HashSet<Place> = attending.values().cloned().collect();
+        self.attended.send_if_modified(|current| {
+            let changed = **current != places;
+            if changed {
+                *current = Arc::new(places);
+            }
+            changed
+        });
+    }
+
+    /// The places attended, as they are and as they change.
+    pub fn attended(&self) -> watch::Receiver<Attended> {
+        self.attended.subscribe()
     }
 
     /// Sessions are sent `badges` if they differ from those they were.

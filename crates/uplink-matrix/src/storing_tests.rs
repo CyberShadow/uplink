@@ -84,6 +84,7 @@ impl Db {
                         own_receipts: vec![],
                         fully_read: None,
                         image_packs: vec![],
+                        invitation: None,
                         space: false,
                         direct: false,
                         avatar: None,

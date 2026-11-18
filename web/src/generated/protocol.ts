@@ -24,12 +24,12 @@ export type WsServerMsg = { "type": "pong", seq: number, } | { "type": "welcome"
 /**
  * The most recent entry at the time of `Hello`.
  */
-cursor: TxLogId, resumed: boolean, } | { "type": "response", request_id: number, body: ServerResponse, } | { "type": "request_failed", request_id: number, error: ServerError, } | { "type": "entry", entry: LogEntry, } | { "type": "badges", badges: Badges, } | { "type": "notice", notice: Notice, } | { "type": "window_changed", subscription: SubscriptionId, change: WindowChange, };
+cursor: TxLogId, resumed: boolean, } | { "type": "response", request_id: number, body: ServerResponse, } | { "type": "request_failed", request_id: number, error: ServerError, } | { "type": "entry", entry: LogEntry, } | { "type": "badges", badges: Badges, } | { "type": "notice", notice: Notice, } | { "type": "window_changed", subscription: SubscriptionId, change: WindowChange, } | { "type": "unseen_changed", subscription: SubscriptionId, change: UnseenChange, };
 
 /**
  * A notice of the moment (SPEC §5.5).
  */
-export type Notice = { "type": "home_changed" } | { "type": "calendar_configured" } | { "type": "typing" } & Typing | { "type": "receipts_changed" } & ReceiptsChanged | { "type": "security_changed" } & SecurityChanged | { "type": "arrival" } & Arrival | { "type": "recall", item: Arrived, };
+export type Notice = { "type": "home_changed" } | { "type": "calendar_configured" } | { "type": "typing" } & Typing | { "type": "receipts_changed" } & ReceiptsChanged | { "type": "security_changed" } & SecurityChanged;
 
 /**
  * Who is typing in the room, but the account: all of them, each time.
@@ -264,11 +264,11 @@ export type SasEmoji = { symbol: string, description: string, };
  */
 export type VerificationAnswer = "accept" | "confirm" | "mismatch" | "cancel";
 
-export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": "list_history", before: TxLogId | null, limit: number, } | { "type": "list_accounts" } | { "type": "list_entries", query: string, after: ListPosition | null, limit: number, } | { "type": "list_items", query: string, after: ItemPosition | null, limit: number, } | { "type": "subscribe", subscription: SubscriptionId, query: string, unknown: UnknownNames, limit: number, } | { "type": "extend", subscription: SubscriptionId, limit: number, } | { "type": "unsubscribe", subscription: SubscriptionId, } | { "type": "list_home" } | { "type": "list_conversation", entry: EntryId, } | { "type": "list_message_entries", message: MessageId, } | { "type": "load_message", message: MessageId, } | { "type": "always_show_images", rule: ImageRule, always: boolean, } | { "type": "modify_labels", entries: Array<EntryId>, add: Array<LabelId>, remove: Array<LabelId>, } | { "type": "act_on_conversations", conversations: ConversationSet, action: ConversationAction, 
+export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": "list_history", before: TxLogId | null, limit: number, } | { "type": "list_accounts" } | { "type": "list_entries", query: string, after: ListPosition | null, limit: number, } | { "type": "list_items", query: string, after: ItemPosition | null, limit: number, } | { "type": "subscribe", subscription: SubscriptionId, query: string, unknown: UnknownNames, limit: number, of: Of, } | { "type": "extend", subscription: SubscriptionId, limit: number, } | { "type": "unsubscribe", subscription: SubscriptionId, } | { "type": "list_home" } | { "type": "list_conversation", entry: EntryId, } | { "type": "list_message_entries", message: MessageId, } | { "type": "load_message", message: MessageId, } | { "type": "always_show_images", rule: ImageRule, always: boolean, } | { "type": "modify_labels", entries: Array<EntryId>, add: Array<LabelId>, remove: Array<LabelId>, } | { "type": "act_on_conversations", conversations: ConversationSet, action: ConversationAction, 
 /**
  * Done by a view being shown (opening a conversation reads it).
  */
-shown: boolean, } | { "type": "count_conversations", query: string, } | { "type": "list_drafts" } | { "type": "create_draft", id: DraftId, account: string, content: DraftContent, in_reply_to: MessageId | null, } | { "type": "edit_draft", draft: DraftId, revision: number, splice: Splice, } | { "type": "delete_draft", draft: DraftId, } | { "type": "attach_to_draft", draft: DraftId, blob: BlobId, name: string, mime: string, } | { "type": "detach_from_draft", draft: DraftId, attachment: DraftAttachmentId, } | { "type": "send_draft", draft: DraftId, } | { "type": "cancel_send", item: OutboxId, } | { "type": "keep_sent", item: OutboxId, } | { "type": "list_outbox" } | { "type": "keep_observed", account: string, op: TxLogId | null, } | { "type": "list_rooms" } | { "type": "list_timeline", room: RoomId, page: TimelinePage, limit: number, } | { "type": "fill_gap", room: RoomId, gap: GapId, } | { "type": "list_room_events", room: RoomId, events: Array<RoomEventId>, } | { "type": "list_edits", room: RoomId, event: RoomEventId, } | { "type": "edit_text", room: RoomId, event: RoomEventId, } | { "type": "list_image_packs", room: RoomId, } | { "type": "send_matrix_message", room: RoomId, key: string, content: MatrixContent, } | { "type": "cancel_matrix_send", item: MatrixSendId, } | { "type": "keep_matrix_sent", item: MatrixSendId, } | { "type": "mark_seen", place: Place, } | { "type": "mark_room_read", room: RoomId, event: RoomEventId, 
+shown: boolean, } | { "type": "count_conversations", query: string, } | { "type": "list_drafts" } | { "type": "create_draft", id: DraftId, account: string, content: DraftContent, in_reply_to: MessageId | null, } | { "type": "edit_draft", draft: DraftId, revision: number, splice: Splice, } | { "type": "delete_draft", draft: DraftId, } | { "type": "attach_to_draft", draft: DraftId, blob: BlobId, name: string, mime: string, } | { "type": "detach_from_draft", draft: DraftId, attachment: DraftAttachmentId, } | { "type": "send_draft", draft: DraftId, } | { "type": "cancel_send", item: OutboxId, } | { "type": "keep_sent", item: OutboxId, } | { "type": "list_outbox" } | { "type": "keep_observed", account: string, op: TxLogId | null, } | { "type": "list_rooms" } | { "type": "list_timeline", room: RoomId, page: TimelinePage, limit: number, } | { "type": "fill_gap", room: RoomId, gap: GapId, } | { "type": "list_room_events", room: RoomId, events: Array<RoomEventId>, } | { "type": "list_edits", room: RoomId, event: RoomEventId, } | { "type": "edit_text", room: RoomId, event: RoomEventId, } | { "type": "list_image_packs", room: RoomId, } | { "type": "send_matrix_message", room: RoomId, key: string, content: MatrixContent, } | { "type": "cancel_matrix_send", item: MatrixSendId, } | { "type": "keep_matrix_sent", item: MatrixSendId, } | { "type": "attend", place: Place | null, } | { "type": "mark_room_read", room: RoomId, event: RoomEventId, 
 /**
  * Done by the room being shown, as it is read.
  */
@@ -287,7 +287,13 @@ next: ListPosition | null,
  * The entries the list's conversations are made of, as label
  * changes move entries into and out of them.
  */
-scope: ListScope, } | { "type": "entries", as_of: TxLogId, entries: Array<Entry>, } | { "type": "conversation_count", count: number, } | { "type": "home", buckets: Array<HomeBucket>, } | { "type": "items", as_of: TxLogId, 
+scope: ListScope, } | { "type": "entries", as_of: TxLogId, entries: Array<Entry>, } | { "type": "conversation_count", count: number, } | { "type": "home", buckets: Array<HomeBucket>, notifications: Notifications, 
+/**
+ * Of each urgency that some bucket notifies with, the query of
+ * its buckets (as `buckets` has them, joined by `OR`), whose
+ * unseen messages notify (SPEC §12.16).
+ */
+notifying: Array<Notifying>, } | { "type": "items", as_of: TxLogId, 
 /**
  * The most recently active first.
  */
@@ -305,7 +311,7 @@ partial_rooms: Array<RoomId>, } | { "type": "window", as_of: TxLogId, change: Wi
 /**
  * Of its conversations.
  */
-scope: ListScope, } | { "type": "message", message: MessageContent, } | { "type": "drafts", as_of: TxLogId, drafts: Array<Draft>, } | { "type": "outbox", as_of: TxLogId, accounts: Array<AccountOutbox>, } | { "type": "rooms", as_of: TxLogId, accounts: Array<MatrixAccount>, rooms: Array<Room>, } | { "type": "timeline", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, 
+scope: ListScope, } | { "type": "unseen_window", as_of: TxLogId, change: UnseenChange, } | { "type": "message", message: MessageContent, } | { "type": "drafts", as_of: TxLogId, drafts: Array<Draft>, } | { "type": "outbox", as_of: TxLogId, accounts: Array<AccountOutbox>, } | { "type": "rooms", as_of: TxLogId, accounts: Array<MatrixAccount>, rooms: Array<Room>, } | { "type": "timeline", as_of: TxLogId, room: RoomId, events: Array<RoomEvent>, 
 /**
  * Whether there are earlier events than those listed.
  */
@@ -461,12 +467,63 @@ export type RoomHits = { count: number,
 latest: RoomEvent, };
 
 /**
- * What came from others into a home bucket that notifies (SPEC §12.16):
- * the client notifies of it, as urgently as the bucket's badge says.
+ * How notifications are configured (SPEC §3.2, §12.16).
  */
-export type Arrival = { bucket: string, urgency: Urgency, item: Arrived, };
+export type Notifications = { 
+/**
+ * How many of each urgency stand at once: its window's limit.
+ */
+limit: number, 
+/**
+ * How long without the user's input a place shown is no longer
+ * attended (SPEC §12.15).
+ */
+idle_minutes: number, };
 
-export type Arrived = { "kind": "mail", entry: EntryId, } | { "kind": "message", room: RoomId, event: RoomEventId, } | { "kind": "invite", room: RoomId, name: string, };
+/**
+ * What notifies of an urgency: the unseen messages of `query`.
+ */
+export type Notifying = { urgency: Urgency, query: string, };
+
+/**
+ * What a window lists (SPEC §5.7).
+ */
+export type Of = "items" | "unseen";
+
+/**
+ * A message unseen (SPEC §5.7, §12.15), as a notification shows it.
+ */
+export type Unseen = { "kind": "mail", conversation: ItemKey, entry: Entry, } | { "kind": "message", room: RoomId, name: string, event: RoomEvent, } | { "kind": "invite", room: RoomId, name: string, invitation: Invitation, };
+
+/**
+ * As [`WindowChange`], of a window of the unseen.
+ */
+export type UnseenChange = { upserted: Array<ListedUnseen>, removed: Array<ItemKey>, more: boolean, partial_rooms: Array<RoomId>, };
+
+/**
+ * A message unseen, as a window lists it.
+ */
+export type ListedUnseen = { key: ItemKey, position: ItemPosition, unseen: Unseen, };
+
+/**
+ * An invitation to a room (SPEC §9.5): of the stripped `m.room.member`
+ * event of the account that sync gives, which has no id of its own, nor
+ * time.
+ */
+export type Invitation = { id: InvitationId, 
+/**
+ * Who invited the account, by Matrix id.
+ */
+inviter: string, inviter_name: string | null, 
+/**
+ * When it was stored, ms since the Unix epoch.
+ */
+stored_at: number, };
+
+/**
+ * An invitation to a room, as uplink numbers it: in the order stored.
+ */
+export type InvitationId = number;
 
 export type ErrorCode = "not_found" | "not_undoable" | "already_undone" | "conflict" | "invalid" | "internal";
 
@@ -1653,4 +1710,4 @@ export type EventChangeKind = "create" | "update" | "delete";
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "c59528d07c9369e5"
+export const PROTOCOL_VERSION = "8b6313ecbc57c8f0"

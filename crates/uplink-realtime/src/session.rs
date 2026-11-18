@@ -1,5 +1,5 @@
 use crate::hub::Hub;
-use crate::window::{Held, Listing, Window, Windows};
+use crate::window::{Held, Listing, Subscribed, UnseenListing, Window, Windows};
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use futures_util::{stream::FuturesUnordered, StreamExt};
 use std::{convert::Infallible, future::Future, sync::Arc, time::Duration};
@@ -9,8 +9,8 @@ use tokio::{
     time::{interval_at, Instant, MissedTickBehavior},
 };
 use uplink_protocol::{
-    Changed, ClientRequest, ErrorCode, LogEntry, ServerError, ServerResponse, SubscriptionId,
-    TxLogId, UnknownNames, WsClientMsg, WsServerMsg, MAX_PAGE,
+    Changed, ClientRequest, ErrorCode, LogEntry, Of, Place, ServerError, ServerResponse,
+    SubscriptionId, TxLogId, UnknownNames, WsClientMsg, WsServerMsg, MAX_PAGE,
 };
 
 /// WebSocket subprotocol spoken by [`run_session`] (SPEC §5.1).
@@ -56,6 +56,24 @@ pub trait Backend: Send + Sync {
         held: Held,
         changed: Changed,
     ) -> impl Future<Output = Result<Listing, ServerError>> + Send;
+
+    /// What a window of the unseen lists (SPEC §5.7): the first `limit`
+    /// unseen messages `query` matches.
+    fn unseen(
+        &self,
+        query: String,
+        unknown: UnknownNames,
+        limit: u32,
+    ) -> impl Future<Output = Result<UnseenListing, ServerError>> + Send;
+
+    /// `session` attends `to` rather than `from` (SPEC §12.15): one of
+    /// them, at least. Failing, it attends none.
+    fn attend(
+        &self,
+        session: u64,
+        from: Option<Place>,
+        to: Option<Place>,
+    ) -> impl Future<Output = Result<(), ServerError>> + Send;
 }
 
 pub type Response = Result<ServerResponse, ServerError>;
@@ -113,7 +131,15 @@ pub struct Replay {
 /// Speaks the uplink protocol on an upgraded WebSocket until either side
 /// ends the connection.
 pub async fn run_session(mut socket: WebSocket, hub: &Hub, backend: &impl Backend) {
-    let Err(end) = session(&mut socket, hub, backend).await;
+    let id = hub.session();
+    let mut attending = None;
+    let Err(end) = session(&mut socket, hub, backend, id, &mut attending).await;
+    // Its attention ends with it.
+    if attending.is_some() {
+        if let Err(e) = backend.attend(id, attending, None).await {
+            tracing::error!("ws: ending attention failed: {}", e.message);
+        }
+    }
     match end {
         End::ClientClosed => tracing::debug!("ws: client closed"),
         End::Transport(e) => tracing::debug!("ws: transport error: {e}"),
@@ -150,10 +176,13 @@ fn protocol_error(reason: impl Into<String>) -> End {
 }
 
 /// Runs the protocol; only ever returns how the session ended.
+/// `attending` is what the session attends, as the client last said.
 async fn session(
     socket: &mut WebSocket,
     hub: &Hub,
     backend: &impl Backend,
+    id: u64,
+    attending: &mut Option<Place>,
 ) -> Result<Infallible, End> {
     let mut deadline = Instant::now() + SILENCE_TIMEOUT;
 
@@ -181,6 +210,7 @@ async fn session(
     let mut live = hub.subscribe();
     let mut notices = hub.notices();
     let mut badges = hub.badges();
+    let mut attended = hub.attended();
     let replay = backend.replay(since).await.map_err(|e| End::Close {
         code: CLOSE_INTERNAL_ERROR,
         reason: format!("reading log: {e:#}"),
@@ -224,6 +254,10 @@ async fn session(
                         let response = subscription(backend, &mut windows, body).await;
                         respond(socket, &mut live, &mut followed, request_id, response).await?;
                     }
+                    ClientRequest::Attend { place } => {
+                        let response = attend(backend, id, attending, place).await;
+                        respond(socket, &mut live, &mut followed, request_id, response).await?;
+                    }
                     body => match backend.handle(body).await {
                         Answer::Now(response) => {
                             respond(socket, &mut live, &mut followed, request_id, response).await?;
@@ -248,6 +282,11 @@ async fn session(
                 changed.expect("hub outlives its sessions");
                 let current = (**badges.borrow_and_update()).clone();
                 send(socket, &WsServerMsg::Badges { badges: current }).await?;
+            }
+            changed = attended.changed() => {
+                changed.expect("hub outlives its sessions");
+                attended.borrow_and_update();
+                windows.attended();
             }
             _ = minute.tick() => followed.changed.merge(Changed::time()),
             () = std::future::ready(()), if !followed.changed.is_empty() || windows.any_due() => {
@@ -290,6 +329,7 @@ async fn subscription(
             query,
             unknown,
             limit,
+            of,
         } => {
             let limit = page(limit)?;
             if windows.contains(subscription) {
@@ -298,17 +338,28 @@ async fn subscription(
                     message: format!("subscription {} exists", subscription.0),
                 });
             }
-            let mut window = Window::new(query, unknown, limit);
-            let listing = backend
-                .window(
-                    window.query.clone(),
-                    unknown,
-                    limit,
-                    window.held(),
-                    Changed::everything(),
-                )
-                .await?;
-            let response = listed(&mut window, listing);
+            let (window, response) = match of {
+                Of::Items => {
+                    let mut window = Window::new(query, unknown, limit);
+                    let listing = backend
+                        .window(
+                            window.query.clone(),
+                            unknown,
+                            limit,
+                            window.held(),
+                            Changed::everything(),
+                        )
+                        .await?;
+                    let response = listed(&mut window, listing);
+                    (Subscribed::Items(window), response)
+                }
+                Of::Unseen => {
+                    let mut window = Window::new(query, unknown, limit);
+                    let listing = backend.unseen(window.query.clone(), unknown, limit).await?;
+                    let response = listed_unseen(&mut window, listing);
+                    (Subscribed::Unseen(window), response)
+                }
+            };
             windows.insert(subscription, window);
             Ok(response)
         }
@@ -322,18 +373,31 @@ async fn subscription(
             let (window, changed) = windows
                 .take_changed(subscription)
                 .ok_or_else(|| not_found(subscription))?;
-            let limit = window.limit + limit;
-            let listing = backend
-                .window(
-                    window.query.clone(),
-                    window.unknown,
-                    limit,
-                    window.held(),
-                    changed,
-                )
-                .await?;
-            window.limit = limit;
-            Ok(listed(window, listing))
+            Ok(match window {
+                Subscribed::Items(window) => {
+                    let limit = window.limit + limit;
+                    let listing = backend
+                        .window(
+                            window.query.clone(),
+                            window.unknown,
+                            limit,
+                            window.held(),
+                            changed,
+                        )
+                        .await?;
+                    window.limit = limit;
+                    listed(window, listing)
+                }
+                // Listed whole, whatever changed.
+                Subscribed::Unseen(window) => {
+                    let limit = window.limit + limit;
+                    let listing = backend
+                        .unseen(window.query.clone(), window.unknown, limit)
+                        .await?;
+                    window.limit = limit;
+                    listed_unseen(window, listing)
+                }
+            })
         }
         ClientRequest::Unsubscribe { subscription } => {
             windows
@@ -345,8 +409,36 @@ async fn subscription(
     }
 }
 
+/// `attending` is to be `place`: what the backend is told of, if it
+/// changes.
+async fn attend(
+    backend: &impl Backend,
+    id: u64,
+    attending: &mut Option<Place>,
+    place: Option<Place>,
+) -> Response {
+    if *attending != place {
+        let attended = backend.attend(id, attending.clone(), place.clone()).await;
+        // Failing, it attends none.
+        *attending = attended.is_ok().then_some(place).flatten();
+        attended?;
+    }
+    Ok(ServerResponse::Done)
+}
+
+/// The response of a window of the unseen, with what changed of it.
+fn listed_unseen(
+    window: &mut Window<uplink_protocol::Unseen>,
+    listing: UnseenListing,
+) -> ServerResponse {
+    ServerResponse::UnseenWindow {
+        as_of: listing.as_of,
+        change: window.update(listing.unseen, listing.more, listing.partial_rooms),
+    }
+}
+
 /// The window's response, with what changed of it.
-fn listed(window: &mut Window, listing: Listing) -> ServerResponse {
+fn listed(window: &mut Window<uplink_protocol::Item>, listing: Listing) -> ServerResponse {
     ServerResponse::Window {
         as_of: listing.as_of,
         change: window.update(listing.items, listing.more, listing.partial_rooms),
@@ -370,35 +462,57 @@ async fn refresh(
     let started = Instant::now();
     // It listed fine before: what fails now is the server's (or a label
     // gone, which the client hears of as it subscribes again).
-    let listing = backend
-        .window(
-            window.query.clone(),
-            window.unknown,
-            window.limit,
-            window.held(),
-            changed,
-        )
-        .await
-        .map_err(|e| End::Close {
-            code: CLOSE_INTERNAL_ERROR,
-            reason: format!("listing subscription {}: {}", subscription.0, e.message),
-        })?;
+    let failed = |e: ServerError| End::Close {
+        code: CLOSE_INTERNAL_ERROR,
+        reason: format!("listing subscription {}: {}", subscription.0, e.message),
+    };
+    let (limit, message) = match window {
+        Subscribed::Items(window) => {
+            let listing = backend
+                .window(
+                    window.query.clone(),
+                    window.unknown,
+                    window.limit,
+                    window.held(),
+                    changed,
+                )
+                .await
+                .map_err(failed)?;
+            catch_up(socket, live, followed, listing.as_of).await?;
+            let change = window.changed(listing.items, listing.more, listing.partial_rooms);
+            (
+                window.limit,
+                change.map(|change| WsServerMsg::WindowChanged {
+                    subscription,
+                    change,
+                }),
+            )
+        }
+        // Listed whole, whatever changed.
+        Subscribed::Unseen(window) => {
+            let listing = backend
+                .unseen(window.query.clone(), window.unknown, window.limit)
+                .await
+                .map_err(failed)?;
+            catch_up(socket, live, followed, listing.as_of).await?;
+            let change = window.changed(listing.unseen, listing.more, listing.partial_rooms);
+            (
+                window.limit,
+                change.map(|change| WsServerMsg::UnseenChanged {
+                    subscription,
+                    change,
+                }),
+            )
+        }
+    };
     tracing::debug!(
         "ws: subscription {} of {} listed again in {:?}",
         subscription.0,
-        window.limit,
+        limit,
         started.elapsed()
     );
-    catch_up(socket, live, followed, listing.as_of).await?;
-    if let Some(change) = window.changed(listing.items, listing.more, listing.partial_rooms) {
-        send(
-            socket,
-            &WsServerMsg::WindowChanged {
-                subscription,
-                change,
-            },
-        )
-        .await?;
+    if let Some(message) = message {
+        send(socket, &message).await?;
     }
     Ok(())
 }

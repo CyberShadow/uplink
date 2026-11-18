@@ -6,7 +6,7 @@ import type { Account } from '../generated/protocol'
 import { EMPTY } from '../compose/reply'
 import { ServicesContext, useServices } from '../context'
 import { useFavicon } from '../favicon'
-import { useSeen } from '../marks'
+import { Attention } from '../marks'
 import { restoreFocus } from '../historyFocus'
 import { keepFocus, useKeymap } from '../keymap'
 import type { Client } from '../stores/client'
@@ -36,9 +36,12 @@ const EventEditor = lazy(() => import('./EventEditor'))
 export function App(props: { client: Client; status: ReadonlySignal<Status> }) {
   const { ops, mail, drafts, matrix, todos, history, calendar, home } = props.client
   return (
-    <ServicesContext.Provider value={{ ops, mail, drafts, matrix, todos, history, calendar, home, status: props.status }}>
+    <ServicesContext.Provider
+      value={{ ops, mail, drafts, matrix, todos, history, calendar, home, status: props.status, attend: props.client.attend }}
+    >
       <LocationProvider>
         <Shell />
+        <Attention />
       </LocationProvider>
     </ServicesContext.Provider>
   )
@@ -53,10 +56,9 @@ function Shell() {
   // Narrow, the nav is a drawer; going anywhere closes it.
   const [navOpen, setNavOpen] = useState(false)
   useEffect(() => setNavOpen(false), [path])
-  useNotifications(path, route)
+  useNotifications(route)
   useReminders(route)
   useFavicon(home.badges.value)
-  useSeen()
   // A view shown has the focus it had, if gone back or forward to; else
   // the focus it takes (a room's box), or none: not that of a field
   // outside it, as the search box, left from the view before. After its

@@ -5,6 +5,7 @@ import {
   PROTOCOL_VERSION,
   type Listed,
   type ListScope,
+  type UnseenChange,
   type LogEntry,
   type WindowChange,
   type WsClientMsg,
@@ -257,7 +258,7 @@ describe('Connection', () => {
     const subscription = connection.subscribe('is:starred', 'invalid', 100, listener)
     const first = await accept({ cursor: 1, resumed: false })
     const subscribe = await first.peer.next('request')
-    expect(subscribe.body).toEqual({ type: 'subscribe', subscription: 1, query: 'is:starred', unknown: 'invalid', limit: 100 })
+    expect(subscribe.body).toEqual({ type: 'subscribe', subscription: 1, query: 'is:starred', unknown: 'invalid', limit: 100, of: 'items' })
     const scope: ListScope = { type: 'except', labels: [] }
     first.peer.send({ type: 'response', request_id: subscribe.request_id, body: window(1, [todo(1)], true, scope) })
     await vi.waitFor(() => expect(listener.reset).toHaveBeenCalledWith(change([todo(1)], true), scope))
@@ -274,7 +275,7 @@ describe('Connection', () => {
     first.peer.socket.close()
     const second = await accept({ cursor: 3, resumed: true })
     const again = await second.peer.next('request')
-    expect(again.body).toEqual({ type: 'subscribe', subscription: 1, query: 'is:starred', unknown: 'invalid', limit: 100 })
+    expect(again.body).toEqual({ type: 'subscribe', subscription: 1, query: 'is:starred', unknown: 'invalid', limit: 100, of: 'items' })
     second.peer.send({ type: 'response', request_id: again.request_id, body: window(3, [todo(3)], false, scope) })
     await vi.waitFor(() => expect(listener.reset).toHaveBeenLastCalledWith(change([todo(3)], false), scope))
     expect(listener.change).toHaveBeenCalledOnce()
@@ -291,6 +292,34 @@ describe('Connection', () => {
     second.peer.send({ type: 'response', request_id: request.request_id, body: { type: 'accounts', as_of: 3, accounts: [] } })
     await query
     expect(listener.change).toHaveBeenCalledOnce()
+  })
+
+  it('keeps windows of the unseen, and what is attended, across connections', async () => {
+    const { connection } = connect()
+    const listener = { reset: vi.fn(), change: vi.fn(), failed: vi.fn() }
+    connection.subscribeUnseen('in:inbox', 100, listener)
+    // Said once welcomed; as it was, not again.
+    connection.attend({ kind: 'home' })
+    connection.attend({ kind: 'home' })
+    const first = await accept({ cursor: 1, resumed: false })
+    const subscribe = await first.peer.next('request')
+    expect(subscribe.body).toEqual({ type: 'subscribe', subscription: 1, query: 'in:inbox', unknown: 'false', limit: 100, of: 'unseen' })
+    const attend = await first.peer.next('request')
+    expect(attend.body).toEqual({ type: 'attend', place: { kind: 'home' } })
+    const none: UnseenChange = { upserted: [], removed: [], more: false, partial_rooms: [] }
+    first.peer.send({ type: 'response', request_id: subscribe.request_id, body: { type: 'unseen_window', as_of: 1, change: none } })
+    await vi.waitFor(() => expect(listener.reset).toHaveBeenCalledWith(none))
+    const gone = { ...none, removed: ['mail:1'] }
+    first.peer.send({ type: 'unseen_changed', subscription: 1, change: gone })
+    await vi.waitFor(() => expect(listener.change).toHaveBeenCalledWith(gone))
+
+    // A new socket subscribes anew, and is said what is attended.
+    first.peer.socket.close()
+    const second = await accept({ cursor: 1, resumed: true })
+    expect((await second.peer.next('request')).body).toMatchObject({ type: 'subscribe', of: 'unseen' })
+    expect((await second.peer.next('request')).body).toEqual({ type: 'attend', place: { kind: 'home' } })
+    connection.attend(null)
+    expect((await second.peer.next('request')).body).toEqual({ type: 'attend', place: null })
   })
 
   it('tells a subscription the server refused why, and no longer subscribes to it', async () => {

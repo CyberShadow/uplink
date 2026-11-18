@@ -8,10 +8,12 @@ import type {
   ListScope,
   LogEntry,
   Notice,
+  Place,
   ServerError,
   ServerResponse,
   TxLogId,
   UnknownNames,
+  UnseenChange,
   WindowChange,
   WsClientMsg,
   WsServerMsg,
@@ -75,6 +77,14 @@ export interface WindowListener {
   failed(error: Error): void
 }
 
+/** Told of a window of the unseen (SPEC §5.7), as it changes. */
+export interface UnseenListener {
+  /** The window, from nothing: at first, and again on a new connection. */
+  reset(change: UnseenChange): void
+  change(change: UnseenChange): void
+  failed(error: Error): void
+}
+
 /** A subscription's handle. Its listener is told of nothing once it is
  * closed. */
 export interface Subscription {
@@ -87,6 +97,12 @@ export interface Subscriber {
   /** Keeps `listener` told of the first `limit` items of what `query`
    * matches, and more as it widens, until closed (SPEC §5.7). */
   subscribe(query: string, unknown: UnknownNames, limit: number, listener: WindowListener): Subscription
+  /** Keeps `listener` told of the first `limit` unseen messages `query`
+   * matches, a name no kind has false in it, until closed. */
+  subscribeUnseen(query: string, limit: number, listener: UnseenListener): Subscription
+  /** Says what the tab attends, or none (SPEC §12.15), from now on: of
+   * every connection, as each ends the attention of its own. */
+  attend(place: Place | null): void
 }
 
 interface Pending {
@@ -156,7 +172,7 @@ function isResendable(body: ClientRequest): boolean {
     case 'keep_matrix_sent':
     case 'mark_room_read':
     case 'mark_room_fully_read':
-    case 'mark_seen':
+    case 'attend':
     case 'recover_matrix':
     case 'verify_matrix_device':
     case 'answer_verification':
@@ -177,14 +193,16 @@ function isResendable(body: ClientRequest): boolean {
   }
 }
 
-/** A subscription, as the connection keeps it across sockets. */
-interface Window {
+/** A subscription, as the connection keeps it across sockets: of
+ * items, or of the unseen. */
+type Window = {
   query: string
-  unknown: UnknownNames
   /** Of its first page, which a new socket subscribes to. */
   limit: number
-  listener: WindowListener
-}
+} & (
+  | { of: 'items'; unknown: UnknownNames; listener: WindowListener }
+  | { of: 'unseen'; unknown: 'false'; listener: UnseenListener }
+)
 
 export class Connection implements Requester, Subscriber {
   readonly status = signal<Status>('connecting')
@@ -212,6 +230,8 @@ export class Connection implements Requester, Subscriber {
   /** Counts sockets closed, so that answers of a socket gone, which
    * its subscriptions are gone with, are dropped. */
   private socket = 0
+  /** What the tab attends, said again on each new socket. */
+  private attending: Place | null = null
 
   constructor(
     private readonly url: string,
@@ -234,8 +254,21 @@ export class Connection implements Requester, Subscriber {
   }
 
   subscribe(query: string, unknown: UnknownNames, limit: number, listener: WindowListener): Subscription {
+    return this.subscription({ of: 'items', query, unknown, limit, listener })
+  }
+
+  subscribeUnseen(query: string, limit: number, listener: UnseenListener): Subscription {
+    return this.subscription({ of: 'unseen', query, unknown: 'false', limit, listener })
+  }
+
+  attend(place: Place | null) {
+    if (JSON.stringify(place) === JSON.stringify(this.attending)) return
+    this.attending = place
+    if (this.welcomed) this.forSocket({ type: 'attend', place }, () => {})
+  }
+
+  private subscription(window: Window): Subscription {
     const id = this.nextSubscription++
-    const window = { query, unknown, limit, listener }
     this.windows.set(id, window)
     if (this.welcomed) this.open(id, window)
     return {
@@ -250,16 +283,14 @@ export class Connection implements Requester, Subscriber {
     }
   }
 
-  private open(id: number, { query, unknown, limit, listener }: Window) {
+  private open(id: number, window: Window) {
+    const { query, unknown, limit, of } = window
     this.forSocket(
-      { type: 'subscribe', subscription: id, query, unknown, limit },
-      (response) => {
-        if (response.type !== 'window') throw new Error(`expected window in response to subscribe, got ${response.type}`)
-        listener.reset(response.change, response.scope)
-      },
+      { type: 'subscribe', subscription: id, query, unknown, limit, of },
+      (response) => this.take(window, response, 'subscribe', true),
       (error) => {
         this.windows.delete(id)
-        listener.failed(error)
+        window.listener.failed(error)
       },
       id,
     )
@@ -268,13 +299,28 @@ export class Connection implements Requester, Subscriber {
   private widen(id: number, limit: number) {
     this.forSocket(
       { type: 'extend', subscription: id, limit },
-      (response) => {
-        if (response.type !== 'window') throw new Error(`expected window in response to extend, got ${response.type}`)
-        this.windows.get(id)!.listener.change(response.change)
-      },
+      (response) => this.take(this.windows.get(id)!, response, 'extend', false),
       (error) => this.windows.get(id)!.listener.failed(error),
       id,
     )
+  }
+
+  /** Tells the window's listener of `response`, to `request`: what it
+   * lists from nothing, if `reset`, else what changed. */
+  private take(window: Window, response: ServerResponse, request: string, reset: boolean) {
+    switch (window.of) {
+      case 'items':
+        if (response.type !== 'window') throw new Error(`expected window in response to ${request}, got ${response.type}`)
+        if (reset) window.listener.reset(response.change, response.scope)
+        else window.listener.change(response.change)
+        return
+      case 'unseen':
+        if (response.type !== 'unseen_window')
+          throw new Error(`expected unseen_window in response to ${request}, got ${response.type}`)
+        if (reset) window.listener.reset(response.change)
+        else window.listener.change(response.change)
+        return
+    }
   }
 
   /** Sends a request of subscriptions on the socket welcomed, and takes
@@ -331,12 +377,24 @@ export class Connection implements Requester, Subscriber {
         this.queued.clear()
         for (const [id, pending] of queued) this.send(id, pending)
         for (const [id, window] of this.windows) this.open(id, window)
+        if (this.attending !== null) this.forSocket({ type: 'attend', place: this.attending }, () => {})
         break
       }
-      case 'window_changed':
-        // One unsubscribed from may still be on its way.
-        this.windows.get(msg.subscription)?.listener.change(msg.change)
+      // One unsubscribed from may still be on its way.
+      case 'window_changed': {
+        const window = this.windows.get(msg.subscription)
+        if (window === undefined) break
+        if (window.of !== 'items') throw new Error(`window_changed of unseen subscription ${msg.subscription}`)
+        window.listener.change(msg.change)
         break
+      }
+      case 'unseen_changed': {
+        const window = this.windows.get(msg.subscription)
+        if (window === undefined) break
+        if (window.of !== 'unseen') throw new Error(`unseen_changed of items subscription ${msg.subscription}`)
+        window.listener.change(msg.change)
+        break
+      }
       case 'entry':
         this.cursor = msg.entry.id
         this.handlers.entry(msg.entry)

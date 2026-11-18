@@ -282,6 +282,7 @@ fn joined(room_id: &str, events: Vec<ObservedEvent>) -> ObservedRoom {
         own_receipts: vec![],
         fully_read: None,
         image_packs: vec![],
+        invitation: None,
         space: false,
         direct: false,
         avatar: None,
@@ -442,11 +443,12 @@ fn pins_keep_others_pinned_meanwhile() {
     assert_eq!(pins(&now, "$c", false), None, "not pinned");
 }
 
-/// What came of a room is its newest message stored since, and sent
-/// since, that the query matches as a message, and is not the account's.
+/// What is unseen of a room is each message the query matches as a
+/// message, sent once uplink began to sync the account, and stored after
+/// the room was last seen: by Home, or by itself.
 #[tokio::test]
-async fn what_came_matches_and_is_recent() {
-    let db = Db::new();
+async fn unseen_messages_match_as_messages_and_are_news() {
+    let db = Db::news_since(2000);
     let pushed = |id: &str, sender: &str, notify: bool, ts: i64| ObservedEvent {
         push: crate::rooms::Push {
             notify,
@@ -457,39 +459,48 @@ async fn what_came_matches_and_is_recent() {
     };
     db.sync_events(vec![pushed("$1", "@bob:x", true, 3000)], &[])
         .await;
-    let since = db.event("$1").await;
     db.sync_events(
         vec![
             pushed("$4", ME, true, 3000),
             pushed("$2", "@bob:x", true, 3000),
             pushed("$3", "@bob:x", false, 3000),
-            // Sent long before: stored only now, as history is.
+            // Sent before uplink began to sync: history, stored only now.
             pushed("$5", "@bob:x", true, 1000),
         ],
         &[],
     )
     .await;
     let room = db.room().await.id;
-    let arrived = |query: &str| {
+    let unseen = |query: &str, home: RoomEventId, own: Option<RoomEventId>| {
         let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
         let tx = conn.transaction().unwrap();
         let rooms = crate::query::Rooms::of(&db.rooms, &tx).unwrap();
         let query = uplink_query::parse(query, 0).unwrap();
-        let arrived = rooms.arrived(&tx, &query, &[room], since, 2000).unwrap();
-        arrived
+        let own: std::collections::HashMap<_, _> = own.map(|own| (room, own)).into_iter().collect();
+        let (unseen, more) = rooms.unseen(&tx, &query, home, &own, 10).unwrap();
+        assert!(!more);
+        unseen
             .into_iter()
-            .map(|(_, event)| event)
+            .map(|(_, event)| event.event_id)
             .collect::<Vec<_>>()
     };
-    let event = |id: &'static str| db.event(id);
-    // Of the messages that notify, Bob's; of the unread, his last.
-    assert_eq!(arrived("is:unread is:notifying"), [event("$2").await]);
-    assert_eq!(arrived("is:unread"), [event("$3").await]);
-    // Read: no longer unread, but still of a room its terms alone match.
-    let read = event("$3").await;
+    let none = RoomEventId(0);
+    // Of the messages that notify, Bob's since the first sync (which
+    // notifies of none, §9.5), of the unread, those after it, the newest
+    // first; neither of the account's own. Of a room its own terms match,
+    // each, its own too: but of history.
+    assert_eq!(unseen("is:unread is:notifying", none, None), ["$2"]);
+    assert_eq!(unseen("is:unread", none, None), ["$3", "$2"]);
+    assert_eq!(unseen("is:room", none, None), ["$3", "$2", "$4", "$1"]);
+    // Seen in Home as of $1, or in the room as of $2.
+    let (first, second) = (db.event("$1").await, db.event("$2").await);
+    assert_eq!(unseen("is:room", first, None), ["$3", "$2", "$4"]);
+    assert_eq!(unseen("is:room", first, Some(second)), ["$3"]);
+    // Read: no longer unread.
+    let read = db.event("$3").await;
     db.matrix.mark_read(room, read, false, false).await.unwrap();
-    assert!(arrived("is:unread").is_empty());
-    assert_eq!(arrived("is:room"), [event("$3").await]);
+    assert!(unseen("is:unread", none, None).is_empty());
+    assert_eq!(unseen("is:room", first, None), ["$3", "$2", "$4"]);
 }
 
 #[tokio::test]
@@ -768,6 +779,12 @@ mod membership {
                     own_receipts: vec![],
                     fully_read: None,
                     image_packs: vec![],
+                    invitation: (membership == Membership::Invited).then(|| {
+                        crate::rooms::ObservedInvitation {
+                            inviter: "@bob:x".into(),
+                            inviter_name: None,
+                        }
+                    }),
                     space: false,
                     direct: false,
                     avatar: None,
@@ -988,6 +1005,7 @@ mod room_tags {
                     own_receipts: vec![],
                     fully_read: None,
                     image_packs: vec![],
+                    invitation: None,
                     space: false,
                     direct: false,
                     avatar: None,
@@ -1243,6 +1261,7 @@ mod space_order {
                     own_receipts: vec![],
                     fully_read: None,
                     image_packs: vec![],
+                    invitation: None,
                     space: true,
                     direct: false,
                     avatar: None,
@@ -2108,6 +2127,7 @@ mod query {
             own_receipts: vec![],
             fully_read: None,
             image_packs: vec![],
+            invitation: None,
             space: false,
             direct: false,
             avatar: None,
@@ -2342,6 +2362,10 @@ mod query {
         news.events = vec![message("$2", "@feed:x")];
         let mut party = room("!party:x", "Party");
         party.membership = Membership::Invited;
+        party.invitation = Some(crate::rooms::ObservedInvitation {
+            inviter: "@bob:x".into(),
+            inviter_name: None,
+        });
         db.observe(Synced {
             requested: FRESH,
             next_batch: "next".into(),

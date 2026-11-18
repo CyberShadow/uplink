@@ -20,6 +20,9 @@ pub struct Watermark {
     pub room_event: i64,
     pub todo: i64,
     pub event: i64,
+    /// Of invitations to rooms (V0068): none, of what was logged before.
+    #[serde(default)]
+    pub invitation: i64,
 }
 
 /// A row of `seen`: a place's key, and its watermark, if it was seen.
@@ -97,6 +100,38 @@ impl Op for RestoreSeen {
     }
 }
 
+/// The keys of the place's rows: All inboxes is seen as each Inbox.
+pub fn keys(tx: &Transaction, place: &Place) -> Result<Vec<String>> {
+    Ok(match place {
+        Place::Inboxes => {
+            let labels = tx
+                .prepare("SELECT id FROM label WHERE system AND external_id = 'INBOX' ORDER BY id")?
+                .query_map([], |r| r.get(0))?
+                .collect::<Result<Vec<i64>, _>>()?;
+            labels
+                .into_iter()
+                .map(|label| {
+                    key(&Place::Label {
+                        label: uplink_protocol::mail::LabelId(label),
+                    })
+                })
+                .collect()
+        }
+        place => vec![key(place)],
+    })
+}
+
+/// Whether anything was stored since `place` was last seen, if ever.
+pub fn stale(tx: &Transaction, place: &Place) -> Result<bool> {
+    let latest = latest(tx)?;
+    for key in keys(tx, place)? {
+        if watermark(tx, &key)? != Some(latest) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// The place's name, for the log, and the keys of its rows: All inboxes
 /// is seen as each Inbox.
 fn resolve(tx: &Transaction, place: &Place) -> Result<(String, Vec<String>)> {
@@ -104,21 +139,7 @@ fn resolve(tx: &Transaction, place: &Place) -> Result<(String, Vec<String>)> {
         Place::Home => ("Home".into(), vec![key(place)]),
         Place::Todos => ("To-dos".into(), vec![key(place)]),
         Place::Calendar => ("Calendar".into(), vec![key(place)]),
-        Place::Inboxes => {
-            let labels = tx
-                .prepare("SELECT id FROM label WHERE system AND external_id = 'INBOX' ORDER BY id")?
-                .query_map([], |r| r.get(0))?
-                .collect::<Result<Vec<i64>, _>>()?;
-            let keys = labels
-                .into_iter()
-                .map(|label| {
-                    key(&Place::Label {
-                        label: uplink_protocol::mail::LabelId(label),
-                    })
-                })
-                .collect();
-            ("All inboxes".into(), keys)
-        }
+        Place::Inboxes => ("All inboxes".into(), keys(tx, place)?),
         Place::Label { label } => {
             let name: String = tx
                 .query_row("SELECT name FROM label WHERE id = ?1", [label.0], |r| {
@@ -166,63 +187,53 @@ pub(crate) fn latest(tx: &Transaction) -> Result<Watermark> {
         "SELECT (SELECT coalesce(max(id), 0) FROM mail_entry),
                 (SELECT coalesce(max(id), 0) FROM matrix_event),
                 (SELECT coalesce(max(id), 0) FROM todo),
-                (SELECT coalesce(max(id), 0) FROM calendar_event)",
+                (SELECT coalesce(max(id), 0) FROM calendar_event),
+                (SELECT coalesce(max(id), 0) FROM matrix_invitation)",
         [],
-        |r| {
-            Ok(Watermark {
-                mail: r.get(0)?,
-                room_event: r.get(1)?,
-                todo: r.get(2)?,
-                event: r.get(3)?,
-            })
-        },
+        row,
     )?)
 }
 
 /// Every place's watermark, by its key.
 pub fn all(tx: &Transaction) -> Result<Vec<(String, Watermark)>> {
     Ok(tx
-        .prepare("SELECT place, mail, room_event, todo, event FROM seen")?
-        .query_map([], |r| {
-            Ok((
-                r.get(0)?,
-                Watermark {
-                    mail: r.get(1)?,
-                    room_event: r.get(2)?,
-                    todo: r.get(3)?,
-                    event: r.get(4)?,
-                },
-            ))
-        })?
+        .prepare("SELECT mail, room_event, todo, event, invitation, place FROM seen")?
+        .query_map([], |r| Ok((r.get(5)?, row(r)?)))?
         .collect::<Result<_, _>>()?)
 }
 
 fn watermark(tx: &Transaction, key: &str) -> Result<Option<Watermark>> {
     Ok(tx
         .query_row(
-            "SELECT mail, room_event, todo, event FROM seen WHERE place = ?1",
+            "SELECT mail, room_event, todo, event, invitation FROM seen WHERE place = ?1",
             [key],
-            |r| {
-                Ok(Watermark {
-                    mail: r.get(0)?,
-                    room_event: r.get(1)?,
-                    todo: r.get(2)?,
-                    event: r.get(3)?,
-                })
-            },
+            row,
         )
         .optional()?)
+}
+
+/// Of a row whose first columns are a watermark's, in its order.
+fn row(r: &uplink_storage::rusqlite::Row) -> uplink_storage::rusqlite::Result<Watermark> {
+    Ok(Watermark {
+        mail: r.get(0)?,
+        room_event: r.get(1)?,
+        todo: r.get(2)?,
+        event: r.get(3)?,
+        invitation: r.get(4)?,
+    })
 }
 
 fn set(tx: &Transaction, rows: &[Row]) -> Result<()> {
     for (key, watermark) in rows {
         match watermark {
             Some(w) => tx.execute(
-                "INSERT INTO seen (place, mail, room_event, todo, event) VALUES (?1, ?2, ?3, ?4, ?5)
+                "INSERT INTO seen (place, mail, room_event, todo, event, invitation)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT (place) DO UPDATE SET
                    mail = excluded.mail, room_event = excluded.room_event,
-                   todo = excluded.todo, event = excluded.event",
-                params![key, w.mail, w.room_event, w.todo, w.event],
+                   todo = excluded.todo, event = excluded.event,
+                   invitation = excluded.invitation",
+                params![key, w.mail, w.room_event, w.todo, w.event, w.invitation],
             )?,
             None => tx.execute("DELETE FROM seen WHERE place = ?1", [key])?,
         };

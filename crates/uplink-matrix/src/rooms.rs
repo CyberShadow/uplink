@@ -126,10 +126,22 @@ pub struct ObservedRoom {
     pub own_receipts: Vec<String>,
     /// The event the account's `m.fully_read` is at, if it has one.
     pub fully_read: Option<String>,
+    /// Of a room invited to, the invitation: of no other.
+    pub invitation: Option<ObservedInvitation>,
     /// Its image packs, by state key, in its order. Not in the log: they
     /// are stored.
     #[serde(skip)]
     pub image_packs: Vec<(String, image_packs::Pack)>,
+}
+
+/// An invitation, as the stripped `m.room.member` event of the account
+/// says (SPEC §9.5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ObservedInvitation {
+    /// Who sent it, by Matrix id.
+    pub inviter: String,
+    /// Their display name in the room, if the client has it.
+    pub inviter_name: Option<String>,
 }
 
 /// A room a space lists, by an `m.space.child` event with `via`.
@@ -299,17 +311,31 @@ impl Observation for Synced {
             "account {account} is a {kind} account"
         );
 
+        // What the account's first sync stores is no news (SPEC §12.15).
+        let first: bool = tx.query_row(
+            "SELECT sync_state IS NULL FROM account WHERE id = ?1",
+            [account],
+            |r| r.get(0),
+        )?;
         let pending = outbox::pending_rooms(tx, account)?;
         let mut events = vec![];
         let mut changed_rooms = vec![];
         let mut sent = vec![];
         let mut added_total = 0;
         for room in self.rooms {
+            ensure!(
+                (room.membership == Membership::Invited) == room.invitation.is_some(),
+                "room {} is {:?}, with an invitation: {:?}",
+                room.room_id,
+                room.membership,
+                room.invitation
+            );
             let (id, upserted) = upsert_room(tx, account, &room)?;
             // Stale, they are read again.
             let tagged = room_tags::observe(tx, id, &room.tags, self.requested)? == Some(true);
             image_packs::observe_room(tx, account, id, &room.image_packs)?;
-            let changed = set_children(tx, id, &room.children)? || upserted || tagged;
+            let invited = observe_invitation(tx, id, room.invitation.as_ref(), !first)?;
+            let changed = set_children(tx, id, &room.children)? || upserted || tagged || invited;
             let positions = synced_positions(tx, id, room.events.len())?;
             let inserted = insert_events(tx, id, &room.events, &positions)?;
             if let (true, Some(Some(first))) = (room.limited, inserted.first()) {
@@ -546,6 +572,27 @@ fn upsert_room(tx: &Transaction, account: &str, room: &ObservedRoom) -> Result<(
             (RoomId(id), true)
         }
     })
+}
+
+/// Keeps the room's invitation while it is invited to (`invitation`), as
+/// the first sync to tell of it does: a later one is of the same, unless
+/// the room was left meanwhile. Returns whether it changed.
+fn observe_invitation(
+    tx: &Transaction,
+    room: RoomId,
+    invitation: Option<&ObservedInvitation>,
+    news: bool,
+) -> Result<bool> {
+    let changed = match invitation {
+        Some(invitation) => tx.execute(
+            "INSERT INTO matrix_invitation (room, inviter, inviter_name, stored_at, news)
+             VALUES (?1, ?2, ?3, CAST(unixepoch('subsec') * 1000 AS INTEGER), ?4)
+             ON CONFLICT (room) DO NOTHING",
+            params![room.0, invitation.inviter, invitation.inviter_name, news],
+        )?,
+        None => tx.execute("DELETE FROM matrix_invitation WHERE room = ?1", [room.0])?,
+    };
+    Ok(changed > 0)
 }
 
 /// Records the rooms the space lists; returns whether they changed.

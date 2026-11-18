@@ -3,11 +3,12 @@
 // entry before the op's response (SPEC §5.4).
 
 import type { Blobs } from '../blobs'
-import type { Requester, Subscriber, Subscription, WindowListener } from '../connection'
+import type { Requester, Subscriber, Subscription, UnseenListener, WindowListener } from '../connection'
 import { RequestError } from '../connection'
 import type {
-  Arrived,
   Attachment,
+  ListedUnseen,
+  Unseen,
   Urgency,
   RoomPreview,
   Place,
@@ -77,6 +78,7 @@ import type {
   MessageId,
   UrlPreview,
   UnknownNames,
+  UnseenChange,
 } from '../generated/protocol'
 import type { Client } from '../stores/client'
 import { ruleKey } from '../stores/mail'
@@ -133,6 +135,40 @@ interface FakeWindow {
   items: Map<string, Listed>
   more: boolean
   partialRooms: RoomId[]
+}
+
+/** A window of the unseen, as the fake keeps it. */
+interface FakeUnseenWindow {
+  query: string
+  listener: UnseenListener
+  listed: Map<string, ListedUnseen>
+}
+
+/** What notifies, of each urgency, as the fake's home has it. */
+export const NOTIFYING = { interrupting: '(is:unread is:room OR is:todo)', quiet: '(in:inbox)' } as const
+
+/** Its key in a window of the unseen, as the server has it. */
+function unseenKey(unseen: Unseen): string {
+  switch (unseen.kind) {
+    case 'mail':
+      return `mail:${unseen.entry.id}`
+    case 'message':
+      return `event:${unseen.event.id}`
+    case 'invite':
+      return `invite:${unseen.invitation.id}`
+  }
+}
+
+/** Its position, as the server has it: by when it came. */
+function unseenPosition(unseen: Unseen): ItemPosition {
+  switch (unseen.kind) {
+    case 'mail':
+      return { at: unseen.entry.received_at, kind: 'mail', id: unseen.entry.id }
+    case 'message':
+      return { at: unseen.event.ts, kind: 'room', id: unseen.event.id }
+    case 'invite':
+      return { at: unseen.invitation.stored_at, kind: 'room', id: unseen.invitation.id }
+  }
 }
 
 /** Whether it may change what a query lists, as the server says
@@ -674,15 +710,29 @@ export class FakeServer implements Requester, Subscriber, Blobs {
     this.observe('mx', this.matrixSendsChanged(sent.room))
   }
 
-  /** Something came from others into the bucket that notifies, as the
-   * server tells when it derives the badges (SPEC §12.16). */
-  arrive(bucket: string, urgency: Urgency, item: Arrived) {
-    this.client.notice({ type: 'arrival', bucket, urgency, item })
+  /** What is unseen of `urgency`'s buckets is `unseen` now, as the
+   * server tells its windows of the unseen (SPEC §12.16). */
+  unseen(urgency: Urgency, unseen: Unseen[]) {
+    this.unseenOf.set(urgency, unseen)
+    for (const [id, window] of this.unseenWindows) {
+      if (window.query !== NOTIFYING[urgency]) continue
+      const change = this.unseenChange(window)
+      this.tell(() => this.unseenWindows.has(id) && window.listener.change(change))
+    }
   }
 
-  /** What came is no news any more (SPEC §12.16). */
-  recall(item: Arrived) {
-    this.client.notice({ type: 'recall', item })
+  /** The place seen, as the server sees it as attention begins (SPEC
+   * §12.15): logged as done by showing. */
+  see(place: Place): Promise<void> {
+    this.seen.push(place)
+    return this.inTurn(() => {
+      this.showing = true
+      try {
+        this.commit({ type: 'user' }, 'Seen', [{ type: 'seen_changed' }])
+      } finally {
+        this.showing = false
+      }
+    })
   }
 
   /** Members are typing in the room, as sync says. */
@@ -824,6 +874,10 @@ export class FakeServer implements Requester, Subscriber, Blobs {
   readonly quiet = new Set<RoomId>()
   /** The places seen, in order (SPEC §12.15). */
   readonly seen: Place[] = []
+  /** How long without input the user is idle, as home configures it. */
+  idleMinutes = 5
+  /** What the client said it attends, in order (SPEC §12.15). */
+  readonly attended: (Place | null)[] = []
 
   /** What pages say of themselves, by URL, as the homeserver previews
    * them. */
@@ -834,11 +888,61 @@ export class FakeServer implements Requester, Subscriber, Blobs {
   meanwhile: (() => void) | null = null
 
   private readonly windows = new Map<number, FakeWindow>()
+  private readonly unseenWindows = new Map<number, FakeUnseenWindow>()
+  /** Of each urgency, what is unseen, newest first. */
+  private readonly unseenOf = new Map<Urgency, Unseen[]>()
   private nextSubscription = 1
+
+  attend(place: Place | null) {
+    this.requests.push({ type: 'attend', place })
+    this.attended.push(place)
+  }
+
+  subscribeUnseen(query: string, limit: number, listener: UnseenListener): Subscription {
+    const id = this.nextSubscription++
+    this.requests.push({ type: 'subscribe', subscription: id, query, unknown: 'false', limit, of: 'unseen' })
+    const window: FakeUnseenWindow = { query, listener, listed: new Map() }
+    let closed = false
+    this.inTurn(() => {
+      const first = this.unseenChange(window)
+      if (!closed) this.unseenWindows.set(id, window)
+      return first
+    }).then(
+      (change) => this.unseenWindows.has(id) && listener.reset(change),
+      (error: Error) => !closed && listener.failed(error),
+    )
+    return {
+      extend: () => {
+        throw new Error('a window of the unseen is not widened')
+      },
+      close: () => {
+        closed = true
+        this.requests.push({ type: 'unsubscribe', subscription: id })
+        this.unseenWindows.delete(id)
+      },
+    }
+  }
+
+  /** What changed of the window of the unseen, which it then has. */
+  private unseenChange(window: FakeUnseenWindow): UnseenChange {
+    const urgency = (Object.keys(NOTIFYING) as Urgency[]).find((u) => NOTIFYING[u] === window.query)!
+    const listed = (this.unseenOf.get(urgency) ?? []).map(
+      (unseen): ListedUnseen => ({ key: unseenKey(unseen), position: unseenPosition(unseen), unseen }),
+    )
+    const now = new Set(listed.map((l) => l.key))
+    const change: UnseenChange = {
+      removed: [...window.listed.keys()].filter((key) => !now.has(key)),
+      upserted: listed.filter((l) => JSON.stringify(window.listed.get(l.key)) !== JSON.stringify(l)),
+      more: false,
+      partial_rooms: [],
+    }
+    window.listed = new Map(listed.map((l) => [l.key, l]))
+    return change
+  }
 
   subscribe(query: string, unknown: UnknownNames, limit: number, listener: WindowListener): Subscription {
     const id = this.nextSubscription++
-    this.requests.push({ type: 'subscribe', subscription: id, query, unknown, limit })
+    this.requests.push({ type: 'subscribe', subscription: id, query, unknown, limit, of: 'items' })
     const window: FakeWindow = { query, unknown, limit, listener, items: new Map(), more: false, partialRooms: [] }
     let closed = false
     this.inTurn(() => {
@@ -912,8 +1016,7 @@ export class FakeServer implements Requester, Subscriber, Blobs {
     this.requests.push(body)
     return this.inTurn(() => {
       // What a view did by being shown (SPEC §12.15) is logged as such.
-      this.showing =
-        body.type === 'mark_seen' || body.type === 'mark_room_fully_read' || ('shown' in body && body.shown)
+      this.showing = body.type === 'mark_room_fully_read' || ('shown' in body && body.shown)
       try {
         return this.answer(body)
       } finally {
@@ -1009,7 +1112,12 @@ export class FakeServer implements Requester, Subscriber, Blobs {
       case 'unsubscribe':
         throw new Error(`${body.type} is the connection's own (\`subscribe\`)`)
       case 'list_home':
-        return { type: 'home', buckets: this.homeBuckets().map(({ name, query }) => ({ name, query })) }
+        return {
+          type: 'home',
+          buckets: this.homeBuckets().map(({ name, query }) => ({ name, query })),
+          notifications: { limit: 100, idle_minutes: this.idleMinutes },
+          notifying: (Object.keys(NOTIFYING) as Urgency[]).map((urgency) => ({ urgency, query: NOTIFYING[urgency] })),
+        }
       case 'list_entries':
         return this.listEntries(body.query, body.after, body.limit)
       case 'list_conversation': {
@@ -1570,9 +1678,8 @@ export class FakeServer implements Requester, Subscriber, Blobs {
         return { type: 'dispatched', tx_log_id: this.editTodo(body.todo, body.edit, `Edited '${body.todo}'`) }
       case 'delete_todo':
         return { type: 'dispatched', tx_log_id: this.deleteTodo(body.todo) }
-      case 'mark_seen':
-        this.seen.push(body.place)
-        return this.dispatched('Seen', [{ type: 'seen_changed' }])
+      case 'attend':
+        throw new Error("attend is the connection's own (`attend`)")
       case 'mark_room_read': {
         const room = this.rooms.find((r) => r.id === body.room)!
         room.read_up_to = this.marker(body.room, body.event)
