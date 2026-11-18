@@ -1,0 +1,115 @@
+/* By its button, below it (or above), aligned with its end; as large,
+   whatever it lists. */
+.picker {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 320px;
+  height: 340px;
+  box-sizing: border-box;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.3);
+}
+
+.picker:focus {
+  outline: none;
+}
+
+.above {
+  top: auto;
+  bottom: 100%;
+}
+
+.picker button {
+  padding: 2px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  font-size: 22px;
+  line-height: 28px;
+  cursor: pointer;
+}
+
+.picker button:hover,
+.picker button:focus-visible {
+  background: var(--hover);
+}
+
+.quick {
+  display: flex;
+  justify-content: space-between;
+}
+
+.picker input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: inherit;
+  color: inherit;
+  font: inherit;
+}
+
+/* To each group. */
+.bar {
+  display: flex;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--line);
+}
+
+.bar button {
+  font-size: 16px;
+  line-height: 22px;
+}
+
+/* Every choice, by group, in rows, in what room is left. */
+.choices {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.choices section {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(34px, 1fr));
+}
+
+.choices h4 {
+  grid-column: 1 / -1;
+  margin: 6px 0 2px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: normal;
+}
+
+.picker img {
+  display: block;
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+}
+
+.bar img {
+  width: 22px;
+  height: 22px;
+}
+
+/* What is typed, as a reaction. */
+.choices .text {
+  grid-column: 1 / -1;
+  justify-self: start;
+  max-width: 100%;
+  overflow: hidden;
+  font-size: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

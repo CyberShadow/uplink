@@ -5,7 +5,24 @@ export interface Emoji {
   unicode: string
   label: string
   shortcodes: readonly string[]
+  /** Its group's index in `GROUPS`, or none, as a component's (a skin
+   * tone, a hair style), which is part of others. */
+  group: number | null
 }
+
+/** Emojibase's groups, as its index names them, with an emoji for each. */
+export const GROUPS = [
+  { name: 'Smileys & emotion', icon: '😀' },
+  { name: 'People & body', icon: '👋' },
+  null,
+  { name: 'Animals & nature', icon: '🐻' },
+  { name: 'Food & drink', icon: '🍔' },
+  { name: 'Travel & places', icon: '✈️' },
+  { name: 'Activities', icon: '⚽' },
+  { name: 'Objects', icon: '💡' },
+  { name: 'Symbols', icon: '❤️' },
+  { name: 'Flags', icon: '🏁' },
+] as const
 
 let loading: Promise<readonly Emoji[]> | null = null
 
@@ -16,11 +33,25 @@ export function loadEmoji(): Promise<readonly Emoji[]> {
       import('emojibase-data/en/compact.json'),
       import('emojibase-data/en/shortcodes/iamcal.json'),
     ])
-    return data.flatMap((emoji) => {
-      const codes = shortcodes[emoji.hexcode as keyof typeof shortcodes] as string | string[] | undefined
-      if (codes === undefined) return []
-      return [{ unicode: emoji.unicode, label: emoji.label, shortcodes: typeof codes === 'string' ? [codes] : codes }]
-    })
+    return data
+      .flatMap((emoji) => {
+        const codes = shortcodes[emoji.hexcode as keyof typeof shortcodes] as string | string[] | undefined
+        if (codes === undefined) return []
+        const group = emoji.group === undefined || GROUPS[emoji.group] === null ? null : emoji.group
+        return [
+          {
+            emoji: {
+              unicode: emoji.unicode,
+              label: emoji.label,
+              shortcodes: typeof codes === 'string' ? [codes] : codes,
+              group,
+            },
+            order: emoji.order!,
+          },
+        ]
+      })
+      .sort((a, b) => a.order - b.order)
+      .map((e) => e.emoji)
   })()
   return loading
 }

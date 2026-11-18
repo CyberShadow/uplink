@@ -7,7 +7,6 @@ import { render } from 'preact'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import type {
-  ImagePack,
   MemberReceipt,
   Room,
   RoomEvent,
@@ -29,7 +28,6 @@ import {
   media,
   mediaPath,
   mxcPath,
-  packImagePath,
   permalink,
   reactionName,
   senderColor,
@@ -43,7 +41,7 @@ import {
 import { Confirm } from './Confirm'
 import { Icon } from './Icon'
 import { MenuButton, type MenuItem } from './Menu'
-import { useOpensAbove } from './popover'
+import { ReactionPicker } from './ReactionPicker'
 import { fileSize } from './size'
 import { roomPath } from './Room'
 import styles from './Room.module.css'
@@ -51,9 +49,6 @@ import overlay from './Overlay.module.css'
 
 /** Of an event, the reactions and edits being sent. */
 export type Overlay = readonly Outgoing[]
-
-/** Reactions offered at once, as Element's quick ones. */
-const QUICK = ['👍', '👎', '😄', '🎉', '😕', '❤️', '🚀', '👀']
 
 /** Media are shown at most this large, keeping their aspect ratio. */
 const IMAGE_BOX = { width: 320, height: 240 }
@@ -824,9 +819,7 @@ export function ReactionKey(props: { room: Room; event: RoomEvent; reactionKey: 
  * once closed. */
 export type Reacting = null | 'pointer' | 'key'
 
-/** The button offering reactions: the quick ones, the images of the
- * packs the room offers (those whose shortcode or description has what
- * is typed), or any typed: an image's `:shortcode:` is that image. */
+/** The button offering reactions, in its picker. */
 function ReactButton(props: {
   room: Room
   react: (key: string, shortcode: string | null) => void
@@ -834,33 +827,11 @@ function ReactButton(props: {
   setOpen: (open: Reacting) => void
 }) {
   const { open, setOpen } = props
-  const { matrix } = useServices()
-  const [typed, setTyped] = useState('')
-  // Of the room as it is when the picker opens.
-  const [packs, setPacks] = useState<ImagePack[] | null>(null)
-  const opened = open !== null
-  useEffect(() => {
-    setPacks(null)
-    if (!opened) return
-    let current = true
-    void matrix.imagePacks(props.room.id).then((packs) => current && setPacks(packs))
-    return () => {
-      current = false
-    }
-  }, [opened, matrix, props.room.id])
   const root = useRef<HTMLSpanElement>(null)
-  const input = useRef<HTMLInputElement>(null)
-  const picker = useRef<HTMLDivElement>(null)
-  // Placed once its packs show, which make it larger.
-  const above = useOpensAbove(picker, opened && packs !== null)
   const close = () => {
     setOpen(null)
-    setTyped('')
     if (open === 'key') root.current!.closest<HTMLElement>('[data-event]')!.focus()
   }
-  useLayoutEffect(() => {
-    if (open === 'key') picker.current!.querySelector('button')!.focus()
-  }, [open])
   useEscape(open !== null ? close : null)
   useEffect(() => {
     if (open === null) return
@@ -870,19 +841,6 @@ function ReactButton(props: {
     document.addEventListener('pointerdown', outside)
     return () => document.removeEventListener('pointerdown', outside)
   }, [open, setOpen])
-  const choose = (key: string, shortcode: string | null) => {
-    close()
-    props.react(key, shortcode)
-  }
-  const words = typed.trim().replace(/^:|:$/g, '').toLowerCase()
-  const shown = (packs ?? [])
-    .map((pack) => ({
-      ...pack,
-      images: pack.images.filter(
-        (i) => i.shortcode.toLowerCase().includes(words) || (i.body ?? '').toLowerCase().includes(words),
-      ),
-    }))
-    .filter((pack) => pack.images.length > 0)
   return (
     <span class={styles.reactRoot} ref={root}>
       <button
@@ -896,76 +854,15 @@ function ReactButton(props: {
         <Icon name="smile-plus" />
       </button>
       {open !== null && (
-        <div
-          ref={picker}
-          class={above ? `${styles.picker} ${styles.above}` : styles.picker}
-          role="dialog"
-          aria-label="React"
-          // Left by the focus (Tab, a click elsewhere), it closes.
-          onFocusOut={(event) => {
-            if (!picker.current!.contains(event.relatedTarget as Node | null)) setOpen(null)
+        <ReactionPicker
+          room={props.room}
+          focus={open === 'key'}
+          choose={(key, shortcode) => {
+            close()
+            props.react(key, shortcode)
           }}
-          onKeyDown={(event) => {
-            const pressed = event.target as HTMLElement
-            const arrow = { ArrowLeft: -1, ArrowRight: 1 }[event.key]
-            // In the box, the arrows move its caret, but from an empty one.
-            if (arrow !== undefined && (pressed !== input.current || typed === '')) {
-              const controls = [...picker.current!.querySelectorAll<HTMLElement>('button, input')]
-              const at = controls.indexOf(pressed)
-              controls[Math.max(0, Math.min(at + arrow, controls.length - 1))].focus()
-              event.preventDefault()
-            } else if (pressed !== input.current && [...event.key].length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
-              // A key typed on a reaction is the box's, not a shortcut.
-              event.stopPropagation()
-              input.current!.focus()
-            }
-          }}
-        >
-          {QUICK.map((key) => (
-            <button key={key} type="button" aria-label={`React with ${key}`} onMouseDown={keepFocus} onClick={() => choose(key, null)}>
-              {key}
-            </button>
-          ))}
-          <form
-            onSubmit={(event) => {
-              event.preventDefault()
-              const key = typed.trim()
-              if (key === '') return
-              const image = (packs ?? []).flatMap((p) => p.images).find((i) => `:${i.shortcode}:` === key)
-              if (image) choose(image.url, key)
-              else choose(key, null)
-            }}
-          >
-            <input
-              ref={input}
-              aria-label="Reaction"
-              placeholder="Other…"
-              value={typed}
-              onInput={(event) => setTyped(event.currentTarget.value)}
-            />
-          </form>
-          {shown.length > 0 && (
-            <div class={styles.packs}>
-              {shown.map((pack, at) => (
-                <section key={at} aria-label={pack.name ?? 'Your emoji'}>
-                  <h4>{pack.name ?? 'Your emoji'}</h4>
-                  {pack.images.map((image) => (
-                    <button
-                      key={image.shortcode}
-                      type="button"
-                      aria-label={`React with :${image.shortcode}:`}
-                      title={`:${image.shortcode}:`}
-                      onMouseDown={keepFocus}
-                      onClick={() => choose(image.url, `:${image.shortcode}:`)}
-                    >
-                      <img src={packImagePath(props.room.id, image.url)} alt="" loading="lazy" />
-                    </button>
-                  ))}
-                </section>
-              ))}
-            </div>
-          )}
-        </div>
+          leave={() => setOpen(null)}
+        />
       )}
     </span>
   )

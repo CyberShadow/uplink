@@ -51,6 +51,9 @@ function rows() {
     .filter((row) => row.textContent !== 'Loading more…')
 }
 const subjects = () => rows().map((row) => row.querySelector('[class*=subject]')!.textContent)
+/** A quick reaction of the reaction picker open. */
+const quickReaction = (key: string) =>
+  within(screen.getByRole('group', { name: 'Quick reactions' })).getByRole('button', { name: `React with ${key}` })
 const focusedSubject = () =>
   rows()
     .find((row) => row.getAttribute('aria-current') === 'true')
@@ -1794,9 +1797,9 @@ describe('matrix', () => {
     // Enter takes one, and other keys type one; then the line has the
     // focus back.
     await user.keyboard('+')
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'React with 👍' }))
+    expect(document.activeElement).toBe(quickReaction('👍'))
     await user.keyboard('{ArrowRight}{ArrowRight}{ArrowLeft}')
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'React with 👎' }))
+    expect(document.activeElement).toBe(quickReaction('👎'))
     await user.keyboard('{Enter}')
     expect(document.activeElement).toBe(lineOf(theirs))
     await user.keyboard('+🎉')
@@ -2384,7 +2387,7 @@ describe('room timeline', () => {
 
     // Any other, from the picker.
     await user.click(within(line('Lunch?')).getByRole('button', { name: 'React' }))
-    await user.click(screen.getByRole('button', { name: 'React with 🎉' }))
+    await user.click(quickReaction('🎉'))
     expect(server.requests).toContainEqual({
       type: 'send_matrix_message',
       key: expect.any(String),
@@ -2469,6 +2472,57 @@ describe('room timeline', () => {
       room: room.id,
       content: { type: 'reaction', event: event.event_id, key: 'mxc://example.org/mine', shortcode: ':mine:' },
     })
+  })
+
+  it('offers every emoji by its group, and finds them as typed, or reacts with what is typed', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const event = server.receive(room.id, { body: 'Lunch?' })
+    const user = await start(`/rooms/${room.id}`)
+    await within(timeline()).findByText('Lunch?')
+    const open = async () => {
+      await user.click(within(line('Lunch?')).getByRole('button', { name: 'React' }))
+      return screen.getByRole('dialog', { name: 'React' })
+    }
+    const reacted = (key: string) =>
+      expect(server.requests).toContainEqual({
+        type: 'send_matrix_message',
+        key: expect.any(String),
+        room: room.id,
+        content: { type: 'reaction', event: event.event_id, key, shortcode: null },
+      })
+    let picker = await open()
+    const food = await within(picker).findByRole('region', { name: 'Food & drink' })
+    within(picker).getByRole('button', { name: 'Food & drink' })
+    await user.click(within(food).getByRole('button', { name: 'React with 🍕' }))
+    reacted('🍕')
+
+    // Found by shortcode or name, best first: Enter takes the first.
+    picker = await open()
+    await within(picker).findByRole('region', { name: 'Smileys & emotion' })
+    const box = within(picker).getByRole('textbox', { name: 'Reaction' })
+    await user.type(box, 'thumbs')
+    expect(within(picker).queryByRole('region', { name: 'Smileys & emotion' })).toBeNull()
+    expect(within(picker).queryByRole('navigation', { name: 'Groups' })).toBeNull()
+    const found = within(picker).getByRole('region', { name: 'Emoji' })
+    expect(within(found).getAllByRole('button').map((b) => b.textContent)).toEqual(['👍', '👎'])
+    expect(within(found).getAllByRole('button').map((b) => b.title)).toEqual([':+1:', ':-1:'])
+    await user.type(box, '{Enter}')
+    reacted('👍')
+
+    // A shortcode typed whole is its emoji, the first found or not.
+    picker = await open()
+    await user.type(within(picker).getByRole('textbox', { name: 'Reaction' }), ':thumbsdown:{Enter}')
+    reacted('👎')
+
+    // What is typed, as it is, if nothing is found or if asked.
+    picker = await open()
+    await user.type(within(picker).getByRole('textbox', { name: 'Reaction' }), 'smile')
+    await user.click(within(within(picker).getByRole('region', { name: 'As text' })).getByRole('button', { name: 'React with smile' }))
+    reacted('smile')
+    picker = await open()
+    await user.type(within(picker).getByRole('textbox', { name: 'Reaction' }), 'nope nope{Enter}')
+    reacted('nope nope')
   })
 
   it('replies, edits the last message with Up, and deletes', async () => {
