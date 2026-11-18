@@ -1855,14 +1855,58 @@ describe('matrix', () => {
     expect(followed).toHaveBeenCalled()
     expect(document.activeElement).toBe(link)
     // Other keys act on its line still. t opens its thread, whose box Esc
-    // leaves for the line; then Esc closes the thread, keeping the line.
+    // leaves for the thread's messages; then Esc closes the thread, for
+    // the line.
     await user.keyboard('t')
     expect(document.activeElement).toBe(await screen.findByRole('textbox', { name: 'Reply in thread' }))
     await user.keyboard('{Escape}')
-    expect(document.activeElement).toBe(lineOf(theirs))
+    const thread = screen.getByRole('list', { name: 'Thread messages' })
+    expect(document.activeElement).toBe(thread.querySelector(`[data-event="${theirs.id}"]`))
     await user.keyboard('{Escape}')
     expect(screen.queryByRole('complementary', { name: 'Thread' })).toBeNull()
     expect(document.activeElement).toBe(lineOf(theirs))
+  })
+
+  it('moves between a room and its threads by the arrows', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const root = server.receive(room.id, { body: 'Plans' })
+    server.receiveInThread(room.id, root, { body: 'lunch then' })
+    const other = server.receive(room.id, { body: 'Elsewhere' })
+    const user = await start(`/rooms/${room.id}`)
+    const timeline = screen.getByRole('list', { name: 'Timeline' })
+    await within(timeline).findByText('Elsewhere')
+    const line = (event: { id: number }) => timeline.querySelector(`[data-event="${event.id}"]`)
+    const thread = () => screen.getByRole('list', { name: 'Thread messages' })
+    const threadLine = (text: string) => within(thread()).getByText(text).closest('li')
+    // → opens the line's thread, at its first message.
+    await user.keyboard('{Escape}kk')
+    expect(document.activeElement).toBe(line(root))
+    await user.keyboard('{ArrowRight}')
+    await waitFor(() => expect(document.activeElement).toBe(threadLine('Plans')))
+    // There, j/k move within it; ← goes back to its root's line.
+    await user.keyboard('j')
+    expect(document.activeElement).toBe(threadLine('lunch then'))
+    await user.keyboard('{ArrowLeft}')
+    expect(document.activeElement).toBe(line(root))
+    expect(screen.getByRole('complementary', { name: 'Thread' })).toBeTruthy()
+    // From a line with no thread of its own, → goes to the one open.
+    await user.keyboard('j{ArrowRight}')
+    expect(document.activeElement).toBe(threadLine('Plans'))
+    // t writes to it, from the room's line too; Esc leaves its box for
+    // its messages, at the latest.
+    await user.keyboard('{ArrowLeft}t')
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Reply in thread' }))
+    await user.keyboard('{Escape}')
+    expect(document.activeElement).toBe(threadLine('lunch then'))
+    // Esc closes it, for its root's line.
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('complementary', { name: 'Thread' })).toBeNull()
+    expect(document.activeElement).toBe(line(root))
+    // With none open, → opens the one a line would begin.
+    await user.keyboard('j{ArrowRight}')
+    await waitFor(() => expect(document.activeElement).toBe(threadLine('Elsewhere')))
+    expect(line(other)).not.toBe(document.activeElement)
   })
 
   it('moves through the nav by Alt and the arrows, from the box too, and to unread with Shift', async () => {
@@ -1946,12 +1990,10 @@ describe('matrix', () => {
     scrolledTo(document.getElementById(`event-${root.id}`)!)
     await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'Catching up' })).toBeNull())
     expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Reply in thread' }))
+    // A thread's box, for its messages: the latest.
     await user.keyboard('{Escape}')
-    expect(document.activeElement).toBe(document.body)
-    // From no line, j/k go to the timeline's.
-    await user.keyboard('k')
-    expect(document.activeElement).toBe(document.getElementById(`event-${root.id}`))
-    // From a line, the panel closes first, keeping it.
+    expect(document.activeElement).toBe(within(thread).getByText('lunch then').closest('li'))
+    // From a line of it, the thread closes, for its root's.
     await user.keyboard('{Escape}')
     expect(screen.queryByRole('complementary', { name: 'Thread' })).toBeNull()
     expect(document.activeElement).toBe(document.getElementById(`event-${root.id}`))

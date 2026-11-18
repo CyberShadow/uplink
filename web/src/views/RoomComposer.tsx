@@ -70,8 +70,8 @@ export function Composer(props: {
   scrolling: Actions
   /** Gives the focus to an event's line, if shown. */
   focusLine: (event: RoomEventId) => void
-  /** Where Esc goes from the box, as it was opened from there by a key:
-   * else, nowhere. */
+  /** Where Esc goes from the box: a thread's, to its messages; else,
+   * nowhere. */
   back: (() => void) | null
 }) {
   const { room, at, mode, setMode, thread } = props

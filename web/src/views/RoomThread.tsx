@@ -2,12 +2,12 @@
 // panel: its root, its messages, those being sent to it, and a box to
 // write to it.
 
-import { useMemo, useRef } from 'preact/hooks'
-import type { Room, RoomEventId } from '../generated/protocol'
+import { useLayoutEffect, useMemo, useRef } from 'preact/hooks'
+import type { Room } from '../generated/protocol'
 import { useServices } from '../context'
-import { keepFocus, pages } from '../keymap'
+import { focusShown, keepFocus, pages } from '../keymap'
 import { TEXT, shown } from '../matrix'
-import { Events, NO_READERS_BY_EVENT, overlaid, rows } from './Room'
+import { Events, NO_READERS_BY_EVENT, type ThreadOpened, moveLine, overlaid, rows } from './Room'
 import { Composer, type Mode, useMode } from './RoomComposer'
 import styles from './Room.module.css'
 // Its header as the room info's.
@@ -15,22 +15,27 @@ import panel from './RoomInfo.module.css'
 
 export function ThreadPanel(props: {
   room: Room
-  root: RoomEventId
+  opened: ThreadOpened
   me: string
-  /** Where Esc goes from its box, as it was opened from there by a key. */
-  back: (() => void) | null
+  /** Gives the focus to the room's timeline: to its root's line. */
+  toRoom: () => void
+  /** Closes it, for the room's timeline. */
+  leave: () => void
+  /** Closes it, for the room's box. */
   close: () => void
   openMember: (user: string) => void
 }) {
   const { room, me } = props
   const { matrix } = useServices()
-  const thread = matrix.thread(room.id, props.root)
+  const { opened } = props
+  const { root } = opened
+  const thread = matrix.thread(room.id, root)
   const state = thread.state.value
   const sends = matrix.timeline(room.id).outgoing.value
   const composer = useRef<HTMLTextAreaElement>(null)
   const scroller = useRef<HTMLDivElement>(null)
   const listed = useRef<HTMLOListElement>(null)
-  const at = useMemo(() => ({ room: room.id, thread: props.root }), [room.id, props.root])
+  const at = useMemo(() => ({ room: room.id, thread: root }), [room.id, root])
   const [mode, setMode] = useMode(at)
   const events = useMemo(() => (state ? [state.root, ...state.replies] : []), [state])
   const rootId = state?.root.event_id ?? null
@@ -47,6 +52,14 @@ export function ThreadPanel(props: {
     setMode(next)
     composer.current?.focus()
   }
+  // Opened, again too, what it was opened for has the focus, once there
+  // is any of it; after its box takes it, shown.
+  const loaded = state !== null
+  useLayoutEffect(() => {
+    if (!loaded) return
+    if (opened.focus === 'first') listed.current!.querySelector<HTMLElement>('[data-event]')!.focus()
+    else if (composer.current) focusShown(composer.current)
+  }, [loaded, opened])
   return (
     <aside class={styles.thread} aria-label="Thread">
       <header class={panel.header}>
@@ -73,10 +86,12 @@ export function ThreadPanel(props: {
             readers={NO_READERS_BY_EVENT}
             act={act}
             openThread={null}
+            threadOpen={null}
+            toRoom={props.toRoom}
             details={null}
             openMember={props.openMember}
             target={mode.type === 'new' ? null : mode.event.id}
-            closePanel={null}
+            closePanel={props.leave}
           />
         </ol>
       </div>
@@ -91,7 +106,7 @@ export function ThreadPanel(props: {
           thread={rootId}
           scrolling={pages(scroller)}
           focusLine={(event) => listed.current!.querySelector<HTMLElement>(`[data-event="${event}"]`)?.focus()}
-          back={props.back}
+          back={() => moveLine(listed.current!, -1)}
         />
       )}
     </aside>

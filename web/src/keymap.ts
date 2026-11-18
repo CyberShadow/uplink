@@ -44,6 +44,8 @@ export type Action =
   | 'delete'
   | 'edit'
   | 'thread'
+  | 'intoThread'
+  | 'outOfThread'
   | 'react'
   | 'pin'
   | 'spam'
@@ -161,6 +163,8 @@ export const KEYMAP: Binding[] = [
   },
   { action: 'edit', keys: ['e'], label: 'e', help: 'Edit the message (in a room, your own); in the calendar: the event open, if your own' },
   { action: 'thread', keys: ['t'], label: 't', help: 'Open the message\'s thread, or reply in one (in a room)' },
+  { action: 'intoThread', keys: ['ArrowRight'], label: '→', help: "Open the message's thread, at its first message; or go to the thread open (in a room)" },
+  { action: 'outOfThread', keys: ['ArrowLeft'], label: '←', help: "From a thread's message, back to the room's" },
   { action: 'react', keys: ['[Shift]++'], label: '+', help: 'React to the message (in a room)' },
   { action: 'pin', keys: ['p'], label: 'p', help: 'Pin or unpin the message (in a room)' },
   { action: 'spam', keys: ['[Shift]+!'], label: '!', help: 'Report spam, or not spam' },

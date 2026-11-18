@@ -3929,7 +3929,12 @@ is cancelled), for the shortcuts, as vim's normal mode; `i`, `Enter`
 and `r` go back to it. Out of the box, `j`/`k` move to a line (from none, to the latest; in a
 thread's list, within it), as the mail list's, and keys act on its
 message, as Slack's do on the one it focuses: `r` replies, `e` edits
-one's own, `t` opens its thread or replies in one, `+` opens its
+one's own, `t` opens its thread or replies in one, at its box; `→`, as
+Slack's, at its first message (the line's own thread; else the one open
+beside the timeline; else the one the line would begin), and `←`, from
+a thread's message, goes back to its root's line in the timeline (where
+that is not shown, to the latest), so that the two move between the
+timeline and the thread open; `+` opens its
 reactions (at the first: `←`/`→` move along them, `Enter` takes one,
 other keys type one into their box; the focus leaving closes them, and
 closed, the line has it back), `p` pins or unpins it and `Delete` (on macOS, the
@@ -4047,12 +4052,15 @@ as a native list does), `Enter` chooses and `Esc` closes.
   name). They repeat while held.
 - **`Esc` goes up**, pressed again and again, to a known place, first
   undoing what was done last: a field leaves itself (once it has
-  cancelled what it was doing: a reply, a completion); a reply, an edit
-  or a thread begun by a key on a line goes back to the line (begun by
+  cancelled what it was doing: a reply, a completion); a reply or an
+  edit begun by a key on a line goes back to the line (begun by
   the pointer, the box keeps the focus), and the line replied to or
-  edited (by `Up` too) shows, in view, while the box is at it; from a
+  edited (by `Up` too) shows, in view, while the box is at it; a
+  thread's box leaves itself for the thread's messages, at the latest,
+  for `j`/`k` to move through them; from a
   line, it closes a room's panel first (the details `Enter` opened, a
-  thread), keeping one's place, then leaves the line, as anything else
+  thread), keeping one's place (from a thread's own line, its root's in
+  the timeline), then leaves the line, as anything else
   that has the focus (a link); from nothing, it closes a room's panel (a thread, the
   info, a search, a message's details), takes an open conversation back
   to its list, selects none, and else goes home. Dialogs, menus and
