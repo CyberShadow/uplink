@@ -1020,7 +1020,9 @@ than it buffers is closed; the client reconnects and resumes.
 - **To-dos**: `TodosChanged { todos }` (added, edited or deleted; the
   client lists them again, as it does drafts).
 - **Seen**: `SeenChanged` — places were seen, or no longer (§12.15),
-  so what `is:new` matches changed.
+  so what is unseen changed: what `dot` badges hold (§12.14) and windows
+  of the unseen list, which are derived anew of it. Items are not of
+  it, so windows of items are not checked again.
 - **Draft**: `DraftEdited { draft, revision, field, splice }` (§7.2), and
   `DraftsChanged { drafts }` when drafts are created or deleted.
 - **Outbox**: `OutboxChanged { accounts }` — something not yet reconciled
@@ -4585,7 +4587,8 @@ on another device, notifies of it (§12.16). It records the seen as
 `MarkSeen { place }` (as shown, below) as attention to a place begins,
 and as it ends, as of then, so that the log is not filled with visits;
 an attended place's being seen changes what is unseen across items, as
-a place seen does (§5.7, §12.14). What came while a place was attended,
+a place seen does (§5.7, §12.14): what `dot` badges hold, derived anew,
+and the windows of the unseen; not windows of items. What came while a place was attended,
 when the server stopped before attention ended, is unseen again.
 
 A place's watermark is of ids, not of what it held: what was stored

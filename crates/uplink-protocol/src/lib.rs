@@ -1262,6 +1262,9 @@ pub struct Changed {
     /// Time passed, which moves items into `due:today` and out of
     /// `newer_than:`: what it moves (a query's).
     pub time: bool,
+    /// Places were seen, or no longer, or what is attended changed (SPEC
+    /// §12.15): what is unseen, which items themselves are not.
+    pub seen: bool,
     /// What the log does not name item by item: everything.
     pub everything: bool,
 }
@@ -1283,9 +1286,22 @@ impl Changed {
         }
     }
 
+    /// Of what is seen.
+    pub fn seen() -> Self {
+        Self {
+            seen: true,
+            ..Self::default()
+        }
+    }
+
     /// Whether nothing changed.
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
+    }
+
+    /// Whether anything of the items changed: not only what is seen.
+    pub fn of_items(&self) -> bool {
+        !self.is_empty() && *self != Self::seen()
     }
 
     /// With what `entry`'s events say changed.
@@ -1300,6 +1316,7 @@ impl Changed {
         self.todos.extend(other.todos);
         self.events |= other.events;
         self.time |= other.time;
+        self.seen |= other.seen;
         self.everything |= other.everything;
     }
 
@@ -1315,12 +1332,12 @@ impl Changed {
             ServerEvent::TimelineChanged(changed) => self.rooms.push(changed.room),
             ServerEvent::TodosChanged(changed) => self.todos.extend(&changed.todos),
             ServerEvent::CalendarChanged(_) => self.events = true,
+            ServerEvent::SeenChanged => self.seen = true,
             // Gone, they are of no conversation to check again; a label
-            // renamed or deleted, of what its name meant; what is seen,
-            // of what every item shows unread.
-            ServerEvent::EntriesRemoved(_)
-            | ServerEvent::LabelListChanged(_)
-            | ServerEvent::SeenChanged => self.everything = true,
+            // renamed or deleted, of what its name meant.
+            ServerEvent::EntriesRemoved(_) | ServerEvent::LabelListChanged(_) => {
+                self.everything = true
+            }
             ServerEvent::ImageRuleChanged(_)
             | ServerEvent::AccountChanged(_)
             | ServerEvent::DraftEdited(_)

@@ -43,6 +43,9 @@ pub trait Listable: Clone + PartialEq + Send + Sync + Sized + 'static {
 
     fn position(&self) -> ItemPosition;
 
+    /// Whether `changed` may change what a window of it lists.
+    fn moved_by(changed: &Changed) -> bool;
+
     /// The first `limit` of what `window`'s query matches, now that
     /// `changed` since it was last listed.
     fn list(
@@ -68,6 +71,11 @@ impl Listable for Item {
 
     fn position(&self) -> ItemPosition {
         Item::position(self)
+    }
+
+    /// Not what is seen: what items are is not of it.
+    fn moved_by(changed: &Changed) -> bool {
+        changed.of_items()
     }
 
     /// Of what it holds, but for what changed.
@@ -113,6 +121,10 @@ impl Listable for Unseen {
         Unseen::position(self)
     }
 
+    fn moved_by(changed: &Changed) -> bool {
+        !changed.is_empty()
+    }
+
     /// Whole, whatever changed.
     fn list(
         backend: &impl Backend,
@@ -153,6 +165,11 @@ macro_rules! of_window {
 }
 pub(crate) use of_window;
 
+/// Whether `changed` may change what `window` lists.
+fn moved_by<L: Listable>(_window: &Window<L>, changed: &Changed) -> bool {
+    L::moved_by(changed)
+}
+
 /// A session's windows, by subscription, and those due to be listed
 /// again, in turn.
 #[derive(Default)]
@@ -181,27 +198,19 @@ impl Windows {
         self.windows.remove(&subscription)
     }
 
-    /// What changed may change what every window lists: each is due,
-    /// after those due already, to check again what changed since it was
-    /// last listed.
+    /// What changed may change what windows list: each it may change is
+    /// due, after those due already, to check again what changed since it
+    /// was last listed.
     pub fn came(&mut self, changed: &Changed) {
         for (&subscription, window) in &mut self.windows {
-            of_window!(window, window => window.changed.merge(changed.clone()));
-            if !self.due.contains(&subscription) {
-                self.due.push_back(subscription);
-            }
-        }
-    }
-
-    /// What is attended changed (SPEC §12.15), so what is unseen: each
-    /// window of the unseen is due, whole.
-    pub fn attended(&mut self) {
-        for (&subscription, window) in &mut self.windows {
-            let Subscribed::Unseen(window) = window else {
-                continue;
-            };
-            window.changed.merge(Changed::everything());
-            if !self.due.contains(&subscription) {
+            let moved = of_window!(window, window => {
+                let moved = moved_by(window, changed);
+                if moved {
+                    window.changed.merge(changed.clone());
+                }
+                moved
+            });
+            if moved && !self.due.contains(&subscription) {
                 self.due.push_back(subscription);
             }
         }
@@ -394,6 +403,34 @@ mod tests {
             .changed(vec![todo(2, 30, "b!"), todo(3, 5, "c")], true, vec![])
             .unwrap();
         assert!(change.upserted.is_empty() && change.removed.is_empty() && change.more);
+    }
+
+    /// What is seen changes what is unseen, not what items are: windows
+    /// of the unseen are due of it, of items not (SPEC §12.15).
+    #[test]
+    fn what_is_seen_is_of_windows_of_the_unseen() {
+        let mut windows = Windows::default();
+        windows.insert(
+            SubscriptionId(1),
+            Subscribed::Items(Window::new("q".into(), UnknownNames::Invalid, 1)),
+        );
+        windows.insert(
+            SubscriptionId(2),
+            Subscribed::Unseen(Window::new("q".into(), UnknownNames::Invalid, 1)),
+        );
+        windows.came(&Changed::seen());
+        let (due, _, changed) = windows.next_due().unwrap();
+        assert_eq!((due.0, changed), (2, Changed::seen()));
+        assert!(windows.next_due().is_none());
+        // Of what items are too, both are due, of all of it.
+        let mut both = Changed::time();
+        both.merge(Changed::seen());
+        windows.came(&both);
+        let mut due: Vec<_> =
+            std::iter::from_fn(|| windows.next_due().map(|(id, _, changed)| (id.0, changed)))
+                .collect();
+        due.sort_by_key(|(id, _)| *id);
+        assert_eq!(due, [(1, both.clone()), (2, both)]);
     }
 
     #[test]

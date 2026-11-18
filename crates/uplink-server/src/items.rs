@@ -657,8 +657,9 @@ impl Items {
             .await
     }
 
-    /// `badged` kept: what `changed` names checked again. What the log
-    /// does not name item by item, everything is derived anew for.
+    /// `badged` kept: what `changed` names checked again; of what is
+    /// seen, the `dot` buckets derived anew. What the log does not name
+    /// item by item, everything is derived anew for.
     pub async fn rebadged(
         &self,
         badged: Badged,
@@ -683,6 +684,12 @@ impl Items {
                     let hold = |query: Query| {
                         this.hold(&tx, &rooms, &seen, bucket.badge, &query, today, now)
                     };
+                    // A `dot` holds what is unseen: of what is seen, all of
+                    // it may change.
+                    if changed.seen && bucket.badge == Badge::Dot {
+                        bucket.held = hold(bucket.query.clone())?;
+                        continue;
+                    }
                     let of_kind = |kind| bucket.query.clone().and(Query::Term(Term::Kind(kind)));
                     let fresh = Fresh {
                         among: hold(bucket.query.clone().among(among.clone()))?,
@@ -1340,6 +1347,7 @@ mod tests {
         let mut left = 0;
         let (mut badged, _) = items.badged().await.unwrap();
         let mut todo_ids = vec![];
+        let mut seen_marks = vec![];
         // Of the labels, by step: as many sets as there are steps of a kind.
         let sets: [&[&str]; 5] = [
             &["INBOX", "UNREAD"],
@@ -1429,6 +1437,20 @@ mod tests {
                     }
                 }
                 _ => unreachable!(),
+            }
+            // Now and then places seen, and no longer (undone).
+            match step % 7 {
+                3 => {
+                    let place = [Place::Home, Place::Inboxes, Place::Todos][step / 7 % 3].clone();
+                    let mark = dispatcher.dispatch(crate::seen::MarkSeen { place });
+                    seen_marks.push(mark.await.unwrap());
+                }
+                6 => {
+                    if let Some(mark) = seen_marks.pop() {
+                        dispatcher.undo(mark).await.unwrap();
+                    }
+                }
+                _ => {}
             }
             let mut changed = Changed::default();
             while let Ok(entry) = entries.try_recv() {

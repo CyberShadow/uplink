@@ -286,7 +286,8 @@ async fn session(
             changed = attended.changed() => {
                 changed.expect("hub outlives its sessions");
                 attended.borrow_and_update();
-                windows.attended();
+                // What is unseen.
+                followed.changed.merge(Changed::seen());
             }
             _ = minute.tick() => followed.changed.merge(Changed::time()),
             () = std::future::ready(()), if !followed.changed.is_empty() || windows.any_due() => {
