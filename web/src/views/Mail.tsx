@@ -969,7 +969,9 @@ function ConversationView(props: {
  * styles are in, as Firefox warns; loaded, it is fitted, and scrolled to
  * again. A frame has loaded the document it has once its load came
  * with it: not by its `readyState`, as before it begins to load it has
- * the browser's blank document, complete. */
+ * the browser's blank document, complete. What grows it is told by its
+ * changes, not by a `ResizeObserver`, whose watching alone lays out
+ * the frame inside, each frame, as it loads. */
 function useOpenAt(target: RefObject<HTMLElement>, content: RefObject<HTMLElement>, bar: RefObject<HTMLElement>) {
   useLayoutEffect(() => {
     const element = target.current!
@@ -982,14 +984,18 @@ function useOpenAt(target: RefObject<HTMLElement>, content: RefObject<HTMLElemen
       element.scrollIntoView({ block: 'start' })
     }
     pin()
-    const observer = new ResizeObserver(pin)
-    observer.observe(within)
-    // Before the frame's own handler fits it; so, pinned once it has.
+    // Once a frame, at most, once laid out: a body shown, a frame fitted.
     let frame = 0
-    const load = (event: Event) => {
-      if (event.target instanceof HTMLIFrameElement) loaded.set(event.target, event.target.srcdoc)
+    const later = () => {
       cancelAnimationFrame(frame)
       frame = requestAnimationFrame(pin)
+    }
+    const observer = new MutationObserver(later)
+    observer.observe(within, { childList: true, subtree: true, attributes: true, characterData: true })
+    // Before the frame's own handler fits it.
+    const load = (event: Event) => {
+      if (event.target instanceof HTMLIFrameElement) loaded.set(event.target, event.target.srcdoc)
+      later()
     }
     within.addEventListener('load', load, true)
     const events = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const

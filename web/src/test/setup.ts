@@ -8,11 +8,6 @@ document.head.insertAdjacentHTML('beforeend', '<link rel="icon" type="image/svg+
 // jsdom does no layout, nor media queries: the system's theme is light.
 Element.prototype.scrollIntoView = () => {}
 Element.prototype.scrollBy = () => {}
-window.ResizeObserver = class {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
 window.matchMedia = (query: string) =>
   ({
     matches: false,
