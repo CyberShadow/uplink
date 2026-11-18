@@ -1495,8 +1495,8 @@ a sync may never give one: a Matrix long poll is usually already waiting
 when uplink pushes, and is woken by the push's own echo, so it is
 ambiguous, and it tells of the field once. So after an applied push of
 the value still desired, the reconciler **reads the field back**
-directly, unless the next sync is anyway sent after the outcome is
-recorded (providers whose sync and pushes take turns, §6.6.6). It does
+directly; where sync and pushes take turns (§6.6.6), only once the
+next sync, sent after the outcome is recorded, did not tell of it. It does
 not read back while a push is in flight or of unknown outcome: no
 observation would be trusted.
 
@@ -1629,12 +1629,14 @@ How they order:
 - Gmail, IMAP, Graph, JMAP and the calendar: one task per account takes
   sync and pushes in turns, so each sync is sent after the
   outcomes of the pushes before it are recorded, and is authoritative
-  for them. Pushes applied are read back still, in the same step
-  (Gmail `messages.get`, IMAP `UID FETCH FLAGS`, Graph `GET
-  /messages/{id}`, JMAP `Email/get`; the calendar's answers by `GET
-  /events/{id}`): an incremental sync tells only of what changed, and
-  may not mention an entry the push left as it was. IDLE and JMAP's
-  push only wake the task. Should anything observe out of turn, it
+  for them. After a push applied (or one of unknown outcome expired),
+  the next sync is sent at once, and confirms what it tells of; then
+  what it did not is read back (Gmail `messages.get`, IMAP `UID FETCH
+  FLAGS`, Graph `GET /messages/{id}`, JMAP `Email/get`; the calendar's
+  answers by `GET /events/{id}`): an incremental sync tells only of
+  what changed, and may not mention an entry the push left as it was.
+  So a bulk change is fetched once, by the sync, not again by its
+  read-back. IDLE and JMAP's push only wake the task. Should anything observe out of turn, it
   stamps `as_of` like any other.
 - POP3: labels are uplink's own; a push is applied at once, and read
   back as uplink has it.

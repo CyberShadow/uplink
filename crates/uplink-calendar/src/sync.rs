@@ -206,13 +206,15 @@ impl CalendarSync {
         }
     }
 
-    /// One round, as of `now` (ms): syncs, pushes, and syncs again if it
-    /// wrote an event, so that what was written shows as the provider has
-    /// it (a series created, its occurrences).
+    /// One round, as of `now` (ms): syncs, then pushes; if it pushed,
+    /// syncs again, so that what was written shows as the provider has it
+    /// (a series created, its occurrences), and what was given is
+    /// confirmed, but for what the sync does not tell of, then read back.
     pub async fn step(&self, now: i64) -> Result<()> {
         self.sync(now).await?;
         if self.push().await? {
             self.sync(now).await?;
+            self.read_back().await?;
         }
         Ok(())
     }
@@ -235,23 +237,50 @@ impl CalendarSync {
         }
     }
 
-    /// Gives Graph the answers to meeting requests asked for (SPEC §6.6),
-    /// then the events written, recording what it made of each; whether it
-    /// wrote any event.
+    /// Reads back what the last sync left to confirm (SPEC §6.6.6), then
+    /// gives Graph the answers to meeting requests asked for, then the
+    /// events written, recording what it made of each; whether there is
+    /// anything for a sync to show or confirm: an event written, an answer
+    /// given, or one of unknown outcome expired.
     pub async fn push(&self) -> Result<bool> {
-        self.reconcile().await?;
-        self.write().await
+        self.read_back().await?;
+        let answered = self.reconcile().await?;
+        let wrote = self.write().await?;
+        Ok(answered || wrote)
     }
 
-    /// Gives Graph the answers to meeting requests the user asked for,
-    /// and reads back what that is to be confirmed by (SPEC §6.6): until
-    /// nothing is left to give or read. Every answer claimed is given and
-    /// its outcome recorded, though one fails; then the first failure,
-    /// that may pass, is returned, for the step to be retried with
-    /// backoff.
-    pub async fn reconcile(&self) -> Result<()> {
-        // Each round gives or confirms; few are needed.
+    /// Reads back the answers an applied push, or one of unknown outcome
+    /// expired, is to be confirmed by, or an untrusted observation
+    /// doubted: an incremental sync tells only of events that changed.
+    async fn read_back(&self) -> Result<()> {
+        let account = self.account.clone();
+        let answers = self
+            .query(move |conn| respond::reconciling(conn, &account))
+            .await?;
+        for stored in answers.into_iter().filter(|a| a.field.read_back()) {
+            let as_of = self.query(uplink_tx_log::as_of).await?;
+            let path = format!("/events/{}?$select=responseStatus", stored.external_id);
+            let read: Option<Answered> = self.graph.get(&self.graph.url(&path)).await?;
+            self.observe(ResponseRead {
+                event: stored.event,
+                response: read.map(|a| a.response_status.response),
+                as_of,
+            })
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Gives Graph the answers to meeting requests the user asked for
+    /// (SPEC §6.6): until nothing is left to give; whether any was given,
+    /// or one of unknown outcome expired, for a sync to confirm. Every
+    /// answer claimed is given and its outcome recorded, though one fails;
+    /// then the first failure, that may pass, is returned, for the step to
+    /// be retried with backoff.
+    pub async fn reconcile(&self) -> Result<bool> {
+        // Each round gives or settles; few are needed.
         const ROUNDS: usize = 8;
+        let mut confirm = false;
         for _ in 0..ROUNDS {
             let account = self.account.clone();
             let answers = self
@@ -264,6 +293,7 @@ impl CalendarSync {
                     interrupted: false,
                 })
                 .await?;
+                confirm = true;
                 continue;
             }
             let wanted: Vec<_> = answers
@@ -271,40 +301,24 @@ impl CalendarSync {
                 .filter(|a| a.field.wanted().is_some())
                 .map(|a| a.event)
                 .collect();
-            if !wanted.is_empty() {
-                self.observe(AnswersClaimed { events: wanted }).await?;
-                self.give().await?;
-                continue;
+            if wanted.is_empty() {
+                return Ok(confirm);
             }
-            let read_back: Vec<_> = answers
-                .into_iter()
-                .filter(|a| a.field.read_back())
-                .collect();
-            if read_back.is_empty() {
-                return Ok(());
-            }
-            for stored in read_back {
-                let as_of = self.query(uplink_tx_log::as_of).await?;
-                let path = format!("/events/{}?$select=responseStatus", stored.external_id);
-                let read: Option<Answered> = self.graph.get(&self.graph.url(&path)).await?;
-                self.observe(ResponseRead {
-                    event: stored.event,
-                    response: read.map(|a| a.response_status.response),
-                    as_of,
-                })
-                .await?;
-            }
+            self.observe(AnswersClaimed { events: wanted }).await?;
+            confirm |= self.give().await?;
         }
-        bail!("answers still to give or read after {ROUNDS} rounds")
+        bail!("answers still to give after {ROUNDS} rounds")
     }
 
-    /// Gives the answers claimed, recording each outcome as it ends.
-    async fn give(&self) -> Result<()> {
+    /// Gives the answers claimed, recording each outcome as it ends;
+    /// whether any was applied.
+    async fn give(&self) -> Result<bool> {
         let account = self.account.clone();
         let answers = self
             .query(move |conn| respond::reconciling(conn, &account))
             .await?;
         let mut failed = None;
+        let mut applied = false;
         for stored in answers {
             let Some(attempt) = stored
                 .field
@@ -339,6 +353,7 @@ impl CalendarSync {
                     }
                 }
             };
+            applied |= ended == Ended::Applied;
             self.observe(ResponseGiven {
                 event: stored.event,
                 response,
@@ -346,7 +361,7 @@ impl CalendarSync {
             })
             .await?;
         }
-        failed.map_or(Ok(()), Err)
+        failed.map_or(Ok(applied), Err)
     }
 
     /// Gives Graph the events written, recording what it made of each;

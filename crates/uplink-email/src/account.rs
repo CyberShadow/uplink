@@ -3,9 +3,9 @@
 //! queued mail (SPEC §6.6, §6.7, §8).
 //!
 //! One task per account does everything, in turn: fetch changes and
-//! record them, reconcile the labels the user changed (claim their pushes,
-//! push them, record how each ended, read back those pushed), send what
-//! is due. Since a fetch is always recorded before the next push starts,
+//! record them, reconcile the labels the user changed (read back what the
+//! fetch left unconfirmed, claim their pushes, push them, record how each
+//! ended), send what is due; a push applied is fetched for at once. Since a fetch is always recorded before the next push starts,
 //! and asked for after the last was recorded, what the task observes is
 //! never older than what it knows (`account.labels_known_at`, V0073). What
 //! differs between providers is behind [`Provider`].
@@ -476,8 +476,8 @@ impl<P: Provider> SyncTask<P> {
         }
     }
 
-    /// Syncs (a step), pushes and sends; returns whether the sync has more
-    /// to do at once, and when the next queued mail is due. `synced_since`:
+    /// Syncs (a step), pushes and sends; returns whether to step again at
+    /// once (the sync has more to do, or a push to confirm), and when the next queued mail is due. `synced_since`:
     /// when the last sync that recorded all there was began.
     async fn step(&self, synced_since: &mut Option<i64>) -> Result<(bool, Option<i64>)> {
         let began = now_ms();
@@ -485,22 +485,41 @@ impl<P: Provider> SyncTask<P> {
         if !more {
             *synced_since = Some(began);
         }
-        self.reconcile().await?;
+        let confirm = self.reconcile().await?;
         if let (true, Some(since)) = (P::FILES_SENT, *synced_since) {
             self.settle_unknown(since).await?;
         }
-        Ok((more, self.send_due().await?))
+        Ok((more || confirm, self.send_due().await?))
     }
 
-    /// Pushes the label changes the user made, and reads back what that is
-    /// to be confirmed by (SPEC §6.6): until nothing is left to push or
-    /// read, but for what waits on the next sync (a push not applied, an
-    /// entry its read did not find). Every push claimed ends recorded,
+    /// Reads back what the step's sync left to confirm, then pushes the
+    /// label changes the user made (SPEC §6.6.6): until nothing is left to
+    /// push, but for what waits on the next sync (a push not applied).
+    /// Whether a push was applied, or one of unknown outcome expired: the
+    /// next sync, sent at once, confirms what it tells of, and the step
+    /// after it reads back the rest. Every push claimed ends recorded,
     /// though some fail; then the first failure, that may pass, is
     /// returned, for the step to be retried with backoff.
-    async fn reconcile(&self) -> Result<()> {
-        // Each round pushes or confirms; few are needed.
+    async fn reconcile(&self) -> Result<bool> {
+        // An incremental sync tells only of what changed, and may not
+        // mention an entry a push left as it was; what it did not confirm
+        // is read. An entry not found waits on the next sync too: it may
+        // have moved.
+        let mut read: Vec<(EntryId, String)> = self
+            .account
+            .reconciling()
+            .await?
+            .into_iter()
+            .filter(|f| f.key_known && f.field.read_back())
+            .map(|f| (f.entry, f.external_id))
+            .collect();
+        read.dedup();
+        if !read.is_empty() {
+            self.provider.read(&self.account, read).await?;
+        }
+        // Each round pushes or settles; few are needed.
         const ROUNDS: usize = 8;
+        let mut confirm = false;
         let mut later = BTreeSet::new();
         for _ in 0..ROUNDS {
             let fields = self.account.reconciling().await?;
@@ -520,6 +539,7 @@ impl<P: Provider> SyncTask<P> {
                         interrupted: in_flight,
                     })
                     .await?;
+                confirm |= !in_flight;
                 continue;
             }
             let wanted: Vec<(EntryId, LabelId)> = fields
@@ -527,73 +547,55 @@ impl<P: Provider> SyncTask<P> {
                 .filter(|f| f.key_known && !later.contains(&f.entry) && f.field.wanted().is_some())
                 .map(|f| (f.entry, f.label))
                 .collect();
-            if !wanted.is_empty() {
-                self.account
-                    .observe(LabelsClaimed { changes: wanted })
-                    .await?;
-                let claimed: Vec<Pending> = self
-                    .account
-                    .reconciling()
-                    .await?
-                    .into_iter()
-                    .filter_map(|f| {
-                        let attempt = f.field.attempt.filter(|a| a.outcome == Outcome::InFlight)?;
-                        Some(Pending {
-                            entry: f.entry,
-                            external_id: f.external_id,
-                            label: f.label,
-                            label_external_id: f.label_external_id,
-                            kind: f.kind,
-                            desired: attempt.value,
-                        })
+            if wanted.is_empty() {
+                return Ok(confirm);
+            }
+            self.account
+                .observe(LabelsClaimed { changes: wanted })
+                .await?;
+            let claimed: Vec<Pending> = self
+                .account
+                .reconciling()
+                .await?
+                .into_iter()
+                .filter_map(|f| {
+                    let attempt = f.field.attempt.filter(|a| a.outcome == Outcome::InFlight)?;
+                    Some(Pending {
+                        entry: f.entry,
+                        external_id: f.external_id,
+                        label: f.label,
+                        label_external_id: f.label_external_id,
+                        kind: f.kind,
+                        desired: attempt.value,
                     })
-                    .collect();
-                let mut failed = None;
-                let mut pushes = vec![];
-                for pushed in self.provider.push(&self.account, claimed).await {
+                })
+                .collect();
+            let mut failed = None;
+            let mut pushes = vec![];
+            for pushed in self.provider.push(&self.account, claimed).await {
+                match pushed.ended {
+                    Ended::Applied => confirm = true,
+                    Ended::NotApplied { refused: Some(_) } => {}
                     // Not applied, or maybe: pushed again after the next
                     // sync, rather than at once.
-                    if !matches!(
-                        pushed.ended,
-                        Ended::Applied | Ended::NotApplied { refused: Some(_) }
-                    ) {
-                        later.extend(pushed.changes.iter().map(|c| c.entry));
-                    }
-                    if let Some(e) = pushed.error {
-                        failed.get_or_insert(e.context("pushing label changes"));
-                    }
-                    pushes.push(Pushed {
-                        changes: pushed.changes,
-                        ended: pushed.ended,
-                        rekeyed: pushed.rekeyed,
-                    });
+                    _ => later.extend(pushed.changes.iter().map(|c| c.entry)),
                 }
-                // All ended by now: recorded as one.
-                self.account.observe(LabelsPushed { pushes }).await?;
-                if let Some(e) = failed {
-                    return Err(e);
+                if let Some(e) = pushed.error {
+                    failed.get_or_insert(e.context("pushing label changes"));
                 }
-                continue;
+                pushes.push(Pushed {
+                    changes: pushed.changes,
+                    ended: pushed.ended,
+                    rekeyed: pushed.rekeyed,
+                });
             }
-            let mut read: Vec<(EntryId, String)> = fields
-                .iter()
-                .filter(|f| f.key_known && !later.contains(&f.entry) && f.field.read_back())
-                .map(|f| (f.entry, f.external_id.clone()))
-                .collect();
-            read.dedup();
-            if read.is_empty() {
-                return Ok(());
-            }
-            let entries: BTreeSet<EntryId> = read.iter().map(|(e, _)| *e).collect();
-            self.provider.read(&self.account, read).await?;
-            // Not found, as an entry moved is not: the next sync tells.
-            for f in self.account.reconciling().await? {
-                if entries.contains(&f.entry) && f.field.read_back() {
-                    later.insert(f.entry);
-                }
+            // All ended by now: recorded as one.
+            self.account.observe(LabelsPushed { pushes }).await?;
+            if let Some(e) = failed {
+                return Err(e);
             }
         }
-        anyhow::bail!("label changes still to push or read after {ROUNDS} rounds")
+        anyhow::bail!("label changes still to push after {ROUNDS} rounds")
     }
 
     /// Settles the sends whose outcome was unknown, attempted long enough

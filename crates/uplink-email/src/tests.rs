@@ -3635,13 +3635,101 @@ async fn pushes_go_between_the_steps_of_a_long_sync() {
         );
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    // Done, it waits for the poll interval.
+    // Done, it waits for the poll interval. What was pushed is read back
+    // after the next sync, which tells nothing of it.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert_eq!(
         *calls.lock().unwrap(),
-        ["sync", "push", "read", "sync", "sync"]
+        ["sync", "push", "sync", "read", "sync"]
     );
     assert!(db.accounts_outbox().is_empty(), "pushed, and seen so");
+    run.abort();
+}
+
+/// A provider whose sync tells of the entries pushed, as Gmail's history
+/// and IMAP's CHANGEDSINCE do, recording its calls.
+struct Telling {
+    calls: Arc<std::sync::Mutex<Vec<&'static str>>>,
+}
+
+impl crate::account::Provider for Telling {
+    const KIND: &'static str = "gmail";
+    const FILES_SENT: bool = true;
+
+    async fn sync(&self, account: &crate::account::Account) -> anyhow::Result<bool> {
+        self.calls.lock().unwrap().push("sync");
+        let pushed = account
+            .read(|conn| crate::mailbox::reconciling(conn, "a"))
+            .await?
+            .into_iter()
+            .filter(|f| f.field.attempt.is_some())
+            .map(|f| (f.entry, f.external_id))
+            .collect();
+        read_as_desired(account, pushed).await?;
+        Ok(false)
+    }
+
+    async fn push(
+        &self,
+        _: &crate::account::Account,
+        claimed: Vec<crate::account::Pending>,
+    ) -> Vec<crate::account::PushEnded> {
+        self.calls.lock().unwrap().push("push");
+        vec![crate::account::PushEnded::of(
+            &claimed,
+            Ended::Applied,
+            None,
+        )]
+    }
+
+    async fn read(
+        &self,
+        _: &crate::account::Account,
+        _: Vec<(EntryId, String)>,
+    ) -> anyhow::Result<()> {
+        unreachable!("the sync after the push tells of it")
+    }
+
+    async fn send(
+        &self,
+        _: &crate::account::Account,
+        _: crate::account::Outgoing<'_>,
+    ) -> Result<crate::compose::SentCopy, crate::account::SendError> {
+        unreachable!("nothing is queued")
+    }
+}
+
+/// A push applied is confirmed by the sync sent at once after it, where
+/// that tells of the entry, without reading it back.
+#[tokio::test]
+async fn a_push_is_confirmed_by_the_next_sync() {
+    let db = Db::new();
+    archived(&db).await;
+    let calls = Arc::new(std::sync::Mutex::new(vec![]));
+    let task = crate::account::SyncTask::new(
+        Telling {
+            calls: calls.clone(),
+        },
+        "a".into(),
+        own("a@x"),
+        db.dispatcher.clone(),
+        db.reader(),
+        db.dir.path(),
+        std::time::Duration::from_secs(3600),
+    );
+    let run = tokio::spawn(task.run());
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !db.accounts_outbox().is_empty() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{:?}",
+            calls.lock().unwrap()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    // Done, it waits for the poll interval.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(*calls.lock().unwrap(), ["sync", "push", "sync"]);
     run.abort();
 }
 
