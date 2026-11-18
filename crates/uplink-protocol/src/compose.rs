@@ -1,9 +1,10 @@
 //! Drafts and the outbox (SPEC §6.6, §6.7, §7).
 //!
-//! A draft is edited by span replacements on its text fields, each based
-//! on the draft's revision: an edit based on an older revision than the
-//! current one is refused, and the client rebases it (§7.2). Offsets and
-//! lengths count UTF-16 code units, as JavaScript strings do.
+//! A draft is edited by span replacements on its text fields
+//! ([`Splice`]), each based on the draft's revision: an edit based on an
+//! older revision than the current one is refused, and the client rebases
+//! it (§7.2). Offsets and lengths count UTF-16 code units, as JavaScript
+//! strings do.
 
 use crate::{mail::MessageId, TxLogId};
 use serde::{Deserialize, Serialize};
@@ -95,15 +96,50 @@ pub enum DraftField {
     Body,
 }
 
-/// Replaces `delete` at `offset` of `field` with `insert`.
+/// Replaces `delete` at `offset` of a text with `insert` (SPEC §7.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Splice {
-    pub field: DraftField,
     /// In UTF-16 code units.
     pub offset: u32,
     pub delete: String,
     pub insert: String,
+}
+
+impl Splice {
+    /// `text` with the splice applied, if what it deletes is at its
+    /// offset.
+    pub fn apply(&self, text: &str) -> Option<String> {
+        let start = byte_offset(text, self.offset)?;
+        let rest = text[start..].strip_prefix(self.delete.as_str())?;
+        Some([&text[..start], &self.insert, rest].concat())
+    }
+
+    /// What undoes it, of the text it made.
+    pub fn inverse(&self) -> Self {
+        Self {
+            offset: self.offset,
+            delete: self.insert.clone(),
+            insert: self.delete.clone(),
+        }
+    }
+}
+
+/// The byte offset of `units` UTF-16 code units into `text`; `None` past
+/// the end or inside a surrogate pair.
+fn byte_offset(text: &str, units: u32) -> Option<usize> {
+    let units = units as usize;
+    let mut counted = 0;
+    for (i, c) in text.char_indices() {
+        if counted == units {
+            return Some(i);
+        }
+        counted += c.len_utf16();
+        if counted > units {
+            return None;
+        }
+    }
+    (counted == units).then_some(text.len())
 }
 
 /// Where a mail being sent is (SPEC §6.7).
@@ -227,12 +263,13 @@ pub struct Refusal {
 
 // ── events ────────────────────────────────────────────────────────────────
 
-/// A draft's text changed by `splice`, making its revision `revision`.
+/// A draft's `field` changed by `splice`, making its revision `revision`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct DraftEdited {
     pub draft: DraftId,
     pub revision: i64,
+    pub field: DraftField,
     pub splice: Splice,
 }
 
@@ -249,4 +286,33 @@ pub struct DraftsChanged {
 #[serde(deny_unknown_fields)]
 pub struct OutboxChanged {
     pub accounts: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn splices_count_utf16_units() {
+        let text = "a😀b";
+        assert_eq!(byte_offset(text, 0), Some(0));
+        assert_eq!(byte_offset(text, 1), Some(1));
+        assert_eq!(byte_offset(text, 2), None, "inside the surrogate pair");
+        assert_eq!(byte_offset(text, 3), Some(5));
+        assert_eq!(byte_offset(text, 4), Some(6));
+        assert_eq!(byte_offset(text, 5), None);
+        let s = |offset, delete: &str, insert: &str| Splice {
+            offset,
+            delete: delete.into(),
+            insert: insert.into(),
+        };
+        assert_eq!(s(3, "b", "c").apply(text).as_deref(), Some("a😀c"));
+        assert_eq!(s(1, "😀", "").apply(text).as_deref(), Some("ab"));
+        assert_eq!(s(4, "", "!").apply(text).as_deref(), Some("a😀b!"));
+        assert_eq!(s(1, "b", "").apply(text), None);
+        assert_eq!(
+            s(3, "b", "c").inverse().apply("a😀c").as_deref(),
+            Some(text)
+        );
+    }
 }

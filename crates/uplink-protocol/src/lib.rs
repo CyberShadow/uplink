@@ -14,7 +14,9 @@ pub mod matrix;
 pub mod todos;
 pub mod typescript;
 
-use compose::{BlobId, Draft, DraftAttachmentId, DraftContent, DraftId, OutboxId, Splice};
+use compose::{
+    BlobId, Draft, DraftAttachmentId, DraftContent, DraftField, DraftId, OutboxId, Splice,
+};
 use mail::{EntryId, LabelId, ListPosition, MessageId};
 use matrix::{MatrixSendId, MembershipChange, RoomEventId, RoomId, TimelinePage};
 use todos::{TodoEdit, TodoId};
@@ -234,11 +236,12 @@ pub enum ClientRequest {
         content: DraftContent,
         in_reply_to: Option<MessageId>,
     },
-    /// Apply `splice` to the draft at `revision`; refused with `conflict`
-    /// if the draft is at another revision.
+    /// Apply `splice` to `field` of the draft at `revision`; refused with
+    /// `conflict` if the draft is at another revision.
     EditDraft {
         draft: DraftId,
         revision: i64,
+        field: DraftField,
         splice: Splice,
     },
     DeleteDraft {

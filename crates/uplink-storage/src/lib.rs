@@ -488,6 +488,51 @@ mod tests {
         );
     }
 
+    /// Recorded draft edits name their field beside the splice (V0076),
+    /// as undo and replay read them.
+    #[test]
+    fn draft_edits_name_their_field_beside_the_splice() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = migrated_to(dir.path(), 75);
+        conn.execute_batch(
+            r#"INSERT INTO tx_log (id, ts, description, op_type, op_json, inverse_type,
+                                   inverse_json, events_json)
+               VALUES (1, 0, '', 'draft.edit',
+                       '{"id":"d","revision":0,"splice":{"field":"body","offset":1,"delete":"","insert":"x"}}',
+                       'draft.edit',
+                       '{"id":"d","revision":null,"splice":{"field":"body","offset":1,"delete":"x","insert":""}}',
+                       '[{"type":"draft_edited","draft":"d","revision":1,"splice":{"field":"body","offset":1,"delete":"","insert":"x"}}]'),
+                      (2, 0, '', 'draft.put', '{}', 'draft.delete', '{"id":"d"}',
+                       '[{"type":"drafts_changed","drafts":["d"]}]');"#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open(dir.path()).unwrap();
+        let log: Vec<(String, String, String)> = conn
+            .prepare("SELECT op_json, inverse_json, events_json FROM tx_log ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            log,
+            [
+                (
+                    r#"{"id":"d","revision":0,"splice":{"offset":1,"delete":"","insert":"x"},"field":"body"}"#.into(),
+                    r#"{"id":"d","revision":null,"splice":{"offset":1,"delete":"x","insert":""},"field":"body"}"#.into(),
+                    r#"[{"type":"draft_edited","draft":"d","revision":1,"splice":{"offset":1,"delete":"","insert":"x"},"field":"body"}]"#.into(),
+                ),
+                (
+                    "{}".into(),
+                    r#"{"id":"d"}"#.into(),
+                    r#"[{"type":"drafts_changed","drafts":["d"]}]"#.into()
+                ),
+            ]
+        );
+    }
+
     /// Recorded `outbox_changed` events take the shape that names
     /// accounts (V0022), as replay deserializes them.
     #[test]

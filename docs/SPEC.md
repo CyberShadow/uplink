@@ -1000,7 +1000,7 @@ than it buffers is closed; the client reconnects and resumes.
   client lists them again, as it does drafts).
 - **Seen**: `SeenChanged` — places were seen, or no longer (§12.15),
   so what `is:new` matches changed.
-- **Draft**: `DraftEdited { draft, revision, splice }` (§7.2), and
+- **Draft**: `DraftEdited { draft, revision, field, splice }` (§7.2), and
   `DraftsChanged { drafts }` when drafts are created or deleted.
 - **Outbox**: `OutboxChanged { accounts }` — something not yet reconciled
   in those accounts was added, changed state or went (§6.6); clients
@@ -1077,7 +1077,7 @@ than it buffers is closed; the client reconnects and resumes.
   scope), or every one a query lists, as a search does, when the op is
   done; `ModifyLabels { entries, add, remove }` changes labels of
   entries (mark unread from a message on); `CreateDraft`, `EditDraft { draft, revision,
-  splice }`, `DeleteDraft`, `SendDraft`, `CancelSend { item }`,
+  field, splice }`, `DeleteDraft`, `SendDraft`, `CancelSend { item }`,
   `KeepSent { item }` (§6.7, §7); `KeepObserved { op }` — a refused
   change taken back to what the provider has (§6.6); `AlwaysShowImages
   { rule, always }` (§8.9);
@@ -1831,8 +1831,8 @@ struct PutDraft { id: DraftId, account: String, revision: i64, content: DraftCon
 struct DeleteDraft { id: DraftId }
 /// Replace `delete` with `insert` at `offset` of one text field, based on
 /// the draft at `revision`.
-struct EditDraft { id: DraftId, revision: Option<i64>, splice: Splice }
-struct Splice { field: DraftField, offset: u32, delete: String, insert: String }
+struct EditDraft { id: DraftId, revision: Option<i64>, field: DraftField, splice: Splice }
+struct Splice { offset: u32, delete: String, insert: String }
 ```
 
 Every field is text: From is an address as typed, and To, Cc and Bcc

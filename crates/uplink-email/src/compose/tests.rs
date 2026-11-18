@@ -6,13 +6,14 @@ use crate::{
 use uplink_protocol::{ErrorCode, ServerResponse, TxLogId};
 use uplink_tx_log::UndoError;
 
-fn splice(field: DraftField, offset: u32, delete: &str, insert: &str) -> Splice {
-    Splice {
-        field,
+/// An edit of `field`.
+fn splice(field: DraftField, offset: u32, delete: &str, insert: &str) -> (DraftField, Splice) {
+    let splice = Splice {
         offset,
         delete: delete.into(),
         insert: insert.into(),
-    }
+    };
+    (field, splice)
 }
 
 fn content(to: &str, subject: &str, body: &str) -> DraftContent {
@@ -56,10 +57,11 @@ fn attach(id: &str, name: &str) -> AttachToDraft {
     }
 }
 
-fn edit(id: &str, revision: i64, splice: Splice) -> EditDraft {
+fn edit(id: &str, revision: i64, (field, splice): (DraftField, Splice)) -> EditDraft {
     EditDraft {
         id: DraftId(id.into()),
         revision: Some(revision),
+        field,
         splice,
     }
 }
@@ -87,22 +89,6 @@ impl Db {
     }
 }
 
-#[test]
-fn splices_count_utf16_units() {
-    let text = "a😀b";
-    assert_eq!(byte_offset(text, 0), Some(0));
-    assert_eq!(byte_offset(text, 1), Some(1));
-    assert_eq!(byte_offset(text, 2), None, "inside the surrogate pair");
-    assert_eq!(byte_offset(text, 3), Some(5));
-    assert_eq!(byte_offset(text, 4), Some(6));
-    assert_eq!(byte_offset(text, 5), None);
-    let s = |offset, delete, insert| splice(DraftField::Body, offset, delete, insert);
-    assert_eq!(apply_splice(text, &s(3, "b", "c")).as_deref(), Some("a😀c"));
-    assert_eq!(apply_splice(text, &s(1, "😀", "")).as_deref(), Some("ab"));
-    assert_eq!(apply_splice(text, &s(4, "", "!")).as_deref(), Some("a😀b!"));
-    assert_eq!(apply_splice(text, &s(1, "b", "")), None);
-}
-
 #[tokio::test]
 async fn edits_apply_at_their_revision() {
     let db = Db::new();
@@ -124,7 +110,8 @@ async fn edits_apply_at_their_revision() {
         [ServerEvent::DraftEdited(DraftEdited {
             draft: DraftId("d".into()),
             revision: 1,
-            splice: splice(DraftField::Subject, 2, "", " there"),
+            field: DraftField::Subject,
+            splice: splice(DraftField::Subject, 2, "", " there").1,
         })]
     );
     db.dispatch(edit("d", 1, splice(DraftField::To, 0, "", "b@x")))

@@ -268,7 +268,7 @@ export type ClientRequest = { "type": "undo", tx_log_id: TxLogId, } | { "type": 
 /**
  * Done by a view being shown (opening a conversation reads it).
  */
-shown: boolean, } | { "type": "count_conversations", query: string, } | { "type": "list_drafts" } | { "type": "create_draft", id: DraftId, account: string, content: DraftContent, in_reply_to: MessageId | null, } | { "type": "edit_draft", draft: DraftId, revision: number, splice: Splice, } | { "type": "delete_draft", draft: DraftId, } | { "type": "attach_to_draft", draft: DraftId, blob: BlobId, name: string, mime: string, } | { "type": "detach_from_draft", draft: DraftId, attachment: DraftAttachmentId, } | { "type": "send_draft", draft: DraftId, } | { "type": "cancel_send", item: OutboxId, } | { "type": "keep_sent", item: OutboxId, } | { "type": "list_outbox" } | { "type": "keep_observed", account: string, op: TxLogId | null, } | { "type": "list_rooms" } | { "type": "list_timeline", room: RoomId, page: TimelinePage, limit: number, } | { "type": "fill_gap", room: RoomId, gap: GapId, } | { "type": "list_room_events", room: RoomId, events: Array<RoomEventId>, } | { "type": "list_edits", room: RoomId, event: RoomEventId, } | { "type": "edit_text", room: RoomId, event: RoomEventId, } | { "type": "list_image_packs", room: RoomId, } | { "type": "send_matrix_message", room: RoomId, key: string, content: MatrixContent, } | { "type": "cancel_matrix_send", item: MatrixSendId, } | { "type": "keep_matrix_sent", item: MatrixSendId, } | { "type": "attend", place: Place | null, } | { "type": "mark_room_read", room: RoomId, event: RoomEventId, 
+shown: boolean, } | { "type": "count_conversations", query: string, } | { "type": "list_drafts" } | { "type": "create_draft", id: DraftId, account: string, content: DraftContent, in_reply_to: MessageId | null, } | { "type": "edit_draft", draft: DraftId, revision: number, field: DraftField, splice: Splice, } | { "type": "delete_draft", draft: DraftId, } | { "type": "attach_to_draft", draft: DraftId, blob: BlobId, name: string, mime: string, } | { "type": "detach_from_draft", draft: DraftId, attachment: DraftAttachmentId, } | { "type": "send_draft", draft: DraftId, } | { "type": "cancel_send", item: OutboxId, } | { "type": "keep_sent", item: OutboxId, } | { "type": "list_outbox" } | { "type": "keep_observed", account: string, op: TxLogId | null, } | { "type": "list_rooms" } | { "type": "list_timeline", room: RoomId, page: TimelinePage, limit: number, } | { "type": "fill_gap", room: RoomId, gap: GapId, } | { "type": "list_room_events", room: RoomId, events: Array<RoomEventId>, } | { "type": "list_edits", room: RoomId, event: RoomEventId, } | { "type": "edit_text", room: RoomId, event: RoomEventId, } | { "type": "list_image_packs", room: RoomId, } | { "type": "send_matrix_message", room: RoomId, key: string, content: MatrixContent, } | { "type": "cancel_matrix_send", item: MatrixSendId, } | { "type": "keep_matrix_sent", item: MatrixSendId, } | { "type": "attend", place: Place | null, } | { "type": "mark_room_read", room: RoomId, event: RoomEventId, 
 /**
  * Done by the room being shown, as it is read.
  */
@@ -875,9 +875,9 @@ updated_at: number, };
 export type DraftField = "from" | "to" | "cc" | "bcc" | "subject" | "body";
 
 /**
- * Replaces `delete` at `offset` of `field` with `insert`.
+ * Replaces `delete` at `offset` of a text with `insert` (SPEC §7.2).
  */
-export type Splice = { field: DraftField, 
+export type Splice = { 
 /**
  * In UTF-16 code units.
  */
@@ -995,9 +995,9 @@ ts: number, };
 export type Refusal = { reason: string, entries: number, };
 
 /**
- * A draft's text changed by `splice`, making its revision `revision`.
+ * A draft's `field` changed by `splice`, making its revision `revision`.
  */
-export type DraftEdited = { draft: DraftId, revision: number, splice: Splice, };
+export type DraftEdited = { draft: DraftId, revision: number, field: DraftField, splice: Splice, };
 
 /**
  * Drafts were created or deleted.
@@ -1732,4 +1732,4 @@ export type EventChangeKind = "create" | "update" | "delete";
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "9274faca0e311e76"
+export const PROTOCOL_VERSION = "086b23fc89e2fb88"

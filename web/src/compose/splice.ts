@@ -1,11 +1,7 @@
 // Text edits as splices (SPEC §7.2): replace `delete` at `offset` with
 // `insert`, offsets in UTF-16 code units, as JavaScript strings count.
 
-export interface Edit {
-  offset: number
-  delete: string
-  insert: string
-}
+import type { Splice } from '../generated/protocol'
 
 function isHighSurrogate(code: number): boolean {
   return code >= 0xd800 && code <= 0xdbff
@@ -17,7 +13,7 @@ function isLowSurrogate(code: number): boolean {
 
 /** The edit turning `from` into `to`: the span between their common
  * prefix and suffix, never splitting a surrogate pair. `null` if equal. */
-export function diff(from: string, to: string): Edit | null {
+export function diff(from: string, to: string): Splice | null {
   if (from === to) return null
   let start = 0
   const shorter = Math.min(from.length, to.length)
@@ -39,7 +35,7 @@ export function diff(from: string, to: string): Edit | null {
 }
 
 /** `text` with `edit` applied; throws if what it deletes is not there. */
-export function apply(text: string, edit: Edit): string {
+export function apply(text: string, edit: Splice): string {
   const end = edit.offset + edit.delete.length
   if (text.slice(edit.offset, end) !== edit.delete) {
     throw new Error(`edit at ${edit.offset} does not match the text`)
@@ -51,7 +47,7 @@ export function apply(text: string, edit: Edit): string {
  * of the same text, so that it applies to the text `remote` produced.
  * Where they overlap, the local edit gives up deleting what the remote one
  * changed: neither side's insertion is lost. */
-export function transform(local: Edit, remote: Edit): Edit {
+export function transform(local: Splice, remote: Splice): Splice {
   const localEnd = local.offset + local.delete.length
   const remoteEnd = remote.offset + remote.delete.length
   const shift = remote.insert.length - remote.delete.length
@@ -91,7 +87,7 @@ export function rebase(base: string, local: string, server: string): string {
 }
 
 /** Where `position` in a text moves to when `edit` is applied to it. */
-export function movePosition(position: number, edit: Edit): number {
+export function movePosition(position: number, edit: Splice): number {
   if (position <= edit.offset) return position
   const end = edit.offset + edit.delete.length
   if (position >= end) return position + edit.insert.length - edit.delete.length

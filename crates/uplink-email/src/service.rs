@@ -19,7 +19,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use uplink_protocol::{
-    compose::{BlobId, DraftAttachmentId, DraftContent, DraftId, OutboxId, Splice, UploadedBlob},
+    compose::{
+        BlobId, DraftAttachmentId, DraftContent, DraftField, DraftId, OutboxId, Splice,
+        UploadedBlob,
+    },
     mail::{
         ConversationAction, EntryId, ImageRule, LabelId, ListPosition, MessageContent, MessageId,
         RemoteHost,
@@ -354,11 +357,18 @@ impl Mail {
             .await
     }
 
-    pub async fn edit_draft(&self, draft: DraftId, revision: i64, splice: Splice) -> Response {
+    pub async fn edit_draft(
+        &self,
+        draft: DraftId,
+        revision: i64,
+        field: DraftField,
+        splice: Splice,
+    ) -> Response {
         self.dispatcher
             .answer(EditDraft {
                 id: draft,
                 revision: Some(revision),
+                field,
                 splice,
             })
             .await

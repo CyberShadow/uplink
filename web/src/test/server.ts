@@ -26,6 +26,7 @@ import type {
   AccountOutbox,
   Failing,
   PendingChanges,
+  DraftField,
   Splice,
   Entry,
   ImageRule,
@@ -289,8 +290,8 @@ export class FakeServer implements Requester, Subscriber, Blobs {
   }
 
   /** Edits a draft as another tab would. */
-  editElsewhere(draft: string, splice: Splice) {
-    this.editDraft(draft, this.drafts.get(draft)!.revision, splice)
+  editElsewhere(draft: string, field: DraftField, splice: Splice) {
+    this.editDraft(draft, this.drafts.get(draft)!.revision, field, splice)
   }
 
   /** A Gmail account, of address `<id>@example.com` and the `identities`
@@ -1334,7 +1335,7 @@ export class FakeServer implements Requester, Subscriber, Blobs {
         return this.dispatched('Saved draft', [{ type: 'drafts_changed', drafts: [id] }])
       }
       case 'edit_draft':
-        return { type: 'dispatched', tx_log_id: this.editDraft(body.draft, body.revision, body.splice) }
+        return { type: 'dispatched', tx_log_id: this.editDraft(body.draft, body.revision, body.field, body.splice) }
       case 'attach_to_draft': {
         const draft = this.drafts.get(body.draft)!
         const attachment = {
@@ -2096,16 +2097,16 @@ export class FakeServer implements Requester, Subscriber, Blobs {
     return { type: 'dispatched', tx_log_id: this.commit({ type: 'user' }, description, events) }
   }
 
-  private editDraft(id: string, revision: number, splice: Splice): number {
+  private editDraft(id: string, revision: number, field: DraftField, splice: Splice): number {
     const draft = this.drafts.get(id)
     if (!draft) throw new RequestError({ code: 'conflict', message: 'the draft no longer exists' })
     if (draft.revision !== revision) {
       throw new RequestError({ code: 'conflict', message: `the draft is at revision ${draft.revision}` })
     }
-    const content = { ...draft.content, [splice.field]: apply(draft.content[splice.field], splice) }
+    const content = { ...draft.content, [field]: apply(draft.content[field], splice) }
     this.drafts.set(id, { ...draft, content, revision: revision + 1 })
     return this.commit({ type: 'user' }, 'Edited draft', [
-      { type: 'draft_edited', draft: id, revision: revision + 1, splice },
+      { type: 'draft_edited', draft: id, revision: revision + 1, field, splice },
     ])
   }
 

@@ -257,14 +257,16 @@ impl Op for DeleteDraft {
     }
 }
 
-/// Applies `splice` to a draft at `revision`. Inverses, which undo applies
-/// to whatever revision the draft has reached, have no revision; they
-/// check only that the text they remove is where they expect it.
+/// Applies `splice` to `field` of a draft at `revision`. Inverses, which
+/// undo applies to whatever revision the draft has reached, have no
+/// revision; they check only that the text they remove is where they
+/// expect it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EditDraft {
     pub id: DraftId,
     pub revision: Option<i64>,
+    pub field: DraftField,
     pub splice: Splice,
 }
 
@@ -272,7 +274,7 @@ impl Op for EditDraft {
     const KIND: &'static str = "draft.edit";
 
     fn apply(self, tx: &Transaction) -> Result<Applied> {
-        let draft = existing_draft(tx, &self.id)?;
+        let mut draft = existing_draft(tx, &self.id)?;
         if let Some(revision) = self.revision {
             if revision != draft.revision {
                 bail!(Conflict(format!(
@@ -281,58 +283,38 @@ impl Op for EditDraft {
                 )));
             }
         }
-        let splice = &self.splice;
-        let column = match splice.field {
-            DraftField::From => "from_addr",
-            DraftField::To => "to_addrs",
-            DraftField::Cc => "cc_addrs",
-            DraftField::Bcc => "bcc_addrs",
-            DraftField::Subject => "subject",
-            DraftField::Body => "body_html",
+        let c = &mut draft.content;
+        let (column, text) = match self.field {
+            DraftField::From => ("from_addr", &mut c.from),
+            DraftField::To => ("to_addrs", &mut c.to),
+            DraftField::Cc => ("cc_addrs", &mut c.cc),
+            DraftField::Bcc => ("bcc_addrs", &mut c.bcc),
+            DraftField::Subject => ("subject", &mut c.subject),
+            DraftField::Body => ("body_html", &mut c.body),
         };
-        let c = &draft.content;
-        let text = match splice.field {
-            DraftField::From => &c.from,
-            DraftField::To => &c.to,
-            DraftField::Cc => &c.cc,
-            DraftField::Bcc => &c.bcc,
-            DraftField::Subject => &c.subject,
-            DraftField::Body => &c.body,
-        };
-        let edited = apply_splice(text, splice)
+        *text = self
+            .splice
+            .apply(text)
             .ok_or_else(|| Conflict("the draft's text changed".into()))?;
         let revision = draft.revision + 1;
         tx.execute(
             &format!(
                 "UPDATE draft SET {column} = ?1, revision = ?2, updated_at = ?3 WHERE id = ?4"
             ),
-            params![edited, revision, now_ms(), self.id.0],
+            params![*text, revision, now_ms(), self.id.0],
         )?;
-        let subject = match splice.field {
-            DraftField::Subject => &edited,
-            _ => &c.subject,
-        };
         Ok(Applied {
-            description: format!(
-                "Edited draft {}",
-                title(&DraftContent {
-                    subject: subject.clone(),
-                    ..c.clone()
-                })
-            ),
+            description: format!("Edited draft {}", title(&draft.content)),
             inverse: Inverse::of(&EditDraft {
                 id: self.id.clone(),
                 revision: None,
-                splice: Splice {
-                    field: splice.field,
-                    offset: splice.offset,
-                    delete: splice.insert.clone(),
-                    insert: splice.delete.clone(),
-                },
+                field: self.field,
+                splice: self.splice.inverse(),
             }),
             events: vec![ServerEvent::DraftEdited(DraftEdited {
                 draft: self.id,
                 revision,
+                field: self.field,
                 splice: self.splice,
             })],
         })
@@ -429,33 +411,6 @@ fn touch(tx: &Transaction, draft: &DraftId) -> Result<()> {
         params![now_ms(), draft.0],
     )?;
     Ok(())
-}
-
-/// `text` with `splice` applied, if what it deletes is at its offset.
-fn apply_splice(text: &str, splice: &Splice) -> Option<String> {
-    let start = byte_offset(text, splice.offset)?;
-    let end = start + splice.delete.len();
-    if !text[start..].starts_with(&splice.delete) {
-        return None;
-    }
-    Some([&text[..start], &splice.insert, &text[end..]].concat())
-}
-
-/// The byte offset of `units` UTF-16 code units into `text`; `None` past
-/// the end or inside a surrogate pair.
-fn byte_offset(text: &str, units: u32) -> Option<usize> {
-    let units = units as usize;
-    let mut counted = 0;
-    for (i, c) in text.char_indices() {
-        if counted == units {
-            return Some(i);
-        }
-        counted += c.len_utf16();
-        if counted > units {
-            return None;
-        }
-    }
-    (counted == units).then_some(text.len())
 }
 
 // ── sends ─────────────────────────────────────────────────────────────────

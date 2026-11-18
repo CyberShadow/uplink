@@ -2,10 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Client } from '../stores/client'
 import { FakeServer } from '../test/server'
 import { EMPTY } from './reply'
-import { SAVE_DELAY_MS, type ComposeSession } from './session'
+import type { ComposeSession } from '../stores/drafts'
+import { SAVE_DELAY_MS } from './session'
 
 let server: FakeServer
 let client: Client
+/** The draft last opened. */
+let draft: string
 
 beforeEach(async () => {
   vi.useFakeTimers()
@@ -22,12 +25,12 @@ afterEach(() => {
 })
 
 async function open(body = ''): Promise<ComposeSession> {
-  const id = await client.drafts.create('work', { ...EMPTY, body }, null)
-  await vi.waitFor(() => expect(client.drafts.drafts.value?.has(id!)).toBe(true))
-  return client.drafts.session(id!)
+  draft = (await client.drafts.create('work', { ...EMPTY, body }, null))!
+  await vi.waitFor(() => expect(client.drafts.drafts.value?.has(draft)).toBe(true))
+  return client.drafts.session(draft)
 }
 
-const serverBody = (session: ComposeSession) => server.drafts.get(session.id)!.content.body
+const serverBody = () => server.drafts.get(draft)!.content.body
 const edits = () => server.requests.filter((r) => r.type === 'edit_draft')
 
 describe('ComposeSession', () => {
@@ -38,9 +41,9 @@ describe('ComposeSession', () => {
     expect(session.state.value).toBe('unsaved')
     await vi.advanceTimersByTimeAsync(SAVE_DELAY_MS)
     expect(edits()).toEqual([
-      { type: 'edit_draft', draft: session.id, revision: 0, splice: { field: 'body', offset: 5, delete: '', insert: ' world' } },
+      { type: 'edit_draft', draft, revision: 0, field: 'body', splice: { offset: 5, delete: '', insert: ' world' } },
     ])
-    expect(serverBody(session)).toBe('Hello world')
+    expect(serverBody()).toBe('Hello world')
     expect(session.state.value).toBe('saved')
   })
 
@@ -48,7 +51,7 @@ describe('ComposeSession', () => {
     const session = await open('Hello')
     const rebased = vi.fn()
     session.onRebase = rebased
-    server.editElsewhere(session.id, { field: 'body', offset: 0, delete: '', insert: 'Oh, ' })
+    server.editElsewhere(draft, 'body', { offset: 0, delete: '', insert: 'Oh, ' })
     expect(session.content.value.body).toBe('Oh, Hello')
     expect(rebased).toHaveBeenCalledWith('body', 'Hello', 'Oh, Hello')
     expect(session.state.value).toBe('saved')
@@ -57,10 +60,10 @@ describe('ComposeSession', () => {
   it('rebases unsaved typing onto edits from elsewhere', async () => {
     const session = await open('Hello')
     session.set('body', 'Hello world')
-    server.editElsewhere(session.id, { field: 'body', offset: 0, delete: '', insert: 'Oh, ' })
+    server.editElsewhere(draft, 'body', { offset: 0, delete: '', insert: 'Oh, ' })
     expect(session.content.value.body).toBe('Oh, Hello world')
     await vi.advanceTimersByTimeAsync(SAVE_DELAY_MS)
-    expect(serverBody(session)).toBe('Oh, Hello world')
+    expect(serverBody()).toBe('Oh, Hello world')
     expect(session.state.value).toBe('saved')
   })
 
@@ -68,11 +71,11 @@ describe('ComposeSession', () => {
     const session = await open('Hello')
     session.set('subject', 'Hi')
     server.meanwhile = () =>
-      server.editElsewhere(session.id, { field: 'body', offset: 5, delete: '', insert: '!' })
+      server.editElsewhere(draft, 'body', { offset: 5, delete: '', insert: '!' })
     await vi.advanceTimersByTimeAsync(SAVE_DELAY_MS)
     await vi.waitFor(() => expect(session.state.value).toBe('saved'))
     expect(edits().map((e) => e.type === 'edit_draft' && e.revision)).toEqual([0, 1])
-    expect(server.drafts.get(session.id)!.content).toMatchObject({ subject: 'Hi', body: 'Hello!' })
+    expect(server.drafts.get(draft)!.content).toMatchObject({ subject: 'Hi', body: 'Hello!' })
     expect(session.content.value).toMatchObject({ subject: 'Hi', body: 'Hello!' })
   })
 
@@ -81,7 +84,7 @@ describe('ComposeSession', () => {
     session.set('body', 'a')
     server.meanwhile = () => session.set('body', 'ab')
     await vi.advanceTimersByTimeAsync(SAVE_DELAY_MS)
-    await vi.waitFor(() => expect(serverBody(session)).toBe('ab'))
+    await vi.waitFor(() => expect(serverBody()).toBe('ab'))
     expect(session.state.value).toBe('saved')
   })
 
@@ -89,8 +92,8 @@ describe('ComposeSession', () => {
     const session = await open('')
     session.set('to', 'bob@example.org')
     await session.flush()
-    expect(server.drafts.get(session.id)!.content.to).toBe('bob@example.org')
-    await client.drafts.send(session.id)
+    expect(server.drafts.get(draft)!.content.to).toBe('bob@example.org')
+    await client.drafts.send(draft)
     await vi.waitFor(() => expect(session.state.value).toBe('gone'))
     await vi.waitFor(() => expect(client.drafts.outbox.value).toHaveLength(1))
   })

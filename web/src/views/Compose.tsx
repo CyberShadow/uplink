@@ -8,9 +8,9 @@ import StarterKit from '@tiptap/starter-kit'
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import type { Draft, DraftField } from '../generated/protocol'
-import type { ComposeSession } from '../compose/session'
 import { diff, movePosition } from '../compose/splice'
 import { useServices } from '../context'
+import type { ComposeSession } from '../stores/drafts'
 import { defaultAddress, identityOf } from '../identities'
 import { keepFocus, useKeymap } from '../keymap'
 import styles from './Compose.module.css'
@@ -49,7 +49,7 @@ function ComposeForm(props: { session: ComposeSession; draft: Draft }) {
   const attach = async (files: readonly File[]) => {
     setUploading((n) => n + files.length)
     try {
-      await drafts.attach(session.id, files)
+      await drafts.attach(draft.id, files)
     } finally {
       setUploading((n) => n - files.length)
     }
@@ -64,10 +64,10 @@ function ComposeForm(props: { session: ComposeSession; draft: Draft }) {
     if (uploading > 0) return
     await session.flush()
     if (session.state.value === 'gone') return
-    if (await drafts.send(session.id)) close()
+    if (await drafts.send(draft.id)) close()
   }
   const discard = async () => {
-    if (await drafts.discard(session.id)) close()
+    if (await drafts.discard(draft.id)) close()
   }
   useKeymap({ send, close }, { within: form })
 
@@ -118,8 +118,8 @@ function ComposeForm(props: { session: ComposeSession; draft: Draft }) {
     }
   }, [session])
 
-  const identities = mail.accounts.value?.find((a) => a.id === session.account)?.identities ?? []
-  const listId = `identities-${session.id}`
+  const identities = mail.accounts.value?.find((a) => a.id === draft.account)?.identities ?? []
+  const listId = `identities-${draft.id}`
   const field = (name: DraftField, label: string, extra: { placeholder?: string; list?: string } = {}) => (
     <label key={name} class={styles.field}>
       <span>{label}</span>
@@ -183,7 +183,7 @@ function ComposeForm(props: { session: ComposeSession; draft: Draft }) {
                 aria-label={`Remove ${a.name}`}
                 title="Remove"
                 onMouseDown={keepFocus}
-                onClick={() => drafts.detach(session.id, a.id)}
+                onClick={() => drafts.detach(draft.id, a.id)}
                 disabled={gone}
               >
                 ×

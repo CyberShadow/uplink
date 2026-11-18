@@ -20,14 +20,15 @@ import type {
 } from '../generated/protocol'
 import type { Blobs } from '../blobs'
 import { RequestError, type Requester } from '../connection'
-import { ComposeSession } from '../compose/session'
+import { EditSession, type EditOutcome } from '../compose/session'
 import { apply } from '../compose/splice'
 import { Loader, query, type Response } from './query'
 import type { Ops } from './ops'
 
 export const FIELDS: readonly DraftField[] = ['from', 'to', 'cc', 'bcc', 'subject', 'body']
 
-export type EditOutcome = 'applied' | 'conflict' | 'gone'
+/** A session editing a draft in this tab. */
+export type ComposeSession = EditSession<DraftField>
 
 export class DraftStore {
   /** By id; `null` until loaded. */
@@ -92,7 +93,7 @@ export class DraftStore {
     if (!draft || event.revision !== draft.revision + 1) {
       throw new Error(`draft ${event.draft} edited at revision ${event.revision}, but known at ${draft?.revision}`)
     }
-    const field = event.splice.field
+    const field = event.field
     const content = { ...draft.content, [field]: apply(draft.content[field], event.splice) }
     this.drafts.value = new Map(drafts).set(draft.id, {
       ...draft,
@@ -105,7 +106,14 @@ export class DraftStore {
   session(id: string): ComposeSession {
     let session = this.sessions.get(id)
     if (!session) {
-      session = new ComposeSession(this, id)
+      session = new EditSession<DraftField>({
+        fields: FIELDS,
+        server: () => {
+          const drafts = this.drafts.value
+          return drafts ? (drafts.get(id) ?? null) : undefined
+        },
+        edit: (revision, field, splice) => this.edit(id, revision, field, splice),
+      })
       this.sessions.set(id, session)
     }
     return session
@@ -125,9 +133,9 @@ export class DraftStore {
 
   /** Not through `ops`: edits are saved as typed, without notices, and a
    * conflict is expected now and then. */
-  async edit(draft: string, revision: number, splice: Splice): Promise<EditOutcome> {
+  private async edit(draft: string, revision: number, field: DraftField, splice: Splice): Promise<EditOutcome> {
     try {
-      await this.server.request({ type: 'edit_draft', draft, revision, splice })
+      await this.server.request({ type: 'edit_draft', draft, revision, field, splice })
       return 'applied'
     } catch (error) {
       if (error instanceof RequestError && error.error.code === 'conflict') {

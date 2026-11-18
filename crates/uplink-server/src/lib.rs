@@ -1199,8 +1199,9 @@ impl Backend for Services {
             ClientRequest::EditDraft {
                 draft,
                 revision,
+                field,
                 splice,
-            } => self.mail.edit_draft(draft, revision, splice).await,
+            } => self.mail.edit_draft(draft, revision, field, splice).await,
             ClientRequest::DeleteDraft { draft } => self.mail.delete_draft(draft).await,
             ClientRequest::AttachToDraft {
                 draft,
