@@ -123,6 +123,16 @@ struct Held {
 }
 
 /// Of kinds checked again, those wholly.
+/// Of `listed`, one too many, its first `limit`: the one past them, if
+/// there is one, taken.
+fn after<T>(listed: &mut Vec<T>, limit: u32) -> Option<T> {
+    assert!(
+        listed.len() <= limit as usize + 1,
+        "of one too many at most"
+    );
+    (listed.len() > limit as usize).then(|| listed.pop().expect("of more than none"))
+}
+
 /// Of a query, the kinds what changed is checked again of wholly, rather
 /// than item by item.
 struct Whole {
@@ -477,11 +487,14 @@ impl Items {
         changed: Changed,
     ) -> Result<Listing<Item>, ServerError> {
         if changed.everything {
-            let (as_of, page, partial_rooms) = self.read_page(query, unknown, None, limit).await?;
+            // One too many: the first after those listed.
+            let (as_of, mut page, partial_rooms) =
+                self.read_page(query, unknown, None, limit + 1).await?;
+            let next = after(&mut page.items, limit);
             return Ok(Listing {
                 as_of,
                 listed: page.items,
-                more: page.next.is_some(),
+                next,
                 scope: page.scope,
                 partial_rooms,
             });
@@ -513,7 +526,9 @@ impl Items {
                 };
                 // What it matches of what changed: of the first `limit`,
                 // as no more can be of the window, and one too many, as
-                // then it has more.
+                // then it has more. Of each set (what changed, and each
+                // kind whole) that has fewer, all, so that the first of
+                // them after what it held is the first of what changed.
                 let Page {
                     items: mut fresh,
                     scope,
@@ -525,9 +540,17 @@ impl Items {
                 }
                 // Of more than it held, what is after its last is not known
                 // whole: it is listed after it, if needed.
-                let last = held
-                    .more
-                    .then(|| held.items.last().expect("more is after some").position());
+                let last = held.next.as_ref().map(|_| {
+                    held.items
+                        .last()
+                        .expect("what is after is after some")
+                        .position()
+                });
+                let fresh_after = fresh
+                    .iter()
+                    .filter(|item| last.is_some_and(|last| item.position() > last))
+                    .min_by_key(|item| item.position())
+                    .cloned();
                 let mut items: Vec<Item> = held
                     .items
                     .into_iter()
@@ -539,29 +562,71 @@ impl Items {
                     .into_values()
                     .collect();
                 items.sort_by_key(Item::position);
-                let more = match (items.len().cmp(&(limit as usize)), last) {
-                    (Ordering::Greater, _) => {
-                        items.truncate(limit as usize);
-                        true
+                let next = match (items.len().cmp(&(limit as usize)), last) {
+                    // Of all up to its last, as many as it holds and more:
+                    // the first past them is of them.
+                    (Ordering::Greater, _) => items.split_off(limit as usize).into_iter().next(),
+                    // As many as it holds, all of those up to its last:
+                    // the first after it is the first of what changed
+                    // after it, or what was, if that did not change.
+                    (Ordering::Equal, Some(last)) => {
+                        let was = held.next.filter(|next| !touched(next));
+                        match [fresh_after, was]
+                            .into_iter()
+                            .flatten()
+                            .min_by_key(Item::position)
+                        {
+                            Some(next) => Some(next),
+                            None => page(&query, Some(last), 1)?.items.pop(),
+                        }
                     }
-                    // What is after it is listed: to fill it, and to know if
-                    // there is more, one too many.
-                    (Ordering::Less | Ordering::Equal, Some(last)) => {
-                        let left = limit as usize - items.len();
-                        let mut after = page(&query, Some(last), left as u32 + 1)?.items;
-                        let more = after.len() > left;
-                        after.truncate(left);
-                        items.extend(after);
-                        more
+                    // What is after it is listed: to fill it, and to know
+                    // what is next, one too many.
+                    (Ordering::Less, Some(last)) => {
+                        let left = limit - items.len() as u32;
+                        let mut past = page(&query, Some(last), left + 1)?.items;
+                        let next = after(&mut past, left);
+                        items.extend(past);
+                        next
                     }
-                    (Ordering::Less | Ordering::Equal, None) => false,
+                    // It held all there was, and has all of what changed.
+                    (Ordering::Less | Ordering::Equal, None) => None,
+                };
+                // A room unchanged is as partly searched as it was: its own
+                // terms, its messages, and so whether it is of each
+                // `has:(…)`, are as they were.
+                let partial_rooms = match whole.rooms {
+                    true => rooms.partly_searched(&tx, &query).map_err(internal)?,
+                    false => {
+                        let changed_rooms = query.clone().among(uplink_query::Among {
+                            rooms: changed.rooms.iter().map(|room| room.0).collect(),
+                            ..Default::default()
+                        });
+                        let partial: HashSet<RoomId> = held
+                            .partial_rooms
+                            .into_iter()
+                            .filter(|room| !changed.rooms.contains(room))
+                            .chain(
+                                rooms
+                                    .partly_searched(&tx, &changed_rooms)
+                                    .map_err(internal)?,
+                            )
+                            .collect();
+                        // In the order the rooms are listed, as of all.
+                        rooms
+                            .all()
+                            .iter()
+                            .map(|room| room.id)
+                            .filter(|room| partial.contains(room))
+                            .collect()
+                    }
                 };
                 Ok(Listing {
                     as_of,
                     listed: items,
-                    more,
+                    next,
                     scope,
-                    partial_rooms: rooms.partly_searched(&tx, &query).map_err(internal)?,
+                    partial_rooms,
                 })
             })
             .await
@@ -757,18 +822,20 @@ impl Items {
                 }
                 let rooms = Rooms::of(&this.rooms, &tx).map_err(internal)?;
                 let seen = Seen::load(&tx, &attended).map_err(internal)?;
-                let (entries, mail_more) = mail::unseen(
+                // One too many of each: the first after those listed is
+                // of one of them.
+                let entries = mail::unseen(
                     &tx,
                     &this.mail_accounts,
                     &query,
                     Unknown::False,
                     &seen.mail(),
-                    limit,
+                    limit + 1,
                 )
                 .map_err(list_error)?;
                 let (home, own) = seen.rooms(|w| w.room_event, RoomEventId);
-                let (messages, rooms_more) = rooms
-                    .unseen(&tx, &query, home, &own, limit)
+                let messages = rooms
+                    .unseen(&tx, &query, home, &own, limit + 1)
                     .map_err(internal)?;
                 let (home, own) = seen.rooms(|w| w.invitation, InvitationId);
                 let invitations = rooms
@@ -796,12 +863,11 @@ impl Items {
                     )
                     .collect();
                 unseen.sort_by_key(Unseen::position);
-                let more = mail_more || rooms_more || unseen.len() > limit as usize;
-                unseen.truncate(limit as usize);
+                let next = after(&mut unseen, limit);
                 Ok(Listing {
                     as_of: rooms.as_of(),
                     listed: unseen,
-                    more,
+                    next,
                     scope: (),
                     partial_rooms: rooms.partly_searched(&tx, &query).map_err(internal)?,
                 })
@@ -1172,7 +1238,8 @@ mod tests {
             for query in queries {
                 let held = uplink_realtime::Held {
                     items: vec![],
-                    more: false,
+                    next: None,
+                    partial_rooms: vec![],
                 };
                 let listing = items
                     .window(
@@ -1208,7 +1275,8 @@ mod tests {
             for (query, listing) in queries.iter().zip(windows) {
                 let held = uplink_realtime::Held {
                     items: listing.listed,
-                    more: listing.more,
+                    next: listing.next.clone(),
+                    partial_rooms: listing.partial_rooms.clone(),
                 };
                 items
                     .window(
@@ -1366,7 +1434,8 @@ mod tests {
         };
         let anew = || uplink_realtime::Held {
             items: vec![],
-            more: false,
+            next: None,
+            partial_rooms: vec![],
         };
         let mut windows = vec![];
         for (query, limit) in [
@@ -1508,7 +1577,8 @@ mod tests {
             for (query, limit, listing) in &mut windows {
                 let held = uplink_realtime::Held {
                     items: listing.listed.clone(),
-                    more: listing.more,
+                    next: listing.next.clone(),
+                    partial_rooms: listing.partial_rooms.clone(),
                 };
                 let kept = window(query, *limit, held, changed.clone()).await.unwrap();
                 let listed = window(query, *limit, anew(), Changed::everything())
@@ -1517,7 +1587,7 @@ mod tests {
                 let keys = |l: &Listing<Item>| l.listed.iter().map(Item::key).collect::<Vec<_>>();
                 assert_eq!(keys(&kept), keys(&listed), "{query}, step {step}");
                 assert_eq!(kept.listed, listed.listed, "{query}, step {step}");
-                assert_eq!(kept.more, listed.more, "{query}, step {step}");
+                assert_eq!(kept.next, listed.next, "{query}, step {step}");
                 assert_eq!(
                     kept.partial_rooms, listed.partial_rooms,
                     "{query}, step {step}"
@@ -1557,11 +1627,12 @@ mod tests {
         }
         let held = uplink_realtime::Held {
             items: listing.listed,
-            more: listing.more,
+            next: listing.next.clone(),
+            partial_rooms: listing.partial_rooms.clone(),
         };
         let kept = window("label:SPAM", 2, held, changed).await.unwrap();
         assert_eq!(kept.listed.len(), 2);
-        assert!(kept.more);
+        assert!(kept.next.is_some());
     }
 
     /// Time moves items no entry names: into `due:today`, out of
@@ -1655,7 +1726,8 @@ mod tests {
         };
         let anew = || uplink_realtime::Held {
             items: vec![],
-            more: false,
+            next: None,
+            partial_rooms: vec![],
         };
         let mut listed = vec![];
         for query in queries {
@@ -1676,7 +1748,8 @@ mod tests {
         for (query, listing) in queries.iter().zip(listed) {
             let held = uplink_realtime::Held {
                 items: listing.listed.clone(),
-                more: listing.more,
+                next: listing.next.clone(),
+                partial_rooms: listing.partial_rooms.clone(),
             };
             let kept = window(query, held, Changed::time()).await.unwrap();
             let anew = window(query, anew(), Changed::everything()).await.unwrap();
@@ -1824,7 +1897,7 @@ mod tests {
                 .unseen(query.into(), UnknownNames::False, 10)
                 .await
                 .unwrap();
-            assert!(!listing.more);
+            assert!(listing.next.is_none());
             listing
                 .listed
                 .iter()
@@ -2085,7 +2158,8 @@ mod tests {
                     10,
                     uplink_realtime::Held {
                         items: vec![],
-                        more: false,
+                        next: None,
+                        partial_rooms: vec![],
                     },
                     Changed::everything(),
                 )
@@ -2123,7 +2197,7 @@ mod tests {
             buckets[2].query,
             "(tag:nowhere OR is:todo) -has:(is:invite) -has:(rent)"
         );
-        assert!(!windows[0].1.more);
+        assert!(windows[0].1.next.is_none());
         // As a search's, the name is refused.
         assert_eq!(
             items
@@ -2133,7 +2207,8 @@ mod tests {
                     10,
                     uplink_realtime::Held {
                         items: vec![],
-                        more: false
+                        next: None,
+                        partial_rooms: vec![],
                     },
                     Changed::everything()
                 )

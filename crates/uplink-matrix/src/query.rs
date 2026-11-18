@@ -305,8 +305,7 @@ impl Rooms {
     /// holding of each), that are unseen (SPEC §12.15): sent once uplink
     /// began to sync their account, and stored after their room was last
     /// seen, by `seen` (Home's) and `rooms` (a room's own, as seen as of
-    /// its events). The newest first, up to `limit`, with their rooms;
-    /// and whether there are more.
+    /// its events). The newest first, up to `limit`, with their rooms.
     pub fn unseen(
         &self,
         tx: &Transaction,
@@ -314,7 +313,7 @@ impl Rooms {
         seen: RoomEventId,
         rooms: &HashMap<RoomId, RoomEventId>,
         limit: u32,
-    ) -> Result<(Vec<(&Room, RoomEvent)>, bool)> {
+    ) -> Result<Vec<(&Room, RoomEvent)>> {
         // Of the rooms with messages stored since they were seen alone, so
         // that it costs as much however many rooms there are.
         // By the range of ids (`+room`: not by an index of rooms, which
@@ -335,7 +334,7 @@ impl Rooms {
             .collect::<Result<_, _>>()?;
         let listed: Vec<&Room> = self.listed().filter(|r| since.contains(&r.id.0)).collect();
         if listed.is_empty() {
-            return Ok((vec![], false));
+            return Ok(vec![]);
         }
         let query = query.clone().among(uplink_query::Among {
             rooms: since.clone(),
@@ -343,7 +342,7 @@ impl Rooms {
         });
         self.resolve(tx, &query, Some(&since))?;
         let Some(mut search) = self.search(&query, &listed, true) else {
-            return Ok((vec![], false));
+            return Ok(vec![]);
         };
         let from = search.from();
         let seen = search.sql.param(seen.0);
@@ -352,7 +351,7 @@ impl Rooms {
             .map(|(room, event)| (room.0.to_string(), event.0))
             .collect();
         let rooms_seen = search.sql.param(serde_json::to_string(&rooms_seen)?);
-        let one_more = search.sql.param(limit + 1);
+        let limit = search.sql.param(limit);
         let found: Vec<(RoomId, RoomEventId)> = tx
             .prepare(&format!(
                 "SELECT e.room, e.id {from}
@@ -363,16 +362,15 @@ impl Rooms {
                    AND e.ts >= (SELECT a.news_since FROM matrix_room n
                                 JOIN account a ON a.id = n.account_id WHERE n.id = e.room)
                  ORDER BY e.ts DESC, e.id DESC
-                 LIMIT {one_more}"
+                 LIMIT {limit}"
             ))?
             .query_map(params_from_iter(search.sql.params.iter()), |r| {
                 Ok((RoomId(r.get(0)?), RoomEventId(r.get(1)?)))
             })?
             .collect::<Result<_, _>>()?;
-        let more = found.len() > limit as usize;
         let mut events: HashMap<RoomEventId, RoomEvent> = HashMap::new();
         let mut by_room: HashMap<RoomId, Vec<RoomEventId>> = HashMap::new();
-        for (room, event) in found.iter().take(limit as usize) {
+        for (room, event) in &found {
             by_room.entry(*room).or_default().push(*event);
         }
         for (room, ids) in by_room {
@@ -384,7 +382,6 @@ impl Rooms {
         }
         let unseen = found
             .into_iter()
-            .take(limit as usize)
             .map(|(room, event)| {
                 let room = *listed
                     .iter()
@@ -394,7 +391,7 @@ impl Rooms {
                 (room, event)
             })
             .collect();
-        Ok((unseen, more))
+        Ok(unseen)
     }
 
     /// The invitations of the rooms `query` matches that are unseen (SPEC

@@ -21,8 +21,8 @@ pub struct Listing<T: Listable> {
     pub as_of: TxLogId,
     /// The first of what the query matches, in their order.
     pub listed: Vec<T>,
-    /// Whether it matches more.
-    pub more: bool,
+    /// The first it matches after those, if it matches more.
+    pub next: Option<T>,
     pub scope: T::Scope,
     /// The rooms it looked through not whole ([`WindowChange`]'s).
     pub partial_rooms: Vec<RoomId>,
@@ -33,8 +33,10 @@ pub struct Listing<T: Listable> {
 pub struct Held {
     /// The most recently active first.
     pub items: Vec<Item>,
-    /// Whether its query matches more.
-    pub more: bool,
+    /// The first its query matched after those, if any.
+    pub next: Option<Item>,
+    /// The rooms it looked through not whole.
+    pub partial_rooms: Vec<RoomId>,
 }
 
 /// What a window lists (`Of`): items, or the unseen. Of each the same,
@@ -108,9 +110,17 @@ impl Listable for Item {
         held: Option<&Snapshot<Self>>,
         changed: Changed,
     ) -> impl Future<Output = Result<Listing<Self>, ServerError>> + Send {
-        let held = Held {
-            items: held.map(|held| held.listed.clone()).unwrap_or_default(),
-            more: held.is_some_and(|held| held.more),
+        let held = match held {
+            Some(held) => Held {
+                items: held.listed.clone(),
+                next: held.next.clone(),
+                partial_rooms: held.partial_rooms.clone(),
+            },
+            None => Held {
+                items: vec![],
+                next: None,
+                partial_rooms: vec![],
+            },
         };
         backend.window(query.to_owned(), unknown, limit, held, changed)
     }
@@ -350,11 +360,12 @@ mod tests {
     }
 
     fn snapshot(limit: u32, listed: Vec<Item>, more: bool) -> Snapshot<Item> {
+        let next = more.then(|| todo(99, 0, "z"));
         Snapshot {
             limit,
             as_of: TxLogId(0),
             listed,
-            more,
+            next,
             scope: ListScope::Except { labels: vec![] },
             partial_rooms: vec![],
         }

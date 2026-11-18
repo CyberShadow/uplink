@@ -775,7 +775,7 @@ pub fn placed(
 /// and stored after each place of its conversation was last seen, as
 /// `seen` has them (Home, its account's All Mail, its conversation's
 /// labels). The newest first, up to `limit`, each with its
-/// conversation's key (`Item::key`'s); and whether there are more.
+/// conversation's key (`Item::key`'s).
 pub fn unseen(
     tx: &Transaction,
     accounts: &[ConfiguredAccount],
@@ -783,10 +783,10 @@ pub fn unseen(
     unknown: Unknown,
     seen: &Seen,
     limit: u32,
-) -> Result<(Vec<(String, Entry)>, bool), ListError> {
+) -> Result<Vec<(String, Entry)>, ListError> {
     let (condition, scope) = compile(tx, accounts, query, unknown)?;
     if matches!(condition, Condition::Const(false)) {
-        return Ok((vec![], false));
+        return Ok(vec![]);
     }
     // Home holds them all: those after it only, by the key's index.
     let home = seen.get("home").copied().unwrap_or(0);
@@ -814,27 +814,21 @@ pub fn unseen(
             params![
                 serde_json::to_string(seen).expect("a map of numbers serializes"),
                 home,
-                limit + 1
+                limit
             ],
             entry_row,
         )?
         .collect::<Result<Vec<_>, _>>()?;
-    let mut entries = with_labels(tx, entries)?;
-    let more = entries.len() > limit as usize;
-    entries.truncate(limit as usize);
-    Ok((
-        entries
-            .into_iter()
-            .map(|entry| {
-                let key = match &entry.thread_id {
-                    Some(thread) => format!("{}/{thread}", entry.account),
-                    None => format!("#{}", entry.id.0),
-                };
-                (key, entry)
-            })
-            .collect(),
-        more,
-    ))
+    Ok(with_labels(tx, entries)?
+        .into_iter()
+        .map(|entry| {
+            let key = match &entry.thread_id {
+                Some(thread) => format!("{}/{thread}", entry.account),
+                None => format!("#{}", entry.id.0),
+            };
+            (key, entry)
+        })
+        .collect())
 }
 
 /// The keys (as `Item::key` has them) of the conversations of these

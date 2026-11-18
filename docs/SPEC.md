@@ -1219,7 +1219,10 @@ naming a space, its rooms whole, as a room changed may change which
 rooms it holds) takes its place, of as many as the window holds (and
 one too many, to know if there are more), and what the query no longer
 matches leaves; what comes after what it held is listed after it, to
-fill it. Each minute it checks again what time alone moves (`time`):
+fill it. It keeps the first item after what it holds: unchanged, it is
+still the first after, so that there are more is known without listing
+again; and of the rooms it looked through not whole, those of the rooms
+that did not change are as they were. Each minute it checks again what time alone moves (`time`):
 of every query, its to-dos (into `due:today`) and events (as of now)
 whole, and of a query bounded by a time (`newer_than:`), its mail and
 rooms whole too. After an event the log does not name items by (entries

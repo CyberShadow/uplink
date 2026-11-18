@@ -649,9 +649,9 @@ async fn unseen_messages_match_as_messages_and_are_news() {
         let rooms = crate::query::Rooms::of(&db.rooms, &tx).unwrap();
         let query = uplink_query::parse(query, 0).unwrap();
         let own: std::collections::HashMap<_, _> = own.map(|own| (room, own)).into_iter().collect();
-        let (unseen, more) = rooms.unseen(&tx, &query, home, &own, 10).unwrap();
-        assert!(!more);
-        unseen
+        rooms
+            .unseen(&tx, &query, home, &own, 10)
+            .unwrap()
             .into_iter()
             .map(|(_, event)| event.event_id)
             .collect::<Vec<_>>()

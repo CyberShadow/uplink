@@ -57,7 +57,7 @@ impl Backend for Lists {
         Ok(Listing {
             as_of: TxLogId(state.head),
             listed: state.items.iter().take(limit as usize).cloned().collect(),
-            more: state.items.len() > limit as usize,
+            next: state.items.get(limit as usize).cloned(),
             scope: ListScope::Except { labels: vec![] },
             partial_rooms: vec![],
         })
@@ -78,7 +78,7 @@ impl Backend for Lists {
         };
         Ok(Listing {
             as_of: TxLogId(state.head),
-            more: unseen.len() > limit as usize,
+            next: unseen.get(limit as usize).cloned(),
             listed: unseen.into_iter().take(limit as usize).collect(),
             scope: (),
             partial_rooms: vec![],

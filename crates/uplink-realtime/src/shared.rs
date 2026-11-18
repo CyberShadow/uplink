@@ -48,8 +48,8 @@ pub struct Snapshot<T: Listable> {
     pub as_of: TxLogId,
     /// The first of what the query matches, in their order.
     pub listed: Vec<T>,
-    /// Whether it matches more.
-    pub more: bool,
+    /// The first it matches after those, if it matches more.
+    pub next: Option<T>,
     pub scope: T::Scope,
     pub partial_rooms: Vec<RoomId>,
 }
@@ -62,7 +62,7 @@ impl<T: Listable> Snapshot<T> {
         let shown = self.listed.len().min(limit as usize);
         (
             &self.listed[..shown],
-            self.more || self.listed.len() > shown,
+            self.next.is_some() || self.listed.len() > shown,
         )
     }
 }
@@ -328,7 +328,7 @@ impl Shared {
                     limit: job.limit,
                     as_of: listing.as_of,
                     listed: listing.listed,
-                    more: listing.more,
+                    next: listing.next,
                     scope: listing.scope,
                     partial_rooms: listing.partial_rooms,
                 };
@@ -338,7 +338,7 @@ impl Shared {
                         State::Listed(was) => {
                             was.limit == snapshot.limit
                                 && was.listed == snapshot.listed
-                                && was.more == snapshot.more
+                                && was.next == snapshot.next
                                 && was.scope == snapshot.scope
                                 && was.partial_rooms == snapshot.partial_rooms
                         }
@@ -508,7 +508,7 @@ mod tests {
                 limit,
                 as_of: TxLogId(0),
                 listed: vec![],
-                more: false,
+                next: None,
                 scope: ListScope::Except { labels: vec![] },
                 partial_rooms: vec![],
             },
@@ -600,7 +600,7 @@ mod tests {
                 limit: 1,
                 as_of: TxLogId(0),
                 listed: vec![],
-                more: false,
+                next: None,
                 scope: (),
                 partial_rooms: vec![],
             },

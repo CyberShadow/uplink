@@ -1924,9 +1924,8 @@ pub(crate) mod service {
                 let mut conn = db.reader();
                 let tx = conn.transaction().unwrap();
                 let unknown = crate::query::Unknown::False;
-                let (unseen, more) =
+                let unseen =
                     crate::query::unseen(&tx, &accounts, &query, unknown, seen, 500).unwrap();
-                assert!(!more);
                 let mut keys: Vec<String> = unseen.into_iter().map(|(key, _)| key).collect();
                 keys.sort();
                 keys
