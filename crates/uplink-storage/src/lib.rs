@@ -20,6 +20,13 @@ pub fn db_path(data_root: &Path) -> PathBuf {
     data_root.join("db").join("uplink.sqlite")
 }
 
+/// Gathers the statistics the planner lacks (SPEC §4.2): of the tables
+/// without any, or grown or shrunk much since.
+pub fn optimize(conn: &Connection) -> Result<()> {
+    conn.pragma_update(None, "optimize", 0x10002)?;
+    Ok(())
+}
+
 /// Opens the main database under `data_root`, creating it if needed,
 /// applies the connection settings of SPEC §4.2, runs pending
 /// migrations, and gathers the statistics the planner lacks.
@@ -54,10 +61,8 @@ pub fn open(data_root: &Path) -> Result<Connection> {
         .set_grouped(true)
         .run(&mut conn)
         .with_context(|| format!("migrating {}", path.display()))?;
-    // Statistics of the tables, for the planner: of those without, or
-    // grown since (SPEC §4.2).
     conn.pragma_update(None, "analysis_limit", 1000)?;
-    conn.pragma_update(None, "optimize", 0x10002)?;
+    optimize(&conn)?;
 
     Ok(conn)
 }

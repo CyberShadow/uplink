@@ -463,3 +463,63 @@ async fn history_lists_user_ops_newest_first_with_their_undos() {
     assert_eq!(rest.iter().map(|h| h.entry.id.0).collect::<Vec<_>>(), [1]);
     assert!(!more);
 }
+
+/// Sample rows `from..from + n` appearing externally, all at once.
+#[derive(Debug, Serialize)]
+struct SamplesFilled {
+    from: i64,
+    n: i64,
+}
+
+impl Observation for SamplesFilled {
+    const KIND: &'static str = "sample.filled";
+
+    fn apply(self, _account: &str, tx: &Transaction) -> Result<Observed> {
+        tx.execute(
+            "WITH RECURSIVE n(i) AS (SELECT ?1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2)
+             INSERT INTO sample (id, x) SELECT i, i % 7 FROM n",
+            [self.from, self.from + self.n - 1],
+        )?;
+        Ok(Observed {
+            description: format!("{} samples", self.n),
+            events: vec![],
+        })
+    }
+}
+
+/// Statistics gathered while a table was small are gathered again once
+/// it grew, as the writer writes: else the planner plans for it as small.
+#[tokio::test]
+async fn statistics_follow_tables_as_they_grow() {
+    let f = fixture();
+    f.db.execute_batch("CREATE INDEX sample_x ON sample(x)")
+        .unwrap();
+    f.dispatcher
+        .dispatch(SampleInsert { id: 0, x: 0 })
+        .await
+        .unwrap();
+    f.db.execute_batch("ANALYZE sample").unwrap();
+    let rows = || -> i64 {
+        let stat: String =
+            f.db.query_row(
+                "SELECT stat FROM sqlite_stat1 WHERE tbl = 'sample' AND idx = 'sample_x'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        stat.split(' ').next().unwrap().parse().unwrap()
+    };
+    assert_eq!(rows(), 1);
+    let n = OPTIMIZE_EVERY as i64;
+    f.dispatcher
+        .observe("acct".into(), SamplesFilled { from: 1, n })
+        .await
+        .unwrap();
+    // Gathered before the next write.
+    assert_eq!(rows(), 1);
+    f.dispatcher
+        .dispatch(SampleInsert { id: -1, x: 0 })
+        .await
+        .unwrap();
+    assert!(rows() > n / 2, "{}", rows());
+}

@@ -186,6 +186,27 @@ struct Inner {
 struct Writer {
     conn: Connection,
     views: Vec<Arc<dyn View>>,
+    /// The rows the connection had changed when the planner's statistics
+    /// were last brought up to date.
+    optimized_at: u64,
+}
+
+/// The rows changed after which the planner's statistics are brought up
+/// to date again (SPEC §4.2): those of a table that was small when they
+/// were gathered, grown since, would have it plan for a small table.
+const OPTIMIZE_EVERY: u64 = 10_000;
+
+impl Writer {
+    /// Brings the planner's statistics up to date, as on open, if enough
+    /// rows changed since they last were.
+    fn optimize_if_due(&mut self) -> Result<()> {
+        let changed = self.conn.total_changes();
+        if changed - self.optimized_at >= OPTIMIZE_EVERY {
+            uplink_storage::optimize(&self.conn)?;
+            self.optimized_at = self.conn.total_changes();
+        }
+        Ok(())
+    }
 }
 
 /// State derived of the database that queries would otherwise derive
@@ -205,6 +226,7 @@ impl Dispatcher {
         Self {
             inner: Arc::new(Inner {
                 writer: Mutex::new(Writer {
+                    optimized_at: conn.total_changes(),
                     conn,
                     views: vec![],
                 }),
@@ -305,7 +327,8 @@ impl Inner {
         E: From<anyhow::Error>,
     {
         let mut writer = self.lock();
-        let Writer { conn, views } = &mut *writer;
+        writer.optimize_if_due()?;
+        let Writer { conn, views, .. } = &mut *writer;
         let tx = conn.transaction().context("beginning transaction")?;
         let expected = this_entry(&tx)?;
         let (executed, undoes) = execute(&tx)?;
