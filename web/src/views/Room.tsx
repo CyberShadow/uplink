@@ -108,6 +108,7 @@ function Timeline(props: { room: Room; words: string | null }) {
     reply: write,
     write,
     label: () => setTagging(true),
+    info: () => setPanel(panel?.type === 'info' ? null : { type: 'info' }),
     ...lines(toLatest, toLatest),
     first: toEarliest,
     last: toLatest,
@@ -123,11 +124,11 @@ function Timeline(props: { room: Room; words: string | null }) {
   const readers = useMemo(() => readersByEvent(events ?? [], receipts), [events, receipts])
   const gaps = timeline.gaps.value
   const list = useMemo(() => rows(events ?? [], caughtUp, me, gaps), [events, caughtUp, me, gaps])
-  const lastOwn = useMemo(
+  const own = useMemo(
     () =>
-      events?.findLast(
+      events?.filter(
         (e) => e.sender === me && e.kind === 'm.room.message' && !e.redacted && TEXT.has(shown(e).msgtype ?? ''),
-      ) ?? null,
+      ) ?? [],
     [events, me],
   )
   const act = (next: Mode) => {
@@ -179,6 +180,7 @@ function Timeline(props: { room: Room; words: string | null }) {
               type="button"
               class={styles.link}
               aria-expanded={panel?.type === 'info'}
+              title="Room info (m)"
               onMouseDown={keepFocus}
               onClick={() => setPanel(panel?.type === 'info' ? null : { type: 'info' })}
             >
@@ -235,7 +237,7 @@ function Timeline(props: { room: Room; words: string | null }) {
             textarea={composer}
             mode={mode}
             setMode={setMode}
-            lastOwn={lastOwn}
+            own={own}
             thread={null}
             scrolling={scrolling}
             focusLine={focusLine}

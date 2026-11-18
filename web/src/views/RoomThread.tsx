@@ -35,11 +35,11 @@ export function ThreadPanel(props: {
   const rootId = state?.root.event_id ?? null
   const [overlay, outgoing] = useMemo(() => overlaid(events, sends, rootId), [events, sends, rootId])
   const list = useMemo(() => rows(events, null, me), [events, me])
-  const lastOwn = useMemo(
+  const own = useMemo(
     () =>
-      state?.replies.findLast(
+      state?.replies.filter(
         (e) => e.sender === me && e.kind === 'm.room.message' && !e.redacted && TEXT.has(shown(e).msgtype ?? ''),
-      ) ?? null,
+      ) ?? [],
     [state, me],
   )
   const act = (next: Mode) => {
@@ -90,7 +90,7 @@ export function ThreadPanel(props: {
           textarea={composer}
           mode={mode}
           setMode={setMode}
-          lastOwn={lastOwn}
+          own={own}
           thread={rootId}
           scrolling={pages(scroller)}
           focusLine={(event) => listed.current!.querySelector<HTMLElement>(`[data-event="${event}"]`)?.focus()}

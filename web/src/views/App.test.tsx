@@ -2109,6 +2109,54 @@ describe('matrix', () => {
     expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Message Lounge' }))
   })
 
+  it('recalls what was sent, marks text as Markdown, and opens the info, by keys', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    server.receive(room.id, { sender: ME, sender_name: 'Me', body: 'first sent' })
+    server.receive(room.id, { body: 'not mine' })
+    server.receive(room.id, { sender: ME, sender_name: 'Me', body: 'second sent' })
+    const user = await start(`/rooms/${room.id}`)
+    await within(screen.getByRole('list', { name: 'Timeline' })).findByText('second sent')
+    const box = screen.getByRole('textbox', { name: 'Message Lounge' }) as HTMLTextAreaElement
+    const shows = (text: string) => waitFor(() => expect(box.value).toBe(text))
+
+    // Ctrl+Alt+Up recalls the account's messages, the latest first; Down,
+    // back to what was being written.
+    await user.keyboard('draft{Control>}{Alt>}{ArrowUp}{/Alt}{/Control}')
+    await shows('second sent')
+    await user.keyboard('{Control>}{Alt>}{ArrowUp}{ArrowUp}{/Alt}{/Control}')
+    await shows('first sent')
+    await user.keyboard('{Control>}{Alt>}{ArrowDown}{/Alt}{/Control}')
+    await shows('second sent')
+    await user.keyboard('{Control>}{Alt>}{ArrowDown}{ArrowDown}{/Alt}{/Control}')
+    await shows('draft')
+    // One recalled is sent again.
+    await user.keyboard('{Control>}{Alt>}{ArrowUp}{/Alt}{/Control}')
+    await shows('second sent')
+    await user.keyboard('{Enter}')
+    expect(server.requests).toContainEqual({ type: 'send_matrix_message', key: expect.any(String), room: room.id, content: text('second sent') })
+    await shows('')
+
+    // Ctrl+B marks what is typed next, or what is selected, and unmarks it.
+    await user.keyboard('{Control>}b{/Control}bold')
+    await shows('**bold**')
+    box.setSelectionRange(2, 6)
+    await user.keyboard('{Control>}b{/Control}')
+    await shows('bold')
+    expect([box.selectionStart, box.selectionEnd]).toEqual([0, 4])
+    await user.keyboard('{Control>}i{/Control}')
+    await shows('*bold*')
+    await user.keyboard('{Control>}a{/Control}{Backspace}')
+
+    // m shows the room's info, whose controls → goes to, and hides it.
+    await user.keyboard('{Escape}m')
+    const info = screen.getByRole('complementary', { name: 'Room info' })
+    await user.keyboard('k{ArrowRight}')
+    expect(info.contains(document.activeElement)).toBe(true)
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('complementary', { name: 'Room info' })).toBeNull()
+  })
+
   it('sends with Enter, showing the message until it is synced back', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')

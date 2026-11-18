@@ -62,8 +62,9 @@ export function Composer(props: {
   textarea: preact.RefObject<HTMLTextAreaElement>
   mode: Mode
   setMode: (mode: Mode) => void
-  /** The account's last message of text, which Up edits. */
-  lastOwn: RoomEvent | null
+  /** The account's messages of text there, oldest first: Up edits the
+   * last, and what they said is recalled, to send again. */
+  own: readonly RoomEvent[]
   /** Of a thread's box, the thread's root (a Matrix event id). */
   thread: string | null
   /** Scrolls what the box writes to, by the page keys, from the box. */
@@ -91,8 +92,10 @@ export function Composer(props: {
   // Completions dismissed, until the text changes.
   const [dismissed, setDismissed] = useState(false)
   const [selected, setSelected] = useState(0)
-  // Where the caret goes once a completion is in the box.
+  // Where the caret goes once a completion is in the box; and, marked,
+  // where what is selected ends.
   const placeCaret = useRef<number | null>(null)
+  const selectTo = useRef<number | null>(null)
   const [, openJoined] = useOpenJoined(room.account, noop)
   // An edit's text, apart from the draft, which it leaves as it is: as
   // the server made it of the message (`source`), and as typed since.
@@ -117,7 +120,6 @@ export function Composer(props: {
   // A room's box, or a thread's, has the focus once it shows: typing is
   // what one does there. Esc leaves it, to the shortcuts.
   useLayoutEffect(() => focusShown(props.textarea.current!), [props.textarea])
-  useKeymap(props.scrolling, { within: props.textarea })
   const editingId = editing?.id ?? null
   useEffect(() => {
     if (editingId === null) return
@@ -148,8 +150,9 @@ export function Composer(props: {
   }, [session, editingId, props.textarea])
   useLayoutEffect(() => {
     if (placeCaret.current === null) return
-    props.textarea.current!.setSelectionRange(placeCaret.current, placeCaret.current)
+    props.textarea.current!.setSelectionRange(placeCaret.current, selectTo.current ?? placeCaret.current)
     placeCaret.current = null
+    selectTo.current = null
   }, [value, props.textarea])
 
   /** Sets the box's text, and where the caret goes. */
@@ -160,6 +163,56 @@ export function Composer(props: {
     setCaret(at)
     placeCaret.current = at
   }
+  // The message of `own` recalled into the box, and what was being
+  // written before; until something else is typed, or it is sent.
+  const [recalled, setRecalled] = useState<{ at: number; typed: string } | null>(null)
+  // The latest recall, so that one answered late is dropped.
+  const recalling = useRef(0)
+  /** Recalls the message sent `by` after the one recalled, as the server
+   * makes its text (an edit's); past the last, what was being written. */
+  const recall = (by: 1 | -1) => () => {
+    const { own } = props
+    const at = (recalled?.at ?? own.length) + by
+    if (at < 0 || at > own.length) return
+    const typed = recalled?.typed ?? value
+    const id = ++recalling.current
+    if (at === own.length) {
+      setRecalled(null)
+      write(typed, typed.length)
+      return
+    }
+    setRecalled({ at, typed })
+    matrix.editText(room.id, own[at].id).then(
+      (text) => id === recalling.current && write(text, text.length),
+      (e) => id === recalling.current && setError((e as Error).message),
+    )
+  }
+  /** Marks what is selected, as Markdown, or unmarks it; with nothing
+   * selected, the caret goes within the marks. */
+  const mark = (by: string) => () => {
+    const box = props.textarea.current!
+    const [from, to] = [box.selectionStart, box.selectionEnd]
+    const marked = value.slice(from - by.length, from) === by && value.slice(to, to + by.length) === by
+    const text = marked
+      ? value.slice(0, from - by.length) + value.slice(from, to) + value.slice(to + by.length)
+      : value.slice(0, from) + by + value.slice(from, to) + by + value.slice(to)
+    const start = marked ? from - by.length : from + by.length
+    write(text, start)
+    selectTo.current = start + to - from
+  }
+  useKeymap(
+    {
+      ...props.scrolling,
+      bold: mark('**'),
+      italic: mark('*'),
+      strike: mark('~~'),
+      code: mark('`'),
+      // An edit is of the one message; files go with a room's messages.
+      ...(editing === null && { recallOlder: recall(-1), recallNewer: recall(1) }),
+      ...(editing === null && attachable && { attach: () => picker.current!.click() }),
+    },
+    { within: props.textarea },
+  )
   const choose = (suggestion: Suggestion) => {
     write(value.slice(0, open!.start) + suggestion.insert + value.slice(caret), open!.start + suggestion.insert.length)
     setSelected(0)
@@ -175,6 +228,7 @@ export function Composer(props: {
   const send = () => {
     if (!sendable) return
     typing.stop()
+    setRecalled(null)
     if (editing) {
       if (value !== loaded!.source) {
         const command = parse(value)
@@ -347,6 +401,7 @@ export function Composer(props: {
               at = start + found.unicode.length
             }
             write(text, at)
+            setRecalled(null)
             setSelected(0)
             setDismissed(false)
             if (text.trim() === '') typing.stop()
@@ -385,9 +440,9 @@ export function Composer(props: {
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault()
               send()
-            } else if (event.key === 'ArrowUp' && value === '' && !editing && props.lastOwn) {
+            } else if (event.key === 'ArrowUp' && NO_MODIFIERS(event) && value === '' && !editing && props.own.length > 0) {
               event.preventDefault()
-              setMode({ type: 'edit', event: props.lastOwn, back: false })
+              setMode({ type: 'edit', event: props.own.at(-1)!, back: false })
             } else if (event.key === 'Escape') {
               if (mode.type !== 'new') {
                 leave()
@@ -406,6 +461,8 @@ export function Composer(props: {
 }
 
 function noop() {}
+
+const NO_MODIFIERS = (event: KeyboardEvent) => !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
 
 /** Tells the room while the account types: renewed as it goes on, and
  * stopped once the box is emptied or sent, or the room left. */

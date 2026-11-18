@@ -3975,6 +3975,7 @@ them (so `Enter` writes only from no line). Its bindings count only
 while the focus is in its list: a component's window bindings may be
 scoped so, and of those of the same keys, one scoped where the focus is
 fires, as nearer, before the latest component's.
+`m` shows the room's info beside it, or hides it.
 `PageUp`/`PageDown` scroll the timeline a page
 (less an eighth), from the box too, as Element's; from a thread's box,
 the thread. The room's box unfocused is then the exception
@@ -4410,7 +4411,15 @@ buttons.
   edit is sent as the box's text says (Markdown, `/plain` or `/html`;
   other commands are refused), an action staying one.
   Up, in an empty box, edits the account's last message; Escape cancels
-  a reply or edit. Files attached (the paperclip), pasted or dropped on
+  a reply or edit. `Ctrl+Alt+↑`/`↓`, as Element's, recall into the box
+  what the account sent there (its messages of text among those loaded,
+  the latest first, each as the text an edit of it would begin from), to
+  send again, changed or not; past the latest, what was being written is
+  back; typing, or sending, ends the recall. `Ctrl+B`, `Ctrl+I`,
+  `Ctrl+Shift+X` and `Ctrl+E` mark what is selected as Markdown's bold,
+  italic, struck or code (or unmark it, if so marked), and with nothing
+  selected put the caret between the marks; `Ctrl+U` attaches files, as
+  the paperclip. Files attached (the paperclip), pasted or dropped on
   the room are listed above the box, to remove or send with the
   message, as files after it (the first answering what it replies to if
   there is no text); one still uploading is listed too, and waited for.

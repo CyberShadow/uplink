@@ -58,6 +58,14 @@ export type Action =
   | 'compose'
   | 'reply'
   | 'write'
+  | 'recallOlder'
+  | 'recallNewer'
+  | 'bold'
+  | 'italic'
+  | 'strike'
+  | 'code'
+  | 'attach'
+  | 'info'
   | 'replyAll'
   | 'forward'
   | 'send'
@@ -181,6 +189,14 @@ export const KEYMAP: Binding[] = [
   { action: 'compose', keys: ['c'], label: 'c', help: 'Compose (in the calendar: a new event)' },
   { action: 'reply', keys: ['r'], label: 'r', help: 'Reply (in a room: to the message, or else write one)' },
   { action: 'write', keys: ['i', 'Enter'], label: 'i, Enter', help: 'Write a message (in a room, whose box Esc leaves)' },
+  { action: 'recallOlder', keys: ['Control+Alt+ArrowUp'], label: 'Ctrl+Alt+↑', help: "Recall the message sent before (in a room's box, as Element's): what was sent there, to send again", repeats: true },
+  { action: 'recallNewer', keys: ['Control+Alt+ArrowDown'], label: 'Ctrl+Alt+↓', help: 'Recall the message sent after; past the last, what was being written', repeats: true },
+  { action: 'bold', keys: ['$mod+b'], label: `${MOD}+B`, help: "Bold: what is selected, or what is typed next (in a room's box, as Markdown)" },
+  { action: 'italic', keys: ['$mod+i'], label: `${MOD}+I`, help: "Italic (in a room's box)" },
+  { action: 'strike', keys: ['$mod+Shift+x'], label: `${MOD}+Shift+X`, help: "Struck through (in a room's box)" },
+  { action: 'code', keys: ['$mod+e'], label: `${MOD}+E`, help: "Code (in a room's box)" },
+  { action: 'attach', keys: ['$mod+u'], label: `${MOD}+U`, help: "Attach files (in a room's box)" },
+  { action: 'info', keys: ['m'], label: 'm', help: "The room's info and members, beside it; again, closes them (in a room)" },
   { action: 'replyAll', keys: ['a'], label: 'a', help: 'Reply all' },
   { action: 'forward', keys: ['f'], label: 'f', help: 'Forward' },
   { action: 'send', keys: ['$mod+Enter'], label: `${MOD}+Enter`, help: 'Send (in compose; in an event: save it)' },
