@@ -1,9 +1,8 @@
 //! How the sender reconciles rooms' fields with the homeserver (SPEC
 //! §6.6): a [`Kind`] of field (a room's tags, a space's order, a
-//! membership) says how its fields are stored, pushed and read back; the
-//! observations here record, for any kind, what the sender does to them:
-//! claiming pushes, how each ended, what was read back, and pushes whose
-//! outcome became unknown or expired.
+//! membership) says how its fields are stored, pushed and read back;
+//! [`Rooms`] makes it a kind of field of the reconciler, which drives it.
+//! What a read back finds is recorded here, for any kind.
 
 use anyhow::Result;
 use serde::{de::DeserializeOwned, Serialize};
@@ -15,7 +14,8 @@ use uplink_protocol::{
 use uplink_storage::rusqlite::{Connection, Transaction};
 use uplink_tx_log::{
     reconcile::{Ended, Field},
-    this_entry, Observation, Observed,
+    reconciler::{self, Changed, Fields, Values},
+    Observation, Observed,
 };
 
 use crate::{outbox, rooms};
@@ -109,74 +109,6 @@ pub struct Homeserver {
     pub user: matrix_sdk::ruma::OwnedUserId,
 }
 
-/// The fields whose pushes the sender claims, in one entry (SPEC
-/// §6.6.3): those still wanted of `fields`.
-#[derive(Serialize)]
-#[serde(bound = "")]
-pub struct Claimed<K: Kind> {
-    pub fields: Vec<(RoomId, String)>,
-    #[serde(skip)]
-    kind: PhantomData<K>,
-}
-
-impl<K: Kind> Claimed<K> {
-    pub fn new(fields: Vec<(RoomId, String)>) -> Self {
-        Self {
-            fields,
-            kind: PhantomData,
-        }
-    }
-}
-
-impl<K: Kind> Observation for Claimed<K> {
-    const KIND: &'static str = K::CLAIMED;
-
-    fn apply(self, _account: &str, tx: &Transaction) -> Result<Observed> {
-        let mut claimed = 0;
-        for (room, key) in &self.fields {
-            let mut field = K::load(tx, *room, key)?;
-            // Unless an op settled it meanwhile.
-            if field.wanted().is_some() {
-                field.claim()?;
-                K::store(tx, *room, key, &field)?;
-                claimed += 1;
-            }
-        }
-        Ok(Observed {
-            description: format!("Setting {claimed} {} on the homeserver", K::WHAT),
-            events: vec![],
-        })
-    }
-}
-
-/// How a push of the room's field ended: of `value`, the value pushed.
-#[derive(Serialize)]
-#[serde(bound = "")]
-pub struct Pushed<K: Kind> {
-    pub room: RoomId,
-    pub key: String,
-    pub value: K::Value,
-    pub ended: Ended,
-}
-
-impl<K: Kind> Observation for Pushed<K> {
-    const KIND: &'static str = K::PUSHED;
-
-    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
-        let before = outbox::pending_rooms(tx, account)?;
-        let mut field = K::load(tx, self.room, &self.key)?;
-        let shown = field.clone();
-        field.ended(self.ended.clone(), this_entry(tx)?)?;
-        K::store(tx, self.room, &self.key, &field)?;
-        let changed = K::shows_otherwise(&shown, &field);
-        let name = rooms::name(tx, self.room)?;
-        Ok(Observed {
-            description: K::pushed(&name, &self.key, &self.value, &self.ended),
-            events: events(tx, account, self.room, before, changed)?,
-        })
-    }
-}
-
 /// The room's fields, read back from the homeserver by a request sent
 /// after `as_of` (SPEC §6.6.2).
 #[derive(Serialize)]
@@ -201,70 +133,119 @@ impl<K: Kind> Observation for Read<K> {
     }
 }
 
-/// Pushes whose outcome became unknown, as of `now_ms`: those in flight,
-/// as the process stopped (`interrupted`), else those so long enough to
-/// expire (SPEC §6.6.3).
-#[derive(Serialize)]
-#[serde(bound = "")]
-pub struct Settled<K: Kind> {
-    pub now_ms: i64,
-    pub interrupted: bool,
-    #[serde(skip)]
+/// A kind of a room's fields as a kind of the reconciler's: each keyed
+/// by the room and the key in it, and pushed and read back by the room's
+/// id.
+pub struct Rooms<K>(PhantomData<K>);
+
+/// The account's rooms' fields of a kind, in a transaction.
+pub struct RoomFields<'t, K> {
+    tx: &'t Transaction<'t>,
     kind: PhantomData<K>,
 }
 
-impl<K: Kind> Settled<K> {
-    pub fn new(now_ms: i64, interrupted: bool) -> Self {
-        Self {
-            now_ms,
-            interrupted,
-            kind: PhantomData,
-        }
+impl<K: Kind> Fields<Rooms<K>> for RoomFields<'_, K> {
+    fn load(&self, (room, key): &(RoomId, String)) -> Result<Option<Field<K::Value>>> {
+        K::load(self.tx, *room, key).map(Some)
+    }
+
+    fn store(&mut self, (room, key): &(RoomId, String), field: &Field<K::Value>) -> Result<()> {
+        K::store(self.tx, *room, key, field)
     }
 }
 
-impl<K: Kind> Observation for Settled<K> {
-    const KIND: &'static str = K::SETTLED;
+impl<K: Kind> reconciler::Kind for Rooms<K> {
+    type Key = (RoomId, String);
+    type Value = K::Value;
+    type Entity = RoomId;
+    /// The room's id as Matrix has it.
+    type Target = String;
+    type Fields<'t> = RoomFields<'t, K>;
 
-    fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
-        let before_outbox = outbox::pending_rooms(tx, account)?;
-        let at = this_entry(tx)?;
-        let mut settled = 0;
-        let mut shown = BTreeSet::new();
-        for mut stored in K::reconciling(tx, account)? {
-            let field = &mut stored.field;
-            let before = field.clone();
-            if self.interrupted {
-                field.interrupted(self.now_ms);
-            } else if field.expiring(self.now_ms) {
-                field.expire(self.now_ms, at)?;
-            }
-            if *field != before {
-                K::store(tx, stored.room, &stored.key, field)?;
-                settled += 1;
-                if K::shows_otherwise(&before, field) {
-                    shown.insert(stored.room);
-                }
-            }
-        }
+    const CLAIMED: &'static str = K::CLAIMED;
+    const PUSHED: &'static str = K::PUSHED;
+    const SETTLED: &'static str = K::SETTLED;
+
+    fn entity((room, _): &(RoomId, String)) -> RoomId {
+        *room
+    }
+
+    fn fields<'t>(tx: &'t Transaction<'t>, _account: &'t str) -> Result<RoomFields<'t, K>> {
+        Ok(RoomFields {
+            tx,
+            kind: PhantomData,
+        })
+    }
+
+    fn reconciling(conn: &Connection, account: &str) -> Result<Vec<reconciler::Stored<Self>>> {
+        Ok(K::reconciling(conn, account)?
+            .into_iter()
+            .map(|s| reconciler::Stored {
+                key: (s.room, s.key),
+                target: s.room_id,
+                field: s.field,
+            })
+            .collect())
+    }
+
+    fn events(
+        _tx: &Transaction,
+        account: &str,
+        changed: &[Changed<Self>],
+    ) -> Result<Vec<ServerEvent>> {
+        let shown: BTreeSet<RoomId> = changed
+            .iter()
+            .filter(|c| K::shows_otherwise(&c.before, &c.after))
+            .map(|c| c.key.0)
+            .collect();
         let mut events = vec![];
         if !shown.is_empty() {
             events.push(ServerEvent::RoomsChanged(RoomsChanged {
                 rooms: shown.into_iter().collect(),
             }));
         }
-        if outbox::pending_rooms(tx, account)? != before_outbox {
+        if changed.iter().any(Changed::pending) {
             events.push(outbox::outbox_changed(account));
         }
+        Ok(events)
+    }
+
+    fn claimed(_tx: &Transaction, claimed: &[(RoomId, String)]) -> Result<String> {
+        Ok(format!(
+            "Setting {} {} on the homeserver",
+            claimed.len(),
+            K::WHAT
+        ))
+    }
+
+    fn pushed(tx: &Transaction, pushes: &[(Ended, Values<Self>)]) -> Result<String> {
+        let mut parts = vec![];
+        for (ended, fields) in pushes {
+            for ((room, key), value) in fields {
+                parts.push(K::pushed(&rooms::name(tx, *room)?, key, value, ended));
+            }
+        }
+        Ok(reconciler::joined(parts))
+    }
+
+    fn settled(settled: usize, interrupted: bool) -> String {
         let what = K::WHAT;
-        Ok(Observed {
-            description: if self.interrupted {
-                format!("Whether {settled} {what} were set on the homeserver is unknown")
-            } else {
-                format!("Took {settled} {what} set or not on the homeserver for good")
-            },
-            events,
-        })
+        if interrupted {
+            format!("Whether {settled} {what} were set on the homeserver is unknown")
+        } else {
+            format!("Took {settled} {what} set or not on the homeserver for good")
+        }
+    }
+}
+
+/// A field of a kind as the reconciler has it, as the kind has it.
+pub fn stored<K: Kind>(s: reconciler::Stored<Rooms<K>>) -> Stored<K::Value> {
+    let (room, key) = s.key;
+    Stored {
+        room,
+        room_id: s.target,
+        key,
+        field: s.field,
     }
 }
 

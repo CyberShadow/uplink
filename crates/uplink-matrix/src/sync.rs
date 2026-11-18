@@ -14,7 +14,7 @@ use crate::{
     image_packs, markdown,
     membership::Memberships,
     pins::Pins,
-    reconciler::{self, Claimed, Homeserver, Kind, Pushed, Settled},
+    reconciler::{self, Homeserver, Kind, Rooms},
     room_tags::{self, Tags},
     rooms::{
         self, Decrypted, ObservedEvent, ObservedInvitation, ObservedRoom, Push, ReceiptSent,
@@ -81,7 +81,8 @@ use uplink_storage::{
 };
 use uplink_tx_log::{
     push::{self, PushFailing},
-    reconcile::{Ended, Outcome},
+    reconcile::Ended,
+    reconciler::PushEnded,
     Conflict, Dispatcher, Observation,
 };
 
@@ -1024,11 +1025,7 @@ impl Sender {
             })
             .await?;
         }
-        let now = send::now_ms();
-        self.observe(Settled::<Memberships>::new(now, true)).await?;
-        self.observe(Settled::<Orders>::new(now, true)).await?;
-        self.observe(Settled::<Tags>::new(now, true)).await?;
-        self.observe(Settled::<Pins>::new(now, true)).await
+        Ok(())
     }
 
     async fn step(&self) -> Result<()> {
@@ -1042,91 +1039,20 @@ impl Sender {
     }
 
     /// Pushes the fields of kind `K` the user changed, and reads back what
-    /// that is to be confirmed by (SPEC §6.6): until nothing is left to
-    /// push or read. Every push claimed is pushed and its outcome recorded,
-    /// though one fails; then the first failure, that may pass, is
-    /// returned, for the step to be retried with backoff.
+    /// that is to be confirmed by (SPEC §6.6), at once: the sync, a long
+    /// poll, may be under way since before the push, and tell of it only
+    /// ambiguously. Until nothing is left to read: what a read finds may
+    /// be to push again (another push of it landed, after the last).
     async fn reconcile<K: Kind>(&self) -> Result<()> {
-        // Each round pushes or confirms; few are needed.
+        // Each round pushes and confirms; few are needed.
         const ROUNDS: usize = 8;
         for _ in 0..ROUNDS {
-            let account = self.account.clone();
-            let fields = read(&self.reader, move |conn| K::reconciling(conn, &account)).await?;
-            let now = send::now_ms();
-            if fields.iter().any(|f| f.field.expiring(now)) {
-                self.observe(Settled::<K>::new(now, false)).await?;
-                continue;
-            }
-            let wanted: Vec<_> = fields
-                .iter()
-                .filter(|f| f.field.wanted().is_some())
-                .map(|f| (f.room, f.key.clone()))
-                .collect();
-            if !wanted.is_empty() {
-                self.observe(Claimed::<K>::new(wanted)).await?;
-                self.push::<K>().await?;
-                continue;
-            }
-            let mut read_back: Vec<_> = fields
-                .iter()
-                .filter(|f| f.field.read_back())
-                .map(|f| (f.room, f.room_id.clone()))
-                .collect();
-            read_back.dedup();
-            if read_back.is_empty() {
+            uplink_tx_log::reconciler::push::<Rooms<K>>(self).await?;
+            if !uplink_tx_log::reconciler::read_back::<Rooms<K>>(self).await? {
                 return Ok(());
-            }
-            for (room, room_id) in read_back {
-                let as_of = read(&self.reader, uplink_tx_log::as_of).await?;
-                let read = K::read(&self.homeserver()?, room_id.as_str().try_into()?).await?;
-                self.observe(reconciler::Read::<K> { room, read, as_of })
-                    .await?;
             }
         }
         anyhow::bail!("{} still to push or read after {ROUNDS} rounds", K::WHAT)
-    }
-
-    /// Pushes the fields of kind `K` claimed, by the kind's requests,
-    /// recording each field's outcome as its request ends.
-    async fn push<K: Kind>(&self) -> Result<()> {
-        let account = self.account.clone();
-        let requests = read(&self.reader, move |conn| {
-            let in_flight = K::reconciling(conn, &account)?
-                .into_iter()
-                .filter(|stored| {
-                    stored
-                        .field
-                        .attempt
-                        .as_ref()
-                        .is_some_and(|a| a.outcome == Outcome::InFlight)
-                })
-                .collect();
-            K::requests(conn, in_flight)
-        })
-        .await?;
-        let mut failed = None;
-        for (request, fields) in requests {
-            let room_id = <&RoomId>::try_from(fields[0].room_id.as_str())?;
-            let done = K::push(&self.homeserver()?, room_id, &request).await;
-            let ended = ended(&done);
-            if let (Err(e), Ended::NotApplied { refused: None } | Ended::Unknown { .. }) =
-                (done, &ended)
-            {
-                let e = anyhow::Error::from(e).context(format!("setting {}", K::WHAT));
-                failed.get_or_insert(e);
-            }
-            for stored in fields {
-                let value = stored.field.attempt.expect("in flight").value;
-                self.observe(Pushed::<K> {
-                    room: stored.room,
-                    key: stored.key,
-                    value,
-                    ended: ended.clone(),
-                })
-                .await?;
-            }
-        }
-        failed.map_or(Ok(()), Err)
     }
 
     fn homeserver(&self) -> Result<Homeserver> {
@@ -1567,6 +1493,86 @@ fn mentions(markdown: &str) -> (String, Vec<String>) {
     }
     plain.push_str(rest);
     (plain, users)
+}
+
+/// A kind of room's fields, pushed by the kind's requests, and read back
+/// a room at a time.
+impl<K: Kind> uplink_tx_log::reconciler::Provider<Rooms<K>> for Sender {
+    fn account(&self) -> &str {
+        &self.account
+    }
+
+    fn dispatcher(&self) -> &Dispatcher {
+        &self.dispatcher
+    }
+
+    fn reader(&self) -> &Arc<Mutex<Connection>> {
+        &self.reader
+    }
+
+    async fn push(
+        &self,
+        in_flight: Vec<uplink_tx_log::reconciler::Stored<Rooms<K>>>,
+    ) -> Vec<PushEnded<Rooms<K>>> {
+        // Failing before a request is sent, its fields' pushes are not
+        // applied.
+        let not_sent = |fields, error: anyhow::Error| PushEnded {
+            push: uplink_tx_log::reconciler::Push {
+                fields,
+                ended: Ended::NotApplied { refused: None },
+                rekeyed: None,
+            },
+            error: Some(error.context(format!("setting {}", K::WHAT))),
+        };
+        let keys = in_flight.iter().map(|s| s.key.clone()).collect();
+        let in_flight = in_flight.into_iter().map(reconciler::stored).collect();
+        let requests = match read(&self.reader, move |conn| K::requests(conn, in_flight)).await {
+            Ok(requests) => requests,
+            Err(e) => return vec![not_sent(keys, e)],
+        };
+        let mut pushes = vec![];
+        for (request, fields) in requests {
+            let keys: Vec<_> = fields.iter().map(|s| (s.room, s.key.clone())).collect();
+            let sent = async {
+                let room_id = <&RoomId>::try_from(fields[0].room_id.as_str())?;
+                anyhow::Ok(K::push(&self.homeserver()?, room_id, &request).await)
+            };
+            let done = match sent.await {
+                Ok(done) => done,
+                Err(e) => {
+                    pushes.push(not_sent(keys, e));
+                    continue;
+                }
+            };
+            let outcome = ended(&done);
+            let error = match (done, &outcome) {
+                (Err(e), Ended::NotApplied { refused: None } | Ended::Unknown { .. }) => {
+                    Some(anyhow::Error::from(e).context(format!("setting {}", K::WHAT)))
+                }
+                _ => None,
+            };
+            pushes.push(PushEnded {
+                push: uplink_tx_log::reconciler::Push {
+                    fields: keys,
+                    ended: outcome,
+                    rekeyed: None,
+                },
+                error,
+            });
+        }
+        pushes
+    }
+
+    async fn read(&self, rooms: Vec<uplink_tx_log::reconciler::Stored<Rooms<K>>>) -> Result<()> {
+        for stored in rooms {
+            let room = stored.key.0;
+            let as_of = read(&self.reader, uplink_tx_log::as_of).await?;
+            let read = K::read(&self.homeserver()?, stored.target.as_str().try_into()?).await?;
+            self.observe(reconciler::Read::<K> { room, read, as_of })
+                .await?;
+        }
+        Ok(())
+    }
 }
 
 /// How a push ended (SPEC §6.6.3): applied; not applied, refused if the

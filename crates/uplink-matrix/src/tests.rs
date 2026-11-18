@@ -22,7 +22,10 @@ use uplink_protocol::{
     ServerEvent, ServerResponse, TxLogId,
 };
 use uplink_realtime::Hub;
-use uplink_tx_log::{Dispatcher, Observation, Registry};
+use uplink_tx_log::{
+    reconciler::{Claimed, Push, Pushed},
+    Dispatcher, Observation, Registry,
+};
 
 const ME: &str = "@me:example.org";
 const ROOM: &str = "!room:example.org";
@@ -432,7 +435,7 @@ mod pins {
     use super::*;
     use crate::{
         pins::Pins,
-        reconciler::{Claimed, Kind, Pushed, Read},
+        reconciler::{Kind, Read, Rooms},
     };
     use uplink_protocol::matrix::PendingPins;
     use uplink_tx_log::reconcile::{Ended, Outcome};
@@ -464,7 +467,9 @@ mod pins {
                 .filter(|p| p.field.wanted().is_some())
                 .map(|p| (p.room, p.key))
                 .collect();
-            self.observe(Claimed::<Pins>::new(wanted)).await.unwrap();
+            self.observe(Claimed::<Rooms<Pins>>::new(wanted))
+                .await
+                .unwrap();
             let conn = self.conn();
             let in_flight = Pins::reconciling(&conn, "mx")
                 .unwrap()
@@ -487,12 +492,12 @@ mod pins {
         async fn pushed(&self, events: &[String], ended: Ended) {
             let room = self.room().await.id;
             for event in events {
-                let field = Pins::load(&self.conn(), room, event).unwrap();
-                self.observe(Pushed::<Pins> {
-                    room,
-                    key: event.clone(),
-                    value: field.attempt.unwrap().value,
-                    ended: ended.clone(),
+                self.observe(Pushed::<Rooms<Pins>> {
+                    pushes: vec![Push {
+                        fields: vec![(room, event.clone())],
+                        ended: ended.clone(),
+                        rekeyed: None,
+                    }],
                 })
                 .await
                 .unwrap();
@@ -928,7 +933,7 @@ mod membership {
     use super::*;
     use crate::{
         membership::Memberships,
-        reconciler::{Claimed, Kind, Pushed, Read},
+        reconciler::{Kind, Read, Rooms},
     };
     use uplink_protocol::{matrix::MembershipChange, ErrorCode};
     use uplink_tx_log::reconcile::Ended;
@@ -987,18 +992,18 @@ mod membership {
         /// The sync task pushes the membership asked for, which ends so.
         async fn push_membership(&self, ended: Ended) {
             let room = self.room().await.id;
-            self.observe(Claimed::<Memberships>::new(vec![(room, String::new())]))
-                .await
-                .unwrap();
-            let [stored] = &self.reconciling()[..] else {
-                panic!("one room")
-            };
-            let value = stored.field.attempt.clone().unwrap().value;
-            self.observe(Pushed::<Memberships> {
+            self.observe(Claimed::<Rooms<Memberships>>::new(vec![(
                 room,
-                key: String::new(),
-                value,
-                ended,
+                String::new(),
+            )]))
+            .await
+            .unwrap();
+            self.observe(Pushed::<Rooms<Memberships>> {
+                pushes: vec![Push {
+                    fields: vec![(room, String::new())],
+                    ended,
+                    rekeyed: None,
+                }],
             })
             .await
             .unwrap();
@@ -1103,19 +1108,23 @@ mod membership {
         db.sync_membership(Membership::Invited).await;
         let join = db.change(MembershipChange::Join).await;
         let room = db.room().await.id;
-        db.observe(Claimed::<Memberships>::new(vec![(room, String::new())]))
-            .await
-            .unwrap();
+        db.observe(Claimed::<Rooms<Memberships>>::new(vec![(
+            room,
+            String::new(),
+        )]))
+        .await
+        .unwrap();
         db.dispatcher.undo(join).await.unwrap();
         assert_eq!(
             db.state().await,
             (Membership::Invited, Some(MembershipChange::Leave))
         );
-        db.observe(Pushed::<Memberships> {
-            room,
-            key: String::new(),
-            value: Membership::Joined,
-            ended: Ended::Applied,
+        db.observe(Pushed::<Rooms<Memberships>> {
+            pushes: vec![Push {
+                fields: vec![(room, String::new())],
+                ended: Ended::Applied,
+                rekeyed: None,
+            }],
         })
         .await
         .unwrap();
@@ -1202,7 +1211,7 @@ mod membership {
 mod room_tags {
     use super::*;
     use crate::{
-        reconciler::{Claimed, Kind, Pushed, Read, Stored},
+        reconciler::{Kind, Read, Rooms, Stored},
         room_tags::Tags,
     };
     use uplink_protocol::{
@@ -1273,15 +1282,15 @@ mod room_tags {
         /// The reconciler pushes the room's `tag`, which ends so.
         async fn push(&self, tag: &str, ended: Ended) {
             let room = self.room().await.id;
-            self.observe(Claimed::<Tags>::new(vec![(room, tag.into())]))
+            self.observe(Claimed::<Rooms<Tags>>::new(vec![(room, tag.into())]))
                 .await
                 .unwrap();
-            let value = self.stored(tag).field.attempt.unwrap().value;
-            self.observe(Pushed::<Tags> {
-                room,
-                key: tag.into(),
-                value,
-                ended,
+            self.observe(Pushed::<Rooms<Tags>> {
+                pushes: vec![Push {
+                    fields: vec![(room, tag.into())],
+                    ended,
+                    rekeyed: None,
+                }],
             })
             .await
             .unwrap();
@@ -1446,18 +1455,19 @@ mod room_tags {
         db.sync_tags(&[]).await;
         let tagged = db.tag(&["u.a"], &[]).await.unwrap();
         let room = db.room().await.id;
-        db.observe(Claimed::<Tags>::new(vec![(room, "u.a".into())]))
+        db.observe(Claimed::<Rooms<Tags>>::new(vec![(room, "u.a".into())]))
             .await
             .unwrap();
         db.dispatcher.undo(tagged).await.unwrap();
         assert!(db.tags().await.is_empty());
         assert!(!db.pending_tags().is_empty(), "the push may land");
         assert!(db.wanted_tags().is_empty(), "one push at a time");
-        db.observe(Pushed::<Tags> {
-            room,
-            key: "u.a".into(),
-            value: true,
-            ended: Ended::Applied,
+        db.observe(Pushed::<Rooms<Tags>> {
+            pushes: vec![Push {
+                fields: vec![(room, "u.a".into())],
+                ended: Ended::Applied,
+                rekeyed: None,
+            }],
         })
         .await
         .unwrap();
@@ -1546,7 +1556,7 @@ mod room_tags {
 mod space_order {
     use super::*;
     use crate::{
-        reconciler::{Claimed, Kind, Pushed},
+        reconciler::{Kind, Rooms},
         space_order::Orders,
     };
     use uplink_protocol::{
@@ -1614,7 +1624,7 @@ mod space_order {
         /// The reconciler claims the order wanted.
         async fn claim(&self) {
             let room = self.room().await.id;
-            self.observe(Claimed::<Orders>::new(vec![(room, String::new())]))
+            self.observe(Claimed::<Rooms<Orders>>::new(vec![(room, String::new())]))
                 .await
                 .unwrap();
         }
@@ -1622,16 +1632,12 @@ mod space_order {
         /// The push claimed ended so.
         async fn ended(&self, ended: Ended) {
             let room = self.room().await.id;
-            let conn = uplink_storage::open_reader(self._dir.path()).unwrap();
-            let [stored] = &Orders::reconciling(&conn, "mx").unwrap()[..] else {
-                panic!("one space")
-            };
-            let value = stored.field.attempt.clone().unwrap().value;
-            self.observe(Pushed::<Orders> {
-                room,
-                key: String::new(),
-                value,
-                ended,
+            self.observe(Pushed::<Rooms<Orders>> {
+                pushes: vec![Push {
+                    fields: vec![(room, String::new())],
+                    ended,
+                    rekeyed: None,
+                }],
             })
             .await
             .unwrap();
