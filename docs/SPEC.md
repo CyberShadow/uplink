@@ -448,6 +448,13 @@ level. With `~1 M` messages that's ~4 K files per dir, fine for ext4/btrfs.
   as of the earlier of the two, so that what came between is told again
   (every change to a room names it: checked, as tests write, against the
   rooms listed anew).
+- How the work of something grows with the database is tested, not
+  timed: `uplink_storage::work::Work` counts the steps of SQLite's
+  virtual machine on the connections a test opens (a progress handler),
+  which are as many each run, however busy the machine. A test so
+  measures it over a database and one some times larger, and holds the
+  ratio to what the design says: as much (a page of the fewest's
+  candidates, of however large a mailbox).
 
 **Why rusqlite over sqlx**: no compile-time DB schema dependency (sqlx
 verifies queries against a live DB at build time, which is brittle for an
@@ -2894,7 +2901,7 @@ which a verified device gives.
   actions, of an encrypted event once decrypted, also late; V0032:
   `matrix_event.notify`, `highlight`; events stored before are
   neither). Only news notifies or highlights: what was sent once uplink
-  began to sync the account (`account.news_since`, §12.15). The
+  began to sync the account (`account.news_since`, §12.15),. The
   history a first sync, a gap's filling or decryption stores, however
   late, is neither, though the push rules evaluate it as any; V0060
   cleared it of what was stored before. The nav does not count them as

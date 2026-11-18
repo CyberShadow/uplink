@@ -2741,6 +2741,92 @@ fn fill(conn: &mut Connection, messages: i64, thread: fn(i64) -> Option<String>)
     conn.execute_batch("ANALYZE").unwrap();
 }
 
+/// Fills an empty database with account `a`'s mailbox of `messages`
+/// entries, none threaded, newer by id, each of the labels `labels(id)`
+/// (of INBOX, UNREAD, IMPORTANT); account `b` has none.
+fn fill_labelled(conn: &mut Connection, messages: i64, labels: fn(i64) -> Vec<&'static str>) {
+    let tx = conn.transaction().unwrap();
+    for account in ["a", "b"] {
+        tx.execute(
+            "INSERT INTO account (id, kind) VALUES (?1, 'gmail')",
+            [account],
+        )
+        .unwrap();
+        for label in ["INBOX", "UNREAD", "IMPORTANT", "TRASH", "SPAM"] {
+            tx.execute(
+                "INSERT INTO label (account_id, external_id, name, system) VALUES (?1, ?2, ?2, 1)",
+                [account, label],
+            )
+            .unwrap();
+        }
+    }
+    {
+        let mut statements = [
+            "INSERT INTO message (id, message_id, preferred_variant, subject, from_addr,
+                                  to_addrs, cc_addrs, senders, snippet, has_attachments)
+             VALUES (?1, ?1 || '@x', ?1, 's', 's@x', '[]', '[]', '[]', '', 0)",
+            "INSERT INTO message_variant (sha256, message, source, size_bytes)
+             VALUES (?1, ?1, 'a', 1)",
+            "INSERT INTO mail_entry (account_id, external_id, message, variant, received_at)
+             VALUES ('a', ?1, ?1, ?1, ?1 * 1000)",
+        ]
+        .map(|sql| tx.prepare(sql).unwrap());
+        let mut labelled = tx
+            .prepare(
+                "INSERT INTO entry_label (entry, label, desired, observed)
+                 SELECT ?1, id, 1, 1 FROM label WHERE account_id = 'a' AND external_id = ?2",
+            )
+            .unwrap();
+        for id in 1..=messages {
+            for statement in &mut statements {
+                statement.execute([id]).unwrap();
+            }
+            for label in labels(id) {
+                labelled.execute(params![id, label]).unwrap();
+            }
+        }
+    }
+    tx.commit().unwrap();
+    conn.execute_batch("ANALYZE").unwrap();
+}
+
+/// A page of terms each of many entries but of few in common (home's
+/// Urgent and Important: `in:inbox is:unread is:important`) is found by
+/// the fewest's candidates (SPEC §8): its work is as much however many
+/// more entries the mailbox has of the others, old ones in common that
+/// walking newest first would look through all of it for.
+#[test]
+fn a_page_of_few_in_common_costs_as_the_fewest_however_large_the_mailbox() {
+    use uplink_storage::work::Work;
+
+    // The oldest 2500 important, in the Inbox, a hundred of them unread;
+    // the others in the Inbox or unread, by halves.
+    fn labels(id: i64) -> Vec<&'static str> {
+        match id {
+            ..=2500 if id % 25 == 0 => vec!["INBOX", "IMPORTANT", "UNREAD"],
+            ..=2500 => vec!["INBOX", "IMPORTANT"],
+            _ if id % 2 == 0 => vec!["INBOX"],
+            _ => vec!["UNREAD"],
+        }
+    }
+    let work_of = |messages: i64| {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = uplink_storage::open(dir.path()).unwrap();
+        fill_labelled(&mut conn, messages, labels);
+        let work = Work::default();
+        work.count_on(&conn);
+        let (steps, page) =
+            work.of(|| list(&mut conn, "in:inbox is:unread is:important", None, 20));
+        assert_eq!(page.conversations.len(), 20);
+        steps
+    };
+    let (small, large) = (work_of(10_000), work_of(40_000));
+    assert!(
+        (large as f64) < 1.5 * small as f64,
+        "of 10,000 entries {small} steps, of 40,000 {large}"
+    );
+}
+
 /// Lists and searches with many candidates walk entries newest first
 /// rather than sorting the candidates; both give the order plain queries
 /// do, page by page.

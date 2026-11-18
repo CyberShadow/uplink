@@ -9,6 +9,7 @@ pub use rusqlite;
 
 pub mod seal;
 pub mod store;
+pub mod work;
 
 mod embedded {
     refinery::embed_migrations!("migrations");
