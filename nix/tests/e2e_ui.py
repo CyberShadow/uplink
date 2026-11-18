@@ -488,9 +488,86 @@ def room_history(page):
     return {"shown": shown, "loaded": lines.count(), "moved": top.bounding_box()["y"] - y}
 
 
+def room_keys(page):
+    """Moves through the Keys room by the keyboard alone, as the browser
+    moves the focus: around the window's regions, between the timeline
+    and a thread, and the room's info; and marks text in its box."""
+    nav = page.get_by_role("navigation")
+    nav.get_by_role("link", name="Keys").click()
+    box = page.get_by_role("textbox", name="Message Keys")
+    timeline = page.get_by_role("list", name="Timeline")
+    expect(timeline).to_contain_text("Keys latest", timeout=15000)
+    expect(box).to_be_focused()
+
+    def line(text):
+        return timeline.locator("[data-event]").filter(has_text=text)
+
+    # F6, around the regions; Shift+F6, back.
+    page.keyboard.press("F6")
+    expect(page.get_by_role("searchbox")).to_be_focused()
+    page.keyboard.press("F6")
+    expect(nav.get_by_role("link", name="Keys")).to_be_focused()
+    page.keyboard.press("F6")
+    expect(line("Keys latest")).to_be_focused()
+    page.keyboard.press("F6")
+    expect(box).to_be_focused()
+    page.keyboard.press("Shift+F6")
+    expect(line("Keys latest")).to_be_focused()
+
+    # → opens a line's thread at its first message; ← goes back.
+    page.keyboard.press("k")
+    expect(line("Keys root")).to_be_focused()
+    page.keyboard.press("ArrowRight")
+    thread = page.get_by_role("complementary", name="Thread")
+
+    def thread_line(text):
+        return thread.locator("[data-event]").filter(has_text=text)
+
+    expect(thread_line("Keys root")).to_be_focused()
+    page.keyboard.press("j")
+    expect(thread_line("Keys reply")).to_be_focused()
+    page.screenshot(path=f"{SHOTS}/room-keys-thread.png")
+    page.keyboard.press("ArrowLeft")
+    expect(line("Keys root")).to_be_focused()
+    # t writes in the thread; Esc leaves its box for its messages, then
+    # closes it for the timeline.
+    page.keyboard.press("t")
+    expect(page.get_by_role("textbox", name="Reply in thread")).to_be_focused()
+    page.keyboard.press("Escape")
+    expect(thread_line("Keys reply")).to_be_focused()
+    page.keyboard.press("Escape")
+    expect(thread).to_have_count(0)
+    expect(line("Keys root")).to_be_focused()
+
+    # The room's info, by m: from a line with no thread of its own, →
+    # goes to its controls; Esc closes it, for the line.
+    page.keyboard.press("j")
+    expect(line("Keys latest")).to_be_focused()
+    page.keyboard.press("m")
+    info = page.get_by_role("complementary", name="Room info")
+    expect(info.get_by_role("button").first).to_be_visible(timeout=15000)
+    page.keyboard.press("ArrowRight")
+    expect(info.locator(":focus")).to_have_count(1)
+    page.screenshot(path=f"{SHOTS}/room-keys-info.png")
+    page.keyboard.press("Escape")
+    expect(info).to_have_count(0)
+    expect(line("Keys latest")).to_be_focused()
+
+    # In the box, Ctrl+B marks what is typed next.
+    page.keyboard.press("i")
+    expect(box).to_be_focused()
+    page.keyboard.press("Control+b")
+    page.keyboard.type("bold")
+    expect(box).to_have_value("**bold**")
+    page.keyboard.press("Control+a")
+    page.keyboard.press("Backspace")
+    expect(box).to_have_value("")
+    return {}
+
+
 STEPS = {
     f.__name__: f
-    for f in [read, archive, undo, label, search, reply, matrix, todos, home, history, trash, attachment, tabs, room_draft, hostile, hostile_matrix, room_history]
+    for f in [read, archive, undo, label, search, reply, matrix, todos, home, history, trash, attachment, tabs, room_draft, hostile, hostile_matrix, room_history, room_keys]
 }
 
 step = STEPS[sys.argv[1]]

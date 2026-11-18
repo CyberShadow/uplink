@@ -314,4 +314,24 @@ with subtest("a room's history loads a page at a time as its top comes into view
         assert result["loaded"] == result["shown"] + 50, (browser, result)
         assert abs(result["moved"]) < 1, (browser, result)
 
+with subtest("a room is moved through by the keyboard alone: its regions, a thread, its info"):
+    keys = matrix(bob, "POST", "/createRoom", {"name": "Keys", "invite": ["@alice:localhost"]})["room_id"]
+    matrix(alice, "POST", f"/rooms/{keys}/join", {})
+    root = matrix(bob, "PUT", f"/rooms/{keys}/send/m.room.message/keys-1", {"msgtype": "m.text", "body": "Keys root"})["event_id"]
+    matrix(bob, "PUT", f"/rooms/{keys}/send/m.room.message/keys-2", {
+        "msgtype": "m.text",
+        "body": "Keys reply",
+        "m.relates_to": {"rel_type": "m.thread", "event_id": root},
+    })
+    matrix(bob, "PUT", f"/rooms/{keys}/send/m.room.message/keys-3", {"msgtype": "m.text", "body": "Keys latest"})
+    eventually(
+        "the room's messages to be stored",
+        lambda: machine.succeed(
+            f"sqlite3 {STATE}/db/uplink.sqlite \"SELECT count(*) FROM matrix_event WHERE body LIKE 'Keys %'\""
+        ).strip() == "3",
+        timeout=60,
+    )
+    for browser in ["chromium", "firefox"]:
+        ui(f"room_keys {browser}")
+
 machine.copy_from_vm("/tmp/screenshots", "")
