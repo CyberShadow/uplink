@@ -10,8 +10,7 @@ import { keepFocus } from '../keymap'
 import { dateTime } from '../format'
 import { displayName, senderColor, shown, storedHistory } from '../matrix'
 import styles from './Room.module.css'
-// Its header as the room info's.
-import panel from './RoomInfo.module.css'
+import { SidePanel } from './SidePanel'
 
 /** Keyed on `words`. */
 export function RoomSearch(props: { room: Room; words: string; close: () => void; open: (event: RoomEvent) => void }) {
@@ -45,13 +44,7 @@ export function RoomSearch(props: { room: Room; words: string; close: () => void
   const stored = storedHistory(room)
 
   return (
-    <aside class={styles.thread} aria-label="Search">
-      <header class={panel.header}>
-        <h2>Search messages</h2>
-        <button type="button" onMouseDown={keepFocus} onClick={props.close} aria-label="Close search">
-          ×
-        </button>
-      </header>
+    <SidePanel class={styles.thread} label="Search" title="Search messages" stops="button" back={null} close={props.close}>
       {error !== null && (
         <p class={styles.error} role="alert">
           {error}
@@ -94,7 +87,7 @@ export function RoomSearch(props: { room: Room; words: string; close: () => void
           )}
         </ol>
       )}
-    </aside>
+    </SidePanel>
   )
 }
 

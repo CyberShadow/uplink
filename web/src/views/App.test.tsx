@@ -1864,7 +1864,7 @@ describe('matrix', () => {
     expect(document.activeElement).toBe(thread.querySelector(`[data-event="${theirs.id}"]`))
     await user.keyboard('{Escape}')
     expect(screen.queryByRole('complementary', { name: 'Thread' })).toBeNull()
-    expect(document.activeElement).toBe(lineOf(theirs))
+    expect(document.activeElement).toBe(link)
   })
 
   it('moves between a room and its threads by the arrows', async () => {
@@ -1890,12 +1890,24 @@ describe('matrix', () => {
     await user.keyboard('{ArrowLeft}')
     expect(document.activeElement).toBe(line(root))
     expect(screen.getByRole('complementary', { name: 'Thread' })).toBeTruthy()
-    // From a line with no thread of its own, → goes to the one open.
+    // From a line with no thread of its own, → goes to the one open, where
+    // the focus was in it; ← back to that line.
     await user.keyboard('j{ArrowRight}')
+    expect(document.activeElement).toBe(threadLine('lunch then'))
+    await user.keyboard('{ArrowLeft}')
+    expect(document.activeElement).toBe(line(other))
+    // Home and End go to the first and last of the list that has the focus.
+    await user.keyboard('{Home}')
+    expect(document.activeElement).toBe(line(root))
+    await user.keyboard('{ArrowRight}{Home}')
     expect(document.activeElement).toBe(threadLine('Plans'))
-    // t writes to it, from the room's line too; Esc leaves its box for
-    // its messages, at the latest.
-    await user.keyboard('{ArrowLeft}t')
+    await user.keyboard('{End}')
+    expect(document.activeElement).toBe(threadLine('lunch then'))
+    // Enter writes to the thread, from its messages; t, from the room's
+    // line too. Esc leaves its box for its messages, at the latest.
+    await user.keyboard('{Enter}')
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Reply in thread' }))
+    await user.keyboard('{Escape}{ArrowLeft}t')
     expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Reply in thread' }))
     await user.keyboard('{Escape}')
     expect(document.activeElement).toBe(threadLine('lunch then'))
@@ -1907,6 +1919,86 @@ describe('matrix', () => {
     await user.keyboard('j{ArrowRight}')
     await waitFor(() => expect(document.activeElement).toBe(threadLine('Elsewhere')))
     expect(line(other)).not.toBe(document.activeElement)
+  })
+
+  it('moves through the parts of the window by F6, and within the nav and a panel by its keys', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    server.addRoom('Hall')
+    const first = server.receive(room.id, { body: 'lunch plans' })
+    const second = server.receive(room.id, { body: 'more lunch' })
+    const user = await start(`/rooms/${room.id}`)
+    const nav = document.querySelector('nav')!
+    const list = screen.getByRole('list', { name: 'Timeline' })
+    await within(list).findByText('more lunch')
+    const line = (event: { id: number }) => list.querySelector(`[data-event="${event.id}"]`)
+    const box = screen.getByRole('textbox', { name: 'Message Lounge' })
+    const searchBox = () => screen.getByRole('searchbox', { name: 'Search Lounge' })
+    const here = () => within(nav).getByRole('link', { name: 'Lounge' })
+    expect(document.activeElement).toBe(box)
+
+    // From the box, which is typed in, around: the search box, the nav at
+    // the view on show, the timeline at its latest, and the box again.
+    await user.keyboard('{F6}')
+    expect(document.activeElement).toBe(searchBox())
+    await user.keyboard('{F6}')
+    expect(document.activeElement).toBe(here())
+    await user.keyboard('{F6}')
+    expect(document.activeElement).toBe(line(second))
+    await user.keyboard('{F6}')
+    expect(document.activeElement).toBe(box)
+    // Back, to where the focus was in each.
+    await user.keyboard('{Shift>}{F6}{/Shift}k{Shift>}{F6}{/Shift}')
+    expect(document.activeElement).toBe(here())
+    await user.keyboard('{F6}')
+    expect(document.activeElement).toBe(line(first))
+
+    // In the nav, j/k and Home/End move among its links; Enter follows one.
+    await user.keyboard('{Shift>}{F6}{/Shift}')
+    const links = [...nav.querySelectorAll('a[href]')]
+    const at = links.indexOf(here())
+    await user.keyboard('k')
+    expect(document.activeElement).toBe(links[at - 1])
+    await user.keyboard('{Home}')
+    expect(document.activeElement).toBe(links[0])
+    await user.keyboard('{End}')
+    expect(document.activeElement).toBe(links.at(-1))
+    expect(location.pathname).toBe(`/rooms/${room.id}`)
+
+    // With nothing focused, which is the view's, F6 goes to its first
+    // part, and Shift+F6 to the part before it.
+    await user.keyboard('{Escape}')
+    expect(document.activeElement).toBe(document.body)
+    await user.keyboard('{Shift>}{F6}{/Shift}')
+    expect(nav.contains(document.activeElement)).toBe(true)
+    await user.keyboard('{Escape}{F6}')
+    expect(document.activeElement).toBe(line(first))
+
+    // A search's results, beside the timeline: → goes to them, j/k move
+    // among them, ← goes back, and → to where the focus was in them.
+    await user.keyboard('/lunch{Enter}')
+    const results = await screen.findByRole('list', { name: 'Results' })
+    const found = within(results).getAllByRole('button')
+    expect(found).toHaveLength(2)
+    await user.keyboard('{F6}')
+    expect(document.activeElement).toBe(line(first))
+    await user.keyboard('{ArrowRight}')
+    expect(document.activeElement).toBe(found[0])
+    await user.keyboard('j')
+    expect(document.activeElement).toBe(found[1])
+    await user.keyboard('{ArrowLeft}')
+    expect(document.activeElement).toBe(line(first))
+    await user.keyboard('{ArrowRight}')
+    expect(document.activeElement).toBe(found[1])
+    // F6 goes on from the box to the panel. Esc, in it, closes it for the
+    // timeline.
+    await user.keyboard('{ArrowLeft}{F6}')
+    expect(document.activeElement).toBe(box)
+    await user.keyboard('{F6}')
+    expect(document.activeElement).toBe(found[1])
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('complementary', { name: 'Search' })).toBeNull()
+    expect(document.activeElement).toBe(line(first))
   })
 
   it('moves through the nav by Alt and the arrows, from the box too, and to unread with Shift', async () => {

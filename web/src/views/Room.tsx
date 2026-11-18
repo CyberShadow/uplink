@@ -22,7 +22,8 @@ import type {
 } from '../generated/protocol'
 import { useServices } from '../context'
 import { isLocal, type LocalSend, type Outgoing } from '../stores/matrix'
-import { focusShown, keepFocus, lines, pages, useKeymap } from '../keymap'
+import { keepFocus, lines, pages, useKeymap } from '../keymap'
+import { enterRegion, useRegion } from '../regions'
 import styles from './Room.module.css'
 import { RoomAvatar } from './RoomAvatar'
 import { date, dateTime, time } from '../format'
@@ -92,14 +93,15 @@ function Timeline(props: { room: Room; words: string | null }) {
   const listed = useRef<HTMLOListElement>(null)
   // From no line (those of a list have its own), to the latest.
   const toLatest = () => moveLine(listed.current!, -1)
+  const toEarliest = () => lineOf(listed.current!)?.focus()
   const focusLine = (event: RoomEventId) => lineOf(listed.current!, event)?.focus()
-  /** From a thread, to its root's line; or, where that is not shown, to
-   * the latest. */
-  const toRoom = (root: RoomEventId) => {
-    const line = lineOf(listed.current!, root)
+  // Back to where the focus was in it; else, beside a thread, to its
+  // root's line, if shown; else, to the latest.
+  useRegion('timeline', listed, (last) => {
+    const line = last ?? (panel?.type === 'thread' ? lineOf(listed.current!, panel.root) : null)
     if (line) line.focus()
     else toLatest()
-  }
+  })
   const reading = useReading(room, events, me, listed, scroller)
   const behind = reading.behind.length > 0 || reading.more
   useKeymap({
@@ -107,6 +109,8 @@ function Timeline(props: { room: Room; words: string | null }) {
     write,
     label: () => setTagging(true),
     ...lines(toLatest, toLatest),
+    first: toEarliest,
+    last: toLatest,
     ...scrolling,
     jumpToUnread: reading.jumpToFirstUnread,
     nextMention: reading.nextMention,
@@ -216,8 +220,6 @@ function Timeline(props: { room: Room; words: string | null }) {
               readers={readers}
               act={act}
               openThread={(root, focus) => setPanel({ type: 'thread', root, focus })}
-              threadOpen={panel?.type === 'thread' ? panel.root : null}
-              toRoom={null}
               details={(event) => setPanel({ type: 'message', event })}
               openMember={openMember}
               target={mode.type === 'new' ? null : mode.event.id}
@@ -227,7 +229,7 @@ function Timeline(props: { room: Room; words: string | null }) {
         </div>
         <Typing users={timeline.typing.value} />
         {room.membership === 'joined' && matrix.drafts.drafts.value !== null && (
-          <Composer
+          <RoomBox
             room={room}
             at={at}
             textarea={composer}
@@ -287,16 +289,7 @@ function Timeline(props: { room: Room; words: string | null }) {
           room={room}
           opened={panel}
           me={me}
-          toRoom={() => toRoom(panel.root)}
-          leave={() => {
-            setPanel(null)
-            toRoom(panel.root)
-          }}
-          close={() => {
-            setPanel(null)
-            // From the thread's box, back to the room's.
-            if (composer.current) focusShown(composer.current)
-          }}
+          close={() => setPanel(null)}
           openMember={openMember}
         />
       )}
@@ -304,6 +297,12 @@ function Timeline(props: { room: Room; words: string | null }) {
       {tagging && <RoomTagPicker rooms={[room]} close={() => setTagging(false)} />}
     </div>
   )
+}
+
+/** The room's box: a region of the window. */
+function RoomBox(props: Parameters<typeof Composer>[0]) {
+  useRegion('box', props.textarea, () => props.textarea.current!.focus())
+  return <Composer {...props} />
 }
 
 /** A message's details, while it is in the timeline. */
@@ -354,22 +353,17 @@ export function Events(props: {
   /** Of the main timeline, opens a thread by its root, and what of it
    * has the focus then. */
   openThread: ((root: RoomEventId, focus: ThreadOpened['focus']) => void) | null
-  /** Of the main timeline, the root of the thread open beside it, if
-   * one. */
-  threadOpen: RoomEventId | null
-  /** Of a thread, gives the focus to the room's timeline. */
-  toRoom: (() => void) | null
   /** Of the main timeline, shows a message's details. */
   details: ((event: RoomEventId) => void) | null
   /** Opens a member's profile, by their user id. */
   openMember: (user: string) => void
   /** The event replied to or edited, if any, which its line shows. */
   target: RoomEventId | null
-  /** What Esc does first, from a line: of the main timeline, closes the
-   * panel beside it, if one, keeping the line; of a thread, closes it. */
+  /** Of the main timeline, closes the panel beside it, if one: what Esc
+   * does first, from a line, keeping it. */
   closePanel: (() => void) | null
 }) {
-  const { room, me, overlay, act, openThread, toRoom, details, openMember, closePanel } = props
+  const { room, me, overlay, act, openThread, details, openMember, closePanel } = props
   const { matrix } = useServices()
   const [reacting, setReacting] = useState<{ event: RoomEventId; how: Reacting } | null>(null)
   // The line whose deleting is being asked about.
@@ -407,16 +401,17 @@ export function Events(props: {
         const can = focused()
         ;(can.thread ?? can.replyInThread)?.()
       },
+      first: () => lineOf(props.list.current!)?.focus(),
+      last: () => moveLine(props.list.current!, 'last'),
       ...(openThread && {
-        // The line's own thread; else, the one open; else, the one it
-        // would begin.
-        intoThread: () => {
+        // The line's own thread; else, the panel open; else, the thread
+        // the line would begin.
+        right: () => {
           const can = focused()
-          const root = can.thread ? can.id : (props.threadOpen ?? (can.replyInThread ? can.id : null))
-          if (root !== null) openThread(root, 'first')
+          if (can.thread) openThread(can.id, 'first')
+          else if (!enterRegion('panel') && can.replyInThread) openThread(can.id, 'first')
         },
       }),
-      ...(toRoom && { outOfThread: toRoom }),
       react: () => {
         const can = focused()
         if (can.react) setReacting({ event: can.id, how: 'key' })
@@ -478,17 +473,17 @@ export function Events(props: {
   )
 }
 
-/** The line of `event` in `list`, if shown. */
-function lineOf(list: HTMLElement, event: RoomEventId): HTMLElement | null {
-  return list.querySelector<HTMLElement>(`[data-event="${event}"]`)
+/** The line of `event` in `list`, if shown; or the first of its lines. */
+function lineOf(list: HTMLElement, event?: RoomEventId): HTMLElement | null {
+  return list.querySelector<HTMLElement>(event === undefined ? '[data-event]' : `[data-event="${event}"]`)
 }
 
 /** Moves the focus to the line `by` after the one that has it in `list`,
  * or else to its last, the latest. */
-export function moveLine(list: HTMLElement, by: 1 | -1) {
+export function moveLine(list: HTMLElement, by: 1 | -1 | 'last') {
   const lines = [...list.querySelectorAll<HTMLElement>('[data-event]')]
   const at = lines.findIndex((l) => l.contains(document.activeElement))
-  const to = at === -1 ? lines.length - 1 : Math.max(0, Math.min(at + by, lines.length - 1))
+  const to = at === -1 || by === 'last' ? lines.length - 1 : Math.max(0, Math.min(at + by, lines.length - 1))
   lines[to]?.focus()
 }
 

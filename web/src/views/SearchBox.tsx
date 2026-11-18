@@ -1,4 +1,6 @@
+import { useRef } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
+import { useRegion } from '../regions'
 import { useServices } from '../context'
 import { searchPath } from './App'
 import { roomSearchPath } from './Room'
@@ -13,8 +15,11 @@ export function SearchBox() {
   const room = roomId === undefined ? undefined : matrix.rooms.value?.find((r) => String(r.id) === roomId)
   const shown = path.match(room ? /^\/rooms\/\d+\/search\/([^/]+)/ : /^\/search\/([^/]+)/)?.[1]
   const label = room ? `Search ${room.name}` : 'Search'
+  const form = useRef<HTMLFormElement>(null)
+  useRegion('search', form, () => form.current!.querySelector('input')!.focus())
   return (
     <form
+      ref={form}
       class={styles.search}
       role="search"
       onSubmit={(event) => {

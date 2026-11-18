@@ -3948,11 +3948,13 @@ and `r` go back to it. Out of the box, `j`/`k` move to a line (from none, to the
 thread's list, within it), as the mail list's, and keys act on its
 message, as Slack's do on the one it focuses: `r` replies, `e` edits
 one's own, `t` opens its thread or replies in one, at its box; `→`, as
-Slack's, at its first message (the line's own thread; else the one open
-beside the timeline; else the one the line would begin), and `←`, from
-a thread's message, goes back to its root's line in the timeline (where
-that is not shown, to the latest), so that the two move between the
-timeline and the thread open; `+` opens its
+Slack's, at its first message (the line's own thread; else the panel
+open beside the timeline, whichever it is, where the focus was in it
+last; else the thread the line would begin), and `←`, from within a
+panel, goes back to the timeline (where the focus was in it last; else,
+from a thread, its root's line, or the latest), so that the two move
+between the timeline and the panel open; in a thread, `i`/`Enter` write
+in its own box; `+` opens its
 reactions (at the first: `←`/`→` move along them, `Enter` takes one,
 other keys type one into their box; the focus leaving closes them, and
 closed, the line has it back), `p` pins or unpins it and `Delete` (on macOS, the
@@ -4068,6 +4070,21 @@ as a native list does), `Enter` chooses and `Esc` closes.
   (what a fold hides is passed over), or from its end if none is;
   `Alt+Shift+↑`/`↓` to the nearest with unread (a count, or a bold
   name). They repeat while held.
+- **`F6` moves through the regions** of the window, and `Shift+F6`
+  back, around, as Slack's sections, from within fields too (a function
+  key is no field's own): the search box, the nav, and the view; in a
+  room, in place of the view, its timeline, its box and the panel beside
+  it (`web/src/regions.ts`). Each says where the focus goes in it: the
+  nav, to the link of the view on show; a timeline or a panel, back to
+  where the focus was in it last, or else to its latest line, or its
+  first control. One that takes no focus (hidden, or empty) is passed
+  over. While nothing has the focus, it is the view's: `F6` goes to the
+  first region within it, `Shift+F6` to the one before it. In the nav,
+  and in a panel beside a room (`SidePanel`: a thread, a search's
+  results, the room's info, a member, a message's details), `j`/`k` and
+  the arrows move among its links, lines or controls, `Home`/`End` to
+  the first and last, as in a timeline; `Enter` is the control's own. A
+  player that has the focus keeps the arrows and Space, to seek and play.
 - **`Esc` goes up**, pressed again and again, to a known place, first
   undoing what was done last: a field leaves itself (once it has
   cancelled what it was doing: a reply, a completion); a reply or an
@@ -4077,8 +4094,8 @@ as a native list does), `Enter` chooses and `Esc` closes.
   thread's box leaves itself for the thread's messages, at the latest,
   for `j`/`k` to move through them; from a
   line, it closes a room's panel first (the details `Enter` opened, a
-  thread), keeping one's place (from a thread's own line, its root's in
-  the timeline), then leaves the line, as anything else
+  thread), keeping one's place (from within the panel, for where the
+  focus was in the timeline), then leaves the line, as anything else
   that has the focus (a link); from nothing, it closes a room's panel (a thread, the
   info, a search, a message's details), takes an open conversation back
   to its list, selects none, and else goes home. Dialogs, menus and

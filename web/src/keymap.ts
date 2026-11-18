@@ -44,8 +44,12 @@ export type Action =
   | 'delete'
   | 'edit'
   | 'thread'
-  | 'intoThread'
-  | 'outOfThread'
+  | 'right'
+  | 'left'
+  | 'first'
+  | 'last'
+  | 'nextRegion'
+  | 'previousRegion'
   | 'react'
   | 'pin'
   | 'spam'
@@ -163,8 +167,12 @@ export const KEYMAP: Binding[] = [
   },
   { action: 'edit', keys: ['e'], label: 'e', help: 'Edit the message (in a room, your own); in the calendar: the event open, if your own' },
   { action: 'thread', keys: ['t'], label: 't', help: 'Open the message\'s thread, or reply in one (in a room)' },
-  { action: 'intoThread', keys: ['ArrowRight'], label: '→', help: "Open the message's thread, at its first message; or go to the thread open (in a room)" },
-  { action: 'outOfThread', keys: ['ArrowLeft'], label: '←', help: "From a thread's message, back to the room's" },
+  { action: 'right', keys: ['ArrowRight'], label: '→', help: "Open the message's thread, at its first message; or go to the panel beside the room (in a room)" },
+  { action: 'left', keys: ['ArrowLeft'], label: '←', help: "From the panel beside a room, back to the room's messages" },
+  { action: 'first', keys: ['Home'], label: 'Home', help: 'The first of a list that has the focus (in a room: the earliest message shown)' },
+  { action: 'last', keys: ['End'], label: 'End', help: 'The last of a list that has the focus (in a room: the latest message)' },
+  { action: 'nextRegion', keys: ['F6'], label: 'F6', help: "The next part of the window: the search box, the nav, the view (a room's messages, its box, the panel beside it); also while typing" },
+  { action: 'previousRegion', keys: ['Shift+F6'], label: 'Shift+F6', help: 'The previous part of the window' },
   { action: 'react', keys: ['[Shift]++'], label: '+', help: 'React to the message (in a room)' },
   { action: 'pin', keys: ['p'], label: 'p', help: 'Pin or unpin the message (in a room)' },
   { action: 'spam', keys: ['[Shift]+!'], label: '!', help: 'Report spam, or not spam' },
@@ -371,11 +379,12 @@ export function boundActions(): Set<Action> {
   return new Set(windowBindings.flat().map((b) => b.binding.action))
 }
 /** Whether a press is a field's own: what is typed into one, but with
- * Ctrl, Cmd or Alt held. */
+ * Ctrl, Cmd or Alt held, or a function key. */
 const typed = (event: KeyboardEvent) =>
   !event.ctrlKey &&
   !event.metaKey &&
   !event.altKey &&
+  !/^F\d+$/.test(event.key) &&
   (event.target as Element).matches('[contenteditable],input,select,textarea')
 // tinykeys' own ignores fields, and repeats: those, `sequences` handles.
 const windowKeys = sequences(
@@ -395,7 +404,9 @@ const windowKeys = sequences(
     typed(event) ||
     // As are the keys that activate a control that has the focus: a link
     // in a message, Tabbed to.
-    (ACTIVATE.includes(event.key) && (event.target as Element).matches('a[href],button,summary')),
+    (ACTIVATE.includes(event.key) && (event.target as Element).matches('a[href],button,summary')) ||
+    // And those a player that has the focus seeks and plays by.
+    (PLAY.includes(event.key) && (event.target as Element).matches('audio,video')),
 )
 window.addEventListener('keydown', windowKeys)
 
@@ -409,6 +420,7 @@ export function takeKeys(frame: Window) {
 }
 
 const ACTIVATE = ['Enter', ' ']
+const PLAY = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', ' ']
 
 /** How long a sequence waits for its next press; on the window, until
  * what may follow is shown, after which it waits as long as it takes. */

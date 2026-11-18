@@ -6,11 +6,11 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import type { MemberAction, MemberInfo, Room, RoomPowers } from '../generated/protocol'
 import { useServices } from '../context'
-import { keepFocus } from '../keymap'
 import { MEMBER_ACTIONS, displayName, roomLink, senderColor } from '../matrix'
 import styles from './RoomInfo.module.css'
 import { MemberAvatar } from './RoomEvent'
 import { useOpenJoined } from './RoomStarter'
+import { CONTROLS, SidePanel } from './SidePanel'
 
 export function RoomInfo(props: { room: Room; close: () => void; openMember: (user: string) => void }) {
   const { room } = props
@@ -19,13 +19,7 @@ export function RoomInfo(props: { room: Room; close: () => void; openMember: (us
   const state = members.state.value
   const joined = room.membership === 'joined'
   return (
-    <aside class={styles.panel} aria-label="Room info">
-      <header class={styles.header}>
-        <h2>Room info</h2>
-        <button type="button" onMouseDown={keepFocus} onClick={props.close} aria-label="Close room info">
-          ×
-        </button>
-      </header>
+    <SidePanel class={styles.panel} label="Room info" title="Room info" stops={CONTROLS} back={null} close={props.close}>
       {members.error.value !== null && (
         <p class={styles.error} role="alert">
           {members.error.value}
@@ -41,7 +35,7 @@ export function RoomInfo(props: { room: Room; close: () => void; openMember: (us
           <MemberList room={room} members={state.members} open={props.openMember} />
         </>
       )}
-    </aside>
+    </SidePanel>
   )
 }
 
@@ -248,18 +242,14 @@ export function MemberPanel(props: {
   const roleName = member && role(member)
   const membership = member ? MEMBERSHIP[member.membership] : members.state.value && 'Not a member'
   return (
-    <aside class={styles.panel} aria-label="Member">
-      <header class={styles.header}>
-        {props.back && (
-          <button type="button" onMouseDown={keepFocus} onClick={props.back} aria-label="Back to room info">
-            ‹
-          </button>
-        )}
-        <h2>Member</h2>
-        <button type="button" onMouseDown={keepFocus} onClick={props.close} aria-label="Close member">
-          ×
-        </button>
-      </header>
+    <SidePanel
+      class={styles.panel}
+      label="Member"
+      title="Member"
+      stops={CONTROLS}
+      back={props.back && { label: 'Back to room info', go: props.back }}
+      close={props.close}
+    >
       {members.error.value !== null && (
         <p class={styles.error} role="alert">
           {members.error.value}
@@ -284,7 +274,7 @@ export function MemberPanel(props: {
         </>
       )}
       {member && room.membership === 'joined' && <MemberActions room={room} member={member} />}
-    </aside>
+    </SidePanel>
   )
 }
 

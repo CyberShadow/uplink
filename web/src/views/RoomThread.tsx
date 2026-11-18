@@ -5,23 +5,17 @@
 import { useLayoutEffect, useMemo, useRef } from 'preact/hooks'
 import type { Room } from '../generated/protocol'
 import { useServices } from '../context'
-import { focusShown, keepFocus, pages } from '../keymap'
+import { focusShown, pages, useKeymap } from '../keymap'
 import { TEXT, shown } from '../matrix'
 import { Events, NO_READERS_BY_EVENT, type ThreadOpened, moveLine, overlaid, rows } from './Room'
 import { Composer, type Mode, useMode } from './RoomComposer'
 import styles from './Room.module.css'
-// Its header as the room info's.
-import panel from './RoomInfo.module.css'
+import { SidePanel } from './SidePanel'
 
 export function ThreadPanel(props: {
   room: Room
   opened: ThreadOpened
   me: string
-  /** Gives the focus to the room's timeline: to its root's line. */
-  toRoom: () => void
-  /** Closes it, for the room's timeline. */
-  leave: () => void
-  /** Closes it, for the room's box. */
   close: () => void
   openMember: (user: string) => void
 }) {
@@ -60,14 +54,10 @@ export function ThreadPanel(props: {
     if (opened.focus === 'first') listed.current!.querySelector<HTMLElement>('[data-event]')!.focus()
     else if (composer.current) focusShown(composer.current)
   }, [loaded, opened])
+  // From its messages, its own box is written in, not the room's.
+  useKeymap({ write: () => composer.current?.focus() }, { focus: listed })
   return (
-    <aside class={styles.thread} aria-label="Thread">
-      <header class={panel.header}>
-        <h2>Thread</h2>
-        <button type="button" onMouseDown={keepFocus} onClick={props.close} aria-label="Close thread">
-          ×
-        </button>
-      </header>
+    <SidePanel class={styles.thread} label="Thread" title="Thread" stops="[data-event]" back={null} close={props.close}>
       {thread.error.value !== null && (
         <p class={styles.error} role="alert">
           {thread.error.value}
@@ -86,12 +76,10 @@ export function ThreadPanel(props: {
             readers={NO_READERS_BY_EVENT}
             act={act}
             openThread={null}
-            threadOpen={null}
-            toRoom={props.toRoom}
             details={null}
             openMember={props.openMember}
             target={mode.type === 'new' ? null : mode.event.id}
-            closePanel={props.leave}
+            closePanel={null}
           />
         </ol>
       </div>
@@ -109,6 +97,6 @@ export function ThreadPanel(props: {
           back={() => moveLine(listed.current!, -1)}
         />
       )}
-    </aside>
+    </SidePanel>
   )
 }

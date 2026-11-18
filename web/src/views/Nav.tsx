@@ -5,6 +5,7 @@ import { useLocation } from 'preact-iso'
 import { date, dateTime, duration } from '../format'
 import { historyProgress } from '../matrix'
 import { keepFocus, returnFocus, useKeymap } from '../keymap'
+import { stopKeys, useRegion } from '../regions'
 import type { Account, Failing, Label, ListingProgress, MailProvider, Mark, MatrixAccount, Place, Room, RoomId } from '../generated/protocol'
 import { isInbox, markOf, NONE, shows, strongest } from '../marks'
 import { bySpaceOrder, moveSpace } from '../spaceOrder'
@@ -342,6 +343,13 @@ export function Nav(props: { open: boolean }) {
       return
     }
   }
+  // As a region, its links are moved among, from the one of the view on
+  // show; Enter follows one.
+  const links = () => [...nav.current!.querySelectorAll<HTMLElement>('a[href]')]
+  useRegion('nav', nav, () =>
+    (nav.current!.querySelector<HTMLElement>('a[aria-current]') ?? links().at(0))?.focus(),
+  )
+  useKeymap(stopKeys(links), { focus: nav })
   useKeymap({
     navNext: step(1, false),
     navPrevious: step(-1, false),

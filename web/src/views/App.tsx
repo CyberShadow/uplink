@@ -8,6 +8,7 @@ import { ServicesContext, useServices } from '../context'
 import { useFavicon } from '../favicon'
 import { Attention } from '../marks'
 import { restoreFocus } from '../historyFocus'
+import { cycleRegion, enterRegion, useRegion } from '../regions'
 import { keepFocus, useKeymap } from '../keymap'
 import type { Client } from '../stores/client'
 import { Calendar, calendarPath, defaultView, today } from './Calendar'
@@ -70,6 +71,9 @@ function Shell() {
     if (!main.current!.contains(focused)) focused.blur()
   }, [path])
 
+  // The view is where the focus is while nothing has it.
+  useRegion('main', main, () => (document.activeElement as HTMLElement).blur())
+
   /** The account on show, or else the first. */
   const account = () => {
     const shown = path.match(/^\/(?:mail|all)\/([^/]+)/)?.[1]
@@ -107,7 +111,9 @@ function Shell() {
       const draft = await drafts.create(id, EMPTY, null)
       if (draft) route(composePath(draft))
     },
-    search: () => document.querySelector<HTMLInputElement>('input[type=search]')?.focus(),
+    search: () => enterRegion('search'),
+    nextRegion: () => cycleRegion(1),
+    previousRegion: () => cycleRegion(-1),
     switch: () => setSwitching((shown) => !shown),
     help: () => setHelp((shown) => !shown),
   })

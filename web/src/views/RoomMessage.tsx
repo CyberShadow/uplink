@@ -5,11 +5,11 @@
 
 import type { MemberReceipt, Room, RoomEvent } from '../generated/protocol'
 import { dateTime } from '../format'
-import { keepFocus } from '../keymap'
 import { displayName } from '../matrix'
 import { pretty, ReactionKey, Versions } from './RoomEvent'
 import panel from './RoomInfo.module.css'
 import styles from './Room.module.css'
+import { CONTROLS, SidePanel } from './SidePanel'
 
 export function MessageDetails(props: {
   room: Room
@@ -20,13 +20,7 @@ export function MessageDetails(props: {
   const { room, event } = props
   const kind = event.msgtype === null ? event.kind : `${event.kind} (${event.msgtype})`
   return (
-    <aside class={panel.panel} aria-label="Message details">
-      <header class={panel.header}>
-        <h2>Message</h2>
-        <button type="button" onMouseDown={keepFocus} onClick={props.close} aria-label="Close message details">
-          ×
-        </button>
-      </header>
+    <SidePanel class={panel.panel} label="Message details" title="Message" stops={CONTROLS} back={null} close={props.close}>
       <dl class={styles.facts}>
         <dt>From</dt>
         <dd>
@@ -69,6 +63,6 @@ export function MessageDetails(props: {
         <h3>Source</h3>
         <pre class={styles.raw}>{pretty(event.raw)}</pre>
       </section>
-    </aside>
+    </SidePanel>
   )
 }

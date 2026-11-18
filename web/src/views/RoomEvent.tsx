@@ -171,7 +171,7 @@ export function EventRow(
 
   return (
     // Focusable, as the line the keys act on (`Events`).
-    <li ref={row} class={classes.filter(Boolean).join(' ')} id={`event-${event.id}`} tabIndex={-1} data-event={event.id}>
+    <li ref={row} class={classes.filter(Boolean).join(' ')} id={`${props.openThread ? '' : 'thread-'}event-${event.id}`} tabIndex={-1} data-event={event.id}>
       <time class={styles.time} dateTime={new Date(event.ts).toISOString()} title={dateTime(event.ts)}>
         {time(event.ts)}
       </time>
