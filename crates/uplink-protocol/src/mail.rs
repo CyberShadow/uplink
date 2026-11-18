@@ -317,6 +317,11 @@ pub struct EntriesAdded {
 #[serde(deny_unknown_fields)]
 pub struct EntriesRemoved {
     pub entries: Vec<EntryId>,
+    /// The keys of the conversations they were of, as their items are
+    /// keyed: gone, or of the entries `remaining`.
+    pub conversations: Vec<String>,
+    /// An entry of each of those conversations that holds others still.
+    pub remaining: Vec<EntryId>,
 }
 
 /// Whether the user has the rule, now.

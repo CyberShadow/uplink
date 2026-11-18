@@ -1000,7 +1000,10 @@ than it buffers is closed; the client reconnects and resumes.
 
 `ServerEvent` variants by domain:
 
-- **Mail**: `EntriesAdded`, `EntriesRemoved`, `LabelsChanged` (desired
+- **Mail**: `EntriesAdded`, `EntriesRemoved { entries, conversations,
+  remaining }` (the keys of the conversations they were of, gone or held
+  still by an entry of each `remaining`, so that what lists them is
+  checked again of those alone), `LabelsChanged` (desired
   and observed membership per entry and label), `LabelListChanged`,
   `ImageRuleChanged { rule, always }` (§8.9).
   Events carry ids, not content, since they are stored in the log;

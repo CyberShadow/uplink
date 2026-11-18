@@ -1255,6 +1255,9 @@ pub enum ServerEvent {
 pub struct Changed {
     /// Mail by its entries: each of its conversation.
     pub entries: Vec<EntryId>,
+    /// Mail by its conversations' keys: of entries gone, which name no
+    /// conversation now (those that hold others are named by them too).
+    pub conversations: Vec<String>,
     pub rooms: Vec<RoomId>,
     pub todos: Vec<TodoId>,
     /// The events, which the log names only by their calendars: all.
@@ -1312,6 +1315,7 @@ impl Changed {
     /// With what changed in `other` too.
     pub fn merge(&mut self, other: Changed) {
         self.entries.extend(other.entries);
+        self.conversations.extend(other.conversations);
         self.rooms.extend(other.rooms);
         self.todos.extend(other.todos);
         self.events |= other.events;
@@ -1333,11 +1337,13 @@ impl Changed {
             ServerEvent::TodosChanged(changed) => self.todos.extend(&changed.todos),
             ServerEvent::CalendarChanged(_) => self.events = true,
             ServerEvent::SeenChanged => self.seen = true,
-            // Gone, they are of no conversation to check again; a label
-            // renamed or deleted, of what its name meant.
-            ServerEvent::EntriesRemoved(_) | ServerEvent::LabelListChanged(_) => {
-                self.everything = true
+            ServerEvent::EntriesRemoved(removed) => {
+                self.conversations
+                    .extend(removed.conversations.iter().cloned());
+                self.entries.extend(&removed.remaining);
             }
+            // A label renamed or deleted, of what its name meant.
+            ServerEvent::LabelListChanged(_) => self.everything = true,
             ServerEvent::ImageRuleChanged(_)
             | ServerEvent::AccountChanged(_)
             | ServerEvent::DraftEdited(_)

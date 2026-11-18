@@ -759,7 +759,16 @@ inline: boolean, };
 
 export type EntriesAdded = { entries: Array<EntryId>, };
 
-export type EntriesRemoved = { entries: Array<EntryId>, };
+export type EntriesRemoved = { entries: Array<EntryId>, 
+/**
+ * The keys of the conversations they were of, as their items are
+ * keyed: gone, or of the entries `remaining`.
+ */
+conversations: Array<string>, 
+/**
+ * An entry of each of those conversations that holds others still.
+ */
+remaining: Array<EntryId>, };
 
 export type LabelsChanged = { changes: Array<LabelState>, };
 
@@ -1776,4 +1785,4 @@ export type EventChangeKind = "create" | "update" | "delete";
 export type CalendarChanged = { account: string, };
 
 /** Of these types: what `Hello` says the client speaks. */
-export const PROTOCOL_VERSION = "afd6893aeca57c55"
+export const PROTOCOL_VERSION = "bd205a67e6c1baad"

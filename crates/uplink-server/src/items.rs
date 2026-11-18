@@ -73,11 +73,13 @@ fn of_spaces(query: &Query) -> bool {
     uplink_query::names(query, &|t| matches!(t, Term::Space(_)))
 }
 
-/// The keys of the conversations of the entries `changed` names.
+/// The keys of the conversations `changed` names: of its entries, and
+/// those of entries gone.
 fn conversations(tx: &Transaction, changed: &Changed) -> Result<HashSet<String>, ServerError> {
     Ok(mail::conversation_keys(tx, &changed.entries)
         .map_err(internal)?
         .into_iter()
+        .chain(changed.conversations.iter().cloned())
         .collect())
 }
 
@@ -1437,6 +1439,17 @@ mod tests {
                     }
                 }
                 _ => unreachable!(),
+            }
+            // Now and then mail gone: of a conversation that holds others
+            // still (`t3`'s, of every twelfth step from the third), and of
+            // one it was alone in.
+            if step >= 23 && step % 12 == 11 {
+                let gone = format!("m{}", step - 20);
+                let removed = MailboxObserved {
+                    removed: vec![format!("{gone}-1"), gone],
+                    ..observed(None, vec![], vec![])
+                };
+                dispatcher.observe("a".into(), removed).await.unwrap();
             }
             // Now and then places seen, and no longer (undone).
             match step % 7 {

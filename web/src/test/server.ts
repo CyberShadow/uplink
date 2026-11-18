@@ -385,7 +385,12 @@ export class FakeServer implements Requester, Subscriber, Blobs {
   /** The entry is gone from its account, as syncing finds. */
   remove(entry: Entry) {
     this.entries.splice(this.entries.indexOf(this.entries.find((e) => e.id === entry.id)!), 1)
-    this.observe(entry.account, [{ type: 'entries_removed', entries: [entry.id] }])
+    const threaded = entry.thread_id !== null
+    const conversation = threaded ? `${entry.account}/${entry.thread_id}` : `#${entry.id}`
+    const remaining = this.entries.find((e) => threaded && e.account === entry.account && e.thread_id === entry.thread_id)
+    this.observe(entry.account, [
+      { type: 'entries_removed', entries: [entry.id], conversations: [conversation], remaining: remaining ? [remaining.id] : [] },
+    ])
   }
 
   /** Adds an event to `account`'s calendar, as syncing would, without

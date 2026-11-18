@@ -295,14 +295,11 @@ impl Observation for MailboxObserved {
                 [entry.0],
                 |r| r.get::<_, bool>(0),
             )?;
-            tx.execute("DELETE FROM mail_entry WHERE id = ?1", [entry.0])?;
             removed.push(entry);
         }
         if !removed.is_empty() {
             description.push(format!("{} removed", messages(removed.len())));
-            events.push(ServerEvent::EntriesRemoved(EntriesRemoved {
-                entries: removed,
-            }));
+            events.push(ServerEvent::EntriesRemoved(remove(tx, removed)?));
         }
         // Mail sent from the account may have been synced back.
         reconciled |= compose::sends_synced(tx, account)?;
@@ -1318,4 +1315,35 @@ fn capitalize(s: &str) -> String {
         .next()
         .map(|c| c.to_uppercase().chain(chars).collect())
         .unwrap_or_default()
+}
+/// Removes the entries; of their conversations, those that hold others
+/// still, by one of them.
+fn remove(tx: &Transaction, entries: Vec<EntryId>) -> Result<EntriesRemoved> {
+    let conversations = crate::query::conversation_keys(tx, &entries)?;
+    let ids = serde_json::to_string(&entries.iter().map(|e| e.0).collect::<Vec<_>>())?;
+    let threads: Vec<(String, String)> = tx
+        .prepare(
+            "SELECT DISTINCT account_id, thread_id FROM mail_entry
+             WHERE id IN (SELECT value FROM json_each(?1)) AND thread_id IS NOT NULL",
+        )?
+        .query_map([&ids], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    tx.execute(
+        "DELETE FROM mail_entry WHERE id IN (SELECT value FROM json_each(?1))",
+        [&ids],
+    )?;
+    let mut remaining = vec![];
+    for (account, thread) in threads {
+        let other: Option<i64> = tx.query_row(
+            "SELECT min(id) FROM mail_entry WHERE account_id = ?1 AND thread_id = ?2",
+            [&account, &thread],
+            |r| r.get(0),
+        )?;
+        remaining.extend(other.map(EntryId));
+    }
+    Ok(EntriesRemoved {
+        entries,
+        conversations,
+        remaining,
+    })
 }
