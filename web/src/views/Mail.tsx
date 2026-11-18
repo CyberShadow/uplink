@@ -967,14 +967,17 @@ function ConversationView(props: {
  * Not while a message's frame loads (or loads anew, its document
  * changed): laying out the page would lay the frame out before its
  * styles are in, as Firefox warns; loaded, it is fitted, and scrolled to
- * again. */
+ * again. A frame has loaded the document it has once its load came
+ * with it: not by its `readyState`, as before it begins to load it has
+ * the browser's blank document, complete. */
 function useOpenAt(target: RefObject<HTMLElement>, content: RefObject<HTMLElement>, bar: RefObject<HTMLElement>) {
   useLayoutEffect(() => {
     const element = target.current!
     const within = content.current!
+    const loaded = new WeakMap<HTMLIFrameElement, string>()
     const pin = () => {
       const frames = [...within.querySelectorAll('iframe')]
-      if (frames.some((frame) => frame.contentDocument!.readyState !== 'complete')) return
+      if (frames.some((frame) => loaded.get(frame) !== frame.srcdoc)) return
       element.style.scrollMarginTop = `${bar.current!.offsetHeight}px`
       element.scrollIntoView({ block: 'start' })
     }
@@ -983,7 +986,8 @@ function useOpenAt(target: RefObject<HTMLElement>, content: RefObject<HTMLElemen
     observer.observe(within)
     // Before the frame's own handler fits it; so, pinned once it has.
     let frame = 0
-    const load = () => {
+    const load = (event: Event) => {
+      if (event.target instanceof HTMLIFrameElement) loaded.set(event.target, event.target.srcdoc)
       cancelAnimationFrame(frame)
       frame = requestAnimationFrame(pin)
     }
