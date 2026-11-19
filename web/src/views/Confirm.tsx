@@ -6,14 +6,15 @@
 import { useRef } from 'preact/hooks'
 import { useEscape, useTakeFocus } from '../keymap'
 import overlay from './Overlay.module.css'
+import { Backdrop } from './Backdrop'
 
 export function Confirm(props: { title: string; text: string; action: string; confirm: () => void; close: () => void }) {
   const button = useRef<HTMLButtonElement>(null)
   useTakeFocus(button)
   useEscape(props.close)
   return (
-    <div class={overlay.backdrop} onClick={props.close}>
-      <div class={overlay.dialog} role="alertdialog" aria-label={props.title} onClick={(e) => e.stopPropagation()}>
+    <Backdrop class={overlay.backdrop} close={props.close}>
+      <div class={overlay.dialog} role="alertdialog" aria-label={props.title}>
         <h2>{props.title}?</h2>
         <p>{props.text}</p>
         <div class={overlay.buttons}>
@@ -32,6 +33,6 @@ export function Confirm(props: { title: string; text: string; action: string; co
           </button>
         </div>
       </div>
-    </div>
+    </Backdrop>
   )
 }

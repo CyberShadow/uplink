@@ -54,6 +54,7 @@ export function Todos() {
     done: () => current && todos.edit(current.id, { field: 'done', done: current.done_at === null }),
     delete: () => current && todos.delete(current.id),
     add: () => adder.current?.focus(),
+    rename: () => current && setEditing(current.id),
   })
 
   return (
@@ -113,6 +114,9 @@ function Item(props: {
   const done = todo.done_at !== null
   const flagged = flaggedPath(todo)
   return (
+    // A row of the list, whose keys (j/k, Enter) are its own: the click is the
+    // pointer's way to them.
+    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
     <li
       ref={props.itemRef}
       class={[styles.item, props.focused && styles.focused, done && styles.done].filter(Boolean).join(' ')}

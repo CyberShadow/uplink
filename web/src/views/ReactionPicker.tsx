@@ -139,6 +139,8 @@ export function ReactionPicker(props: {
   const text = typed.trim()
 
   return (
+    // The keys of its controls, where they move among them.
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
     <div
       ref={picker}
       class={above ? `${styles.picker} ${styles.above}` : styles.picker}

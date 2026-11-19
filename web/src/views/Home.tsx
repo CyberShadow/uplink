@@ -124,6 +124,9 @@ export function Home() {
                 {rows.map((row) => {
                   const isFocused = row.key === focus
                   return (
+                    // A row of the list, whose keys (j/k, Enter) are its own: the click is the
+                    // pointer's way to them.
+                    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
                     <li
                       key={row.key}
                       ref={isFocused ? focused : undefined}

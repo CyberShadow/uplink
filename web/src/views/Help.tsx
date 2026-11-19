@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { ALT, type Binding, boundActions, KEYMAP, MOD, pendingSequence, useTakeFocus } from '../keymap'
 import styles from './Overlay.module.css'
+import { Backdrop } from './Backdrop'
 
 export function Help({ close }: { close: () => void }) {
   // Keys reach nothing behind it; Esc, or ? again, close it.
@@ -35,14 +36,13 @@ export function Help({ close }: { close: () => void }) {
     </table>
   )
   return (
-    <div class={styles.backdrop} onClick={close}>
+    <Backdrop class={styles.backdrop} close={close}>
       <div
         ref={dialog}
         class={styles.dialog}
         role="dialog"
         aria-label="Keyboard shortcuts"
         tabIndex={-1}
-        onClick={(e) => e.stopPropagation()}
       >
         <h2>Keyboard shortcuts</h2>
         <p class={styles.about}>
@@ -61,7 +61,7 @@ export function Help({ close }: { close: () => void }) {
           {rows(KEYMAP.filter((b) => !here.has(b.action)))}
         </section>
       </div>
-    </div>
+    </Backdrop>
   )
 }
 

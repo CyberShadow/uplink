@@ -11,6 +11,7 @@ import { restoreFocus } from '../historyFocus'
 import { cycleRegion, enterRegion, useRegion } from '../regions'
 import { keepFocus, useKeymap } from '../keymap'
 import type { Client } from '../stores/client'
+import { Backdrop } from './Backdrop'
 import { Calendar, calendarPath, defaultView, today } from './Calendar'
 import { Help, WhichKey } from './Help'
 import { Icon } from './Icon'
@@ -140,7 +141,7 @@ function Shell() {
         {status.value === 'connecting' && <span class={styles.status}>Connecting…</span>}
       </header>
       <Nav open={navOpen} />
-      {navOpen && <div class={styles.scrim} onClick={() => setNavOpen(false)} />}
+      {navOpen && <Backdrop class={styles.scrim} close={() => setNavOpen(false)} />}
       <main ref={main} class={styles.content}>
         {error && (
           <div class={styles.error} role="alert">

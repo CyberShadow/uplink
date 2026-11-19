@@ -4,6 +4,7 @@ import { useServices } from '../context'
 import { labelName, navLabels } from './Nav'
 import { type Check, Picker } from './Picker'
 import styles from './Overlay.module.css'
+import { Backdrop } from './Backdrop'
 
 /** A filterable list of an account's labels, one to choose. */
 function LabelsPicker(props: {
@@ -45,11 +46,11 @@ function useTargetAccount(targets: Thread[]): Account | null {
 
 function MixedAccounts(props: { name: string; close: () => void }) {
   return (
-    <div class={styles.backdrop} onClick={props.close}>
+    <Backdrop class={styles.backdrop} close={props.close}>
       <div class={styles.dialog} role="dialog" aria-label={props.name}>
         <p>Labels belong to one account; select messages of one account to label them.</p>
       </div>
-    </div>
+    </Backdrop>
   )
 }
 

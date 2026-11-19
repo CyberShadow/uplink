@@ -187,13 +187,28 @@ describe('mail', () => {
       await user.keyboard('{Enter}')
       const messages = within(await screen.findByRole('list', { name: 'Conversation' })).getAllByRole('listitem')
       expect(messages).toHaveLength(3)
-      const expanded = () => messages.map((m) => m.querySelector('section')!.getAttribute('aria-expanded'))
+      const expanded = () => messages.map((m) => m.querySelector('header button')!.getAttribute('aria-expanded'))
       expect(expanded()).toEqual(['true', 'false', 'true'])
       await screen.findByText('Body of Plans')
       await waitFor(() => expect(server.labelsOf(last.id)).not.toContain(unread))
       expect(server.labelsOf(first.id)).not.toContain(unread)
       // Its header toggles one.
-      await user.click(messages[1].querySelector('header')!)
+      await user.click(messages[1].querySelector('header button')!)
+      expect(expanded()).toEqual(['true', 'true', 'true'])
+
+      // By the keys: n and p move among the messages, from the one it
+      // opened at; Enter folds the one focused, : folds all, ; unfolds all.
+      const header = (i: number) => messages[i].querySelector('header button')
+      await user.keyboard('n')
+      expect(document.activeElement).toBe(header(0))
+      await user.keyboard('nn')
+      expect(document.activeElement).toBe(header(2))
+      await user.keyboard('p{Enter}')
+      expect(document.activeElement).toBe(header(1))
+      expect(expanded()).toEqual(['true', 'false', 'true'])
+      await user.keyboard(':')
+      expect(expanded()).toEqual(['false', 'false', 'false'])
+      await user.keyboard(';')
       expect(expanded()).toEqual(['true', 'true', 'true'])
     })
 
@@ -249,10 +264,17 @@ describe('mail', () => {
 
       it("answers an earlier message from its own tools and menu", async () => {
         const { user, messages, first } = await conversation()
-        await user.click(messages[0].querySelector('header')!)
+        await user.click(messages[0].querySelector('header button')!)
         await screen.findByText('Body of Plans')
         const tools = within(messages[0])
         await user.click(tools.getByRole('button', { name: 'Reply' }))
+        await waitFor(() => expect(created()).toHaveLength(1))
+        expect(created()[0]).toMatchObject({ in_reply_to: first.message })
+      })
+
+      it('answers the message that n and p focus, by r', async () => {
+        const { user, first } = await conversation()
+        await user.keyboard('pppr')
         await waitFor(() => expect(created()).toHaveLength(1))
         expect(created()[0]).toMatchObject({ in_reply_to: first.message })
       })

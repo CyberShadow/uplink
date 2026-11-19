@@ -84,6 +84,11 @@ export type Action =
   | 'today'
   | 'dayView'
   | 'nextEvent'
+  | 'nextMessage'
+  | 'previousMessage'
+  | 'expandAll'
+  | 'collapseAll'
+  | 'rename'
   | 'previousEvent'
   | 'join'
   | 'weekView'
@@ -218,6 +223,11 @@ export const KEYMAP: Binding[] = [
   { action: 'goHistory', ...go('z'), help: 'Go to History (undo anything)' },
   { action: 'goCalendar', ...go('c'), help: 'Go to the calendar' },
   { action: 'today', keys: ['t'], label: 't', help: 'Today (in the calendar)' },
+  { action: 'nextMessage', keys: ['n'], label: 'n', help: "The next message of an open conversation, as Gmail's: Enter folds or unfolds it, and r, a and f answer it", repeats: true },
+  { action: 'previousMessage', keys: ['p'], label: 'p', help: 'The previous message of an open conversation', repeats: true },
+  { action: 'expandAll', keys: [';'], label: ';', help: 'Unfold every message of an open conversation' },
+  { action: 'collapseAll', keys: ['[Shift]+:'], label: ':', help: 'Fold every message of an open conversation' },
+  { action: 'rename', keys: ['F2'], label: 'F2', help: 'Edit the title (in to-dos; Enter does too, but of one flagged from a message, which it opens)' },
   { action: 'nextEvent', keys: ['n'], label: 'n', help: 'Open the next event (in the calendar; with none open, the first yet to end)', repeats: true },
   { action: 'previousEvent', keys: ['p'], label: 'p', help: 'Open the previous event (in the calendar)', repeats: true },
   { action: 'join', keys: ['Shift+j'], label: 'Shift+j', help: 'Join the online meeting (in the calendar: the one open, or else the one on or starting in 10 minutes)' },
@@ -420,7 +430,7 @@ const windowKeys = sequences(
     typed(event) ||
     // As are the keys that activate a control that has the focus: a link
     // in a message, Tabbed to.
-    (ACTIVATE.includes(event.key) && (event.target as Element).matches('a[href],button,summary')) ||
+    (ACTIVATE.includes(event.key) && (event.target as Element).matches('a[href],button,summary,[role=button]')) ||
     // And those a player that has the focus seeks and plays by.
     (PLAY.includes(event.key) && (event.target as Element).matches('audio,video')),
 )
@@ -435,7 +445,7 @@ export function takeKeys(frame: Window) {
   frame.addEventListener('keydown', windowKeys)
 }
 
-const ACTIVATE = ['Enter', ' ']
+export const ACTIVATE = ['Enter', ' ']
 const PLAY = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', ' ']
 
 /** How long a sequence waits for its next press; on the window, until

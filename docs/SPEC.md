@@ -4102,6 +4102,15 @@ as a native list does), `Enter` chooses and `Esc` closes.
   the arrows move among its links, lines or controls, `Home`/`End` to
   the first and last, as in a timeline; `Enter` is the control's own. A
   player that has the focus keeps the arrows and Space, to seek and play.
+- **What the pointer does, keys do.** The lint (`eslint-plugin-jsx-a11y`,
+  its recommended rules) refuses a click handler on what is no control
+  (a `div`, a `li`) unless the keys have a way to the same, said where
+  it is allowed: a list's row, whose keys are the list's (`j`/`k`,
+  `Enter`); a dialog's backdrop (`Backdrop`), which Esc stands for; a
+  message's body, whose links and spoilers are the controls (a spoiler
+  is a Tab stop, shown by Enter or Space). So a mail's header is a
+  button, and in to-dos `F2` edits a title, as a double click does (and
+  as `Enter` does, but of one flagged from a message, which it opens).
 - **`Esc` goes up**, pressed again and again, to a known place, first
   undoing what was done last: a field leaves itself (once it has
   cancelled what it was doing: a reply, a completion); a reply or an
@@ -4208,7 +4217,10 @@ in the view has a star of its own. A row is unread if any entry is,
 names its senders (`me` for the account's identities, §3.2; by first names
 if several), counts its messages, and shows the user's labels of any.
 The view lists the messages oldest first, the unread ones and the
-latest expanded (a header toggles one), scrolled, as Gmail's, to the
+latest expanded (a header toggles one: a button, which `n` and `p`
+move the focus among, as Gmail's, from the message it opened at, so that
+`Enter` folds or unfolds the one focused, and `r`, `a` and `f` answer it
+rather than the latest; `;` unfolds every message and `:` folds them), scrolled, as Gmail's, to the
 first unread, or else the latest (to the subject, if that is the first),
 and kept there as they load until the user scrolls, clicks or types;
 opening it reads them all, and
@@ -5289,7 +5301,7 @@ flake is the source of truth.
 | `backend-lint`         | `cargo clippy --workspace -- -D warnings` + `cargo fmt --check` |
 | `protocol-ts`          | `web/src/generated/protocol.ts` matches `uplink-protocol`     |
 | `frontend-test`        | `pnpm test` (vitest + jsdom + `@testing-library/preact`)      |
-| `frontend-lint`        | `pnpm lint` (eslint: typescript-eslint, hooks rules)          |
+| `frontend-lint`        | `pnpm lint` (eslint: typescript-eslint, hooks rules, jsx-a11y) |
 | `frontend-build`       | `tsc` + `vite build` (the SPA the binary embeds)              |
 | `integration-gmail`    | NixOS VM test: uplink service + Gmail emulator                |
 | `integration-m365`     | NixOS VM test: uplink service + Graph fake                    |

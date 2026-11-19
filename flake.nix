@@ -34,7 +34,7 @@
           src = ./web;
           fetcherVersion = 3;
           pnpm = pkgs.pnpm_11;
-          hash = "sha256-Fv3vPJYzhlYK5M9EYiz5LG/OJ8dJQu5PwM2/fEiOdjk=";
+          hash = "sha256-XGqMtLwjunhroJizxDDAO6p8+L8ErJzuJI8ADpIcOOY=";
         };
 
         # A derivation running `script` in web/ with its dependencies.

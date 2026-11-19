@@ -2,6 +2,7 @@ import type { ComponentChildren } from 'preact'
 import { useLayoutEffect, useRef, useState } from 'preact/hooks'
 import { useTakeFocus } from '../keymap'
 import styles from './Overlay.module.css'
+import { Backdrop } from './Backdrop'
 
 /** Whether `text` has every word of `filter`, ignoring case. */
 export function matches(text: string, filter: string): boolean {
@@ -61,12 +62,11 @@ export function Picker<T>(props: {
   const { check } = props
 
   return (
-    <div class={styles.backdrop} onClick={props.close}>
+    <Backdrop class={styles.backdrop} close={props.close}>
       <div
         class={`${styles.dialog} ${styles.picker}`}
         role="dialog"
         aria-label={props.name}
-        onClick={(event) => event.stopPropagation()}
       >
         <input
           ref={input}
@@ -91,6 +91,8 @@ export function Picker<T>(props: {
         />
         <ul ref={list} class={styles.options} role="listbox" aria-label={props.listName}>
           {items.map((item, index) => (
+            // Chosen by the keys of the box above, which has the focus.
+            // eslint-disable-next-line jsx-a11y/click-events-have-key-events
             <li
               key={props.id(item)}
               role="option"
@@ -106,6 +108,6 @@ export function Picker<T>(props: {
           {items.length === 0 && <li class={styles.empty}>{props.empty}</li>}
         </ul>
       </div>
-    </div>
+    </Backdrop>
   )
 }

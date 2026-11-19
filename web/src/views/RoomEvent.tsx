@@ -18,7 +18,7 @@ import type {
 import { useServices } from '../context'
 import { isLocal, type MatrixStore, type Outgoing } from '../stores/matrix'
 import type { TodoStore } from '../stores/todos'
-import { keepFocus, useEscape } from '../keymap'
+import { ACTIVATE, keepFocus, useEscape } from '../keymap'
 import { dateTime, time } from '../format'
 import {
   displayName,
@@ -47,6 +47,7 @@ import { fileSize } from './size'
 import { roomPath } from './Room'
 import styles from './Room.module.css'
 import overlay from './Overlay.module.css'
+import { Backdrop } from './Backdrop'
 
 /** Of an event, the reactions and edits being sent. */
 export type Overlay = readonly Outgoing[]
@@ -572,6 +573,11 @@ function Html(props: { room: Room; html: string; openMember: (user: string) => v
       if (color && COLOR.test(color)) element.style.color = color
       if (background && COLOR.test(background)) element.style.backgroundColor = background
     }
+    // A spoiler is shown by the keys too: Tab reaches it.
+    for (const spoiler of root.current!.querySelectorAll<HTMLElement>('[data-mx-spoiler]')) {
+      spoiler.tabIndex = 0
+      spoiler.setAttribute('role', 'button')
+    }
   }, [html, matrix, props.room, members])
   // Each code block with a button copying it, as Element's, beside it
   // rather than in it, so that it stays as the block scrolls. Of the HTML
@@ -595,6 +601,8 @@ function Html(props: { room: Room; html: string; openMember: (user: string) => v
     }
   }, [html])
   return (
+    // Of the links and spoilers in it, which are the controls.
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions
     <span
       ref={root}
       class={styles.html}
@@ -603,6 +611,12 @@ function Html(props: { room: Room; html: string; openMember: (user: string) => v
         target.closest('[data-mx-spoiler]')?.classList.add(styles.revealed)
         const link = permalink(target.closest('a[href]')?.getAttribute('href') ?? '')
         if (link && follow(link)) event.preventDefault()
+      }}
+      onKeyDown={(event) => {
+        const spoiler = (event.target as Element).closest('[data-mx-spoiler]')
+        if (!spoiler || !ACTIVATE.includes(event.key)) return
+        event.preventDefault()
+        spoiler.classList.add(styles.revealed)
       }}
       dangerouslySetInnerHTML={{ __html: html }}
     />
@@ -914,12 +928,12 @@ function EditHistory(props: { room: Room; event: RoomEvent; close: () => void })
   const { close } = props
   useEscape(close)
   return (
-    <div class={overlay.backdrop} onClick={close}>
-      <div class={overlay.dialog} role="dialog" aria-label="Edit history" onClick={(e) => e.stopPropagation()}>
+    <Backdrop class={overlay.backdrop} close={close}>
+      <div class={overlay.dialog} role="dialog" aria-label="Edit history">
         <h2>Edit history</h2>
         <Versions room={props.room} event={props.event} />
       </div>
-    </div>
+    </Backdrop>
   )
 }
 

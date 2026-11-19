@@ -6,8 +6,10 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import { useServices } from '../context'
+import { useEscape } from '../keymap'
 import { roomPath } from './Room'
 import overlay from './Overlay.module.css'
+import { Backdrop } from './Backdrop'
 import styles from './RoomStarter.module.css'
 
 type Mode = 'room' | 'direct' | 'join'
@@ -59,18 +61,13 @@ export function RoomStarter(props: { account: string; close: () => void }) {
     }
   }
 
+  useEscape(props.close)
   return (
-    <div class={overlay.backdrop} onClick={props.close}>
+    <Backdrop class={overlay.backdrop} close={props.close}>
       <div
         class={`${overlay.dialog} ${styles.starter}`}
         role="dialog"
         aria-label="Start a conversation"
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key !== 'Escape') return
-          e.stopPropagation()
-          props.close()
-        }}
       >
         <div class={styles.modes} role="tablist">
           {MODES.map(([m, label]) => (
@@ -125,7 +122,7 @@ export function RoomStarter(props: { account: string; close: () => void }) {
         )}
         {joined !== null && <p class={styles.muted}>Waiting for the room to sync…</p>}
       </div>
-    </div>
+    </Backdrop>
   )
 }
 

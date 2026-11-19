@@ -52,6 +52,9 @@ export function Drafts() {
   return (
     <ul class={styles.list} aria-label="Drafts">
       {list.map((draft, i) => (
+        // A row of the list, whose keys (j/k, Enter) are its own: the click is the
+        // pointer's way to them.
+        // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
         <li
           key={draft.id}
           ref={i === focus ? focused : undefined}

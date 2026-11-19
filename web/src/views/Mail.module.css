@@ -209,9 +209,25 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 0;
-  cursor: pointer;
   white-space: nowrap;
+}
+
+/* Who it is from, what it says and when: the header but its tools, and
+   what folds the message. */
+.messageToggle {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 8px 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
 }
 
 /* The sender gives way to the date and tools, as on a phone. */
@@ -223,7 +239,7 @@
   font-weight: 600;
 }
 
-.messageHeader > :is(.date, .star, .messageTools) {
+.messageHeader :is(.date, .star, .messageTools) {
   flex: none;
 }
 

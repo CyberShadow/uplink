@@ -640,6 +640,9 @@ function OtherRow(props: {
   const parts = useParts(row)
   const isSelected = mail.selected.value.has(row.key)
   return (
+    // A row of the list, whose keys (j/k, Enter) are its own: the click is the
+    // pointer's way to them.
+    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/role-supports-aria-props
     <li
       ref={props.focused ?? undefined}
       class={[styles.row, props.focused && styles.focused, isSelected && styles.selected, parts.unread && styles.unread]
@@ -737,6 +740,9 @@ function MessageList(props: {
           const count = thread.entries.length
           const unread = mail.countHaving(thread, 'UNREAD')
           return (
+            // A row of the list, whose keys (j/k, Enter) are its own: the click is the
+            // pointer's way to them.
+            // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/role-supports-aria-props
             <li
               key={key}
               ref={isFocused ? focused : undefined}
@@ -859,10 +865,29 @@ function ConversationView(props: {
     route(composePath(id))
     if (kind === 'forward') await drafts.attachForwarded(id, content)
   }
+  // Its messages are moved among by n/p, as Gmail's: the focus goes to
+  // the one's header, which Enter folds; from none, to the one it opened at.
+  const headers = () => [...article.current!.querySelectorAll<HTMLElement>('[data-entry] > section > header > button[aria-expanded]')]
+  const moveMessage = (by: 1 | -1) => () => {
+    const all = headers()
+    const at = all.findIndex((h) => h.closest('[data-entry]')!.contains(document.activeElement))
+    const to = at === -1 ? entries.findIndex((e) => e.id === opening) : Math.max(0, Math.min(at + by, all.length - 1))
+    all[to].focus()
+  }
+  /** The message the focus is in, or else the latest: what is answered. */
+  const answered = () => {
+    const id = (document.activeElement as Element).closest<HTMLElement>('[data-entry]')?.dataset.entry
+    return entries.find((e) => String(e.id) === id) ?? latest
+  }
+  const all = (open: boolean) => () => setExpanded(new Map(entries.map((e) => [e.id, open])))
   useKeymap({
-    reply: responder('reply', latest),
-    replyAll: responder('replyAll', latest),
-    forward: responder('forward', latest),
+    reply: () => responder('reply', answered())(),
+    replyAll: () => responder('replyAll', answered())(),
+    forward: () => responder('forward', answered())(),
+    nextMessage: moveMessage(1),
+    previousMessage: moveMessage(-1),
+    expandAll: all(true),
+    collapseAll: all(false),
   })
 
   // A message's own actions, from its menu. Those that take it out of the
@@ -932,7 +957,7 @@ function ConversationView(props: {
       </h1>
       <ol class={styles.conversation} aria-label="Conversation">
         {entries.map((entry) => (
-          <li key={entry.id} ref={entry.id === opening ? openingAt : undefined}>
+          <li key={entry.id} ref={entry.id === opening ? openingAt : undefined} data-entry={entry.id}>
             <ConversationMessage
               mail={mail}
               entry={entry}
@@ -1054,15 +1079,17 @@ function ConversationMessage(props: {
   const rules: ImageRuleState[] = content && content.remote_images.length > 0 ? mail.imageRules(content) : []
   const rulesHad = rules.filter((r) => r.always)
   return (
-    <section class={expanded ? styles.expanded : undefined} aria-expanded={expanded}>
-      <header class={styles.messageHeader} onClick={props.toggle}>
-        <span class={styles.from}>{address(entry.from_name, entry.from_addr)}</span>
-        {!expanded && <span class={styles.snippet}>{entry.snippet}</span>}
-        <time class={styles.date}>{dateTime(date)}</time>
+    <section class={expanded ? styles.expanded : undefined}>
+      <header class={styles.messageHeader}>
+        {/* Folds the message, or unfolds it: by Enter too, as n/p focus it. */}
+        <button type="button" class={styles.messageToggle} aria-expanded={expanded} onMouseDown={keepFocus} onClick={props.toggle}>
+          <span class={styles.from}>{address(entry.from_name, entry.from_addr)}</span>
+          {!expanded && <span class={styles.snippet}>{entry.snippet}</span>}
+          <time class={styles.date}>{dateTime(date)}</time>
+        </button>
         <Star mail={mail} thread={{ account: entry.account, subject: entry.subject, entries: [entry] }} />
         {expanded && (
-          // Its own clicks, not the header's, which folds the message.
-          <span class={styles.messageTools} onClick={(event) => event.stopPropagation()}>
+          <span class={styles.messageTools}>
             <button type="button" aria-label="Reply" title="Reply" onMouseDown={keepFocus} onClick={actions.reply}>
               <Icon name="reply" />
             </button>

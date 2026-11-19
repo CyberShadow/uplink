@@ -110,6 +110,9 @@ interface At {
 function Run(props: At & { run: readonly HistoryEntry[]; open: boolean; toggle: () => void }) {
   const { entry } = props.run[0]
   return (
+    // A row of the list, whose keys (j/k, Enter) are its own: the click is the
+    // pointer's way to them.
+    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
     <li
       ref={props.itemRef}
       class={[styles.item, props.focused && styles.focused].filter(Boolean).join(' ')}
@@ -134,6 +137,9 @@ function Item(props: At & { history: HistoryEntry; inRun: boolean }) {
   const { entry, undone_by } = props.history
   const undone = undone_by !== null
   return (
+    // A row of the list, whose keys (j/k, Enter) are its own: the click is the
+    // pointer's way to them.
+    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
     <li
       ref={props.itemRef}
       class={[
