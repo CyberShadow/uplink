@@ -247,6 +247,13 @@ struct Syncer {
 
 impl Syncer {
     async fn run(self) {
+        // What the homeserver supports is cached in the store for a day,
+        // and refreshed only then: asked anew as uplink starts, so that a
+        // restart sees what it now supports (thread subscriptions,
+        // SPEC §9.5) and not what it did.
+        if let Err(error) = self.client.reset_supported_versions().await {
+            tracing::warn!(account = %self.account, "forgetting what the homeserver supports: {error:#}");
+        }
         let account = self.account.clone();
         let reader = self.reader.clone();
         let recorded = retry(&self.account, "reading the sync state", || {

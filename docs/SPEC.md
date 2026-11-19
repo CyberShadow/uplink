@@ -3059,7 +3059,8 @@ added to the thread, and as its latest is edited or redacted.
 of its replies, and one they do not follow does not, but of mentions:
 by MSC4306's thread subscriptions, which the homeserver keeps and its
 push rules act on (§9.5), where it has them (it advertises
-`org.matrix.msc4306` in `/versions`; else threads cannot be followed,
+`org.matrix.msc4306` in `/versions`, which the SDK caches a day, so
+it is asked anew as uplink starts; else threads cannot be followed,
 and notify as the push rules alone say, as before). Following a thread
 is desired state (§6.6), a field of each thread by its root (V0079
 `matrix_thread_follow`; a thread of no row is not followed), pushed as
