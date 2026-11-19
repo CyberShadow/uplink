@@ -12,6 +12,7 @@ import { keepFocus, lines, useKeymap } from '../keymap'
 import styles from './History.module.css'
 import { dateTime } from '../format'
 import { Outbox } from './Outgoing'
+import { List, rowId } from './List'
 
 /** A line of the list: an entry, alone or of a run that is open; or a
  * run of them, of which the entries follow if it is open. */
@@ -46,6 +47,7 @@ export function History() {
   }
   const [focus, setFocus] = useState(0)
   const focused = useRef<HTMLLIElement>(null)
+  const list = useRef<HTMLUListElement>(null)
   useEffect(() => {
     focused.current?.scrollIntoView({ block: 'nearest' })
   }, [focus])
@@ -83,16 +85,16 @@ export function History() {
         ) : listed.length === 0 ? (
           <p class={styles.placeholder}>Nothing done yet.</p>
         ) : (
-          <ul class={styles.list} aria-label="History">
+          <List tag="ul" list={list} class={styles.list} label="History" cursor={rowId(focus)} multi={false}>
             {listed.map((line, i) => {
-              const at = { focused: i === focus, itemRef: i === focus ? focused : undefined, onFocus: () => setFocus(i) }
+              const at = { id: rowId(i), focused: i === focus, itemRef: i === focus ? focused : undefined, onFocus: () => setFocus(i) }
               return line.type === 'entry' ? (
                 <Item key={line.history.entry.id} history={line.history} inRun={line.inRun} {...at} />
               ) : (
                 <Run key={`run ${runId(line.run)}`} run={line.run} open={line.open} toggle={() => toggle(line.run)} {...at} />
               )
             })}
-          </ul>
+          </List>
         )}
       </section>
     </div>
@@ -100,6 +102,7 @@ export function History() {
 }
 
 interface At {
+  id: string
   focused: boolean
   itemRef: preact.Ref<HTMLLIElement> | undefined
   onFocus: () => void
@@ -110,11 +113,14 @@ interface At {
 function Run(props: At & { run: readonly HistoryEntry[]; open: boolean; toggle: () => void }) {
   const { entry } = props.run[0]
   return (
-    // A row of the list, whose keys (j/k, Enter) are its own: the click is the
-    // pointer's way to them.
-    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
+    // A row of the list, which has the focus for it, and the keys (j/k,
+    // Enter): the click is the pointer's way to them.
+    // eslint-disable-next-line jsx-a11y/click-events-have-key-events
     <li
       ref={props.itemRef}
+      id={props.id}
+      role="option"
+      aria-selected={props.focused}
       class={[styles.item, props.focused && styles.focused].filter(Boolean).join(' ')}
       aria-current={props.focused || undefined}
       onClick={props.onFocus}
@@ -137,11 +143,14 @@ function Item(props: At & { history: HistoryEntry; inRun: boolean }) {
   const { entry, undone_by } = props.history
   const undone = undone_by !== null
   return (
-    // A row of the list, whose keys (j/k, Enter) are its own: the click is the
-    // pointer's way to them.
-    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
+    // A row of the list, which has the focus for it, and the keys (j/k,
+    // Enter): the click is the pointer's way to them.
+    // eslint-disable-next-line jsx-a11y/click-events-have-key-events
     <li
       ref={props.itemRef}
+      id={props.id}
+      role="option"
+      aria-selected={props.focused}
       class={[
         styles.item,
         props.focused && styles.focused,

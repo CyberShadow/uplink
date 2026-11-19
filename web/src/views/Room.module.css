@@ -95,6 +95,16 @@
   overflow: auto;
 }
 
+/* With no line chosen, the messages have the focus as a whole. */
+.scroller:focus {
+  outline: none;
+}
+
+.scroller:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .events {
   list-style: none;
   margin: 0;

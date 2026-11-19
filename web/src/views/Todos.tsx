@@ -7,6 +7,8 @@ import type { Todo } from '../generated/protocol'
 import { useServices } from '../context'
 import { useTitle } from '../title'
 import { keepFocus, lines, useKeymap } from '../keymap'
+import { rest } from '../rest'
+import { List, rowId } from './List'
 import { roomEventPath } from './Room'
 import styles from './Todos.module.css'
 
@@ -31,6 +33,7 @@ export function Todos() {
   const [editing, setEditing] = useState<number | null>(null)
   const adder = useRef<HTMLInputElement>(null)
   const focused = useRef<HTMLLIElement>(null)
+  const listed = useRef<HTMLUListElement>(null)
   useEffect(() => {
     focused.current?.scrollIntoView({ block: 'nearest' })
   }, [focus])
@@ -73,7 +76,7 @@ export function Todos() {
           type="text"
           aria-label="New to-do"
           placeholder="Add a to-do"
-          onKeyDown={(event) => event.key === 'Escape' && event.currentTarget.blur()}
+          onKeyDown={(event) => event.key === 'Escape' && rest()}
         />
       </form>
       {list === null ? (
@@ -81,10 +84,11 @@ export function Todos() {
       ) : list.length === 0 ? (
         <p class={styles.placeholder}>Nothing to do.</p>
       ) : (
-        <ul class={styles.list} aria-label="To-do list">
+        <List tag="ul" list={listed} class={styles.list} label="To-do list" cursor={rowId(focus)} multi={false}>
           {list.map((todo, i) => (
             <Item
               key={todo.id}
+              id={rowId(i)}
               todo={todo}
               focused={i === focus}
               itemRef={i === focus ? focused : undefined}
@@ -94,7 +98,7 @@ export function Todos() {
               onFocus={() => setFocus(i)}
             />
           ))}
-        </ul>
+        </List>
       )}
     </section>
   )
@@ -102,6 +106,7 @@ export function Todos() {
 
 function Item(props: {
   todo: Todo
+  id: string
   focused: boolean
   itemRef: preact.Ref<HTMLLIElement> | undefined
   editing: boolean
@@ -114,13 +119,16 @@ function Item(props: {
   const done = todo.done_at !== null
   const flagged = flaggedPath(todo)
   return (
-    // A row of the list, whose keys (j/k, Enter) are its own: the click is the
-    // pointer's way to them.
-    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
+    // A row of the list, which has the focus for it, and the keys (j/k,
+    // Enter): the click is the pointer's way to them.
+    // eslint-disable-next-line jsx-a11y/click-events-have-key-events
     <li
       ref={props.itemRef}
+      id={props.id}
+      role="option"
       class={[styles.item, props.focused && styles.focused, done && styles.done].filter(Boolean).join(' ')}
       aria-current={props.focused || undefined}
+      aria-selected={props.focused}
       onClick={props.onFocus}
     >
       <input
@@ -185,11 +193,11 @@ function TitleEditor(props: { todo: Todo; stop: () => void }) {
       onKeyDown={(event) => {
         if (event.key === 'Enter') {
           event.preventDefault()
-          input.current!.blur()
+          rest()
         }
         if (event.key === 'Escape') {
           input.current!.value = props.todo.title
-          input.current!.blur()
+          rest()
         }
       }}
     />

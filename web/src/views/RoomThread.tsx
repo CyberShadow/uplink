@@ -7,7 +7,8 @@ import type { Room } from '../generated/protocol'
 import { useServices } from '../context'
 import { focusShown, keepFocus, pages, useKeymap } from '../keymap'
 import { TEXT, shown } from '../matrix'
-import { Events, NO_READERS_BY_EVENT, type ThreadOpened, moveLine, overlaid, rows } from './Room'
+import { useStops } from '../regions'
+import { Events, LINE, NO_READERS_BY_EVENT, type ThreadOpened, moveLine, overlaid, rows } from './Room'
 import { Composer, type Mode, useMode } from './RoomComposer'
 import styles from './Room.module.css'
 import { SidePanel } from './SidePanel'
@@ -54,6 +55,14 @@ export function ThreadPanel(props: {
     if (opened.focus === 'first') listed.current!.querySelector<HTMLElement>('[data-event]')!.focus()
     else if (composer.current) focusShown(composer.current)
   }, [loaded, opened])
+  // Its messages are one Tab stop: the line the focus was on, or else
+  // the latest.
+  useStops(
+    scroller,
+    LINE,
+    (last) => last?.closest(LINE) ?? [...listed.current!.querySelectorAll(LINE)].at(-1) ?? null,
+    null,
+  )
   // From its messages, its own box is written in, not the room's.
   useKeymap({ write: () => composer.current?.focus() }, { focus: listed })
   return (

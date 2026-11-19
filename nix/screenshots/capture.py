@@ -17,7 +17,7 @@ os.makedirs(SHOTS, exist_ok=True)
 
 
 def rows(page):
-    return page.get_by_role("list", name="Messages").get_by_role("listitem")
+    return page.get_by_role("listbox", name="Messages").get_by_role("option")
 
 
 def subjects(page):
@@ -64,7 +64,7 @@ def act(page):
     page.keyboard.press("Shift+T")
     page.keyboard.press("g")
     page.keyboard.press("k")
-    items = page.get_by_role("list", name="To-do list").get_by_role("listitem")
+    items = page.get_by_role("listbox", name="To-do list").get_by_role("option")
     expect(items).to_have_count(1)
     for title in ["Renew passport before Lisbon", "Buy trail snacks"]:
         page.keyboard.press("a")
@@ -117,7 +117,7 @@ def views(page, theme):
     shoot(page, "room", theme)
 
     page.goto(URL + "/history")
-    expect(page.get_by_role("list", name="History").get_by_role("listitem")).not_to_have_count(0)
+    expect(page.get_by_role("listbox", name="History").get_by_role("option")).not_to_have_count(0)
     shoot(page, "history", theme)
 
 

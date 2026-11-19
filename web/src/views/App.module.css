@@ -98,6 +98,11 @@
   overflow: auto;
 }
 
+/* Where the focus rests, in a view with no list: never a Tab stop. */
+.content:focus {
+  outline: none;
+}
+
 .error {
   padding: 6px 16px;
   background: var(--error-bg);

@@ -21,13 +21,13 @@ os.makedirs(SHOTS, exist_ok=True)
 
 
 def subjects(page):
-    rows = page.get_by_role("list", name="Messages").get_by_role("listitem")
+    rows = page.get_by_role("listbox", name="Messages").get_by_role("option")
     return [row.locator("[class*=subject]").inner_text() for row in rows.all()]
 
 
 def inbox(page):
     page.goto(os.environ["UPLINK_URL"] + "/inbox")
-    expect(page.get_by_role("list", name="Messages").get_by_role("listitem")).not_to_have_count(0, timeout=30000)
+    expect(page.get_by_role("listbox", name="Messages").get_by_role("option")).not_to_have_count(0, timeout=30000)
 
 
 def read(page):
@@ -40,7 +40,7 @@ def read(page):
     page.screenshot(path=f"{SHOTS}/message-dark.png")
     page.emulate_media(color_scheme="light")
     page.keyboard.press("u")
-    expect(page.get_by_role("list", name="Messages")).to_be_visible()
+    expect(page.get_by_role("listbox", name="Messages")).to_be_visible()
     return {"subjects": subjects(page)}
 
 
@@ -49,7 +49,7 @@ def archive(page):
     before = len(subjects(page))
     page.keyboard.press("j")
     page.keyboard.press("e")
-    expect(page.get_by_role("list", name="Messages").get_by_role("listitem")).to_have_count(before - 1)
+    expect(page.get_by_role("listbox", name="Messages").get_by_role("option")).to_have_count(before - 1)
     expect(page.get_by_role("status")).to_contain_text("Archived 1 message")
     page.screenshot(path=f"{SHOTS}/archived.png")
     return {"subjects": subjects(page), "notice": page.get_by_role("status").inner_text()}
@@ -60,7 +60,7 @@ def undo(page):
     before = len(subjects(page))
     page.keyboard.press("j")
     page.keyboard.press("e")
-    rows = page.get_by_role("list", name="Messages").get_by_role("listitem")
+    rows = page.get_by_role("listbox", name="Messages").get_by_role("option")
     expect(rows).to_have_count(before - 1)
     page.get_by_role("status").get_by_role("button", name="Undo").click()
     expect(rows).to_have_count(before)
@@ -76,7 +76,7 @@ def label(page):
     page.keyboard.type("proj")
     page.screenshot(path=f"{SHOTS}/picker.png")
     page.keyboard.press("Enter")
-    expect(page.get_by_role("list", name="Messages").get_by_text("Projects")).to_have_count(2)
+    expect(page.get_by_role("listbox", name="Messages").get_by_text("Projects")).to_have_count(2)
     page.screenshot(path=f"{SHOTS}/labelled.png")
     return {"subjects": subjects(page)}
 
@@ -86,7 +86,7 @@ def search(page):
     page.keyboard.press("/")
     page.keyboard.type("quixot")
     page.keyboard.press("Enter")
-    rows = page.get_by_role("list", name="Messages").get_by_role("listitem")
+    rows = page.get_by_role("listbox", name="Messages").get_by_role("option")
     expect(rows).to_have_count(1)
     page.reload()
     expect(rows).to_have_count(1, timeout=10000)
@@ -101,7 +101,7 @@ def reply(page):
     page.keyboard.press("/")
     page.keyboard.type("quixot")
     page.keyboard.press("Enter")
-    expect(page.get_by_role("list", name="Messages").get_by_role("listitem")).to_have_count(1)
+    expect(page.get_by_role("listbox", name="Messages").get_by_role("option")).to_have_count(1)
     page.keyboard.press("Enter")
     expect(page.get_by_role("article")).to_contain_text("quixotic")
     page.keyboard.press("r")
@@ -179,11 +179,11 @@ def todos(page):
     """Flags the first message, then adds a to-do of its own in To-dos."""
     first = subjects(page)[0]
     page.keyboard.press("Shift+T")
-    rows = page.get_by_role("list", name="Messages").get_by_role("listitem")
+    rows = page.get_by_role("listbox", name="Messages").get_by_role("option")
     expect(rows.first.get_by_title("Flagged", exact=False)).to_be_visible()
     page.keyboard.press("g")
     page.keyboard.press("k")
-    items = page.get_by_role("list", name="To-do list").get_by_role("listitem")
+    items = page.get_by_role("listbox", name="To-do list").get_by_role("option")
     expect(items).to_have_count(1)
     page.keyboard.press("a")
     page.keyboard.type("Book the train")
@@ -202,7 +202,7 @@ def history(page):
     """Lists what was done, then undoes the latest with z."""
     page.keyboard.press("g")
     page.keyboard.press("z")
-    items = page.get_by_role("list", name="History").get_by_role("listitem")
+    items = page.get_by_role("listbox", name="History").get_by_role("option")
     expect(items).not_to_have_count(0)
     before = items.count()
     latest = items.first.locator("[class*=description]").inner_text()
@@ -222,7 +222,7 @@ def trash(page):
     first = subjects(page)[0]
     before = len(subjects(page))
     page.keyboard.press("#")
-    rows = page.get_by_role("list", name="Messages").get_by_role("listitem")
+    rows = page.get_by_role("listbox", name="Messages").get_by_role("option")
     expect(rows).to_have_count(before - 1)
     expect(page.get_by_role("status")).to_contain_text("Moved 1 message to Trash")
     page.get_by_role("navigation").get_by_role("link", name="Trash").click()
@@ -233,7 +233,7 @@ def trash(page):
 def attachment(page):
     """Opens the message with a file attached, downloads the file, and
     forwards the message with another file attached."""
-    rows = page.get_by_role("list", name="Messages").get_by_role("listitem")
+    rows = page.get_by_role("listbox", name="Messages").get_by_role("option")
     rows.filter(has_text="Quarterly figures").click()
     files = page.get_by_role("list", name="Attachments")
     expect(files).to_contain_text("figures.pdf")
@@ -328,11 +328,11 @@ def home(page):
     """Goes home: the rows of each bucket."""
     page.get_by_role("link", name="Home").click()
     region = page.get_by_role("region", name="Home")
-    expect(region.get_by_role("region", name="Backlog").get_by_role("listitem")).not_to_have_count(0)
+    expect(region.get_by_role("group", name="Backlog").get_by_role("option")).not_to_have_count(0)
     page.screenshot(path=f"{SHOTS}/home.png")
-    buckets = region.get_by_role("region")
+    buckets = region.get_by_role("group")
     return {
-        b.get_attribute("aria-label"): [row.inner_text() for row in b.get_by_role("listitem").all()]
+        b.get_attribute("aria-label"): [row.inner_text() for row in b.get_by_role("option").all()]
         for b in buckets.all()
     }
 
@@ -362,7 +362,7 @@ def hostile(page):
 
     page.context.route("**/*", sent)
 
-    rows = page.get_by_role("list", name="Messages").get_by_role("listitem")
+    rows = page.get_by_role("listbox", name="Messages").get_by_role("option")
     rows.filter(has_text="Hostile").click()
     body = page.frame_locator("iframe[title='Message body']")
     expect(body.get_by_text("Hostile content")).to_be_visible()
@@ -418,7 +418,7 @@ def hostile(page):
     keys = {"in frame": in_frame, "escaped": page.evaluate("() => document.activeElement.tagName")}
     body.get_by_role("link", name="A link").focus()
     page.keyboard.press("u")
-    expect(page.get_by_role("list", name="Messages")).to_be_visible()
+    expect(page.get_by_role("listbox", name="Messages")).to_be_visible()
 
     # The frame's CSP, refusing what it was meant to (Firefox's words for
     # a font refused: "content blocked").
@@ -552,6 +552,31 @@ def room_keys(page):
     page.keyboard.press("Escape")
     expect(info).to_have_count(0)
     expect(line("Keys latest")).to_be_focused()
+
+    # Esc chooses none: the messages have the focus as a whole, which is
+    # one Tab stop, the box's side the next; back, a line chosen is.
+    page.keyboard.press("Escape")
+    messages = page.get_by_role("group", name="Messages")
+    expect(messages).to_be_focused()
+    page.screenshot(path=f"{SHOTS}/room-keys-rest.png")
+    page.keyboard.press("Tab")
+    expect(page.get_by_role("button", name="Attach files")).to_be_focused()
+    page.keyboard.press("Shift+Tab")
+    expect(messages).to_be_focused()
+    page.keyboard.press("k")
+    expect(line("Keys latest")).to_be_focused()
+    page.keyboard.press("Tab")
+    expect(line("Keys latest").locator(":focus")).to_have_count(1)
+    page.keyboard.press("Escape")
+    expect(messages).to_be_focused()
+    # The nav is one stop: Shift+Tab from it leaves it.
+    page.keyboard.press("F6")
+    page.keyboard.press("F6")
+    expect(nav.get_by_role("link", name="Keys")).to_be_focused()
+    page.keyboard.press("Shift+Tab")
+    expect(nav.locator(":focus")).to_have_count(0)
+    page.keyboard.press("Tab")
+    expect(nav.get_by_role("link", name="Keys")).to_be_focused()
 
     # In the box, Ctrl+B marks what is typed next.
     page.keyboard.press("i")

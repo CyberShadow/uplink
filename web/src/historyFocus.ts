@@ -1,11 +1,14 @@
 // What had the focus in each place of the session's history: going back
-// or forward to one gives it back (a room's box, a line, or nothing), as
+// or forward to one gives it back (a room's box, a line, or where it
+// rests), as
 // browsers give back where a page was scrolled. Each history entry is
 // stamped with a key (preact-iso pushes them without state); what has the
 // focus is kept by key, by the focused element's id.
 
-/** By entry, the id of what had the focus last, or `null` for nothing
- * (or what has no id). */
+/** By entry, the id of what had the focus last, or `null` for what has
+ * no id: where it rests. */
+import { rest } from './rest'
+
 const focused = new Map<string, string | null>()
 
 function entry(): string | undefined {
@@ -41,7 +44,7 @@ export function restoreFocus(): boolean {
   const id = restoring
   restoring = undefined
   if (id === undefined) return false
-  if (id === null) (document.activeElement as HTMLElement).blur()
+  if (id === null) rest()
   // Gone (a line not loaded yet), it is left to the view.
   else document.getElementById(id)?.focus()
   return true

@@ -1,6 +1,7 @@
 import { useRef } from 'preact/hooks'
 import { useLocation } from 'preact-iso'
 import { useRegion } from '../regions'
+import { rest } from '../rest'
 import { useServices } from '../context'
 import { searchPath } from './App'
 import { roomSearchPath } from './Room'
@@ -27,7 +28,7 @@ export function SearchBox() {
         const input = event.currentTarget.elements.namedItem('q') as HTMLInputElement
         const query = input.value.trim()
         if (query) route(room ? roomSearchPath(room.id, query) : searchPath(query))
-        input.blur()
+        rest()
       }}
     >
       <input
@@ -39,7 +40,7 @@ export function SearchBox() {
         key={`${roomId}:${shown}`}
         defaultValue={shown ? decodeURIComponent(shown) : ''}
         onKeyDown={(event) => {
-          if (event.key === 'Escape') event.currentTarget.blur()
+          if (event.key === 'Escape') rest()
         }}
       />
       {/* A room's search has no operators. */}

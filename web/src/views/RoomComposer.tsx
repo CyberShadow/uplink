@@ -16,6 +16,7 @@ import { byShortcode } from '../emoji'
 import { type Actions, focusShown, keepFocus, useKeymap } from '../keymap'
 import { displayName, senderColor, shown, text as message } from '../matrix'
 import { completing, type Suggestion, Suggestions, useEmoji, useSuggestions } from './Autocomplete'
+import { rest } from '../rest'
 import { Icon } from './Icon'
 import { useOpenJoined } from './RoomStarter'
 import styles from './Room.module.css'
@@ -448,7 +449,7 @@ export function Composer(props: {
                 leave()
                 if (mode.back) props.focusLine(mode.event.id)
               } else if (props.back) props.back()
-              else event.currentTarget.blur()
+              else rest()
             }
           }}
         />

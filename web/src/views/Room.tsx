@@ -23,7 +23,8 @@ import type {
 import { useServices } from '../context'
 import { isLocal, type LocalSend, type Outgoing } from '../stores/matrix'
 import { keepFocus, lines, pages, useKeymap } from '../keymap'
-import { enterRegion, useRegion } from '../regions'
+import { enterRegion, useRegion, useStops } from '../regions'
+import { useRest } from '../rest'
 import styles from './Room.module.css'
 import { RoomAvatar } from './RoomAvatar'
 import { date, dateTime, time } from '../format'
@@ -110,6 +111,10 @@ function Timeline(props: { room: Room; words: string | null; at: RoomEventId | n
     if (line) line.focus()
     else toLatest()
   })
+  // With no line chosen, the messages have the focus as a whole: where
+  // it rests in a room, and its one Tab stop, which a line chosen is.
+  useRest(scroller)
+  useStops(scroller, LINE, (last) => last?.closest(LINE) ?? null, 'empty')
   const reading = useReading(room, events, me, listed, scroller)
   const behind = reading.behind.length > 0 || reading.more
   useKeymap({
@@ -235,7 +240,7 @@ function Timeline(props: { room: Room; words: string | null; at: RoomEventId | n
         {room.pinned.length > 0 && <PinnedBar room={room} />}
         <CatchUp reading={reading} />
         {/* Reversed, so that it stays scrolled to the latest event. */}
-        <div ref={scroller} class={styles.scroller}>
+        <div ref={scroller} class={styles.scroller} role="group" aria-label="Messages">
           <ol
             ref={listed}
             class={styles.events}
@@ -509,6 +514,9 @@ export function Events(props: {
     </>
   )
 }
+
+/** A line of a list of events. */
+export const LINE = '[data-event]'
 
 /** The line of `event` in `list`, if shown; or the first of its lines. */
 function lineOf(list: HTMLElement, event?: RoomEventId): HTMLElement | null {
@@ -909,6 +917,8 @@ function useReading(
       const latest = room.latest ?? events?.at(-1)?.id
       if (latest === undefined) return
       matrix.markRead(room.id, latest, false, true)
+      // Marked, what shows of it need not be again.
+      marked.current = latest
       held.current = false
       // The line goes: nothing loaded is after it.
       const last = events?.at(-1)

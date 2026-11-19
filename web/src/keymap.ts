@@ -10,6 +10,7 @@ import {
   parseKeybinding,
   type KeybindingPress,
 } from 'tinykeys'
+import { rest, resting } from './rest'
 
 export type Action =
   | 'next'
@@ -266,13 +267,12 @@ export function keepFocus(event: MouseEvent) {
 /** `keepFocus` for controls that are also dragged: as preventing the
  * mousedown's default would keep a drag from starting, the control takes
  * the focus, and gives it back once the press ends, clicked or dragged. */
-export function returnFocus(event: MouseEvent) {
+export function returnFocus() {
   const previous = document.activeElement!
-  const pressed = event.currentTarget as HTMLElement
   const back = () => {
     window.removeEventListener('mouseup', back)
     window.removeEventListener('dragend', back)
-    if (previous === document.body) pressed.blur()
+    if (previous === document.body) rest()
     else (previous as HTMLElement).focus({ preventScroll: true })
   }
   window.addEventListener('mouseup', back)
@@ -415,18 +415,18 @@ const typed = (event: KeyboardEvent) =>
   !event.metaKey &&
   !event.altKey &&
   !/^F\d+$/.test(event.key) &&
-  (event.target as Element).matches('[contenteditable],input,select,textarea')
+  (event.target as Element).matches(`[contenteditable],input:not(${TOGGLES}),select,textarea`)
 // tinykeys' own ignores fields, and repeats: those, `sequences` handles.
 const windowKeys = sequences(
   () => windowBindings,
   (pending) => (pendingSequence.value = pending),
-  // Escape leaves what has the focus (a line, a link), as fields leave
-  // themselves, before it goes `up` from nothing; but after what is
-  // bound where the focus is (a panel opened from a line closes first).
+  // Escape leaves what has the focus (a line, a link) for where it
+  // rests, as fields leave themselves, before it goes `up` from there;
+  // but after what is bound where the focus is (a panel opened from a
+  // line closes first).
   (event) => {
-    const focused = document.activeElement as HTMLElement
-    if (event.key !== 'Escape' || event.shiftKey || focused === document.body) return false
-    focused.blur()
+    if (event.key !== 'Escape' || event.shiftKey || resting()) return false
+    rest()
     return true
   },
   (event) =>
@@ -434,7 +434,7 @@ const windowKeys = sequences(
     typed(event) ||
     // As are the keys that activate a control that has the focus: a link
     // in a message, Tabbed to.
-    (ACTIVATE.includes(event.key) && (event.target as Element).matches('a[href],button,summary,[role=button]')) ||
+    (ACTIVATE.includes(event.key) && (event.target as Element).matches(`a[href],button,summary,[role=button],${TOGGLES}`)) ||
     // And those a player that has the focus seeks and plays by.
     (PLAY.includes(event.key) && (event.target as Element).matches('audio,video')),
 )
@@ -450,6 +450,8 @@ export function takeKeys(frame: Window) {
 }
 
 export const ACTIVATE = ['Enter', ' ']
+/** Fields nothing is typed into: the shortcuts count in them. */
+const TOGGLES = 'input[type=checkbox],input[type=radio]'
 const PLAY = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', ' ']
 
 /** How long a sequence waits for its next press; on the window, until

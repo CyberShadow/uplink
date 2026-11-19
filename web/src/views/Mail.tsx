@@ -47,6 +47,7 @@ import { inboxUnread, labelName } from './Nav'
 import { useTitle } from '../title'
 import { useLoadInView } from './loadInView'
 import { useListPlace } from './listPlace'
+import { List, rowId } from './List'
 import { FAVOURITE } from '../roomTags'
 import { isOwnEvent } from '../stores/calendar'
 import { Confirm } from './Confirm'
@@ -633,6 +634,7 @@ function ConversationToolbar(props: {
 function OtherRow(props: {
   mail: MailStore
   row: OtherItemRow
+  id: string
   focused: Ref<HTMLLIElement> | null
   open: () => void
 }) {
@@ -640,11 +642,13 @@ function OtherRow(props: {
   const parts = useParts(row)
   const isSelected = mail.selected.value.has(row.key)
   return (
-    // A row of the list, whose keys (j/k, Enter) are its own: the click is the
-    // pointer's way to them.
-    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/role-supports-aria-props
+    // A row of the list, which has the focus for it, and the keys (j/k,
+    // Enter): the click is the pointer's way to them.
+    // eslint-disable-next-line jsx-a11y/click-events-have-key-events
     <li
       ref={props.focused ?? undefined}
+      id={props.id}
+      role="option"
       class={[styles.row, props.focused && styles.focused, isSelected && styles.selected, parts.unread && styles.unread]
         .filter(Boolean)
         .join(' ')}
@@ -692,6 +696,7 @@ function MessageList(props: {
 
   const rows = mail.rows.value
   const listed = useRef<HTMLUListElement>(null)
+  const cursor = rows.findIndex((row) => row.key === mail.focus.value)
   useListPlace(listed, rows.map((row) => row.key), list?.view, mail)
   // A search's rooms show their accounts'.
   if (!list?.loaded || !matrix.accounts.value) return <p class={styles.placeholder}>Loading…</p>
@@ -709,12 +714,15 @@ function MessageList(props: {
   const own = (account: string) => accounts.find((a) => a.id === account)?.identities ?? []
   return (
     <>
-      <ul
-        ref={listed}
+      <List
+        tag="ul"
+        list={listed}
         class={styles.list}
-        aria-label="Messages"
+        label="Messages"
+        cursor={cursor === -1 ? undefined : rowId(cursor)}
+        multi
       >
-        {rows.map((row) => {
+        {rows.map((row, index) => {
           if (row.kind !== 'mail') {
             const isFocused = row.key === mail.focus.value
             return (
@@ -722,6 +730,7 @@ function MessageList(props: {
                 key={row.key}
                 mail={mail}
                 row={row}
+                id={rowId(index)}
                 focused={isFocused ? focused : null}
                 open={() => {
                   mail.focus.value = row.key
@@ -740,12 +749,14 @@ function MessageList(props: {
           const count = thread.entries.length
           const unread = mail.countHaving(thread, 'UNREAD')
           return (
-            // A row of the list, whose keys (j/k, Enter) are its own: the click is the
-            // pointer's way to them.
-            // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/role-supports-aria-props
+            // A row of the list, which has the focus for it, and the keys (j/k,
+            // Enter): the click is the pointer's way to them.
+            // eslint-disable-next-line jsx-a11y/click-events-have-key-events
             <li
               key={key}
               ref={isFocused ? focused : undefined}
+              id={rowId(index)}
+              role="option"
               class={[
                 styles.row,
                 isFocused && styles.focused,
@@ -799,7 +810,7 @@ function MessageList(props: {
           )
         })}
         {list.more && <More mail={mail} loaded={rows.length} />}
-      </ul>
+      </List>
       {!list.more && <PartialRooms rooms={list.partialRooms} />}
     </>
   )
@@ -833,7 +844,7 @@ function More(props: { mail: MailStore; loaded: number }) {
   const element = useRef<HTMLLIElement>(null)
   useLoadInView(element, props.loaded, () => props.mail.loadMore())
   return (
-    <li ref={element} class={styles.more}>
+    <li ref={element} class={styles.more} role="presentation">
       Loading more…
     </li>
   )

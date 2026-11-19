@@ -5,7 +5,7 @@ import { useLocation } from 'preact-iso'
 import { date, dateTime, duration } from '../format'
 import { historyProgress } from '../matrix'
 import { keepFocus, returnFocus, useKeymap } from '../keymap'
-import { stopKeys, useRegion } from '../regions'
+import { stopKeys, useRegion, useStops } from '../regions'
 import type { Account, Failing, Label, ListingProgress, MailProvider, Mark, MatrixAccount, Place, Room, RoomId } from '../generated/protocol'
 import { isInbox, markOf, NONE, shows, strongest } from '../marks'
 import { bySpaceOrder, moveSpace } from '../spaceOrder'
@@ -200,6 +200,9 @@ const matrixSection = (account: string) => `matrix:${account}`
 const labelFold = (account: string, node: LabelNode) => `${account}:${node.path}`
 const spaceFold = (room: Room) => `matrix:${room.account}:${room.room_id}`
 
+/** What the nav's keys move among. */
+const STOPS = 'a[href], button'
+
 /** Whether the nav links to the room: a joined space it only nests. */
 export const linksTo = (room: Room) => !(room.space && room.membership === 'joined')
 
@@ -343,13 +346,14 @@ export function Nav(props: { open: boolean }) {
       return
     }
   }
-  // As a region, its links are moved among, from the one of the view on
-  // show; Enter follows one.
-  const links = () => [...nav.current!.querySelectorAll<HTMLElement>('a[href]')]
-  useRegion('nav', nav, () =>
-    (nav.current!.querySelector<HTMLElement>('a[aria-current]') ?? links().at(0))?.focus(),
-  )
-  useKeymap(stopKeys(links), { focus: nav })
+  // As a region, its links, and what folds them, are moved among, from
+  // the link of the view on show; Enter follows one. One Tab stop: where
+  // the focus was in it last, or else that link.
+  const stops = () => [...nav.current!.querySelectorAll<HTMLElement>(STOPS)]
+  const shown = () => nav.current!.querySelector<HTMLElement>('a[aria-current]') ?? stops().at(0) ?? null
+  useRegion('nav', nav, () => shown()?.focus())
+  useStops(nav, STOPS, (last) => last?.closest(STOPS) ?? shown(), null)
+  useKeymap(stopKeys(stops), { focus: nav })
   useKeymap({
     navNext: step(1, false),
     navPrevious: step(-1, false),

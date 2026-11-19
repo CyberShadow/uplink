@@ -9,6 +9,7 @@ import { useFavicon } from '../favicon'
 import { Attention } from '../marks'
 import { restoreFocus } from '../historyFocus'
 import { cycleRegion, enterRegion, useRegion } from '../regions'
+import { rest, useRest } from '../rest'
 import { keepFocus, useKeymap } from '../keymap'
 import type { Client } from '../stores/client'
 import { Backdrop } from './Backdrop'
@@ -63,19 +64,18 @@ function Shell() {
   useNotifications(route)
   useReminders(route)
   useFavicon(home.badges.value)
+  // The view is where the focus rests, where nothing in it is.
+  const main = useRef<HTMLElement>(null)
+  useRest(main)
+  useRegion('main', main, () => main.current!.focus())
   // A view shown has the focus it had, if gone back or forward to; else
-  // the focus it takes (a room's box), or none: not that of a field
+  // the focus it takes (a room's box), or it rests: not that of a field
   // outside it, as the search box, left from the view before. After its
   // own effects, as a parent's run after its children's.
-  const main = useRef<HTMLElement>(null)
   useLayoutEffect(() => {
     if (restoreFocus()) return
-    const focused = document.activeElement as HTMLElement
-    if (!main.current!.contains(focused)) focused.blur()
+    if (!main.current!.contains(document.activeElement)) rest()
   }, [path])
-
-  // The view is where the focus is while nothing has it.
-  useRegion('main', main, () => (document.activeElement as HTMLElement).blur())
 
   /** The account on show, or else the first. */
   const account = () => {
@@ -145,7 +145,7 @@ function Shell() {
       </header>
       <Nav open={navOpen} />
       {navOpen && <Backdrop class={styles.scrim} close={() => setNavOpen(false)} />}
-      <main ref={main} class={styles.content}>
+      <main ref={main} class={styles.content} tabIndex={-1}>
         {error && (
           <div class={styles.error} role="alert">
             {error}

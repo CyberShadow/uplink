@@ -17,6 +17,7 @@ import { date, time } from '../format'
 import { homeMailPath, searchPath } from './App'
 import { calendarPath } from './Calendar'
 import { LabelPicker } from './LabelPicker'
+import { List, rowId } from './List'
 import { ItemCells, ROW, pathOf } from './ItemRow'
 import { RoomTagPicker } from './RoomTagPicker'
 import { FAVOURITE } from '../roomTags'
@@ -41,7 +42,9 @@ export function Home() {
 
   const agenda = home.agenda.value
   const buckets = home.buckets.value
-  const current = home.rows.value.find((row) => row.key === focus)
+  const all = home.rows.value
+  const current = all.find((row) => row.key === focus)
+  const listed = useRef<HTMLDivElement>(null)
 
   const open = (row: Row) => {
     if (row.kind !== 'mail') return route(pathOf(row))
@@ -106,11 +109,18 @@ export function Home() {
           </button>
         ))}
       </nav>
-      <div class={styles.buckets}>
+      <List
+        tag="div"
+        list={listed}
+        class={styles.buckets}
+        label="Buckets' rows"
+        cursor={current && rowId(all.indexOf(current))}
+        multi={false}
+      >
         {buckets.map((shown) => {
           const { bucket, rows } = shown
           return (
-          <section key={bucket.name} id={id(bucket)} class={styles.bucket} aria-label={bucket.name}>
+          <section key={bucket.name} id={id(bucket)} class={styles.bucket} role="group" aria-label={bucket.name}>
             {/* The bucket as a list of its own, to work through. */}
             <h2>
               <a href={searchPath(bucket.query)}>
@@ -120,16 +130,19 @@ export function Home() {
             {rows.length === 0 ? (
               <p class={styles.empty}>Nothing.</p>
             ) : (
-              <ul class={styles.rows}>
+              <ul class={styles.rows} role="presentation">
                 {rows.map((row) => {
                   const isFocused = row.key === focus
                   return (
-                    // A row of the list, whose keys (j/k, Enter) are its own: the click is the
-                    // pointer's way to them.
-                    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
+                    // A row of the list, which has the focus for it, and the keys (j/k,
+                    // Enter): the click is the pointer's way to them.
+                    // eslint-disable-next-line jsx-a11y/click-events-have-key-events
                     <li
                       key={row.key}
                       ref={isFocused ? focused : undefined}
+                      id={rowId(all.indexOf(row))}
+                      role="option"
+                      aria-selected={isFocused}
                       class={[ROW, styles.row, isFocused && styles.focused, unread(row) && styles.unread].filter(Boolean).join(' ')}
                       aria-current={isFocused || undefined}
                       onClick={() => {
@@ -151,7 +164,7 @@ export function Home() {
           </section>
           )
         })}
-      </div>
+      </List>
       {picking?.kind === 'mail' && (
         <LabelPicker
           targets={[threadOf(picking.conversation)]}

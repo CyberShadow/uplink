@@ -4174,18 +4174,42 @@ as a native list does), `Enter` chooses and `Esc` closes.
   nav, to the link of the view on show; a timeline or a panel, back to
   where the focus was in it last, or else to its latest line, or its
   first control. One that takes no focus (hidden, or empty) is passed
-  over. While nothing has the focus, it is the view's: `F6` goes to the
-  first region within it, `Shift+F6` to the one before it. In the nav,
+  over. At rest in a room (below), on its messages with none chosen,
+  `F6` goes to the first region within the view, `Shift+F6` to the one
+  before it. In the nav,
   and in a panel beside a room (`SidePanel`: a thread, a search's
   results, the room's info, a member, a message's details), `j`/`k` and
   the arrows move among its links, lines or controls, `Home`/`End` to
   the first and last, as in a timeline; `Enter` is the control's own. A
   player that has the focus keeps the arrows and Space, to seek and play.
+- **Something always has the focus**, which rests (`web/src/rest.ts`)
+  where the view's keys are: on a view's list as a whole, as Gmail's
+  (`List`: mail's, home's, to-dos', history's), whose keys move a cursor
+  among its rows (the list names it, `aria-activedescendant`), dimmed
+  while the focus is elsewhere; in a room, on its messages with none
+  chosen (`j`/`k` choose the latest, `i` writes); else on the view. A
+  view shown rests, unless it takes the focus (a room's box); a list
+  loaded takes it from the view. What had the focus gone from under it
+  (a line deleted), or a click on what takes none, leaves it to the
+  page, which browsers do not tell of: the key pressed next is the
+  resting element's. Nothing is typed into a checkbox: the shortcuts
+  count in one, but Space, which is its own.
+- **`Tab` stops once at each part** (`useStops`), as a composite
+  widget's (WAI-ARIA), and the keys above move within it: the nav, at
+  where the focus was in it last, or else the link of the view on show
+  (its folds are among what `j`/`k` move through); a list, and then the
+  controls of the cursor's row; a room's messages, at them all with none
+  chosen, else at the line chosen, and then what it holds (its sender,
+  links, buttons); a thread's, at the line the focus was on, or else the
+  latest. The controls of other rows and lines take no `Tab`. Toolbars,
+  a room's header and the other panels' controls are each their own
+  stop. A test walks `Tab` over a mail list and a room, and names every
+  stop.
 - **What the pointer does, keys do.** The lint (`eslint-plugin-jsx-a11y`,
   its recommended rules) refuses a click handler on what is no control
   (a `div`, a `li`) unless the keys have a way to the same, said where
-  it is allowed: a list's row, whose keys are the list's (`j`/`k`,
-  `Enter`); a dialog's backdrop (`Backdrop`), which Esc stands for; a
+  it is allowed: a list's row, an option of the list that has the
+  focus for it, with its keys (`j`/`k`, `Enter`); a dialog's backdrop (`Backdrop`), which Esc stands for; a
   message's body, whose links and spoilers are the controls (a spoiler
   is a Tab stop, shown by Enter or Space). So a mail's header is a
   button, and in to-dos `F2` edits a title, as a double click does (and
@@ -4201,8 +4225,9 @@ as a native list does), `Enter` chooses and `Esc` closes.
   line, it closes a room's panel first (the details `Enter` opened, a
   thread), keeping one's place (from within the panel, for where the
   focus was in the timeline), then leaves the line, as anything else
-  that has the focus (a link); from nothing, it closes a room's panel (a thread, the
-  info, a search, a message's details), takes an open conversation back
+  that has the focus (a link), for where the focus rests; from there, it
+  closes a room's panel (a thread, the info, a search, a message's
+  details), marks a room behind read, takes an open conversation back
   to its list, selects none, and else goes home. Dialogs, menus and
   pickers close by it first.
 

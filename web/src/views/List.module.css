@@ -1,0 +1,10 @@
+/* The cursor's row shows that the list has the focus. */
+.list:focus {
+  outline: none;
+}
+
+/* While it has not (the nav has, or a box), the cursor only keeps its
+   place. */
+.list:not(:focus-within) [aria-current] {
+  border-left-color: var(--muted);
+}

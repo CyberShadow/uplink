@@ -34,7 +34,7 @@ async function start(path = '/mail/work/INBOX') {
   else if (path.startsWith('/matrix/')) await screen.findByRole('heading', { name: /^Security of/ })
   else if (path === '/') await screen.findByRole('region', { name: 'Home' })
   else if (/\/\d+$/.test(path)) await screen.findByRole('toolbar', { name: 'Conversation actions' })
-  else await screen.findByRole('list', { name: 'Messages' })
+  else await screen.findByRole('listbox', { name: 'Messages' })
   return userEvent.setup()
 }
 
@@ -44,11 +44,14 @@ function badges(marks: Partial<Marks>): Badges {
   return { marks: { home: none, labels: [], accounts: [], rooms: [], todos: none, calendar: none, ...marks } }
 }
 
+/** Where the focus rests in a room: its messages, with none chosen. */
+function timelineRest() {
+  return screen.getByRole('list', { name: 'Timeline' }).parentElement
+}
+
 /** The list's conversations, without the end saying more are loading. */
 function rows() {
-  return within(screen.getByRole('list', { name: 'Messages' }))
-    .queryAllByRole('listitem')
-    .filter((row) => row.textContent !== 'Loading more…')
+  return within(screen.getByRole('listbox', { name: 'Messages' })).queryAllByRole('option')
 }
 const subjects = () => rows().map((row) => row.querySelector('[class*=subject]')!.textContent)
 /** A quick reaction of the reaction picker open. */
@@ -222,7 +225,7 @@ describe('mail', () => {
         const conversation = await screen.findByRole('list', { name: 'Conversation' })
         const at = scrolled.mock.contexts.at(-1) as Element
         await user.keyboard('{Escape}')
-        await screen.findByRole('list', { name: 'Messages' })
+        await screen.findByRole('listbox', { name: 'Messages' })
         return at === conversation.closest('article') ? 'subject' : within(conversation).getAllByRole('listitem').indexOf(at as HTMLLIElement)
       }
       expect(await openedAt()).toBe(2)
@@ -296,7 +299,7 @@ describe('mail', () => {
         await user.click(screen.getByRole('menuitem', { name: 'Mark unread from here' }))
         await waitFor(() => expect(server.labelsOf(second.id)).toContain(unread))
         expect(server.labelsOf(first.id)).not.toContain(unread)
-        await screen.findByRole('list', { name: 'Messages' })
+        await screen.findByRole('listbox', { name: 'Messages' })
       })
 
       it("shows a message's original, as its account has it", async () => {
@@ -362,7 +365,7 @@ describe('mail', () => {
     await screen.findByText('Undid it')
     expect(subjects()).toEqual(['First', 'Second', 'Third'])
     // The click left the focus alone: keys still drive the list.
-    expect(document.activeElement).toBe(document.body)
+    expect(document.activeElement).toBe(screen.getByRole('listbox', { name: 'Messages' }))
   })
 
   it('shows what may follow a sequence begun, which then waits for it, or Esc', async () => {
@@ -390,7 +393,7 @@ describe('mail', () => {
     await user.keyboard('j{Enter}')
     expect(await screen.findByText('Body of Second')).toBeTruthy()
     await user.keyboard('{Escape}')
-    await screen.findByRole('list', { name: 'Messages' })
+    await screen.findByRole('listbox', { name: 'Messages' })
     expect(location.pathname).toBe('/mail/work/INBOX')
     await user.keyboard('x{Escape}')
     expect(client.mail.selected.value.size).toBe(0)
@@ -408,7 +411,7 @@ describe('mail', () => {
     // Of no place in the list, which back goes to.
     expect(within(toolbar).queryByRole('button', { name: 'Older' })).toBeNull()
     await user.keyboard('u')
-    await screen.findByRole('list', { name: 'Messages' })
+    await screen.findByRole('listbox', { name: 'Messages' })
     expect(location.pathname).toBe('/mail/work/INBOX')
   })
 
@@ -486,7 +489,7 @@ describe('mail', () => {
     await screen.findByText('Body of Second')
     expect(document.title).toBe('Second – uplink')
     await user.click(within(screen.getByRole('navigation')).getByRole('link', { name: /Inbox/ }))
-    await screen.findByRole('list', { name: 'Messages' })
+    await screen.findByRole('listbox', { name: 'Messages' })
     await waitFor(() => expect(document.title).toBe('Inbox (2) – work@example.com – uplink'))
     await user.click(within(screen.getByRole('navigation')).getByRole('link', { name: /Lounge/ }))
     expect(location.pathname).toBe(`/rooms/${room.id}`)
@@ -507,7 +510,7 @@ describe('mail', () => {
     await user.keyboard('j')
     expect(await screen.findByText('Body of Third')).toBeTruthy()
     await user.keyboard('u')
-    await screen.findByRole('list', { name: 'Messages' })
+    await screen.findByRole('listbox', { name: 'Messages' })
     expect(focusedSubject()).toBe('Third')
   })
 
@@ -643,7 +646,7 @@ describe('mail', () => {
     await user.keyboard('{Enter}')
     await screen.findByText('Body of First')
     await user.keyboard('e')
-    await screen.findByRole('list', { name: 'Messages' })
+    await screen.findByRole('listbox', { name: 'Messages' })
     expect(subjects()).toEqual(['Second', 'Third'])
   })
 
@@ -746,7 +749,7 @@ describe('mail', () => {
       expect(selectAll().indeterminate).toBe(false)
       expect(client.mail.selected.value.size).toBe(3)
       // The click left the focus alone: keys still drive the list.
-      expect(document.activeElement).toBe(document.body)
+      expect(document.activeElement).toBe(screen.getByRole('listbox', { name: 'Messages' }))
     })
 
     it('selects from its menu', async () => {
@@ -857,8 +860,8 @@ describe('mail', () => {
       await user.click(toolbar().getByRole('button', { name: 'Newer' }))
       await screen.findByText('Body of First')
       await user.click(toolbar().getByRole('button', { name: 'Back to the list' }))
-      await screen.findByRole('list', { name: 'Messages' })
-      expect(document.activeElement).toBe(document.body)
+      await screen.findByRole('listbox', { name: 'Messages' })
+      expect(document.activeElement).toBe(screen.getByRole('listbox', { name: 'Messages' }))
     })
 
     it('counts "many" while more are to load, and loads them as the end nears', async () => {
@@ -898,7 +901,7 @@ describe('mail', () => {
       await user.click(await screen.findByRole('menuitem', { name: 'Mark as not important' }))
       await waitFor(() => expect(server.labelsOf(first.latest.id)).not.toContain(important))
       await user.click(await toolbar().findByRole('button', { name: 'Mark as unread' }))
-      await screen.findByRole('list', { name: 'Messages' })
+      await screen.findByRole('listbox', { name: 'Messages' })
       await waitFor(() => expect(rows()[0].className).toMatch(/unread/))
     })
   })
@@ -1046,7 +1049,7 @@ describe('mail', () => {
     expect(focusedSubject()).toBe('First')
     await user.keyboard('?')
     expect(screen.queryByRole('dialog')).toBeNull()
-    expect(document.activeElement).toBe(document.body)
+    expect(document.activeElement).toBe(screen.getByRole('listbox', { name: 'Messages' }))
     await user.keyboard('?{Escape}')
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(location.pathname).toBe('/mail/work/INBOX')
@@ -1729,7 +1732,7 @@ describe('matrix', () => {
     expect(location.pathname).toBe(`/rooms/${lounge.id}`)
     for (const key of ['i', '{Enter}', 'r']) {
       await user.keyboard('{Escape}')
-      expect(document.activeElement).toBe(document.body)
+      expect(document.activeElement).toBe(timelineRest())
       await user.keyboard(key)
       expect(document.activeElement).toBe(box())
     }
@@ -1768,7 +1771,8 @@ describe('matrix', () => {
     expect(document.activeElement).toBe(box())
     await user.keyboard('{Escape}/{Alt>}{Shift>}k{/Shift}{/Alt}')
     expect(location.pathname).toBe('/todos')
-    expect(document.activeElement).toBe(document.body)
+    // With no list, it rests on the view.
+    expect(document.activeElement).toBe(document.querySelector('main'))
   })
 
   it('acts by keys on the message that j and k move to, out of the box', async () => {
@@ -2008,7 +2012,7 @@ describe('matrix', () => {
 
     // The to-do opens the room at the message, its line focused.
     await user.keyboard('gk')
-    const todos = await screen.findByRole('list', { name: 'To-do list' })
+    const todos = await screen.findByRole('listbox', { name: 'To-do list' })
     expect(within(todos).getByRole('link', { name: 'message' }).getAttribute('href')).toBe(`/rooms/${room.id}/at/${asked.id}`)
     await user.keyboard('{Enter}')
     expect(location.pathname).toBe(`/rooms/${room.id}/at/${asked.id}`)
@@ -2051,9 +2055,10 @@ describe('matrix', () => {
     await user.keyboard('{F6}')
     expect(document.activeElement).toBe(line(first))
 
-    // In the nav, j/k and Home/End move among its links; Enter follows one.
+    // In the nav, j/k and Home/End move among its links, and what folds
+    // them; Enter follows one.
     await user.keyboard('{Shift>}{F6}{/Shift}')
-    const links = [...nav.querySelectorAll('a[href]')]
+    const links = [...nav.querySelectorAll('a[href], button')]
     const at = links.indexOf(here())
     await user.keyboard('k')
     expect(document.activeElement).toBe(links[at - 1])
@@ -2063,10 +2068,10 @@ describe('matrix', () => {
     expect(document.activeElement).toBe(links.at(-1))
     expect(location.pathname).toBe(`/rooms/${room.id}`)
 
-    // With nothing focused, which is the view's, F6 goes to its first
+    // At rest, on its messages with none chosen, F6 goes to its first
     // part, and Shift+F6 to the part before it.
     await user.keyboard('{Escape}')
-    expect(document.activeElement).toBe(document.body)
+    expect(document.activeElement).toBe(timelineRest())
     await user.keyboard('{Shift>}{F6}{/Shift}')
     expect(nav.contains(document.activeElement)).toBe(true)
     await user.keyboard('{Escape}{F6}')
@@ -2143,18 +2148,18 @@ describe('matrix', () => {
     await within(screen.getByRole('list', { name: 'Timeline' })).findByText('Plans')
     const away = async () => {
       await user.keyboard('gi')
-      await screen.findByRole('list', { name: 'Messages' })
+      await screen.findByRole('listbox', { name: 'Messages' })
     }
     const back = async () => {
       history.back()
       await waitFor(() => expect(location.pathname).toBe(`/rooms/${room.id}`))
     }
 
-    // Left with nothing focused, it has nothing, not its box.
+    // Left at rest, it rests, not on its box.
     await user.keyboard('{Escape}')
     await away()
     await back()
-    expect(document.activeElement).toBe(document.body)
+    expect(document.activeElement).toBe(timelineRest())
     // Or its line.
     await user.keyboard('k')
     await away()
@@ -2162,7 +2167,7 @@ describe('matrix', () => {
     expect(document.activeElement).toBe(document.getElementById(`event-${said.id}`))
     // Or its box.
     await user.keyboard('i{Alt>}{Shift>}i{/Shift}{/Alt}')
-    await screen.findByRole('list', { name: 'Messages' })
+    await screen.findByRole('listbox', { name: 'Messages' })
     await back()
     expect(document.activeElement).toBe(box())
   })
@@ -2188,7 +2193,7 @@ describe('matrix', () => {
     expect(screen.queryByRole('complementary', { name: 'Thread' })).toBeNull()
     expect(document.activeElement).toBe(document.getElementById(`event-${root.id}`))
     await user.keyboard('{Escape}')
-    expect(document.activeElement).toBe(document.body)
+    expect(document.activeElement).toBe(timelineRest())
     expect(location.pathname).toBe(`/rooms/${room.id}`)
     await user.keyboard('{Escape}')
     expect(location.pathname).toBe('/')
@@ -3458,6 +3463,102 @@ describe('room timeline', () => {
   })
 })
 
+describe('Tab', () => {
+  /** What Tab stops at, over the page, by what each is called, with
+   * `here` for what has the focus: those before it, by Shift+Tab, and
+   * those after it. (Past the page's ends is the browser's own.) */
+  async function stops(user: ReturnType<typeof userEvent.setup>): Promise<string[]> {
+    const from = document.activeElement as HTMLElement
+    const walk = async (shift: boolean) => {
+      const names: string[] = []
+      from.focus()
+      for (;;) {
+        await user.tab({ shift })
+        const at = document.activeElement!
+        if (at === document.body) return names
+        const line = at.matches('[data-event]') ? `line: ${at.querySelector('[class*=body]')!.textContent}` : null
+        names.push(line ?? at.getAttribute('aria-label') ?? at.getAttribute('title') ?? at.textContent!.trim())
+      }
+    }
+    const before = await walk(true)
+    const after = await walk(false)
+    from.focus()
+    return [...before.reverse(), 'here', ...after]
+  }
+
+  it('stops once at the nav and at a list, and at the controls of the row the cursor is on', async () => {
+    const user = await start('/mail/work/INBOX')
+    // The list has the focus, as a whole.
+    const list = screen.getByRole('listbox', { name: 'Messages' })
+    expect(document.activeElement).toBe(list)
+    expect(await stops(user)).toEqual([
+      'Menu',
+      'Search',
+      'Search help',
+      // The nav: its link to the view on show.
+      'Inbox3',
+      'Select all',
+      'Select',
+      'here',
+      // The first row's.
+      'Select',
+      'Star',
+    ])
+    // The cursor's row moves, and its controls with it.
+    await user.keyboard('j')
+    expect(list.getAttribute('aria-activedescendant')).toBe(rows()[1].id)
+    await user.tab()
+    expect(rows()[1].contains(document.activeElement)).toBe(true)
+    // In a field of the row, the shortcuts count: nothing is typed there.
+    await user.keyboard('k')
+    expect(list.getAttribute('aria-activedescendant')).toBe(rows()[0].id)
+    // Esc, from anywhere, goes back to the list.
+    await user.keyboard('{Escape}')
+    expect(document.activeElement).toBe(list)
+  })
+
+  it('stops once at a room\'s messages: at them all with none chosen, else at the line chosen and its controls', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    server.addRoom('Hall')
+    server.receive(room.id, { body: 'see https://example.org/one' })
+    server.receive(room.id, { body: 'and https://example.org/two' })
+    const user = await start(`/rooms/${room.id}`)
+    await within(screen.getByRole('list', { name: 'Timeline' })).findByText(/two/)
+    const above = [
+      'Menu',
+      'Search Lounge',
+      // The nav: its link to the room.
+      'LLounge',
+      'Tags',
+      'Room info (m)',
+      'Leave',
+      'Jump to first unread (Shift+PgUp)',
+      'Mark as read (Esc)',
+    ]
+    // From the box.
+    expect(await stops(user)).toEqual([...above, 'Messages', 'Attach files', 'here'])
+    // A line chosen is the stop, and what it holds the next ones.
+    await user.keyboard('{Escape}k')
+    expect(await stops(user)).toEqual([
+      ...above,
+      'here',
+      '@bob:example.org',
+      'https://example.org/two',
+      'React',
+      'Reply',
+      'Reply in thread',
+      'Options',
+      'Attach files',
+      'Message Lounge',
+    ])
+    // Esc chooses none: the messages are the stop again.
+    await user.keyboard('{Escape}')
+    expect(document.activeElement).toBe(timelineRest())
+    expect(await stops(user)).toEqual([...above, 'here', 'Attach files', 'Message Lounge'])
+  })
+})
+
 describe('switcher', () => {
   beforeEach(() => localStorage.removeItem('uplink.recent'))
 
@@ -3554,7 +3655,7 @@ describe('switcher', () => {
 
 describe('home', () => {
   const bucketRows = (name: string) =>
-    within(screen.getByRole('region', { name })).queryAllByRole('listitem').map((row) => row.querySelector('[class*=title]')!.textContent)
+    within(screen.getByRole('group', { name })).queryAllByRole('option').map((row) => row.querySelector('[class*=title]')!.textContent)
 
   it('lists the buckets, and e is done with any row, s stars it', async () => {
     server.addMatrixAccount()
@@ -3565,7 +3666,7 @@ describe('home', () => {
     expect(screen.getByRole('link', { name: /^Home/ }).getAttribute('aria-current')).toBe('page')
     await waitFor(() => expect(bucketRows('Now')).toEqual(['Lobby']))
     const detail = () => {
-      const row = within(screen.getByRole('region', { name: 'Now' })).getAllByRole('listitem')[0]
+      const row = within(screen.getByRole('group', { name: 'Now' })).getAllByRole('option')[0]
       return [row.querySelector('[class*=text]')!.textContent, row.querySelector('[title$=unread]')?.textContent]
     }
     // A room says what its latest message does, as mail its snippet, and
@@ -3574,7 +3675,7 @@ describe('home', () => {
     server.receive(lobby.id, { body: 'Lunch?\nAt noon', sender_name: 'Carol', sender: '@carol:example.org' })
     await waitFor(() => expect(detail()).toEqual(['Carol: Lunch? At noon', '2']))
     expect(bucketRows('Inbox')).toHaveLength(3)
-    expect(within(screen.getByRole('region', { name: 'Later' })).getByText('Nothing.')).toBeTruthy()
+    expect(within(screen.getByRole('group', { name: 'Later' })).getByText('Nothing.')).toBeTruthy()
     expect(within(screen.getByRole('navigation', { name: 'Buckets' })).getAllByRole('button').map((b) => b.textContent)).toEqual([
       'Now 1',
       'Inbox 3',
@@ -3601,7 +3702,7 @@ describe('home', () => {
     await user.keyboard('e')
     await waitFor(() => expect(bucketRows('Inbox')).toHaveLength(2))
     // A heading opens its bucket as a list.
-    const inbox = screen.getByRole('region', { name: 'Inbox' })
+    const inbox = screen.getByRole('group', { name: 'Inbox' })
     expect(decodeURIComponent(within(inbox).getByRole('link', { name: /^Inbox/ }).getAttribute('href')!)).toBe(
       '/search/in:inbox',
     )
@@ -3806,8 +3907,8 @@ describe('search', () => {
 
 describe('to-dos', () => {
   const todoTitles = () =>
-    within(screen.getByRole('list', { name: 'To-do list' }))
-      .getAllByRole('listitem')
+    within(screen.getByRole('listbox', { name: 'To-do list' }))
+      .getAllByRole('option')
       .map((item) => item.querySelector('[class*=title]')!.textContent)
   const navCount = () => screen.getByRole('link', { name: /^To-dos/ }).textContent
 
@@ -3862,7 +3963,7 @@ describe('to-dos', () => {
 })
 
 describe('history', () => {
-  const items = () => within(screen.getByRole('list', { name: 'History' })).getAllByRole('listitem')
+  const items = () => within(screen.getByRole('listbox', { name: 'History' })).getAllByRole('option')
 
   it('undoes the last action with z anywhere, and the one before with z again', async () => {
     const user = await start('/mail/work/INBOX')
@@ -3882,7 +3983,7 @@ describe('history', () => {
     await user.keyboard('e')
     await waitFor(() => expect(subjects()).toEqual(['Second', 'Third']))
     await user.keyboard('gz')
-    await screen.findByRole('list', { name: 'History' })
+    await screen.findByRole('listbox', { name: 'History' })
     expect(items().map((i) => i.querySelector('[class*=description]')!.textContent)).toEqual([
       server.lastDescription(),
     ])
@@ -3907,7 +4008,7 @@ describe('history', () => {
     server.editRoomDraftElsewhere(at, { offset: 0, delete: '', insert: 'Hel' })
     server.editRoomDraftElsewhere(at, { offset: 3, delete: '', insert: 'lo' })
     await user.keyboard('gz')
-    await screen.findByRole('list', { name: 'History' })
+    await screen.findByRole('listbox', { name: 'History' })
     const descriptions = () => items().map((i) => i.querySelector('[class*=description]')!.textContent)
     expect(descriptions()).toEqual(['Edited the draft 2 edits', archived])
 
@@ -3942,7 +4043,7 @@ describe('history', () => {
     expect(outbox.getAttribute('aria-label')).toBe('Outbox')
     await within(outbox).findByText('Starred 1 message')
     expect(done.getAttribute('aria-label')).toBe('History')
-    expect(within(done).getAllByRole('listitem').map((i) => i.querySelector('[class*=description]')!.textContent)).toEqual([
+    expect(within(done).getAllByRole('option').map((i) => i.querySelector('[class*=description]')!.textContent)).toEqual([
       archived,
     ])
   })
