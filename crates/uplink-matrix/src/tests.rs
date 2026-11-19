@@ -3879,3 +3879,48 @@ mod follows {
         assert_eq!(db.found("is:followed is:notifying is:new"), ["$1"]);
     }
 }
+
+/// The SDK keeps every receipt of a sync's receipt events for a room, of
+/// which some homeservers send one per user (matrix-sdk-base is patched
+/// so: vendor/matrix-sdk-base), each user's latest.
+#[tokio::test]
+async fn receipts_of_one_sync_are_all_stored() {
+    use matrix_sdk::ruma::{
+        events::receipt::{ReceiptEventContent, ReceiptThread, ReceiptType},
+        owned_event_id, owned_room_id, owned_user_id,
+    };
+    use matrix_sdk::{MemoryStore, StateChanges, StateStore};
+    let room = owned_room_id!("!room:localhost");
+    let (first, second) = (owned_event_id!("$first"), owned_event_id!("$second"));
+    let receipt = |event: &str, user: &str| {
+        serde_json::from_value::<ReceiptEventContent>(json!({
+            event: { "m.read": { user: { "ts": 1 } } }
+        }))
+        .unwrap()
+    };
+    let mut changes = StateChanges::default();
+    changes.add_receipts(&room, receipt("$first", "@alice:localhost"));
+    changes.add_receipts(&room, receipt("$first", "@bob:localhost"));
+    changes.add_receipts(&room, receipt("$second", "@alice:localhost"));
+    let store = MemoryStore::new();
+    store.save_changes(&changes).await.unwrap();
+    let readers = |event| {
+        let (store, room) = (&store, &room);
+        async move {
+            store
+                .get_event_room_receipt_events(
+                    room,
+                    ReceiptType::Read,
+                    &ReceiptThread::Unthreaded,
+                    event,
+                )
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|(user, _)| user)
+                .collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(readers(&first).await, [owned_user_id!("@bob:localhost")]);
+    assert_eq!(readers(&second).await, [owned_user_id!("@alice:localhost")]);
+}

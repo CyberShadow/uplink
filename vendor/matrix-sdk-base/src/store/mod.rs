@@ -669,9 +669,35 @@ impl StateChanges {
     }
 
     /// Update the `StateChanges` struct with the given room with a new
-    /// `Receipts`.
+    /// `Receipts`, merged with those added before: a sync may have several
+    /// receipt events for a room (some homeservers send one per user). A
+    /// user's receipt replaces the one added before of the same type and
+    /// thread, whichever event that was for.
     pub fn add_receipts(&mut self, room_id: &RoomId, event: ReceiptEventContent) {
-        self.receipts.insert(room_id.to_owned(), event);
+        let receipts = self
+            .receipts
+            .entry(room_id.to_owned())
+            .or_insert_with(|| ReceiptEventContent(BTreeMap::new()));
+        for (event_id, event_receipts) in event.0 {
+            for (receipt_type, users) in event_receipts {
+                for (user_id, receipt) in users {
+                    for earlier in receipts.0.values_mut() {
+                        if let Some(earlier) = earlier.get_mut(&receipt_type) {
+                            earlier.retain(|user, earlier| {
+                                *user != user_id || earlier.thread != receipt.thread
+                            });
+                        }
+                    }
+                    receipts
+                        .0
+                        .entry(event_id.clone())
+                        .or_default()
+                        .entry(receipt_type.clone())
+                        .or_default()
+                        .insert(user_id, receipt);
+                }
+            }
+        }
     }
 
     /// Get a specific state event of statically-known type with the given state

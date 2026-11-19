@@ -8,3 +8,11 @@ adding it (`git log vendor/matrix-sdk-base`).
 
 Drop it, and its `[patch.crates-io]` entry in the workspace's
 `Cargo.toml`, once a release has the fixes.
+
+## Fixes
+
+- `StateChanges::add_receipts` merges a room's receipt events, rather
+  than keeping the last: a sync may have several (Conduit and tuwunel
+  send one per user), and all but the last of a sync were lost. Unfixed
+  upstream as of 2026-11-19. Uplink's test:
+  `receipts_of_one_sync_are_all_stored`.

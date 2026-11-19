@@ -1587,23 +1587,9 @@ async fn receipts_are_listed_by_their_events_and_named() {
             .find(|e| e.event_id == last.as_str())
     })
     .await;
-    let listed = || async {
-        match uplink
-            .matrix
-            .list_receipts(room.id)
-            .await
-            .answered()
-            .await
-            .unwrap()
-        {
-            ServerResponse::Receipts { receipts, .. } => receipts,
-            other => panic!("unexpected {other:?}"),
-        }
-    };
-    // Each in a sync of its own: the SDK keeps only the last of a room's
-    // `m.receipt` events in a sync, of which Conduit sends one per user.
-    let mut read = vec![];
-    for (n, reader) in readers.iter().enumerate() {
+    // At once: a sync may bring several, Conduit sending one receipt
+    // event per user.
+    for reader in &readers {
         reader
             .get_room(bob_room.room_id())
             .unwrap()
@@ -1614,12 +1600,23 @@ async fn receipts_are_listed_by_their_events_and_named() {
             )
             .await
             .unwrap();
-        read = eventually("the reader's receipt to be listed", || async {
-            let receipts = listed().await;
-            (receipts.len() == n + 1).then_some(receipts)
-        })
-        .await;
     }
+    let mut read = eventually("the readers' receipts to be listed", || async {
+        match uplink
+            .matrix
+            .list_receipts(room.id)
+            .await
+            .answered()
+            .await
+            .unwrap()
+        {
+            ServerResponse::Receipts { receipts, .. } => {
+                (receipts.len() == readers.len()).then_some(receipts)
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    })
+    .await;
     read.sort_by(|a, b| a.member.user.cmp(&b.member.user));
     assert!(read.iter().all(|r| r.event == seen.id));
     assert_eq!(
