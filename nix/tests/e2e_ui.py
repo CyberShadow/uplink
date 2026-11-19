@@ -570,9 +570,9 @@ def room_keys(page):
     expect(line("Keys latest").locator(":focus")).to_have_count(1)
     page.keyboard.press("Escape")
     expect(messages).to_be_focused()
-    # The nav is one stop: Shift+Tab from it leaves it.
-    page.keyboard.press("F6")
-    page.keyboard.press("F6")
+    # The nav, the part before the view, is one stop: Shift+Tab from it
+    # leaves it.
+    page.keyboard.press("Shift+F6")
     expect(nav.get_by_role("link", name="Keys")).to_be_focused()
     page.keyboard.press("Shift+Tab")
     expect(nav.locator(":focus")).to_have_count(0)
