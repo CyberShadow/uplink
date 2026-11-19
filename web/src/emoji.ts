@@ -1,5 +1,9 @@
 // Emoji by their shortcodes, as Element knows them: Emojibase's data,
-// with its Slack-style (iamcal) shortcodes, loaded on first use.
+// with its Slack-style (iamcal) shortcodes, loaded on first use. As
+// Element's version of it (17): its forms (U+FE0F after each emoji that
+// may take it, which 18 drops from many) are the reactions' keys, by
+// which the same reaction from Element (or a bridge, which sends them
+// as Element does) is counted with the others.
 
 export interface Emoji {
   unicode: string
@@ -18,7 +22,7 @@ export const GROUPS = [
   { name: 'Animals & nature', icon: '🐻' },
   { name: 'Food & drink', icon: '🍔' },
   { name: 'Travel & places', icon: '✈️' },
-  { name: 'Activities', icon: '⚽' },
+  { name: 'Activities', icon: '⚽\u{FE0F}' },
   { name: 'Objects', icon: '💡' },
   { name: 'Symbols', icon: '❤️' },
   { name: 'Flags', icon: '🏁' },

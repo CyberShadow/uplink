@@ -1,5 +1,11 @@
 import { expect, it } from 'vitest'
-import { vertically } from './ReactionPicker'
+import { loadEmoji } from '../emoji'
+import { QUICK, vertically } from './ReactionPicker'
+
+it('offers the quick reactions as Emojibase has them', async () => {
+  const emoji = (await loadEmoji()).map((e) => e.unicode)
+  for (const key of QUICK) expect(emoji).toContain(key)
+})
 
 const box = (left: number, top: number, width = 30, height = 30) => ({ left, top, right: left + width, bottom: top + height })
 

@@ -66,8 +66,8 @@ describe('completions', () => {
 
   it('find emoji by shortcode, those beginning with it first', async () => {
     const emoji = await loadEmoji()
-    expect(byShortcode(emoji, '+1')?.unicode).toBe('👍')
-    expect(searchEmoji(emoji, 'thumbs').map((e) => e.unicode)).toEqual(['👍', '👎'])
+    expect(byShortcode(emoji, '+1')?.unicode).toBe('👍️')
+    expect(searchEmoji(emoji, 'thumbs').map((e) => e.unicode)).toEqual(['👍️', '👎️'])
     expect(searchEmoji(emoji, 'smile')[0].unicode).toBe('😄')
   })
 })

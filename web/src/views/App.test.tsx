@@ -1819,9 +1819,9 @@ describe('matrix', () => {
     // Enter takes one, and other keys type one; then the line has the
     // focus back.
     await user.keyboard('+')
-    expect(document.activeElement).toBe(quickReaction('👍'))
+    expect(document.activeElement).toBe(quickReaction('👍️'))
     await user.keyboard('{ArrowRight}{ArrowRight}{ArrowLeft}')
-    expect(document.activeElement).toBe(quickReaction('👎'))
+    expect(document.activeElement).toBe(quickReaction('👎️'))
     await user.keyboard('{Enter}')
     expect(document.activeElement).toBe(lineOf(theirs))
     await user.keyboard('+🎉')
@@ -1845,7 +1845,7 @@ describe('matrix', () => {
     await user.keyboard('#{Enter}')
     expect(document.activeElement).toBe(lineOf(mine))
     expect(sent()).toEqual([
-      { type: 'reaction', event: theirs.event_id, key: '👎', shortcode: null },
+      { type: 'reaction', event: theirs.event_id, key: '👎️', shortcode: null },
       { type: 'reaction', event: theirs.event_id, key: '🎉', shortcode: null },
       { type: 'redaction', event: mine.event_id },
     ])
@@ -2343,10 +2343,10 @@ describe('room composer', () => {
     await user.keyboard('{Enter}')
     // A whole shortcode becomes its emoji.
     await user.keyboard(' :tada:')
-    expect(box.value).toBe('hi [Carol Danvers](https://matrix.to/#/@carol:example.org) 👍 🎉')
+    expect(box.value).toBe('hi [Carol Danvers](https://matrix.to/#/@carol:example.org) 👍️ 🎉')
     await user.keyboard('{Enter}')
     await waitFor(() =>
-      expect(sent()).toEqual([text('hi [Carol Danvers](https://matrix.to/#/@carol:example.org) 👍 🎉')]),
+      expect(sent()).toEqual([text('hi [Carol Danvers](https://matrix.to/#/@carol:example.org) 👍️ 🎉')]),
     )
 
     // Escape dismisses a completion; Enter then sends.
@@ -2785,15 +2785,15 @@ describe('room timeline', () => {
     expect(within(picker).queryByRole('region', { name: 'Smileys & emotion' })).toBeNull()
     expect(within(picker).queryByRole('navigation', { name: 'Groups' })).toBeNull()
     const found = within(picker).getByRole('region', { name: 'Emoji' })
-    expect(within(found).getAllByRole('button').map((b) => b.textContent)).toEqual(['👍', '👎'])
+    expect(within(found).getAllByRole('button').map((b) => b.textContent)).toEqual(['👍️', '👎️'])
     expect(within(found).getAllByRole('button').map((b) => b.title)).toEqual([':+1:', ':-1:'])
     await user.type(box, '{Enter}')
-    reacted('👍')
+    reacted('👍️')
 
     // A shortcode typed whole is its emoji, the first found or not.
     picker = await open()
     await user.type(within(picker).getByRole('textbox', { name: 'Reaction' }), ':thumbsdown:{Enter}')
-    reacted('👎')
+    reacted('👎️')
 
     // What is typed, as it is, if nothing is found or if asked.
     picker = await open()

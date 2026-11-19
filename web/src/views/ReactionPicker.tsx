@@ -13,8 +13,10 @@ import { useEmoji } from './Autocomplete'
 import { useOpensAbove } from './popover'
 import styles from './ReactionPicker.module.css'
 
-/** Reactions offered at once, as Element's quick ones. */
-const QUICK = ['👍', '👎', '😄', '🎉', '😕', '❤️', '🚀', '👀']
+/** Reactions offered at once, as Element's quick ones, and as it sends
+ * them: as Emojibase has them, with U+FE0F where it does (👍️, not 👍),
+ * a key the others' reactions are counted with only if the same. */
+export const QUICK = ['👍\u{FE0F}', '👎\u{FE0F}', '😄', '🎉', '😕', '❤\u{FE0F}', '🚀', '👀']
 
 /** What a reaction can be chosen as: an emoji, or a pack's image (its
  * key the image's URL, by its `:shortcode:`). */
