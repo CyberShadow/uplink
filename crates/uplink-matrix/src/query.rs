@@ -619,6 +619,7 @@ fn of_room(
         | Term::New
         | Term::Mention
         | Term::Notifying
+        | Term::Participating
         | Term::After(_)
         | Term::Before(_) => None,
         // Of mail, or of other kinds.
@@ -724,6 +725,9 @@ enum Cond {
     New,
     Highlights,
     Notifies,
+    /// Not the account's own, in a thread it started or posted in
+    /// before, or a reply to its message.
+    Participating,
     /// In one of these rooms.
     Rooms(Vec<i64>),
     After(i64),
@@ -802,6 +806,7 @@ impl Cond {
             Term::New => Cond::New,
             Term::Mention => Cond::Highlights,
             Term::Notifying => Cond::Notifies,
+            Term::Participating => Cond::Participating,
             Term::After(at) => Cond::After(*at),
             Term::Before(at) => Cond::Before(*at),
             // Of everything, as Trash and Spam are not of messages.
@@ -857,6 +862,32 @@ impl Cond {
             _ => None,
         }
     }
+}
+
+/// Of a message `e` of room `r`, whose account's Matrix id is `me`
+/// (SQL), whether the account takes part in its conversation, as Slack
+/// notifies of the threads one follows (those one started, posted in or
+/// was mentioned in): not its own, and in a thread whose root is the
+/// account's or mentions it, or in which it posted or was mentioned
+/// before (sent before: following begins then, as Slack's; a thread
+/// backfilled is not stored in order), or a reply to one of its messages
+/// (in a thread, the fallback names the latest before, so this is also
+/// of the thread). Each by an index: the root and the message replied to
+/// by id, the thread's own by its relations.
+fn participating(me: &str) -> String {
+    format!(
+        "(e.sender <> {me} AND (
+           EXISTS (SELECT 1 FROM matrix_event t
+                   WHERE t.room = e.room AND t.event_id = e.reply_to AND t.sender = {me})
+           OR (e.rel_type = 'm.thread' AND (
+             EXISTS (SELECT 1 FROM matrix_event t
+                     WHERE t.room = e.room AND t.event_id = e.relates_to
+                       AND (t.sender = {me} OR t.highlight))
+             OR EXISTS (SELECT 1 FROM matrix_event t
+                        WHERE t.room = e.room AND t.relates_to = e.relates_to
+                          AND t.rel_type = 'm.thread' AND t.ts < e.ts
+                          AND (t.sender = {me} OR t.highlight))))))"
+    )
 }
 
 /// SQL of a condition on a message `e` of room `r`, and its parameters.
@@ -923,6 +954,10 @@ impl Sql {
             }
             Cond::Highlights => "e.highlight".to_owned(),
             Cond::Notifies => "e.notify".to_owned(),
+            Cond::Participating => {
+                let me = self.me();
+                participating(&me)
+            }
             Cond::Rooms(ids) => format!(
                 "e.room IN ({})",
                 ids.iter()

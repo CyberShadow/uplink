@@ -111,6 +111,7 @@ fn term_matches(todo: &Todo, term: &Term, today: &str) -> bool {
         | Term::New
         | Term::Mention
         | Term::Notifying
+        | Term::Participating
         | Term::Direct
         | Term::Invited
         | Term::Space(_) => false,
