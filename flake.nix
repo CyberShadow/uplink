@@ -71,7 +71,8 @@
 
         # ── Rust ───────────────────────────────────────────────────────────
         # Cargo sources plus the SQL migrations that uplink-storage embeds
-        # at compile time, and the example configuration.
+        # at compile time, the example configuration, and the patched
+        # dependencies.
         cargoSrc = pkgs.lib.cleanSourceWith {
           src = ./.;
           name = "source";
@@ -80,6 +81,8 @@
             # `uplink init` writes the example configuration, which a test
             # checks parses.
             || pkgs.lib.hasSuffix "/examples/uplink.yaml" path
+            # Patched dependencies, whole: their README is their doc.
+            || pkgs.lib.hasInfix "/vendor/" path
             || craneLib.filterCargoSources path type;
         };
 
@@ -95,7 +98,14 @@
           ];
         };
 
-        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+        cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
+          # Patched dependencies are built with the others, so not stubbed
+          # as the workspace's crates are.
+          extraDummyScript = ''
+            rm -rf $out/vendor
+            cp -r --no-preserve=mode ${cargoSrc}/vendor $out/vendor
+          '';
+        });
 
         # Binary with embedded SPA (rust-embed reads crates/uplink-server/static/).
         uplinkBin = craneLib.buildPackage (commonArgs // {
