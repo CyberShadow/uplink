@@ -134,7 +134,7 @@ fn default_home() -> Vec<HomeBucket> {
         bucket(
             "Urgent",
             "(in:inbox is:unread is:important to:me) OR (is:mention is:new) \
-             OR (is:participating is:new) OR (is:dm is:unread is:notifying) OR is:invite",
+             OR (is:dm is:unread is:notifying) OR is:invite",
             Some(Badge::Alert),
         ),
         bucket(

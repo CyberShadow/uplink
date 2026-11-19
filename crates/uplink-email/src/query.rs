@@ -425,7 +425,6 @@ impl Compiler<'_> {
             Term::New
             | Term::Mention
             | Term::Notifying
-            | Term::Participating
             | Term::Direct
             | Term::Invited
             | Term::Space(_)

@@ -255,8 +255,7 @@ send_delay_secs: 10
 home:
   - name: Urgent
     query: (in:inbox is:unread is:important to:me) OR (is:mention is:new)
-      OR (is:participating is:new) OR (is:dm is:unread is:notifying)
-      OR is:invite
+      OR (is:dm is:unread is:notifying) OR is:invite
     badge: alert
   - name: Important
     query: (in:inbox is:unread is:important) OR (is:unread is:notifying)
@@ -2415,13 +2414,7 @@ room counts it unread, §9.5), `is:new` of one after its fully-read
 marker and not the account's (not yet caught up on, §12.15; so
 `is:mention is:new` is of `Room.mentions`), `is:mention` and
 `is:notifying` of one that highlights or notifies, by the push rules,
-read or not; `is:participating` of one from others in a conversation
-the account takes part in, as Slack notifies of the threads one
-follows (those one started, posted in or was mentioned in), which the
-push rules cannot say: in a thread whose root is the account's or
-mentions it, or in which it posted or was mentioned before (sent
-before, so following begins then; a thread backfilled is not stored in
-order), or a reply to one of its messages; dates are of the message. So a state is said, not implied:
+read or not; dates are of the message. So a state is said, not implied:
 `is:mention` finds every room the account was ever mentioned in, and
 the home view's buckets say `is:mention is:new` or `is:unread
 is:notifying`. A room's own terms decide what they can
@@ -3334,9 +3327,7 @@ which a verified device gives.
   is positioned by when it was stored, seen by its own watermark, and is news unless the
   account's first sync stored it. The
   default buckets ask the push rules (`is:notifying`) of every message
-  but mentions and replies in threads the account takes part in
-  (`is:participating`, which the push rules cannot say: Slack's, bridged,
-  notify of these), so what the push rules mute does not notify, and what
+  but mentions, so what the push rules mute does not notify, and what
   they notify of is in a bucket that notifies: a bridged DM, which they
   take for a group chat (the bridge bot, its puppet and the user), is
   to be told to notify by a room rule, for every client alike.
@@ -4481,8 +4472,7 @@ The agenda is listed then, as home shows, and as calendars change.
 
 The default buckets (§3.2) go by how the user is reached, not by kind,
 mail and rooms alike: Urgent is what is addressed to the user (important
-mail to them, mentions, replies in threads they take part in, as
-Slack's, direct messages that notify, invitations);
+mail to them, mentions, direct messages that notify, invitations);
 Important what else needs them (important mail they are not addressed
 in, as a list's or a service's to a group; rooms the push rules notify
 of, which for a group chat is the user's own choice; to-dos and events

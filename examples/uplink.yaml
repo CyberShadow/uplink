@@ -35,8 +35,7 @@ send_delay_secs: 10
 home:
   - name: Urgent
     query: (in:inbox is:unread is:important to:me) OR (is:mention is:new)
-      OR (is:participating is:new) OR (is:dm is:unread is:notifying)
-      OR is:invite
+      OR (is:dm is:unread is:notifying) OR is:invite
     badge: alert
   - name: Important
     query: (in:inbox is:unread is:important) OR (is:unread is:notifying)

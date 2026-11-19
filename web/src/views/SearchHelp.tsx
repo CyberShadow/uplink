@@ -61,7 +61,6 @@ const SECTIONS: { title: string; rows: Row[] }[] = [
       ['is:new', 'Messages not yet caught up on, however far they were read'],
       ['is:mention', 'Messages that mention you, read or not: is:mention is:new, those new'],
       ['is:notifying', 'Messages that notify, by your rules (none of muted rooms)'],
-      ['is:participating', 'Replies in threads you started, posted or were mentioned in, and replies to you'],
       ['is:dm', 'Direct chats'],
       ['is:invite', 'Rooms you are invited to'],
       ['tag:lowpriority', 'Rooms with the tag: favourite, lowpriority, or one of yours'],

@@ -3384,7 +3384,7 @@ fn home(
 ) -> Vec<usize> {
     let home = [
         "(in:inbox is:unread is:important to:me) OR (is:mention is:new) \
-         OR (is:participating is:new) OR (is:dm is:unread is:notifying) OR is:invite",
+         OR (is:dm is:unread is:notifying) OR is:invite",
         "(in:inbox is:unread is:important) OR (is:unread is:notifying) \
          OR is:overdue OR due:today",
         "(in:inbox is:unread) OR (is:unread tag:favourite)",

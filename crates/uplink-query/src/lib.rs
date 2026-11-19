@@ -65,10 +65,6 @@ pub enum Term {
     Mention,
     /// A room's message that notifies, by the push rules.
     Notifying,
-    /// A room's message, not the account's own, in a conversation the
-    /// account takes part in, as Slack's followed threads: in a thread
-    /// it started, or posted in before, or a reply to its message.
-    Participating,
     /// A direct chat.
     Direct,
     /// A room the account is invited to.
@@ -511,15 +507,13 @@ fn operator(name: &str, value: &str, quoted: bool, now: i64) -> Result<Query, In
             "new" => term(Term::New),
             "mention" => term(Term::Mention),
             "notifying" => term(Term::Notifying),
-            "participating" => term(Term::Participating),
             "dm" => term(Term::Direct),
             "invite" => term(Term::Invited),
             "overdue" => term(Term::Overdue),
             "done" => term(Term::Done),
             _ => Err(invalid(format!(
                 "is:{value}: is: takes unread, read, starred, important, mail, room, todo, \
-                 event, new, mention, notifying, participating, dm, invite, overdue or \
-                 done"
+                 event, new, mention, notifying, dm, invite, overdue or done"
             ))),
         },
         "space" => term(Term::Space(value.to_owned())),
@@ -955,7 +949,6 @@ mod tests {
         assert_eq!(ok("is:mail"), term(Term::Kind(Kind::Mail)));
         assert_eq!(ok("is:mention"), term(Term::Mention));
         assert_eq!(ok("is:notifying"), term(Term::Notifying));
-        assert_eq!(ok("is:participating"), term(Term::Participating));
         assert_eq!(ok("is:dm"), term(Term::Direct));
         assert_eq!(ok("is:invite"), term(Term::Invited));
         assert_eq!(ok("is:overdue"), term(Term::Overdue));

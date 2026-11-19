@@ -2088,74 +2088,6 @@ mod relations {
                                                "m.in_reply_to": { "event_id": reply_to } } } })
     }
 
-    /// As Slack notifies of the threads one follows: replies by others in
-    /// a thread whose root is the account's or mentions it, or in which it
-    /// posted or was mentioned before, and replies to its messages.
-    #[tokio::test]
-    async fn messages_are_participating_in_threads_the_account_takes_part_in() {
-        let db = Db::new();
-        let reply = |id: &str, sender: &str, to: &str| {
-            json!({ "type": "m.room.message", "event_id": id, "sender": sender,
-                    "content": { "msgtype": "m.text", "body": id,
-                                 "m.relates_to": { "m.in_reply_to": { "event_id": to } } } })
-        };
-        let events = [
-            // A thread the account started.
-            text("$mine", ME, "root"),
-            in_thread("$a1", "@bob:x", "$mine", "$mine", true),
-            in_thread("$a2", ME, "$mine", "$a1", true),
-            // One it posted in: of what came after only.
-            text("$theirs", "@bob:x", "root"),
-            in_thread("$b1", "@carol:x", "$theirs", "$theirs", true),
-            in_thread("$b2", ME, "$theirs", "$b1", true),
-            in_thread("$b3", "@carol:x", "$theirs", "$b2", true),
-            in_thread("$b4", "@bob:x", "$theirs", "$b1", false),
-            // One it did not.
-            text("$other", "@bob:x", "root"),
-            in_thread("$c1", "@carol:x", "$other", "$other", true),
-            // One it was mentioned in: of what came after only (the
-            // mention itself is `is:mention`).
-            text("$asked", "@bob:x", "root"),
-            in_thread("$d1", "@carol:x", "$asked", "$asked", true),
-            in_thread("$d2", "@bob:x", "$asked", "$d1", true),
-            in_thread("$d3", "@carol:x", "$asked", "$d2", true),
-            // One whose root mentions it.
-            text("$calls", "@bob:x", "root"),
-            in_thread("$e1", "@carol:x", "$calls", "$calls", true),
-            // Replies, to it and to others.
-            reply("$r1", "@bob:x", "$mine"),
-            reply("$r2", "@bob:x", "$other"),
-        ];
-        // Each sent by its place; stored in another order, as a thread
-        // backfilled is: the latest first.
-        let mut events: Vec<ObservedEvent> = events
-            .iter()
-            .enumerate()
-            .map(|(i, event)| {
-                let mut event = event.clone();
-                event["origin_server_ts"] = json!(1_700_000_000_000_i64 + i as i64);
-                let mut event =
-                    ObservedEvent::parse(&event.to_string(), None, Encryption::None).unwrap();
-                event.push.highlight = ["$d2", "$calls"].contains(&event.event_id.as_str());
-                event
-            })
-            .collect();
-        events.reverse();
-        db.sync_events(events, &[]).await;
-        let mut conn = uplink_storage::open_reader(db._dir.path()).unwrap();
-        let tx = conn.transaction().unwrap();
-        let rooms = crate::query::Rooms::of(&db.rooms, &tx).unwrap();
-        let query = uplink_query::parse("is:participating", 0).unwrap();
-        let mut found: Vec<String> = rooms
-            .unseen(&tx, &query, RoomEventId(0), &Default::default(), 20)
-            .unwrap()
-            .into_iter()
-            .map(|(_, event)| event.event_id)
-            .collect();
-        found.sort();
-        assert_eq!(found, ["$a1", "$b3", "$b4", "$d3", "$e1", "$r1"]);
-    }
-
     #[tokio::test]
     async fn threads_are_listed_apart_and_summed_up_by_their_roots() {
         let db = Db::new();
@@ -2877,7 +2809,7 @@ mod query {
 
         let home = [
             "(in:inbox is:unread is:important to:me) OR (is:mention is:new) \
-         OR (is:participating is:new) OR (is:dm is:unread is:notifying) OR is:invite",
+         OR (is:dm is:unread is:notifying) OR is:invite",
             "(in:inbox is:unread is:important) OR (is:unread is:notifying) \
          OR is:overdue OR due:today",
             "(in:inbox is:unread) OR (is:unread tag:favourite)",
