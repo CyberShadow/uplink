@@ -3062,7 +3062,7 @@ push rules act on (§9.5), where it has them (it advertises
 `org.matrix.msc4306` in `/versions`, which the SDK caches a day, so
 it is asked anew as uplink starts; else threads cannot be followed,
 and notify as the push rules alone say, as before). Following a thread
-is desired state (§6.6), a field of each thread by its root (V0079
+is desired state (§6.6), a field of each thread by its root (V0080
 `matrix_thread_follow`; a thread of no row is not followed), pushed as
 a manual subscription (`PUT
 /_matrix/client/unstable/io.element.msc4306/rooms/{room}/thread/{root}/subscription`)

@@ -54,6 +54,8 @@ pub fn open(data_root: &Path) -> Result<Connection> {
 
     drop_sparse_occurrences(&mut conn)
         .with_context(|| format!("repairing the calendar of {}", path.display()))?;
+    renumber_thread_follow(&conn)
+        .with_context(|| format!("renumbering a migration of {}", path.display()))?;
     // Each with its record, in one transaction: refinery otherwise
     // commits a migration, then that it was applied, so that one
     // interrupted between the two is applied again, and fails.
@@ -104,6 +106,29 @@ fn drop_sparse_occurrences(conn: &mut Connection) -> Result<()> {
     )?;
     tx.execute(&format!("DELETE FROM calendar_event WHERE {SPARSE}"), [])?;
     tx.commit()?;
+    Ok(())
+}
+
+/// Thread follows' migration was V0079 before it was rebased over the
+/// to-do's room event's, which has the version now: a database that
+/// applied it as V0079 would have that refused as another migration of
+/// the version, and the to-do's never applied. Its record is dropped, so
+/// that the to-do's applies as V0079, and the follows' as V0080, which
+/// keeps the table it finds. Done ahead of the migrations, as an applied
+/// one is not to change.
+fn renumber_thread_follow(conn: &Connection) -> Result<()> {
+    let recorded: bool = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'refinery_schema_history'",
+        [],
+        |r| r.get::<_, i64>(0).map(|n| n > 0),
+    )?;
+    if recorded {
+        conn.execute(
+            "DELETE FROM refinery_schema_history
+             WHERE version = 79 AND name = 'matrix_thread_follow'",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -435,6 +460,53 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(synced, ["b"]);
+    }
+
+    /// A database that applied thread follows as V0079, before they were
+    /// renumbered, applies the to-do's room event as V0079, and keeps its
+    /// follows.
+    #[test]
+    fn thread_follows_applied_as_v0079_are_renumbered() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = migrated_to(dir.path(), 78);
+        let follows = include_str!("../migrations/V0080__matrix_thread_follow.sql")
+            .replace(" IF NOT EXISTS", "");
+        conn.execute_batch(&follows).unwrap();
+        conn.execute_batch(
+            "INSERT INTO refinery_schema_history (version, name, applied_on, checksum)
+               VALUES (79, 'matrix_thread_follow', '2026-11-19T17:19:36Z', '1');
+             INSERT INTO account (id, kind) VALUES ('mx', 'matrix');
+             INSERT INTO matrix_room (account_id, room_id, name, encrypted) VALUES ('mx', '!r:x', 'R', 0);
+             INSERT INTO matrix_thread_follow (room, root, field)
+               SELECT id, '$root', '{\"desired\":true}' FROM matrix_room;",
+        )
+        .unwrap();
+        drop(conn);
+        let conn = open(dir.path()).unwrap();
+        let applied: Vec<(i64, String)> = conn
+            .prepare(
+                "SELECT version, name FROM refinery_schema_history WHERE version >= 79 ORDER BY 1",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            applied[..2],
+            [
+                (79, "todo_room_event".to_owned()),
+                (80, "matrix_thread_follow".to_owned())
+            ]
+        );
+        let roots: Vec<String> = conn
+            .prepare("SELECT root FROM matrix_thread_follow WHERE desired")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(roots, ["$root"]);
     }
 
     /// Senders' addresses whose images are shown become sender rules
