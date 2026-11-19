@@ -1288,7 +1288,9 @@ impl Backend for Services {
                 self.matrix.mark_fully_read(room, event).await
             }
             ClientRequest::SetTyping { room, typing } => self.matrix.set_typing(room, typing).await,
-            ClientRequest::ListReceipts { room } => self.matrix.list_receipts(room).await,
+            ClientRequest::ListReceipts { room } => {
+                return self.matrix.list_receipts(room).await.into()
+            }
             ClientRequest::ListMembers { room } => {
                 return self.matrix.list_members(room).await.into()
             }

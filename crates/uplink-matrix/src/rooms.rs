@@ -1605,23 +1605,21 @@ pub fn room_ids(
 
 /// The stored ids of the room's events `event_ids` (Matrix ids), with
 /// their positions, of those stored.
-pub fn event_ids(
+/// The room's latest `limit` stored events, of any type, latest first:
+/// their Matrix ids, and where they are.
+pub fn latest_events(
     conn: &Connection,
     room: RoomId,
-    event_ids: &[String],
-) -> Result<Vec<Option<(RoomEventId, i64)>>> {
-    let mut query =
-        conn.prepare("SELECT id, pos FROM matrix_event WHERE room = ?1 AND event_id = ?2")?;
-    event_ids
-        .iter()
-        .map(|event_id| {
-            Ok(query
-                .query_row(params![room.0, event_id], |r| {
-                    Ok((RoomEventId(r.get(0)?), r.get(1)?))
-                })
-                .optional()?)
-        })
-        .collect()
+    limit: usize,
+) -> Result<Vec<(String, RoomEventId, i64)>> {
+    conn.prepare(
+        "SELECT event_id, id, pos FROM matrix_event WHERE room = ?1 ORDER BY pos DESC LIMIT ?2",
+    )?
+    .query_map(params![room.0, limit], |r| {
+        Ok((r.get(0)?, RoomEventId(r.get(1)?), r.get(2)?))
+    })?
+    .collect::<Result<_, _>>()
+    .map_err(Into::into)
 }
 
 /// The account a room is of and its Matrix id, if the room exists.

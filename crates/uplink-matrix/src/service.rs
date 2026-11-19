@@ -611,59 +611,18 @@ impl Matrix {
         Ok(ServerResponse::Done)
     }
 
-    /// How far the room's joined members (but the account) have read, of
-    /// those the client knows, by their receipts for stored events.
-    pub async fn list_receipts(&self, room: RoomId) -> Response {
-        use matrix_sdk::ruma::events::receipt::{ReceiptThread, ReceiptType};
+    /// How far the room's joined members (but the account) have read, by
+    /// their receipts for its latest stored events (`RECEIPTS_OF`): a
+    /// member who read none of them is not listed. A receipt is looked up
+    /// by its event, not its member: sync loads members lazily, so most of
+    /// a large room's are not known until they are fetched.
+    pub async fn list_receipts(&self, room: RoomId) -> Remote {
         let (_, sdk_room) = self.sdk_room(room).await?;
-        let own = sdk_room.own_user_id().to_owned();
-        let members = sdk_room
-            .members_no_sync(matrix_sdk::RoomMemberships::JOIN)
-            .await
-            .map_err(|e| internal(e.into()))?;
-        let mut read = vec![];
-        for member in members.iter().filter(|m| m.user_id() != own) {
-            // Unthreaded receipts, else those of the main timeline.
-            let mut receipt = None;
-            for thread in [ReceiptThread::Unthreaded, ReceiptThread::Main] {
-                receipt = sdk_room
-                    .load_user_receipt(ReceiptType::Read, &thread, member.user_id())
-                    .await
-                    .map_err(|e| internal(e.into()))?;
-                if receipt.is_some() {
-                    break;
-                }
-            }
-            if let Some((event_id, receipt)) = receipt {
-                read.push((
-                    RoomMember {
-                        user: member.user_id().to_string(),
-                        name: member.display_name().map(str::to_owned),
-                    },
-                    event_id.to_string(),
-                    receipt.ts.map(|ts| i64::from(ts.0)),
-                ));
-            }
-        }
-        self.reader
-            .read(move |conn| {
-                let ids: Vec<String> = read.iter().map(|(_, event, _)| event.clone()).collect();
-                let events = rooms::event_ids(conn, room, &ids).map_err(internal)?;
-                let receipts = read
-                    .into_iter()
-                    .zip(events)
-                    .filter_map(|((member, _, ts), event)| {
-                        event.map(|(event, pos)| MemberReceipt {
-                            member,
-                            event,
-                            pos,
-                            ts,
-                        })
-                    })
-                    .collect();
-                Ok(ServerResponse::Receipts { room, receipts })
-            })
-            .await
+        let latest = self
+            .reader
+            .read(move |conn| rooms::latest_events(conn, room, RECEIPTS_OF).map_err(internal))
+            .await?;
+        Ok(Answer::later(receipts(room, sdk_room, latest)))
     }
 
     /// The room's members, as the account's client knows them (fetched
@@ -1656,6 +1615,70 @@ fn refused(e: matrix_sdk::Error) -> ServerError {
 
 /// The room's members, as the account's client knows them (fetched
 /// first, as sync loads them lazily), and what the account may do.
+/// Of how many of a room's latest stored events receipts are listed:
+/// more than a page of the timeline shows, as reactions and edits are
+/// stored but not listed.
+const RECEIPTS_OF: usize = 200;
+
+/// Of the room's events `latest` (latest first, as `rooms::latest_events`
+/// lists them), the receipts of its joined members but the account: each
+/// one's latest. A member the client does not know yet is fetched, with
+/// the room's other members (once: the client keeps them).
+async fn receipts(
+    room: RoomId,
+    sdk_room: matrix_sdk::Room,
+    latest: Vec<(String, RoomEventId, i64)>,
+) -> Response {
+    use matrix_sdk::ruma::events::receipt::{ReceiptThread, ReceiptType};
+    use matrix_sdk::ruma::events::room::member::MembershipState;
+    let own = sdk_room.own_user_id().to_owned();
+    let mut read = vec![];
+    let mut seen = std::collections::HashSet::new();
+    for (event_id, event, pos) in latest {
+        let event_id =
+            matrix_sdk::ruma::OwnedEventId::try_from(event_id).map_err(|e| internal(e.into()))?;
+        // Unthreaded receipts, and those of the main timeline.
+        for thread in [ReceiptThread::Unthreaded, ReceiptThread::Main] {
+            let receipts = sdk_room
+                .load_event_receipts(ReceiptType::Read, &thread, &event_id)
+                .await
+                .map_err(|e| internal(e.into()))?;
+            for (user, receipt) in receipts {
+                if user != own && seen.insert(user.clone()) {
+                    read.push((user, event, pos, receipt.ts.map(|ts| i64::from(ts.0))));
+                }
+            }
+        }
+    }
+    let mut receipts = vec![];
+    for (user, event, pos, ts) in read {
+        let member = match sdk_room
+            .get_member_no_sync(&user)
+            .await
+            .map_err(|e| internal(e.into()))?
+        {
+            Some(member) => Some(member),
+            None => sdk_room
+                .get_member(&user)
+                .await
+                .map_err(|e| internal(e.into()))?,
+        };
+        let Some(member) = member.filter(|m| *m.membership() == MembershipState::Join) else {
+            continue;
+        };
+        receipts.push(MemberReceipt {
+            member: RoomMember {
+                user: user.to_string(),
+                name: member.display_name().map(str::to_owned),
+            },
+            event,
+            pos,
+            ts,
+        });
+    }
+    Ok(ServerResponse::Receipts { room, receipts })
+}
+
 async fn members(room: RoomId, sdk_room: matrix_sdk::Room) -> Response {
     use matrix_sdk::ruma::events::room::member::MembershipState;
     use matrix_sdk::ruma::events::{room::power_levels::UserPowerLevel, StateEventType};

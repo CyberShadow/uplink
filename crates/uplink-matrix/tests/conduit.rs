@@ -1507,7 +1507,14 @@ async fn typing_and_receipts_are_noticed() {
             break;
         }
     }
-    let receipts = match uplink.matrix.list_receipts(room.id).await.unwrap() {
+    let receipts = match uplink
+        .matrix
+        .list_receipts(room.id)
+        .await
+        .answered()
+        .await
+        .unwrap()
+    {
         ServerResponse::Receipts { receipts, .. } => receipts,
         other => panic!("unexpected {other:?}"),
     };
@@ -1517,6 +1524,112 @@ async fn typing_and_receipts_are_noticed() {
         .unwrap();
     assert_eq!(bob_read.event, sent.id);
     assert!(receipts.iter().all(|r| r.member.user != "@alice:localhost"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn receipts_are_listed_by_their_events_and_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let homeserver = Homeserver::start(dir.path()).await;
+    let bob = homeserver.register(dir.path(), "bob").await;
+    let alice_phone = homeserver.register(dir.path(), "alice").await;
+    // More readers than the room's heroes (5), whose members a lazily
+    // loading sync brings (Conduit's brings all, whom `list_receipts`
+    // does not rely on: tuwunel's would not).
+    let mut readers = vec![];
+    for n in 0..7 {
+        let reader = homeserver.register(dir.path(), &format!("reader{n}")).await;
+        reader
+            .account()
+            .set_display_name(Some(&format!("Reader {n}")))
+            .await
+            .unwrap();
+        readers.push(reader);
+    }
+    let bob_room = bob.create_room(Default::default()).await.unwrap();
+    for user in readers.iter().chain([&alice_phone]) {
+        bob_room
+            .invite_user_by_id(user.user_id().unwrap())
+            .await
+            .unwrap();
+        user.sync_once(SyncSettings::default()).await.unwrap();
+        user.join_room_by_id(bob_room.room_id()).await.unwrap();
+    }
+    // More messages than uplink's first sync brings: the readers joined
+    // before them, and sent none.
+    let mut last = None;
+    for n in 0..30 {
+        let sent = bob_room
+            .send(
+                matrix_sdk::ruma::events::room::message::RoomMessageEventContent::text_plain(
+                    format!("message {n}"),
+                ),
+            )
+            .await
+            .unwrap();
+        last = Some(sent.response.event_id);
+    }
+    let last = last.unwrap();
+
+    let uplink = Uplink::new(&homeserver);
+    let _sync = uplink.pair_and_sync().await;
+    let room = eventually("uplink to see the room", || async {
+        uplink
+            .room(bob_room.room_id())
+            .await
+            .filter(|r| r.membership == Membership::Joined)
+    })
+    .await;
+    let seen = eventually("the last message to sync", || async {
+        uplink
+            .timeline(&room)
+            .await
+            .into_iter()
+            .find(|e| e.event_id == last.as_str())
+    })
+    .await;
+    let listed = || async {
+        match uplink
+            .matrix
+            .list_receipts(room.id)
+            .await
+            .answered()
+            .await
+            .unwrap()
+        {
+            ServerResponse::Receipts { receipts, .. } => receipts,
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+    // Each in a sync of its own: the SDK keeps only the last of a room's
+    // `m.receipt` events in a sync, of which Conduit sends one per user.
+    let mut read = vec![];
+    for (n, reader) in readers.iter().enumerate() {
+        reader
+            .get_room(bob_room.room_id())
+            .unwrap()
+            .send_single_receipt(
+                matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType::Read,
+                matrix_sdk::ruma::events::receipt::ReceiptThread::Unthreaded,
+                last.clone(),
+            )
+            .await
+            .unwrap();
+        read = eventually("the reader's receipt to be listed", || async {
+            let receipts = listed().await;
+            (receipts.len() == n + 1).then_some(receipts)
+        })
+        .await;
+    }
+    read.sort_by(|a, b| a.member.user.cmp(&b.member.user));
+    assert!(read.iter().all(|r| r.event == seen.id));
+    assert_eq!(
+        read.iter()
+            .map(|r| (r.member.user.clone(), r.member.name.clone()))
+            .collect::<Vec<_>>(),
+        (0..readers.len())
+            .map(|n| (format!("@reader{n}:localhost"), Some(format!("Reader {n}"))))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
