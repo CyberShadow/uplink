@@ -7,6 +7,7 @@ pub mod bridge;
 pub mod client;
 pub mod crawl;
 pub mod draft;
+pub mod follows;
 pub mod html;
 pub mod image_packs;
 pub mod markdown;
@@ -50,4 +51,5 @@ pub fn register(registry: &mut Registry) {
     registry.register::<space_order::OrderSpaces>();
     registry.register::<room_tags::SetRoomTags>();
     registry.register::<pins::SetPins>();
+    registry.register::<follows::SetFollows>();
 }

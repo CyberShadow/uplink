@@ -93,6 +93,8 @@ export interface LineActions {
   markUnread?: () => void
   /** Flags it for follow-up, by a to-do of it; or, flagged, unflags it. */
   flag?: { flagged: boolean; toggle: () => void }
+  /** Follows the thread it is (or would be) the root of, or unfollows it. */
+  follow?: { followed: boolean; toggle: () => void }
 }
 
 /** How much of a message its to-do's title says. */
@@ -110,7 +112,8 @@ export function lineActions(line: Line, services: { matrix: MatrixStore; todos: 
   const replyable = joined && message && !event.redacted
   // A message of a thread is no thread's root, even if its root is not
   // stored.
-  const threadable = replyable && line.openThread !== null && content.content['m.relates_to']?.rel_type !== 'm.thread'
+  const ofThread = event.thread_root !== null || content.content['m.relates_to']?.rel_type === 'm.thread'
+  const threadable = replyable && line.openThread !== null && !ofThread
   const pinned = room.pinned.includes(event.event_id)
   const actions: LineActions = {}
   if (replyable) {
@@ -146,6 +149,11 @@ export function lineActions(line: Line, services: { matrix: MatrixStore; todos: 
   }
   if (joined && room.may_pin && message && !event.redacted && !deleting) {
     actions.pin = { pinned, toggle: () => matrix.setPinned(room.id, event.event_id, !pinned) }
+  }
+  // A deleted root is unfollowed, not followed.
+  if (joined && message && (!event.redacted || event.followed) && !deleting && !ofThread && matrix.follows(room)) {
+    const { followed } = event
+    actions.follow = { followed, toggle: () => matrix.setFollowed(room.id, event.event_id, !followed) }
   }
   return actions
 }
@@ -190,6 +198,10 @@ export function EventRow(
   if (can.pin) menu.push({ label: can.pin.pinned ? 'Unpin' : 'Pin', icon: 'pin', action: can.pin.toggle })
   if (can.markUnread) menu.push({ label: 'Mark unread from here', icon: 'mail', action: can.markUnread })
   if (can.flag) menu.push({ label: can.flag.flagged ? 'Unflag' : 'Flag for follow-up', icon: 'flag', action: can.flag.toggle })
+  if (can.follow) {
+    const { followed, toggle } = can.follow
+    menu.push({ label: followed ? 'Unfollow thread' : 'Follow thread', icon: 'bell', action: toggle })
+  }
   menu.push({ label: source ? 'Hide source' : 'View source', icon: 'code', action: () => setSource(!source) })
   const joined = room.membership === 'joined'
 

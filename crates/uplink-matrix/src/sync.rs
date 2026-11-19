@@ -11,6 +11,7 @@
 use crate::{
     bridge, client,
     crawl::Crawler,
+    follows::{self, Evaluator, Follows, FollowsSeen},
     image_packs, markdown,
     membership::Memberships,
     pins::Pins,
@@ -52,7 +53,7 @@ use matrix_sdk::{
         },
         EventId, OwnedEventId, OwnedTransactionId, RoomId, UserId,
     },
-    sync::{State, SyncResponse},
+    sync::{State, SyncResponse, Timeline},
     Client, Room,
 };
 use serde_json::json;
@@ -273,6 +274,7 @@ impl Syncer {
             .timeout(if first { FIRST_SYNC } else { LONG_POLL });
         let as_of = read(&self.reader, uplink_tx_log::as_of).await?;
         let response = self.client.sync_once(settings).await?;
+        let follows = follows::supported(&self.client).await?;
         let next_batch = response.next_batch.clone();
         let moment = self.moment(&response).await?;
         let packs_changed = response.account_data.iter().any(|raw| {
@@ -284,7 +286,24 @@ impl Syncer {
         } else {
             None
         };
-        let rooms = self.observe(response, first).await?;
+        // Of a sync's news only (not a first sync's history), the
+        // homeserver is asked what it has of threads, and mentions follow.
+        let news_since = if first {
+            None
+        } else {
+            let account = self.account.clone();
+            read(&self.reader, move |conn| rooms::news_since(conn, &account)).await?
+        };
+        let mut evaluator = Evaluator {
+            client: &self.client,
+            reader: Some(&self.reader),
+            known: HashMap::new(),
+            account: &self.account,
+            sync: news_since,
+            seen: vec![],
+        };
+        let rooms = self.observe(response, first, &mut evaluator).await?;
+        let seen = evaluator.seen;
         let undecryptable: Vec<(String, String)> = rooms
             .iter()
             .flat_map(|room| {
@@ -302,9 +321,16 @@ impl Syncer {
                         next_batch: next_batch.clone(),
                         as_of,
                         rooms,
+                        follows,
                         packs,
                     },
                 )
+                .await?;
+        }
+        // Once the rooms are stored.
+        if !seen.is_empty() {
+            self.dispatcher
+                .observe(self.account.clone(), FollowsSeen { as_of, seen })
                 .await?;
         }
         self.notify(moment).await?;
@@ -400,7 +426,12 @@ impl Syncer {
     /// children), account data (a space's order), or membership. Others' receipts are not stored, so on
     /// their own they are not changes; but the first sync records every
     /// room.
-    async fn observe(&self, response: SyncResponse, first: bool) -> Result<Vec<ObservedRoom>> {
+    async fn observe(
+        &self,
+        response: SyncResponse,
+        first: bool,
+        evaluator: &mut Evaluator<'_>,
+    ) -> Result<Vec<ObservedRoom>> {
         let own = self.client.user_id().context("the client has no user")?;
         let mut observed = vec![];
         for (room_id, update) in response.rooms.joined {
@@ -419,10 +450,10 @@ impl Syncer {
                     self.room(
                         &room_id,
                         Membership::Joined,
-                        update.timeline.events,
-                        update.timeline.limited,
+                        update.timeline,
                         receipts,
                         data,
+                        evaluator,
                     )
                     .await?,
                 );
@@ -434,10 +465,10 @@ impl Syncer {
                 self.room(
                     &room_id,
                     Membership::Left,
-                    update.timeline.events,
-                    update.timeline.limited,
+                    update.timeline,
                     vec![],
                     data,
+                    evaluator,
                 )
                 .await?,
             );
@@ -447,10 +478,10 @@ impl Syncer {
                 self.room(
                     &room_id,
                     Membership::Invited,
-                    vec![],
-                    false,
+                    Timeline::default(),
                     vec![],
                     AccountData::default(),
+                    evaluator,
                 )
                 .await?,
             );
@@ -462,10 +493,12 @@ impl Syncer {
         &self,
         room_id: &RoomId,
         membership: Membership,
-        events: Vec<TimelineEvent>,
-        limited: bool,
+        Timeline {
+            events, limited, ..
+        }: Timeline,
         own_receipts: Vec<String>,
         data: AccountData,
+        evaluator: &mut Evaluator<'_>,
     ) -> Result<ObservedRoom> {
         let room = self
             .client
@@ -473,9 +506,10 @@ impl Syncer {
             .with_context(|| format!("synced room {room_id} is not in the client"))?;
         let mut names = HashMap::new();
         let mut observed = Vec::with_capacity(events.len());
-        for event in events {
+        for event in &events {
             observed.push(timeline_event(&room, event, &mut names).await?);
         }
+        evaluator.evaluate(&room, &mut observed, &events).await?;
         Ok(ObservedRoom {
             room_id: room_id.to_string(),
             name: room.display_name().await?.to_string(),
@@ -708,9 +742,12 @@ fn filter() -> Filter {
 
 /// The event as stored, with its sender's name in the room, which `names`
 /// caches.
+/// Its push rules are as the SDK evaluated them, which do not know the
+/// threads followed: of a message of a thread, [`Evaluator`] evaluates
+/// them again.
 pub(crate) async fn timeline_event(
     room: &Room,
-    event: TimelineEvent,
+    event: &TimelineEvent,
     names: &mut HashMap<String, Option<String>>,
 ) -> Result<ObservedEvent> {
     let encryption = match &event.kind {
@@ -879,7 +916,7 @@ impl Redecryptor {
 
     /// Decrypts `events` (by room id, as JSON), recording those it can.
     async fn decrypt(&self, events: Vec<(String, String)>) -> Result<()> {
-        let mut decrypted: Vec<(String, Vec<ObservedEvent>)> = vec![];
+        let mut decrypted: Vec<(String, Vec<ObservedEvent>, Vec<TimelineEvent>)> = vec![];
         for (room_id, raw) in events {
             let Some(room) = self.client.get_room(<&RoomId>::try_from(room_id.as_str())?) else {
                 continue;
@@ -893,13 +930,31 @@ impl Redecryptor {
             let mut parsed =
                 ObservedEvent::parse(event.raw().json().get(), None, Encryption::Decrypted)?;
             parsed.push = Push::of(event.push_actions());
-            let event = parsed;
             match decrypted.last_mut() {
-                Some((last, events)) if *last == room_id => events.push(event),
-                _ => decrypted.push((room_id, vec![event])),
+                Some((last, events, timeline)) if *last == room_id => {
+                    events.push(parsed);
+                    timeline.push(event);
+                }
+                _ => decrypted.push((room_id, vec![parsed], vec![event])),
             }
         }
-        for (room_id, events) in decrypted {
+        for (room_id, mut events, timeline) in decrypted {
+            // Its threads as uplink has them: they were not read when it
+            // came, of no thread then that was known.
+            let room = self
+                .client
+                .get_room(<&RoomId>::try_from(room_id.as_str())?)
+                .expect("decrypted of a room of the client");
+            Evaluator {
+                client: &self.client,
+                reader: Some(&self.reader),
+                known: HashMap::new(),
+                account: &self.account,
+                sync: None,
+                seen: vec![],
+            }
+            .evaluate(&room, &mut events, &timeline)
+            .await?;
             self.dispatcher
                 .observe(self.account.clone(), Decrypted { room_id, events })
                 .await?;
@@ -1034,6 +1089,8 @@ impl Sender {
         self.reconcile::<Tags>().await?;
         self.reconcile::<Pins>().await?;
         self.send_due().await?;
+        // After sending, as what is sent follows its thread.
+        self.reconcile::<Follows>().await?;
         self.take_back_due().await?;
         self.push_receipts().await
     }
@@ -1565,9 +1622,14 @@ impl<K: Kind> uplink_tx_log::reconciler::Provider<Rooms<K>> for Sender {
 
     async fn read(&self, rooms: Vec<uplink_tx_log::reconciler::Stored<Rooms<K>>>) -> Result<()> {
         for stored in rooms {
-            let room = stored.key.0;
+            let (room, key) = stored.key;
             let as_of = read(&self.reader, uplink_tx_log::as_of).await?;
-            let read = K::read(&self.homeserver()?, stored.target.as_str().try_into()?).await?;
+            let read = K::read(
+                &self.homeserver()?,
+                stored.target.as_str().try_into()?,
+                &key,
+            )
+            .await?;
             self.observe(reconciler::Read::<K> { room, read, as_of })
                 .await?;
         }

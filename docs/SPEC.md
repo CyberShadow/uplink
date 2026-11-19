@@ -255,7 +255,8 @@ send_delay_secs: 10
 home:
   - name: Urgent
     query: (in:inbox is:unread is:important to:me) OR (is:mention is:new)
-      OR (is:dm is:unread is:notifying) OR is:invite
+      OR (is:followed is:notifying is:new) OR (is:dm is:unread is:notifying)
+      OR is:invite
     badge: alert
   - name: Important
     query: (in:inbox is:unread is:important) OR (is:unread is:notifying)
@@ -1403,7 +1404,8 @@ that mirrors a provider is stored twice: *desired* (set by ops) and
 - a mail entry's labels: its labels, folder, read and starred state;
 - whether a mail or a Matrix message is sent (§6.7);
 - a Matrix room's membership (§9.7), tags, pinned events and read
-  receipt, and a space's order (§9.5);
+  receipt, a space's order (§9.5), and whether a thread is followed
+  (§9.2);
 - the user's answer to a meeting request (§10.3);
 - the user's own events created, changed and deleted (§10.4).
 
@@ -1425,7 +1427,7 @@ label (All Mail) and Trash and Spam apart by itself (§8.1).
 Each account runs a reconciler (its sync task) that, after every commit
 touching its state, pushes the differences — Gmail `messages.batchModify`
 and draft `send`; Graph `PATCH`, `move` and draft `send`; Matrix sends,
-joins, leaves, receipts, tags, pins and space orders; Graph `accept`,
+joins, leaves, receipts, tags, pins, thread follows and space orders; Graph `accept`,
 `tentativelyAccept` and `decline`, and events' `POST`, `PATCH`,
 `DELETE` and `cancel` (the calendar's sync task). The UI shows desired state
 immediately, so actions feel instant and survive a provider outage.
@@ -1624,7 +1626,8 @@ Built on fields, by how their values combine:
 - **Registers**, one value each, as above: an entry's folder (where it
   has exactly one), a room's membership, a space's order, an answer.
 - **Sets**, as one register per member (has it, or not): an entry's
-  labels and read and starred state, a room's tags, its pinned events.
+  labels and read and starred state, a room's tags, its pinned events,
+  the threads followed.
   So a change to one member is never a change to the others, however
   the provider writes them. Where it writes the whole set
   (`m.room.pinned_events`), the push is built from uplink's own state —
@@ -1691,7 +1694,13 @@ How they order:
 - Matrix: `/sync` long-polls alongside the pushes, so its answers are
   often ambiguous, and applied pushes are read back (tags by `GET
   .../tags`, other room account data by `GET .../account_data/{type}`,
-  membership by the room's state).
+  membership by the room's state, a thread's follow by `GET
+  .../thread/{root}/subscription`, a thread at a time, not the room's
+  whole).
+  Following a thread is the one field uplink sets without an op of the
+  user's own making it so: the sending of a message follows its thread
+  by the op that sent it (§9.2); a mention follows one as the
+  homeserver's, observed.
 
 #### 6.6.7 Accepted risks
 
@@ -1741,7 +1750,7 @@ the providers, as last observed, match what the user has done.
 its own way: the model is implemented, and simulated, as
 `uplink_tx_log::reconcile`, driven by `uplink_tx_log::reconciler`, and
 Matrix room tags, pinned events, space
-orders (§9.5) and memberships (§9.7), calendar answers (§10.3) and mail
+orders (§9.5), memberships (§9.7) and thread follows (§9.2), calendar answers (§10.3) and mail
 labels (§8) use it, and an IMAP move re-keys its entry (§6.6.5); nothing
 uses limbo yet. The user's own events created, changed and deleted
 (§10.4) are reconciled their own way still: desired as a whole change
@@ -2418,7 +2427,8 @@ room counts it unread, §9.5), `is:new` of one after its fully-read
 marker and not the account's (not yet caught up on, §12.15; so
 `is:mention is:new` is of `Room.mentions`), `is:mention` and
 `is:notifying` of one that highlights or notifies, by the push rules,
-read or not; dates are of the message. So a state is said, not implied:
+read or not; `is:followed` of one of a thread the account follows
+(§9.2), as shown; dates are of the message. So a state is said, not implied:
 `is:mention` finds every room the account was ever mentioned in, and
 the home view's buckets say `is:mention is:new` or `is:unread
 is:notifying`. A room's own terms decide what they can
@@ -3045,6 +3055,53 @@ stored, `TimelineChanged` names them, and clients find them the
 thread's. A thread's root changes (`TimelineChanged`) as messages are
 added to the thread, and as its latest is edited or redacted.
 
+**Following threads.** As Slack's, a thread the user follows notifies
+of its replies, and one they do not follow does not, but of mentions:
+by MSC4306's thread subscriptions, which the homeserver keeps and its
+push rules act on (§9.5), where it has them (it advertises
+`org.matrix.msc4306` in `/versions`; else threads cannot be followed,
+and notify as the push rules alone say, as before). Following a thread
+is desired state (§6.6), a field of each thread by its root (V0079
+`matrix_thread_follow`; a thread of no row is not followed), pushed as
+a manual subscription (`PUT
+/_matrix/client/unstable/io.element.msc4306/rooms/{room}/thread/{root}/subscription`)
+or none (`DELETE`), and read back by `GET`, a thread at a time. A
+message's root lists whether its thread is followed (`followed`, as
+asked for), a thread not yet started too. The user follows one:
+
+- **by writing in it**, as MSC4306 prescribes: a message sent to a
+  thread (a file in reply to one of its messages too) follows it, once
+  the homeserver accepted it, by the op that sent it (§6.7), which the
+  outbox lists it under. Undoing the send does not unfollow, as
+  deleting one's reply in Slack does not;
+- **by starting it**, so that a thread others start by replying to the
+  user's message is followed: every message the user sends to a
+  room's main timeline (not an edit, a reaction, a redaction or a
+  change of state) follows the thread it would be the root of, alike,
+  at one request more per message. MSC4306 says a client subscribes
+  only for what it sends itself, as it sends it: what the user sends
+  from another client (a bridged network's own app, through the
+  bridge's double puppeting) follows nothing, unless that client does;
+- **by being mentioned in it**: a message of a thread not followed that
+  notifies (only mentions and keywords do, of a thread not followed),
+  news (§12.15) and not from the account, nor from a sender it ignores
+  or that is banned, follows its thread automatically (MSC4306's
+  `automatic`, naming the message), which the homeserver skips if the
+  user unfollowed the thread after the message came
+  (`IO.ELEMENT.MSC4306.M_CONFLICTING_UNSUBSCRIPTION`): it stays
+  unfollowed, as the user asked. Not an op: what the homeserver has
+  then is observed (`matrix.follows_seen`);
+- **by hand**: "Follow thread" or "Unfollow thread" in the thread's
+  panel and in a message's menu, and `f` on its line (§12.5)
+  (`SetFollowed { room, root, followed }`, `matrix.set_follows`,
+  undoable). Unfollowing is Slack's "Don't notify me about replies":
+  the thread's messages stored stop notifying (`notify` cleared, but
+  of those that highlight), so what stood of them is let go (§12.16).
+  Following notifies of what comes after, not of what came.
+
+Threads followed before uplink did are the homeserver's; uplink follows
+none of the past by itself (no message sent or mention is news then).
+
 **HTML.** A message's HTML `formatted_body` (and its latest edit's) is
 listed sanitized, as mail's is (§8.9), by the server: the tags and
 attributes the Matrix spec suggests clients show, and no others; links
@@ -3311,7 +3368,21 @@ which a verified device gives.
   push rules as its client evaluates them on sync (the SDK's push
   actions, of an encrypted event once decrypted, also late; V0032:
   `matrix_event.notify`, `highlight`; events stored before are
-  neither). Only news notifies or highlights: what was sent once uplink
+  neither). But a thread's message: the SDK evaluates the rules of
+  thread subscriptions (MSC4306, §9.2:
+  `.io.element.msc4306.rule.unsubscribed_thread`, which mutes a thread
+  not followed but for mentions, before a room's rules;
+  `.io.element.msc4306.rule.subscribed_thread`, which notifies of one
+  followed, the room's rules notwithstanding) knowing no thread
+  followed, so uplink evaluates them again, of each thread as it has
+  it (`follows::Evaluator`): of a sync's, as the homeserver says when
+  its message comes (`GET`, a request per thread of the sync's
+  messages), unless uplink's own opinion of it is pending, which
+  stands; of a gap filled or a message decrypted late, as uplink last
+  had it. The SDK's own threading support is left off: under sync v2 its
+  store of subscriptions is never caught up, so it would ask the
+  homeserver of every thread message it evaluates, filling a gap
+  too. Only news notifies or highlights: what was sent once uplink
   began to sync the account (`account.news_since`, §12.15), found by
   position after the marker (its index), the time only checked: since
   news began is most of a room, as it is used. The
@@ -3332,7 +3403,13 @@ which a verified device gives.
   account's first sync stored it. The
   default buckets ask the push rules (`is:notifying`) of every message
   but mentions, so what the push rules mute does not notify, and what
-  they notify of is in a bucket that notifies: a bridged DM, which they
+  they notify of is in a bucket that notifies. A thread's messages are
+  not unread (as the room's unread count, by the read marker of the
+  main timeline, as uplink's receipts are unthreaded), so a thread's are
+  in a bucket by the fully-read marker, which passes them as catching up
+  does, as mentions are: those of threads followed that notify are
+  Urgent (`is:followed is:notifying is:new`), as being addressed, as
+  Slack's; of a thread not followed, only mentions notify. A bridged DM, which they
   take for a group chat (the bridge bot, its puppet and the user), is
   to be told to notify by a room rule, for every client alike.
 - The read marker is desired state (§6.6). Showing a room, in a visible
@@ -3972,7 +4049,8 @@ between the timeline and the panel open; in a thread, `i`/`Enter` write
 in its own box; `+` opens its
 reactions (at the first: `←`/`→` move along them, `Enter` takes one,
 other keys type one into their box; the focus leaving closes them, and
-closed, the line has it back), `p` pins or unpins it and `Delete` (on macOS, the
+closed, the line has it back), `p` pins or unpins it, `f` follows or
+unfollows its thread (§9.2), and `Delete` (on macOS, the
 key so labelled: Backspace, as Apple Mail's; elsewhere, Backspace is
 left to the browser, as Back where it is) or `#` delete one's own, once asked (§6.8), as
 deleting (by the menu too) cannot be undone once the homeserver has it:
@@ -4349,7 +4427,11 @@ buttons.
   header, a room with pinned messages shows one at a time, as Element's
   banner, the latest pinned first ("Pinned message 1 of 2"): a click
   shows it in the timeline, as a search's, and the next; a message's menu
-  pins and unpins it, if the room's power levels let the account. Deleted messages say so, with the reason; undecryptable
+  pins and unpins it, if the room's power levels let the account, and
+  follows or unfollows the thread it is the root of, or would be
+  ("Follow thread", where the homeserver keeps thread subscriptions,
+  §9.2); the thread's panel says, by its header's button, whether it is
+  followed ("Following", pressed), and follows or unfollows it. Deleted messages say so, with the reason; undecryptable
   ones too. Any other message type shows its `body`.
 - **State events** are summarized after the sender's name ("Alice
   joined", "changed the topic to …"); three or more membership changes
@@ -4526,7 +4608,9 @@ The agenda is listed then, as home shows, and as calendars change.
 
 The default buckets (§3.2) go by how the user is reached, not by kind,
 mail and rooms alike: Urgent is what is addressed to the user (important
-mail to them, mentions, direct messages that notify, invitations);
+mail to them, mentions, replies in threads they follow, as Slack's,
+which interrupt as mentions do, direct messages that notify,
+invitations);
 Important what else needs them (important mail they are not addressed
 in, as a list's or a service's to a group; rooms the push rules notify
 of, which for a group chat is the user's own choice; to-dos and events
@@ -4539,7 +4623,14 @@ Inbox and importance (§8.10, §8.13: `$Important`): mail of lists is to
 be filed past the Inbox, by the server's filters, rather than told
 apart by categories that only Gmail has. Rooms are told apart by the
 push rules (`is:notifying`), which the user keeps for every client, and
-by Element's tags, `m.favourite` and `m.lowpriority`.
+by Element's tags, `m.favourite` and `m.lowpriority`. A thread's
+messages are not unread (the read marker is of the main timeline), so
+Urgent finds them, followed or mentioning, as not caught up on
+(`is:new`, §12.15): `is:followed is:notifying is:new` rather than
+`is:notifying is:new`, which would be of every thread's message where
+the homeserver keeps no thread subscriptions, its push rules then
+notifying of them all; and `is:notifying` still, so that a room muted
+for every client mutes its threads too.
 
 ### 12.14 Badges and marks
 
@@ -5462,7 +5553,12 @@ request).
   (`UPLINK_CONDUIT`, set by the dev shell and the checks; in the build
   sandbox, through libredirect, since Conduit insists on reading
   `/etc/resolv.conf`), register users, and play the other side with a
-  second matrix-sdk client. The `e2e` VM runs Conduit's NixOS service.
+  second matrix-sdk client. Conduit has no thread subscriptions
+  (MSC4306), so following threads (§9.2) is tested against Synapse,
+  from nixpkgs too, its experimental `msc4306_enabled` on
+  (`tests/synapse.rs`, `UPLINK_SYNAPSE`), started the same way; the
+  logic around it also without a homeserver (`tests.rs`, `follows`).
+  The `e2e` VM runs Conduit's NixOS service.
   No separate `integration-matrix` VM test: the Rust tests cover the
   sync task against the real thing, and `e2e` the deployment.
 

@@ -21,6 +21,8 @@ export function SidePanel(props: {
   stops: string
   /** Goes back to the panel it was opened from, if any. */
   back: { label: string; go: () => void } | null
+  /** Buttons of its header, before its close button. */
+  actions?: ComponentChildren
   close: () => void
   children: ComponentChildren
 }) {
@@ -50,6 +52,7 @@ export function SidePanel(props: {
           </button>
         )}
         <h2>{props.title}</h2>
+        {props.actions}
         <button
           type="button"
           onMouseDown={keepFocus}

@@ -619,6 +619,7 @@ fn of_room(
         | Term::New
         | Term::Mention
         | Term::Notifying
+        | Term::Followed
         | Term::After(_)
         | Term::Before(_) => None,
         // Of mail, or of other kinds.
@@ -724,6 +725,8 @@ enum Cond {
     New,
     Highlights,
     Notifies,
+    /// Of a thread the account follows.
+    Followed,
     /// In one of these rooms.
     Rooms(Vec<i64>),
     After(i64),
@@ -802,6 +805,7 @@ impl Cond {
             Term::New => Cond::New,
             Term::Mention => Cond::Highlights,
             Term::Notifying => Cond::Notifies,
+            Term::Followed => Cond::Followed,
             Term::After(at) => Cond::After(*at),
             Term::Before(at) => Cond::Before(*at),
             // Of everything, as Trash and Spam are not of messages.
@@ -923,6 +927,7 @@ impl Sql {
             }
             Cond::Highlights => "e.highlight".to_owned(),
             Cond::Notifies => "e.notify".to_owned(),
+            Cond::Followed => crate::follows::FOLLOWED.to_owned(),
             Cond::Rooms(ids) => format!(
                 "e.room IN ({})",
                 ids.iter()

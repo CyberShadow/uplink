@@ -83,6 +83,11 @@ impl Crawler {
             .client
             .get_room(room_id)
             .with_context(|| format!("the client does not have room {room_id}"))?;
+        let stored = gap.room;
+        let followed = read(&self.reader, move |conn| {
+            crate::follows::followed(conn, stored)
+        })
+        .await?;
         backfill::fill(
             &self.dispatcher,
             self.account.clone(),
@@ -90,6 +95,7 @@ impl Crawler {
             gap.room,
             gap.gap,
             &gap.before,
+            followed,
         )
         .await
     }

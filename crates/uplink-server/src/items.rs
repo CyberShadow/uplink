@@ -1114,6 +1114,7 @@ mod tests {
     ) -> Synced {
         Synced {
             next_batch: "next".into(),
+            follows: false,
             packs: None,
             as_of,
             rooms: vec![ObservedRoom {
@@ -1971,6 +1972,7 @@ mod tests {
                 "mx".into(),
                 Synced {
                     next_batch: "next".into(),
+                    follows: false,
                     packs: None,
                     as_of: uplink_protocol::TxLogId(0),
                     rooms: vec![ObservedRoom {

@@ -44,6 +44,9 @@ pub struct MatrixAccount {
     pub mxid: String,
     /// Whether the first sync has completed.
     pub synced: bool,
+    /// Whether its homeserver keeps whom follows which threads (MSC4306
+    /// thread subscriptions), as it last synced: threads can be followed.
+    pub follows: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -235,6 +238,9 @@ pub struct RoomEvent {
     /// Whether the account's push rules highlight it: it mentions the
     /// account (by `m.mentions`, its name or `@room`) or a keyword.
     pub highlight: bool,
+    /// Whether the account follows the thread it is the root of, or would
+    /// be (SPEC §9.2), as asked for if being changed.
+    pub followed: bool,
 }
 
 /// What a linked page says of itself (OpenGraph), as the homeserver
@@ -575,6 +581,29 @@ pub struct PinChange {
     /// The event's Matrix id.
     pub event: String,
     pub pinned: bool,
+}
+
+/// A thread followed, or unfollowed (MSC4306 thread subscriptions).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct FollowChange {
+    pub room: RoomId,
+    /// The Matrix id of the thread's root.
+    pub root: String,
+    pub followed: bool,
+}
+
+/// Threads being followed or unfollowed by one op.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PendingFollows {
+    /// The op that asked: undoing it puts the follows back.
+    pub op: crate::compose::PendingOp,
+    /// The changes yet to reach the homeserver.
+    pub changes: Vec<FollowChange>,
+    /// Why the homeserver refused one, if it did: it needs a decision,
+    /// which undoing the op makes.
+    pub refused: Option<String>,
 }
 
 /// Events being pinned or unpinned by one op.

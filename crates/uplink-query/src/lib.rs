@@ -65,6 +65,9 @@ pub enum Term {
     Mention,
     /// A room's message that notifies, by the push rules.
     Notifying,
+    /// A room's message of a thread the account follows (MSC4306 thread
+    /// subscriptions), as Slack's followed threads.
+    Followed,
     /// A direct chat.
     Direct,
     /// A room the account is invited to.
@@ -507,13 +510,14 @@ fn operator(name: &str, value: &str, quoted: bool, now: i64) -> Result<Query, In
             "new" => term(Term::New),
             "mention" => term(Term::Mention),
             "notifying" => term(Term::Notifying),
+            "followed" => term(Term::Followed),
             "dm" => term(Term::Direct),
             "invite" => term(Term::Invited),
             "overdue" => term(Term::Overdue),
             "done" => term(Term::Done),
             _ => Err(invalid(format!(
                 "is:{value}: is: takes unread, read, starred, important, mail, room, todo, \
-                 event, new, mention, notifying, dm, invite, overdue or done"
+                 event, new, mention, notifying, followed, dm, invite, overdue or done"
             ))),
         },
         "space" => term(Term::Space(value.to_owned())),
@@ -949,6 +953,7 @@ mod tests {
         assert_eq!(ok("is:mail"), term(Term::Kind(Kind::Mail)));
         assert_eq!(ok("is:mention"), term(Term::Mention));
         assert_eq!(ok("is:notifying"), term(Term::Notifying));
+        assert_eq!(ok("is:followed"), term(Term::Followed));
         assert_eq!(ok("is:dm"), term(Term::Direct));
         assert_eq!(ok("is:invite"), term(Term::Invited));
         assert_eq!(ok("is:overdue"), term(Term::Overdue));

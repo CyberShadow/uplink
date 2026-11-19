@@ -62,6 +62,8 @@ import type {
   Membership,
   PendingRoomTags,
   PendingPins,
+  PendingFollows,
+  FollowChange,
   PinChange,
   PendingSpaceOrders,
   Room,
@@ -271,6 +273,7 @@ export class FakeServer implements Requester, Subscriber, Blobs {
   private spaceOrders: PendingSpaceOrders[] = []
   private roomTags: PendingRoomTags[] = []
   private pins: PendingPins[] = []
+  private follows: PendingFollows[] = []
   readonly events = new Map<RoomId, RoomEvent[]>()
   /** Of Matrix accounts, their security: unverified until recovered. */
   readonly security = new Map<string, MatrixSecurity>()
@@ -528,9 +531,10 @@ export class FakeServer implements Requester, Subscriber, Blobs {
     this.observe(account, [{ type: 'labels_changed', changes: [change] }])
   }
 
-  /** Configures the Matrix account `mx`, of user {@link ME}. */
-  addMatrixAccount() {
-    this.matrixAccounts.push({ id: 'mx', mxid: ME, synced: true })
+  /** Configures the Matrix account `mx`, of user {@link ME}: of a
+   * homeserver that keeps thread follows, unless `follows` is false. */
+  addMatrixAccount(follows = true) {
+    this.matrixAccounts.push({ id: 'mx', mxid: ME, synced: true, follows })
     this.security.set('mx', {
       account: 'mx',
       device_id: 'UPLINK',
@@ -653,6 +657,7 @@ export class FakeServer implements Requester, Subscriber, Blobs {
       html: null,
       thread: null,
       thread_root: null,
+      followed: false,
       // As push rules would have it: a message that names the account.
       highlight: event.body?.includes(ME) ?? false,
       ...event,
@@ -1309,7 +1314,7 @@ export class FakeServer implements Requester, Subscriber, Blobs {
             op: { id: this.membershipBy.get(r.id)!, description: `${r.pending === 'join' ? 'Joined' : 'Left'} '${r.name}'`, ts: 0 },
             refused: r.membership_error,
           }))
-        const matrixPending = [this.matrixSends, memberships, this.spaceOrders, this.roomTags, this.pins]
+        const matrixPending = [this.matrixSends, memberships, this.spaceOrders, this.roomTags, this.pins, this.follows]
         if (matrixPending.some((pending) => pending.length > 0)) {
           accounts.push({
             account: 'mx',
@@ -1321,6 +1326,7 @@ export class FakeServer implements Requester, Subscriber, Blobs {
               space_orders: [...this.spaceOrders].reverse(),
               room_tags: [...this.roomTags].reverse(),
               pins: [...this.pins].reverse(),
+              follows: [...this.follows].reverse(),
               receipts: [],
             },
           })
@@ -1790,6 +1796,11 @@ export class FakeServer implements Requester, Subscriber, Blobs {
         return { type: 'dispatched', tx_log_id: this.orderSpaces(body.changes) }
       case 'set_pinned':
         return { type: 'dispatched', tx_log_id: this.setPins([{ room: body.room, event: body.event, pinned: body.pinned }]) }
+      case 'set_followed':
+        return {
+          type: 'dispatched',
+          tx_log_id: this.setFollows([{ room: body.room, root: body.root, followed: body.followed }]),
+        }
       case 'modify_room_tags':
         return {
           type: 'dispatched',
@@ -1877,6 +1888,35 @@ export class FakeServer implements Requester, Subscriber, Blobs {
     this.pins.push({ op: { id, description, ts: 0 }, changes: done, refused: null })
     this.undoable.set(id, {
       revert: () => this.setPins(done.map((c) => ({ ...c, pinned: !c.pinned }))),
+      undone: false,
+    })
+    return id
+  }
+
+  /** Follows threads, as the server applies `SetFollows`: shown at once,
+   * as asked for. */
+  private setFollows(changes: FollowChange[]): number {
+    const done: FollowChange[] = []
+    const changed: { room: RoomId; events: RoomEventId[] }[] = []
+    for (const change of changes) {
+      const events = this.events.get(change.room)!
+      const at = events.findIndex((e) => e.event_id === change.root)
+      const root = events[at]
+      if (root.followed === change.followed) continue
+      events[at] = { ...root, followed: change.followed }
+      done.push(change)
+      changed.push({ room: change.room, events: [root.id] })
+    }
+    const followed = done.filter((c) => c.followed).length
+    const description =
+      done.length === 0 ? 'Changed nothing' : followed > 0 ? 'Followed a thread' : 'Unfollowed a thread'
+    const id = this.commit({ type: 'user' }, description, [
+      ...changed.map((c) => ({ type: 'timeline_changed' as const, ...c })),
+      { type: 'outbox_changed', accounts: ['mx'] },
+    ])
+    this.follows.push({ op: { id, description, ts: 0 }, changes: done, refused: null })
+    this.undoable.set(id, {
+      revert: () => this.setFollows(done.map((c) => ({ ...c, followed: !c.followed }))),
       undone: false,
     })
     return id

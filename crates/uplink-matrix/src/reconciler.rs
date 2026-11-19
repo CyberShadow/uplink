@@ -49,6 +49,9 @@ pub trait Kind: Send + Sync + 'static {
     const SETTLED: &'static str;
     /// The fields, as the log names them: "room tags".
     const WHAT: &'static str;
+    /// Whether each field is read back by itself, by its key (a thread's
+    /// follow), rather than all of the room's at once.
+    const BY_KEY: bool = false;
 
     fn load(conn: &Connection, room: RoomId, key: &str) -> Result<Field<Self::Value>>;
     fn store(tx: &Transaction, room: RoomId, key: &str, field: &Field<Self::Value>) -> Result<()>;
@@ -57,6 +60,16 @@ pub trait Kind: Send + Sync + 'static {
     /// Records the room's fields as read by a request sent after `as_of`;
     /// returns whether those shown changed.
     fn observe(tx: &Transaction, room: RoomId, read: &Self::Read, as_of: TxLogId) -> Result<bool>;
+    /// As [`Self::observe`], with what else that changed for clients than
+    /// the room: by default, nothing.
+    fn observe_events(
+        tx: &Transaction,
+        room: RoomId,
+        read: &Self::Read,
+        as_of: TxLogId,
+    ) -> Result<(bool, Vec<ServerEvent>)> {
+        Ok((Self::observe(tx, room, read, as_of)?, vec![]))
+    }
     /// The log's description of a push of the room's (named `room`) field.
     fn pushed(room: &str, key: &str, value: &Self::Value, ended: &Ended) -> String;
 
@@ -81,10 +94,12 @@ pub trait Kind: Send + Sync + 'static {
         room: &RoomIdRef,
         request: &Self::Request,
     ) -> impl Future<Output = matrix_sdk::Result<()>> + Send;
-    /// Reads the room's fields from the homeserver.
+    /// Reads the room's fields from the homeserver: of a kind read
+    /// [by key](Self::BY_KEY), the one of `key`.
     fn read(
         homeserver: &Homeserver,
         room: &RoomIdRef,
+        key: &str,
     ) -> impl Future<Output = Result<Self::Read>> + Send;
 }
 
@@ -124,18 +139,20 @@ impl<K: Kind> Observation for Read<K> {
 
     fn apply(self, account: &str, tx: &Transaction) -> Result<Observed> {
         let before = outbox::pending_rooms(tx, account)?;
-        let changed = K::observe(tx, self.room, &self.read, self.as_of)?;
+        let (changed, more) = K::observe_events(tx, self.room, &self.read, self.as_of)?;
         let name = rooms::name(tx, self.room)?;
+        let mut events = events(tx, account, self.room, before, changed)?;
+        events.extend(more);
         Ok(Observed {
             description: format!("Read the {} of '{name}' from the homeserver", K::WHAT),
-            events: events(tx, account, self.room, before, changed)?,
+            events,
         })
     }
 }
 
 /// A kind of a room's fields as a kind of the reconciler's: each keyed
 /// by the room and the key in it, and pushed and read back by the room's
-/// id.
+/// id; its entity is the room, or of a kind read by key, the field.
 pub struct Rooms<K>(PhantomData<K>);
 
 /// The account's rooms' fields of a kind, in a transaction.
@@ -157,7 +174,8 @@ impl<K: Kind> Fields<Rooms<K>> for RoomFields<'_, K> {
 impl<K: Kind> reconciler::Kind for Rooms<K> {
     type Key = (RoomId, String);
     type Value = K::Value;
-    type Entity = RoomId;
+    /// The room, and the key of a kind read by key; else empty.
+    type Entity = (RoomId, String);
     /// The room's id as Matrix has it.
     type Target = String;
     type Fields<'t> = RoomFields<'t, K>;
@@ -166,8 +184,15 @@ impl<K: Kind> reconciler::Kind for Rooms<K> {
     const PUSHED: &'static str = K::PUSHED;
     const SETTLED: &'static str = K::SETTLED;
 
-    fn entity((room, _): &(RoomId, String)) -> RoomId {
-        *room
+    fn entity((room, key): &(RoomId, String)) -> (RoomId, String) {
+        (
+            *room,
+            if K::BY_KEY {
+                key.clone()
+            } else {
+                String::new()
+            },
+        )
     }
 
     fn fields<'t>(tx: &'t Transaction<'t>, _account: &'t str) -> Result<RoomFields<'t, K>> {

@@ -34,7 +34,7 @@ pub trait Kind: Sized + Send + Sync + 'static {
     type Value: Clone + PartialEq + Debug + Serialize + DeserializeOwned + Send + Sync + 'static;
     /// What fields are of: a mail entry, a room, an event. Its fields are
     /// read back together, and it is what a push re-keys (SPEC §6.6.5).
-    type Entity: Copy + Ord + Debug + Serialize + Send + Sync + 'static;
+    type Entity: Clone + Ord + Debug + Serialize + Send + Sync + 'static;
     /// What pushing or reading a field takes besides its key: its
     /// entity's ids at the provider.
     type Target: Clone + Debug + Send + Sync + 'static;
@@ -355,7 +355,7 @@ impl<K: Kind> Observation for Pushed<K> {
                     push.ended == Ended::Applied,
                     "re-keyed by a push not applied"
                 );
-                K::rekey(tx, account, key.entity, key.external_id.as_deref())?;
+                K::rekey(tx, account, key.entity.clone(), key.external_id.as_deref())?;
             }
             let mut values = vec![];
             for key in push.fields {

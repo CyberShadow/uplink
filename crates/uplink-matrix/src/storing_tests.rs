@@ -70,6 +70,7 @@ impl Db {
                 Synced {
                     as_of: uplink_protocol::TxLogId(0),
                     next_batch: "next".into(),
+                    follows: true,
                     packs: None,
                     rooms: vec![ObservedRoom {
                         room_id: ROOM.into(),

@@ -356,7 +356,7 @@ impl Kind for Memberships {
 
     /// By a sync of the room alone, from the start, which tells which of
     /// joined, invited and left it is (none: never in it, so left).
-    async fn read(homeserver: &Homeserver, room: &RoomIdRef) -> Result<Membership> {
+    async fn read(homeserver: &Homeserver, room: &RoomIdRef, _key: &str) -> Result<Membership> {
         let mut filter = FilterDefinition::ignore_all();
         filter.room.rooms = Some(vec![room.to_owned()]);
         filter.room.include_leave = true;

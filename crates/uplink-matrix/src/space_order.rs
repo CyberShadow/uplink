@@ -265,7 +265,7 @@ impl Kind for Orders {
         Ok(())
     }
 
-    async fn read(homeserver: &Homeserver, room: &RoomIdRef) -> Result<Option<String>> {
+    async fn read(homeserver: &Homeserver, room: &RoomIdRef, _key: &str) -> Result<Option<String>> {
         let request = get_room_account_data::v3::Request::new(
             homeserver.user.clone(),
             room.to_owned(),

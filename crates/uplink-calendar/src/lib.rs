@@ -434,6 +434,7 @@ fn term_matches(event: &CalendarEvent, term: &Term) -> bool {
         | Term::New
         | Term::Mention
         | Term::Notifying
+        | Term::Followed
         | Term::Direct
         | Term::Invited
         | Term::Space(_)

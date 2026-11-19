@@ -457,6 +457,7 @@ export function Events(props: {
       pin: () => focused().pin?.toggle(),
       flag: () => focused().flag?.toggle(),
       markUnread: () => focused().markUnread?.(),
+      follow: () => focused().follow?.toggle(),
       ...(closePanel && { up: closePanel }),
       ...(details && {
         open: () => {

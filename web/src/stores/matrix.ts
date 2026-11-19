@@ -322,6 +322,17 @@ export class MatrixStore {
     return this.ops.dispatch({ type: 'set_pinned', room, event, pinned })
   }
 
+  /** Whether the room's account can follow threads (MSC4306). */
+  follows(room: Room): boolean {
+    return this.accounts.value?.find((a) => a.id === room.account)?.follows ?? false
+  }
+
+  /** Follows the thread of the room's root, or unfollows it: replies in
+   * it then notify, or no longer. */
+  setFollowed(room: RoomId, root: string, followed: boolean) {
+    return this.ops.dispatch({ type: 'set_followed', room, root, followed })
+  }
+
   /** Tags the rooms `tag`, or, if each has it already, untags them. */
   toggleTag(rooms: readonly Room[], tag: string) {
     return this.setTag(rooms, tag, !rooms.every((r) => r.tags.includes(tag)))

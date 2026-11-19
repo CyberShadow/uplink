@@ -188,6 +188,7 @@ function isResendable(body: ClientRequest): boolean {
     case 'order_spaces':
     case 'modify_room_tags':
     case 'set_pinned':
+    case 'set_followed':
     case 'create_matrix_room':
     case 'start_direct_chat':
     case 'create_todo':

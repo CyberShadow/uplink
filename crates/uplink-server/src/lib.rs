@@ -1351,6 +1351,11 @@ impl Backend for Services {
                 event,
                 pinned,
             } => self.matrix.set_pinned(room, event, pinned).await,
+            ClientRequest::SetFollowed {
+                room,
+                root,
+                followed,
+            } => self.matrix.set_followed(room, root, followed).await,
             ClientRequest::ModifyRoomTags { rooms, add, remove } => {
                 self.matrix.modify_room_tags(rooms, add, remove).await
             }

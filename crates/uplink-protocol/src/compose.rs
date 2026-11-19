@@ -213,6 +213,9 @@ pub enum Pending {
         /// Events being pinned or unpinned, by the op that asked, newest
         /// first.
         pins: Vec<crate::matrix::PendingPins>,
+        /// Threads being followed or unfollowed, by the op that asked,
+        /// newest first.
+        follows: Vec<crate::matrix::PendingFollows>,
         /// Rooms read past their latest read receipt.
         receipts: Vec<crate::matrix::RoomId>,
     },

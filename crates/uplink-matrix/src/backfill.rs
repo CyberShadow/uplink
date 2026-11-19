@@ -1,9 +1,10 @@
 //! Fetching events missing from a room's timeline (SPEC §9.2): the
 //! homeserver's page of them before a stored event.
 
-use crate::{rooms::Filled, sync::timeline_event};
+use crate::{follows::Evaluator, rooms::Filled, sync::timeline_event};
 use anyhow::{Context, Result};
 use matrix_sdk::{
+    deserialized_responses::TimelineEvent,
     room::MessagesOptions,
     ruma::{
         api::client::filter::RoomEventFilter,
@@ -21,7 +22,8 @@ const PAGE: u32 = 50;
 
 /// Fetches the page of events just before the gap `gap` of the room
 /// (`sdk_room`, the account's client's), whose event after it is
-/// `before`, and stores them.
+/// `before`, and stores them. The room's threads `followed` (by root,
+/// [`crate::follows::followed`]) are what its threads' messages notify by.
 pub async fn fill(
     dispatcher: &Dispatcher,
     account: String,
@@ -29,15 +31,33 @@ pub async fn fill(
     room: RoomId,
     gap: GapId,
     before: &str,
+    followed: HashMap<String, bool>,
 ) -> Result<()> {
-    let filled = page(sdk_room, room, gap, before).await?;
+    let mut filled = page(sdk_room, room, gap, before).await?;
+    let (events, timeline) = (&mut filled.0, &filled.1);
+    Evaluator {
+        client: &sdk_room.client(),
+        reader: None,
+        known: followed,
+        account: &account,
+        sync: None,
+        seen: vec![],
+    }
+    .evaluate(sdk_room, &mut events.events, timeline)
+    .await?;
+    let (filled, _) = filled;
     dispatcher.observe(account, filled).await?;
     Ok(())
 }
 
 /// The page of events just before the room's event `before`. Pagination
 /// tokens are not kept: the event's context gives one.
-async fn page(room: &Room, id: RoomId, gap: GapId, before: &str) -> Result<Filled> {
+async fn page(
+    room: &Room,
+    id: RoomId,
+    gap: GapId,
+    before: &str,
+) -> Result<(Filled, Vec<TimelineEvent>)> {
     let before = <&EventId>::try_from(before)?;
     let context = room
         .event_with_context(before, true, UInt::from(0u32), None)
@@ -68,10 +88,10 @@ async fn page(room: &Room, id: RoomId, gap: GapId, before: &str) -> Result<Fille
     }
     let start = messages.end.is_none();
     let mut events = Vec::with_capacity(messages.chunk.len());
-    for event in messages.chunk {
+    for event in &messages.chunk {
         events.push(timeline_event(room, event, &mut names).await?);
     }
-    Ok(Filled {
+    let filled = Filled {
         room: id,
         gap,
         version: room
@@ -82,7 +102,8 @@ async fn page(room: &Room, id: RoomId, gap: GapId, before: &str) -> Result<Fille
         start,
         own_receipts: own_receipts(room).await?,
         fully_read: room.fully_read_event_id().map(|e| e.to_string()),
-    })
+    };
+    Ok((filled, messages.chunk))
 }
 
 /// The events of the account's own read receipts in the room, as its

@@ -53,6 +53,7 @@ export type Action =
   | 'previousRegion'
   | 'react'
   | 'pin'
+  | 'follow'
   | 'spam'
   | 'add'
   | 'undo'
@@ -190,6 +191,7 @@ export const KEYMAP: Binding[] = [
   { action: 'previousRegion', keys: ['Shift+F6'], label: 'Shift+F6', help: 'The previous part of the window' },
   { action: 'react', keys: ['[Shift]++'], label: '+', help: 'React to the message (in a room)' },
   { action: 'pin', keys: ['p'], label: 'p', help: 'Pin or unpin the message (in a room)' },
+  { action: 'follow', keys: ['f'], label: 'f', help: "Follow or unfollow the message's thread (in a room)" },
   { action: 'spam', keys: ['[Shift]+!'], label: '!', help: 'Report spam, or not spam' },
   { action: 'add', keys: ['a'], label: 'a', help: 'Add a to-do (in to-dos)' },
   { action: 'undo', keys: ['z'], label: 'z', help: 'Undo the last action; again, the one before it (in history: undo or redo the one focused)' },

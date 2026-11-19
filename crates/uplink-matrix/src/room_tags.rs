@@ -361,7 +361,7 @@ impl Kind for Tags {
         Ok(())
     }
 
-    async fn read(homeserver: &Homeserver, room: &RoomIdRef) -> Result<Vec<String>> {
+    async fn read(homeserver: &Homeserver, room: &RoomIdRef, _key: &str) -> Result<Vec<String>> {
         let request = get_tags::v3::Request::new(homeserver.user.clone(), room.to_owned());
         let response = homeserver
             .client

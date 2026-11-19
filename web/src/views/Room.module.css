@@ -581,6 +581,25 @@ button.sender:hover .name {
   border-bottom: 1px solid var(--line);
 }
 
+/* Following the thread, or not: pressed while followed. */
+.thread > header .follow {
+  margin: 0 8px 0 auto;
+  padding: 2px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+}
+
+.thread > header .follow:hover {
+  background: var(--selected);
+}
+
+.thread > header .follow[aria-pressed='true'] {
+  color: var(--muted);
+}
+
 .quoted {
   overflow: hidden;
   color: var(--muted);

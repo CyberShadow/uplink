@@ -497,6 +497,15 @@ pub enum ClientRequest {
         event: String,
         pinned: bool,
     },
+    /// Follow the room's thread of root `root` (a Matrix event id), or
+    /// unfollow it (MSC4306 thread subscriptions): a stored message not
+    /// deleted, nor of a thread, is followed, as the thread it is the
+    /// root of, or would be; any is unfollowed.
+    SetFollowed {
+        room: RoomId,
+        root: String,
+        followed: bool,
+    },
     /// Tag rooms and untag them (`m.tag`): added tags are `m.favourite`,
     /// `m.lowpriority` or the user's own, `u.` and a name. A favourite
     /// is not of low priority, and the other way.

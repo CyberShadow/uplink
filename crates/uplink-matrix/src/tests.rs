@@ -35,6 +35,8 @@ struct Db {
     dispatcher: Dispatcher,
     rooms: Arc<crate::room_view::RoomsView>,
     matrix: Matrix,
+    /// Whether the homeserver keeps thread subscriptions, as syncs say.
+    follows: bool,
 }
 
 impl Db {
@@ -67,6 +69,15 @@ impl Db {
             dispatcher,
             rooms,
             matrix,
+            follows: false,
+        }
+    }
+
+    /// Of a homeserver that keeps thread subscriptions (MSC4306).
+    fn following() -> Self {
+        Self {
+            follows: true,
+            ..Self::new()
         }
     }
 
@@ -122,6 +133,7 @@ impl Db {
     ) -> TxLogId {
         self.observe(Synced {
             next_batch: "next".into(),
+            follows: self.follows,
             packs: None,
             as_of: self.as_of(),
             rooms: vec![ObservedRoom {
@@ -943,6 +955,7 @@ mod membership {
         async fn sync_membership(&self, membership: Membership) {
             self.observe(Synced {
                 next_batch: "next".into(),
+                follows: false,
                 packs: None,
                 as_of: self.as_of(),
                 rooms: vec![ObservedRoom {
@@ -1233,6 +1246,7 @@ mod room_tags {
         async fn sync_tags_as_of(&self, tags: &[&str], as_of: TxLogId) -> TxLogId {
             self.observe(Synced {
                 next_batch: "next".into(),
+                follows: false,
                 packs: None,
                 as_of,
                 rooms: vec![ObservedRoom {
@@ -1571,6 +1585,7 @@ mod space_order {
         async fn sync_space(&self, order: Option<&str>) {
             self.observe(Synced {
                 next_batch: "next".into(),
+                follows: false,
                 packs: None,
                 as_of: self.as_of(),
                 rooms: vec![ObservedRoom {
@@ -2506,6 +2521,7 @@ mod query {
         whole.events = vec![message("$3", "@bob:x")];
         db.observe(Synced {
             next_batch: "next".into(),
+            follows: false,
             packs: None,
             as_of: db.as_of(),
             rooms: vec![small, large, whole],
@@ -2593,6 +2609,7 @@ mod query {
         db.observe(Synced {
             as_of: db.as_of(),
             next_batch: "next".into(),
+            follows: false,
             packs: Some(image_packs::AccountPacks {
                 user: Some(pack(None, &["mine"])),
                 everywhere: vec![
@@ -2664,6 +2681,7 @@ mod query {
         db.observe(Synced {
             as_of: db.as_of(),
             next_batch: "next".into(),
+            follows: false,
             packs: None,
             rooms: vec![lounge],
         })
@@ -2710,6 +2728,7 @@ mod query {
         });
         db.observe(Synced {
             next_batch: "next".into(),
+            follows: false,
             packs: None,
             as_of: db.as_of(),
             rooms: vec![work, team, bob, news, party],
@@ -2781,6 +2800,7 @@ mod query {
         db.observe(Synced {
             as_of: db.as_of(),
             next_batch: "next".into(),
+            follows: false,
             packs: None,
             rooms: vec![hq, dm, small],
         })
@@ -2809,7 +2829,8 @@ mod query {
 
         let home = [
             "(in:inbox is:unread is:important to:me) OR (is:mention is:new) \
-         OR (is:dm is:unread is:notifying) OR is:invite",
+         OR (is:followed is:notifying is:new) OR (is:dm is:unread is:notifying) \
+         OR is:invite",
             "(in:inbox is:unread is:important) OR (is:unread is:notifying) \
          OR is:overdue OR due:today",
             "(in:inbox is:unread) OR (is:unread tag:favourite)",
@@ -2926,6 +2947,7 @@ mod query {
         ops.fully_read = Some("$7".into());
         db.observe(Synced {
             next_batch: "next".into(),
+            follows: false,
             packs: None,
             as_of: db.as_of(),
             rooms: vec![work, team, bob, ops],
@@ -3274,6 +3296,7 @@ async fn listing_rooms_costs_as_the_rooms_not_their_history() {
             .collect();
         db.observe(Synced {
             next_batch: "next".into(),
+            follows: false,
             packs: None,
             as_of: db.as_of(),
             rooms: synced,
@@ -3513,5 +3536,346 @@ mod drafts {
             .attach_to_room_draft(room, none, "c.txt".into(), "text/plain".into())
             .await;
         assert_eq!(refused.unwrap_err().code, ErrorCode::NotFound);
+    }
+}
+
+/// Following threads (MSC4306 thread subscriptions, SPEC §9.2): fields
+/// reconciled as pins are, that sending follows, and that what notifies
+/// of a thread's messages goes by.
+mod follows {
+    use super::*;
+    use crate::{
+        follows::{Follows, FollowsSeen, Seen},
+        reconciler::{Kind, Read, Rooms},
+    };
+    use uplink_protocol::matrix::{FollowChange, PendingFollows};
+    use uplink_tx_log::reconcile::Ended;
+
+    /// A message of the thread of `root`, notifying (and highlighting) so.
+    fn in_thread(
+        id: &str,
+        sender: &str,
+        root: &str,
+        notify: bool,
+        highlight: bool,
+    ) -> ObservedEvent {
+        let raw = json!({ "type": "m.room.message", "event_id": id, "sender": sender,
+                          "origin_server_ts": 1_700_000_000_000_i64,
+                          "content": { "msgtype": "m.text", "body": id,
+                                       "m.relates_to": { "rel_type": "m.thread", "event_id": root,
+                                                         "is_falling_back": true,
+                                                         "m.in_reply_to": { "event_id": root } } } });
+        ObservedEvent {
+            push: crate::rooms::Push { notify, highlight },
+            ..ObservedEvent::parse(&raw.to_string(), None, Encryption::None).unwrap()
+        }
+    }
+
+    impl Db {
+        fn reader(&self) -> uplink_storage::rusqlite::Connection {
+            uplink_storage::open_reader(self._dir.path()).unwrap()
+        }
+
+        async fn follow(&self, root: &str, followed: bool) -> TxLogId {
+            let room = self.room().await.id;
+            match self
+                .matrix
+                .set_followed(room, root.into(), followed)
+                .await
+                .unwrap()
+            {
+                ServerResponse::Dispatched { tx_log_id } => tx_log_id,
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+
+        /// The roots of the threads the reconciler would follow, or
+        /// unfollow, claiming them.
+        async fn claim_follows(&self) -> Vec<(String, bool)> {
+            let wanted: Vec<_> = Follows::reconciling(&self.reader(), "mx")
+                .unwrap()
+                .into_iter()
+                .filter(|f| f.field.wanted().is_some())
+                .map(|f| (f.room, f.key))
+                .collect();
+            self.observe(Claimed::<Rooms<Follows>>::new(wanted))
+                .await
+                .unwrap();
+            let conn = self.reader();
+            let in_flight = Follows::reconciling(&conn, "mx")
+                .unwrap()
+                .into_iter()
+                .filter(|f| f.field.attempt.is_some())
+                .collect();
+            Follows::requests(&conn, in_flight)
+                .unwrap()
+                .into_iter()
+                .map(|(request, _)| request)
+                .collect()
+        }
+
+        async fn follow_pushed(&self, root: &str, ended: Ended) {
+            let room = self.room().await.id;
+            self.observe(Pushed::<Rooms<Follows>> {
+                pushes: vec![Push {
+                    fields: vec![(room, root.to_owned())],
+                    ended,
+                    rekeyed: None,
+                }],
+            })
+            .await
+            .unwrap();
+        }
+
+        async fn read_follow(&self, root: &str, followed: bool) {
+            let room = self.room().await.id;
+            self.observe(Read::<Follows> {
+                room,
+                read: (root.to_owned(), followed),
+                as_of: self.as_of(),
+            })
+            .await
+            .unwrap();
+        }
+
+        fn pending_follows(&self) -> Vec<PendingFollows> {
+            match self.outbox().into_iter().next().map(|a| a.pending) {
+                Some(Pending::Matrix { follows, .. }) => follows,
+                None => vec![],
+                other => panic!("{other:?}"),
+            }
+        }
+
+        /// Whether the event's thread is shown followed.
+        async fn followed(&self, event_id: &str) -> bool {
+            let room = self.room().await;
+            let ServerResponse::Timeline { events, .. } = self
+                .matrix
+                .list_timeline(room.id, uplink_protocol::matrix::TimelinePage::Latest, 100)
+                .await
+                .unwrap()
+            else {
+                panic!()
+            };
+            events
+                .iter()
+                .find(|e| e.event_id == event_id)
+                .unwrap()
+                .followed
+        }
+
+        /// The stored messages that notify, by event id.
+        fn notifying(&self) -> Vec<String> {
+            self.reader()
+                .prepare("SELECT event_id FROM matrix_event WHERE notify ORDER BY event_id")
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        }
+
+        /// The messages `query` finds unseen, by event id.
+        fn found(&self, query: &str) -> Vec<String> {
+            let mut conn = self.reader();
+            let tx = conn.transaction().unwrap();
+            let rooms = crate::query::Rooms::of(&self.rooms, &tx).unwrap();
+            let query = uplink_query::parse(query, 0).unwrap();
+            let mut found: Vec<String> = rooms
+                .unseen(&tx, &query, RoomEventId(0), &Default::default(), 20)
+                .unwrap()
+                .into_iter()
+                .map(|(_, event)| event.event_id)
+                .collect();
+            found.sort();
+            found
+        }
+    }
+
+    /// Following is pushed, read back, and undone as pins are; its root
+    /// shows it, a thread not yet started too.
+    #[tokio::test]
+    async fn a_thread_is_followed_and_unfollowed_on_the_homeserver() {
+        let db = Db::following();
+        db.sync(&[("$root", "@bob:x")], &[]).await;
+        assert!(!db.followed("$root").await);
+
+        let followed = db.follow("$root", true).await;
+        assert_eq!(db.description(followed), "Followed a thread");
+        assert!(db.followed("$root").await, "shown as asked for");
+        let [pending] = &db.pending_follows()[..] else {
+            panic!("{:?}", db.pending_follows())
+        };
+        assert_eq!(pending.op.id, followed);
+        let room = db.room().await.id;
+        assert_eq!(
+            pending.changes,
+            [FollowChange {
+                room,
+                root: "$root".into(),
+                followed: true
+            }]
+        );
+        assert_eq!(db.claim_follows().await, [("$root".to_owned(), true)]);
+        db.follow_pushed("$root", Ended::Applied).await;
+        db.read_follow("$root", true).await;
+        assert!(db.pending_follows().is_empty());
+        assert!(Follows::reconciling(&db.reader(), "mx").unwrap().is_empty());
+
+        db.dispatcher.undo(followed).await.unwrap();
+        assert!(!db.followed("$root").await);
+        assert_eq!(db.claim_follows().await, [("$root".to_owned(), false)]);
+    }
+
+    /// Unfollowing is Slack's "Don't notify me about replies": what of the
+    /// thread is stored stops notifying (but mentions), so what stood of
+    /// it goes; other threads' are as they were.
+    #[tokio::test]
+    async fn unfollowing_quiets_the_threads_messages_but_mentions() {
+        let db = Db::following();
+        db.sync_events(
+            vec![
+                message("$root", ME),
+                in_thread("$1", "@bob:x", "$root", true, false),
+                in_thread("$2", "@bob:x", "$root", true, true),
+                message("$other", "@bob:x"),
+                in_thread("$3", "@bob:x", "$other", true, false),
+            ],
+            &[],
+        )
+        .await;
+        // Followed by another client: as the homeserver says.
+        db.observe(FollowsSeen {
+            as_of: db.as_of(),
+            seen: vec![Seen {
+                room_id: ROOM.into(),
+                root: "$root".into(),
+                followed: true,
+                mentioned: false,
+            }],
+        })
+        .await
+        .unwrap();
+        assert!(db.followed("$root").await);
+        assert!(db.pending_follows().is_empty(), "no opinion of uplink's");
+        assert_eq!(db.found("is:followed"), ["$1", "$2"]);
+
+        db.follow("$root", false).await;
+        assert_eq!(db.notifying(), ["$2", "$3"]);
+        assert!(db.found("is:followed").is_empty());
+    }
+
+    /// The homeserver's state of a thread, read as its messages come, is
+    /// what uplink shows of it, as another client changes it: but not over
+    /// uplink's own change, pending.
+    #[tokio::test]
+    async fn follows_seen_are_observed_unless_uplink_asked_otherwise() {
+        let db = Db::following();
+        db.sync(&[("$root", "@bob:x")], &[]).await;
+        let seen = |followed| FollowsSeen {
+            as_of: TxLogId(0),
+            seen: vec![Seen {
+                room_id: ROOM.into(),
+                root: "$root".into(),
+                followed,
+                mentioned: false,
+            }],
+        };
+        db.follow("$root", true).await;
+        db.claim_follows().await;
+        // Seen before the push ended: ambiguous, and not adopted.
+        db.observe(seen(false)).await.unwrap();
+        assert!(db.followed("$root").await);
+    }
+
+    /// What is sent follows its thread, as MSC4306 prescribes, by the op
+    /// that sent it, once the homeserver accepted it: a reply in a thread
+    /// the thread, a message to the room the thread it would be the root
+    /// of. Not an edit.
+    #[tokio::test]
+    async fn sending_follows_the_thread_of_what_is_sent() {
+        let db = Db::following();
+        db.sync(&[("$root", "@bob:x")], &[]).await;
+        let reply = db
+            .sent(
+                MatrixContent::Text {
+                    body: "in the thread".into(),
+                    format: TextFormat::Markdown,
+                    emote: false,
+                    reply_to: None,
+                    replaces: None,
+                    thread: Some("$root".into()),
+                },
+                Some("$reply"),
+            )
+            .await;
+        assert!(db.followed("$root").await);
+        let [pending] = &db.pending_follows()[..] else {
+            panic!("{:?}", db.pending_follows())
+        };
+        assert_eq!(pending.op.id, reply);
+        assert_eq!(pending.changes[0].root, "$root");
+
+        db.sent(text("a message of mine"), Some("$mine")).await;
+        assert!(db.followed("$mine").await, "the root of a thread to come");
+
+        db.sent(
+            MatrixContent::Text {
+                body: "edited".into(),
+                format: TextFormat::Markdown,
+                emote: false,
+                reply_to: None,
+                replaces: Some("$mine".into()),
+                thread: None,
+            },
+            Some("$edit"),
+        )
+        .await;
+        let roots: Vec<String> = db
+            .claim_follows()
+            .await
+            .into_iter()
+            .map(|(root, _)| root)
+            .collect();
+        assert_eq!(roots, ["$mine", "$root"]);
+    }
+
+    /// Where the homeserver keeps no thread subscriptions, nothing follows,
+    /// nor can be followed.
+    #[tokio::test]
+    async fn without_thread_subscriptions_nothing_follows() {
+        let db = Db::new();
+        db.sync(&[("$root", "@bob:x")], &[]).await;
+        db.sent(text("hi"), Some("$mine")).await;
+        assert!(db.claim_follows().await.is_empty());
+        let room = db.room().await.id;
+        let refused = db.matrix.set_followed(room, "$root".into(), true).await;
+        assert_eq!(
+            refused.unwrap_err().code,
+            uplink_protocol::ErrorCode::Invalid
+        );
+        // Unfollowing any is never refused.
+        db.follow("$root", false).await;
+    }
+
+    /// Of the default Urgent bucket: the messages of threads followed that
+    /// notify and are not caught up on, as mentions are.
+    #[tokio::test]
+    async fn messages_of_threads_followed_are_urgent() {
+        let db = Db::following();
+        db.sync_events(
+            vec![
+                message("$root", "@bob:x"),
+                in_thread("$1", "@bob:x", "$root", true, false),
+                in_thread("$2", "@carol:x", "$root", false, false),
+                in_thread("$mine", ME, "$root", true, false),
+                message("$other", "@bob:x"),
+                in_thread("$3", "@bob:x", "$other", true, false),
+            ],
+            &[],
+        )
+        .await;
+        db.follow("$root", true).await;
+        assert_eq!(db.found("is:followed is:notifying is:new"), ["$1"]);
     }
 }

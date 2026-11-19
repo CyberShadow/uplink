@@ -5,7 +5,7 @@
 import { useLayoutEffect, useMemo, useRef } from 'preact/hooks'
 import type { Room } from '../generated/protocol'
 import { useServices } from '../context'
-import { focusShown, pages, useKeymap } from '../keymap'
+import { focusShown, keepFocus, pages, useKeymap } from '../keymap'
 import { TEXT, shown } from '../matrix'
 import { Events, NO_READERS_BY_EVENT, type ThreadOpened, moveLine, overlaid, rows } from './Room'
 import { Composer, type Mode, useMode } from './RoomComposer'
@@ -57,7 +57,30 @@ export function ThreadPanel(props: {
   // From its messages, its own box is written in, not the room's.
   useKeymap({ write: () => composer.current?.focus() }, { focus: listed })
   return (
-    <SidePanel class={styles.thread} label="Thread" title="Thread" stops="[data-event]" back={null} close={props.close}>
+    <SidePanel
+      class={styles.thread}
+      label="Thread"
+      title="Thread"
+      stops="[data-event]"
+      back={null}
+      close={props.close}
+      actions={
+        state !== null &&
+        room.membership === 'joined' &&
+        matrix.follows(room) &&
+        (!state.root.redacted || state.root.followed) && (
+          <button
+            type="button"
+            class={styles.follow}
+            onMouseDown={keepFocus}
+            onClick={() => matrix.setFollowed(room.id, state.root.event_id, !state.root.followed)}
+            aria-pressed={state.root.followed}
+          >
+            {state.root.followed ? 'Following' : 'Follow'}
+          </button>
+        )
+      }
+    >
       {thread.error.value !== null && (
         <p class={styles.error} role="alert">
           {thread.error.value}

@@ -61,6 +61,10 @@ pub const SHORTCODE: &str =
 pub struct SyncState {
     /// The `since` token to sync from next.
     pub next_batch: String,
+    /// Whether the homeserver keeps thread subscriptions (MSC4306), as it
+    /// said then: threads can be followed (SPEC §9.2).
+    #[serde(default)]
+    pub follows: bool,
 }
 
 /// What a sync response changed. Sync responses that change nothing uplink
@@ -72,6 +76,8 @@ pub struct Synced {
     /// The last entry before the sync request was sent (SPEC §6.6.2).
     pub as_of: TxLogId,
     pub rooms: Vec<ObservedRoom>,
+    /// Whether the homeserver keeps thread subscriptions (MSC4306).
+    pub follows: bool,
     /// What the account's account data says of image packs, if the
     /// response changed it (or is the first). Not in the log: it is
     /// stored.
@@ -409,6 +415,7 @@ impl Observation for Synced {
         }
         let state = serde_json::to_string(&SyncState {
             next_batch: self.next_batch,
+            follows: self.follows,
         })?;
         tx.execute(
             "UPDATE account SET sync_state = ?1 WHERE id = ?2",
@@ -1265,6 +1272,19 @@ pub fn sync_state(conn: &Connection, account: &str) -> Result<Option<SyncState>>
         .transpose()
 }
 
+/// Since when what the account's rooms are sent is news (SPEC §12.15),
+/// once it synced first.
+pub fn news_since(conn: &Connection, account: &str) -> Result<Option<i64>> {
+    Ok(conn
+        .query_row(
+            "SELECT news_since FROM account WHERE id = ?1",
+            [account],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten())
+}
+
 /// The rooms of `account`, but those left (unless joining them again),
 /// most recently active first.
 /// `mxid` is the account's user: its own messages are never unread. Its
@@ -1686,7 +1706,9 @@ const COLUMNS: &str = "e.id, e.event_id, e.sender, e.sender_name, e.ts, e.type, 
      THEN NULL ELSE e.reply_to END, e.pos, \
      (SELECT t.id FROM matrix_event t \
       WHERE e.rel_type = 'm.thread' AND t.room = e.room AND t.event_id = e.relates_to), \
-     e.highlight";
+     e.highlight, \
+     EXISTS (SELECT 1 FROM matrix_thread_follow f \
+             WHERE f.room = e.room AND f.root = e.event_id AND f.desired)";
 
 /// An event of [`COLUMNS`], without what relates to it, and the event it
 /// replies to.
@@ -1718,6 +1740,7 @@ fn room_event(r: &Row) -> uplink_storage::rusqlite::Result<(RoomEvent, Option<St
             thread: None,
             thread_root: r.get::<_, Option<i64>>(13)?.map(RoomEventId),
             highlight: r.get(14)?,
+            followed: r.get(15)?,
         },
         r.get(11)?,
     ))

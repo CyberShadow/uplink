@@ -541,11 +541,66 @@ impl Observation for SendSucceeded {
             (false, true) => format!("Sent {body} before the cancel; taking it back"),
             (false, false) => format!("Sent {body} before the cancel could take it back"),
         };
+        let mut events = vec![];
+        // What is sent follows its thread, by the op that sent it (SPEC
+        // §9.2), as it is sent.
+        if let (true, Some(event_id)) = (item.wanted, &self.event_id) {
+            let account = crate::rooms::room_account(tx, item.room)?.context("the room is gone")?;
+            if crate::follows::followable(tx, &account)? {
+                if let Some(root) = followed_thread(tx, item.room, &item.content, event_id)? {
+                    let by: i64 = tx.query_row(
+                        "SELECT desired_by FROM matrix_send WHERE id = ?1",
+                        [self.item.0],
+                        |r| r.get(0),
+                    )?;
+                    events = crate::follows::follow_on_send(tx, item.room, &root, TxLogId(by))?;
+                }
+            }
+        }
+        events.extend(changed(tx, item.room)?);
         Ok(Observed {
             description,
-            events: changed(tx, item.room)?,
+            events,
         })
     }
+}
+
+/// The thread a message sent as `event_id` follows (SPEC §9.2): the one
+/// it is of, or else the one it is the root of, which others may start
+/// by replying to it. Not of an edit, a reaction, a redaction or a
+/// change of state.
+fn followed_thread(
+    tx: &Transaction,
+    room: RoomId,
+    content: &MatrixContent,
+    event_id: &str,
+) -> Result<Option<String>> {
+    // A file's reply is of the thread the event it answers is of.
+    let thread_of = |replied: &Option<String>| -> Result<Option<String>> {
+        let Some(replied) = replied else {
+            return Ok(None);
+        };
+        Ok(crate::rooms::stored_event(tx, room, replied)?
+            .filter(|e| e.rel_type.as_deref() == Some("m.thread"))
+            .and_then(|e| e.relates_to))
+    };
+    Ok(match content {
+        MatrixContent::Text {
+            replaces: Some(_), ..
+        } => None,
+        MatrixContent::Text {
+            thread: Some(root), ..
+        } => Some(root.clone()),
+        MatrixContent::Text { .. } => Some(event_id.to_owned()),
+        MatrixContent::File { reply_to, .. } => {
+            Some(thread_of(reply_to)?.unwrap_or_else(|| event_id.to_owned()))
+        }
+        MatrixContent::Reaction { .. }
+        | MatrixContent::Redaction { .. }
+        | MatrixContent::Name { .. }
+        | MatrixContent::Topic { .. }
+        | MatrixContent::Member { .. } => None,
+    })
 }
 
 /// Sending a message did not succeed: `refused` with the homeserver's

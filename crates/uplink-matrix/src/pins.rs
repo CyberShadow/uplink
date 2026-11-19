@@ -368,7 +368,7 @@ impl Kind for Pins {
         Ok(())
     }
 
-    async fn read(homeserver: &Homeserver, room: &RoomIdRef) -> Result<Vec<String>> {
+    async fn read(homeserver: &Homeserver, room: &RoomIdRef, _key: &str) -> Result<Vec<String>> {
         let request = get_state_event_for_key::v3::Request::new(
             room.to_owned(),
             StateEventType::RoomPinnedEvents,

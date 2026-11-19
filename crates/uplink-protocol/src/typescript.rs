@@ -189,6 +189,8 @@ fn declarations() -> String {
         PendingRoomTags,
         PinChange,
         PendingPins,
+        FollowChange,
+        PendingFollows,
         RoomsChanged,
         TimelineAdded,
         TimelineChanged,

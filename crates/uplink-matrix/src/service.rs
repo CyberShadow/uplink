@@ -4,6 +4,7 @@ use crate::{
     backfill,
     client::{self, Clients},
     draft::{self, AttachToDraft, DetachFromDraft, EditDraft, SetReply},
+    follows::{self, SetFollows},
     image_packs, markdown, media,
     membership::ChangeMembership,
     pins::SetPins,
@@ -24,9 +25,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use uplink_protocol::{
     compose::{BlobId, DraftAttachmentId, Splice},
     matrix::{
-        GapId, MatrixAccount, MatrixContent, MatrixSendId, MemberAction, MemberInfo, MemberReceipt,
-        MemberState, Membership, MembershipChange, NewRoom, PinChange, RoomBox, RoomEventId,
-        RoomId, RoomMember, RoomPowers, RoomTagChange, SpaceOrderChange, TimelinePage,
+        FollowChange, GapId, MatrixAccount, MatrixContent, MatrixSendId, MemberAction, MemberInfo,
+        MemberReceipt, MemberState, Membership, MembershipChange, NewRoom, PinChange, RoomBox,
+        RoomEventId, RoomId, RoomMember, RoomPowers, RoomTagChange, SpaceOrderChange, TimelinePage,
         VerificationAnswer,
     },
     ErrorCode, ServerError, ServerResponse,
@@ -556,31 +557,42 @@ impl Matrix {
     /// Fetches the homeserver's page of events before the room's gap
     /// `gap`, and stores them (SPEC §9.2).
     pub async fn fill_gap(&self, room: RoomId, gap: GapId) -> Remote {
-        let before: String = self
+        let (before, followed): (String, _) = self
             .reader
             .read(move |conn| {
-                conn.query_row(
-                    "SELECT e.event_id FROM matrix_gap g JOIN matrix_event e ON e.id = g.before_event
-                     WHERE g.id = ?1 AND g.room = ?2",
-                    params![gap.0, room.0],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(|e| internal(e.into()))?
-                .ok_or_else(|| {
-                    error(
-                        ErrorCode::NotFound,
-                        format!("room {} has no gap {}", room.0, gap.0),
+                let before = conn
+                    .query_row(
+                        "SELECT e.event_id FROM matrix_gap g JOIN matrix_event e ON e.id = g.before_event
+                         WHERE g.id = ?1 AND g.room = ?2",
+                        params![gap.0, room.0],
+                        |r| r.get(0),
                     )
-                })
+                    .optional()
+                    .map_err(|e| internal(e.into()))?
+                    .ok_or_else(|| {
+                        error(
+                            ErrorCode::NotFound,
+                            format!("room {} has no gap {}", room.0, gap.0),
+                        )
+                    })?;
+                let followed = follows::followed(conn, room).map_err(internal)?;
+                Ok((before, followed))
             })
             .await?;
         let (account, sdk_room) = self.sdk_room(room).await?;
         let dispatcher = self.dispatcher.clone();
         Ok(Answer::later(async move {
-            backfill::fill(&dispatcher, account, &sdk_room, room, gap, &before)
-                .await
-                .map_err(internal)?;
+            backfill::fill(
+                &dispatcher,
+                account,
+                &sdk_room,
+                room,
+                gap,
+                &before,
+                followed,
+            )
+            .await
+            .map_err(internal)?;
             Ok(ServerResponse::Done)
         }))
     }
@@ -826,6 +838,7 @@ impl Matrix {
                         synced: rooms::sync_state(&tx, &account.id)
                             .map_err(internal)?
                             .is_some(),
+                        follows: follows::followable(&tx, &account.id).map_err(internal)?,
                     });
                 }
                 Ok(ServerResponse::Rooms {
@@ -1429,6 +1442,78 @@ impl Matrix {
                     room,
                     event,
                     pinned,
+                }],
+            })
+            .await
+    }
+
+    /// Following the joined room's thread of `root`, of a stored message
+    /// not deleted, nor of a thread, if the homeserver keeps thread
+    /// subscriptions; or unfollowing any.
+    pub async fn set_followed(&self, room: RoomId, root: String, followed: bool) -> Response {
+        if <&matrix_sdk::ruma::EventId>::try_from(root.as_str()).is_err() {
+            return Err(error(
+                ErrorCode::Invalid,
+                format!("not a Matrix event id: {root:?}"),
+            ));
+        }
+        let accounts = self.accounts.clone();
+        let of = root.clone();
+        self.reader
+            .read(move |conn| {
+                let tx = conn.transaction().map_err(|e| internal(e.into()))?;
+                let standing = rooms::standing(&tx, room)
+                    .map_err(internal)?
+                    .ok_or_else(|| no_room(room))?;
+                let joined = standing.membership == Membership::Joined
+                    && accounts.iter().any(|a| a.id == standing.account);
+                if !joined {
+                    return Err(error(
+                        ErrorCode::Invalid,
+                        format!(
+                            "room {} is not a joined room of a configured account",
+                            room.0
+                        ),
+                    ));
+                }
+                if !followed {
+                    return Ok(());
+                }
+                if !follows::followable(&tx, &standing.account).map_err(internal)? {
+                    return Err(error(
+                        ErrorCode::Invalid,
+                        format!(
+                            "the homeserver of {} keeps no thread subscriptions (MSC4306)",
+                            standing.account
+                        ),
+                    ));
+                }
+                let stored = rooms::stored_event(&tx, room, &of)
+                    .map_err(internal)?
+                    .ok_or_else(|| {
+                        error(
+                            ErrorCode::NotFound,
+                            format!("no event {of} in room {}", room.0),
+                        )
+                    })?;
+                if stored.redacted {
+                    return Err(error(ErrorCode::Conflict, format!("{of} is redacted")));
+                }
+                if stored.rel_type.as_deref() == Some("m.thread") {
+                    return Err(error(
+                        ErrorCode::Invalid,
+                        format!("{of} is of a thread, so the root of none"),
+                    ));
+                }
+                Ok(())
+            })
+            .await?;
+        self.dispatcher
+            .answer(SetFollows {
+                changes: vec![FollowChange {
+                    room,
+                    root,
+                    followed,
                 }],
             })
             .await

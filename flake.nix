@@ -259,6 +259,8 @@
           UPLINK_EMULATE = "${emulate}/bin/emulate";
           # A Matrix homeserver, for crates/uplink-matrix/tests.
           UPLINK_CONDUIT = "${conduit}/bin/conduit";
+          # One with thread subscriptions (MSC4306), which Conduit lacks.
+          UPLINK_SYNAPSE = "${pkgs.matrix-synapse}/bin/synapse_homeserver";
           # A mail server (IMAP, SMTP), for crates/uplink-email/tests.
           UPLINK_STALWART = "${pkgs.stalwart}/bin/stalwart";
           # An IMAP server with NOTIFY (RFC 5465), which Stalwart lacks.

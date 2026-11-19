@@ -2991,6 +2991,81 @@ describe('room timeline', () => {
     expect(server.requests).toContainEqual({ type: 'set_pinned', room: room.id, event: old.event_id, pinned: false })
   })
 
+  it('follows threads, from the menu or by f, and lists them in the outbox', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const plans = server.receive(room.id, { body: 'Plans?' })
+    const lunch = server.receive(room.id, { body: 'Lunch?' })
+    const user = await start(`/rooms/${room.id}`)
+    await within(timeline()).findByText('Lunch?')
+
+    // One with no replies yet too.
+    await user.click(within(line('Plans?')).getByRole('button', { name: 'Options' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Follow thread' }))
+    expect(server.requests).toContainEqual({ type: 'set_followed', room: room.id, root: plans.event_id, followed: true })
+    // Followed at once, as asked for.
+    await user.click(within(line('Plans?')).getByRole('button', { name: 'Options' }))
+    await screen.findByRole('menuitem', { name: 'Unfollow thread' })
+    await user.keyboard('{Escape}')
+
+    // f, again to unfollow.
+    line('Lunch?').focus()
+    await user.keyboard('f')
+    expect(server.requests).toContainEqual({ type: 'set_followed', room: room.id, root: lunch.event_id, followed: true })
+    await user.click(within(line('Lunch?')).getByRole('button', { name: 'Options' }))
+    await screen.findByRole('menuitem', { name: 'Unfollow thread' })
+    await user.keyboard('{Escape}')
+    line('Lunch?').focus()
+    await user.keyboard('f')
+    expect(server.requests).toContainEqual({ type: 'set_followed', room: room.id, root: lunch.event_id, followed: false })
+
+    await user.click(within(screen.getByRole('navigation')).getByRole('link', { name: /^History/ }))
+    const section = await screen.findByRole('region', { name: 'mx' })
+    // Newest first.
+    expect(within(section).getAllByRole('listitem').map((row) => row.querySelector('[class*=summary]')!.textContent)).toEqual([
+      'Unfollowed a threadto go: unfollow in Lounge',
+      'Followed a threadto go: follow in Lounge',
+      'Followed a threadto go: follow in Lounge',
+    ])
+  })
+
+  it('follows a thread from its panel', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const root = server.receive(room.id, { body: 'Plans?' })
+    server.receiveInThread(room.id, root, { body: 'Saturday' })
+    const user = await start(`/rooms/${room.id}`)
+    await user.click(await within(timeline()).findByRole('button', { name: /1 reply/ }))
+    const thread = screen.getByRole('complementary', { name: 'Thread' })
+    const follow = await within(thread).findByRole('button', { name: 'Follow' })
+    expect(follow.getAttribute('aria-pressed')).toBe('false')
+    await user.click(follow)
+    expect(server.requests).toContainEqual({ type: 'set_followed', room: room.id, root: root.event_id, followed: true })
+    const following = await within(thread).findByRole('button', { name: 'Following' })
+    expect(following.getAttribute('aria-pressed')).toBe('true')
+    await user.click(following)
+    expect(server.requests).toContainEqual({ type: 'set_followed', room: room.id, root: root.event_id, followed: false })
+    await within(thread).findByRole('button', { name: 'Follow' })
+  })
+
+  it('offers no following where the homeserver keeps no follows', async () => {
+    server.addMatrixAccount(false)
+    const room = server.addRoom('Lounge')
+    const root = server.receive(room.id, { body: 'Plans?' })
+    server.receiveInThread(room.id, root, { body: 'Saturday' })
+    const user = await start(`/rooms/${room.id}`)
+    await user.click(await within(timeline()).findByRole('button', { name: /1 reply/ }))
+    const thread = screen.getByRole('complementary', { name: 'Thread' })
+    await within(thread).findByText('Saturday')
+    expect(within(thread).queryByRole('button', { name: /^Follow/ })).toBeNull()
+    await user.click(within(line('Plans?')).getByRole('button', { name: 'Options' }))
+    expect(screen.queryByRole('menuitem', { name: /Follow/ })).toBeNull()
+    await user.keyboard('{Escape}')
+    line('Plans?').focus()
+    await user.keyboard('f')
+    expect(server.requests.filter((r) => r.type === 'set_followed')).toEqual([])
+  })
+
   it('opens threads beside the timeline, which sum them up, and replies in them', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')
