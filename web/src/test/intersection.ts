@@ -1,6 +1,8 @@
 // jsdom does no layout, so nothing comes into view by itself: a test
 // says what does, and it stays in view.
 
+import { act } from '@testing-library/preact'
+
 const observers = new Set<FakeIntersectionObserver>()
 const visible = new WeakSet<Element>()
 
@@ -37,8 +39,12 @@ class FakeIntersectionObserver {
 
 window.IntersectionObserver = FakeIntersectionObserver as unknown as typeof IntersectionObserver
 
-/** `target` comes into view, as scrolling would bring it, and stays. */
+/** `target` comes into view, as scrolling would bring it, and stays;
+ * what that renders is, as a browser's would be, before what is done
+ * next. */
 export function scrolledTo(target: Element) {
   visible.add(target)
-  for (const observer of [...observers]) observer.show(target)
+  act(() => {
+    for (const observer of [...observers]) observer.show(target)
+  })
 }
