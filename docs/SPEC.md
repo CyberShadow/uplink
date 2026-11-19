@@ -769,7 +769,7 @@ CREATE TABLE todo (
   message     INTEGER REFERENCES message(id),
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL,
-  -- The room's message it was flagged from, likewise (V0078): event rows
+  -- The room's message it was flagged from, likewise (V0079): event rows
   -- are never deleted either. Of one or the other, or of neither.
   room_event  INTEGER REFERENCES matrix_event(id)
 );
