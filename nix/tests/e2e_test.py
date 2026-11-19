@@ -262,7 +262,7 @@ b { font-family: f; background: url(http://t.example/style.gif) }</style><b>bold
             browser,
             result,
         )
-        assert result["keys"] == {"in frame": "IFRAME", "escaped": "BODY"}, (browser, result)
+        assert result["keys"] == {"in frame": "IFRAME", "escaped": "MAIN"}, (browser, result)
 
 with subtest("a hostile Matrix message runs nothing, and has uplink fetch nothing remote"):
     # Dot-segments, which browsers resolve, out of the event's media to

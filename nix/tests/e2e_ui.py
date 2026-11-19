@@ -410,7 +410,8 @@ def hostile(page):
     title = page.title()
 
     # The app's keys, with the focus in the frame, on the link followed:
-    # Escape leaves it, and `u` goes back to the list.
+    # Escape leaves it, for the view, where the focus rests, and `u`
+    # goes back to the list.
     page.bring_to_front()
     body.get_by_role("link", name="A link").focus()
     in_frame = page.evaluate("() => document.activeElement.tagName")
