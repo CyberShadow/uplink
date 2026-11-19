@@ -546,7 +546,9 @@ def room_keys(page):
     expect(line("Keys latest")).to_be_focused()
     page.keyboard.press("m")
     info = page.get_by_role("complementary", name="Room info")
-    expect(info.get_by_role("button").first).to_be_visible(timeout=15000)
+    # Its controls, once its members are loaded: the header's are not
+    # among them, and with none, → opens the line's thread instead.
+    expect(info.get_by_role("listitem").get_by_role("button").first).to_be_visible(timeout=15000)
     page.keyboard.press("ArrowRight")
     expect(info.locator(":focus")).to_have_count(1)
     page.screenshot(path=f"{SHOTS}/room-keys-info.png")
