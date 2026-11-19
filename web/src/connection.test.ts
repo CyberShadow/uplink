@@ -61,7 +61,7 @@ function entry(id: number): LogEntry {
 function todo(id: number): Listed<Item> {
   const item = {
     kind: 'todo' as const,
-    todo: { id, title: `to-do ${id}`, notes: '', due: null, done_at: null, message: null, created_at: 0, updated_at: id },
+    todo: { id, title: `to-do ${id}`, notes: '', due: null, done_at: null, message: null, room_event: null, created_at: 0, updated_at: id },
   }
   return { key: `todo:${id}`, position: { at: id, kind: 'todo', id }, item }
 }

@@ -768,9 +768,13 @@ CREATE TABLE todo (
   -- deleted (entries are), so the link holds.
   message     INTEGER REFERENCES message(id),
   created_at  INTEGER NOT NULL,
-  updated_at  INTEGER NOT NULL
+  updated_at  INTEGER NOT NULL,
+  -- The room's message it was flagged from, likewise (V0078): event rows
+  -- are never deleted either. Of one or the other, or of neither.
+  room_event  INTEGER REFERENCES matrix_event(id)
 );
 CREATE INDEX todo_by_message ON todo(message) WHERE message IS NOT NULL;
+CREATE INDEX todo_by_room_event ON todo(room_event) WHERE room_event IS NOT NULL;
 
 -- ── drafts (local-only MVP) ──────────────────────────────────────────
 -- Edited only through draft ops (§7); history lives in tx_log.
@@ -3806,8 +3810,8 @@ an interface over "where to-dos are" would hide exactly that.
 
 Requests: `ListTodos` (open ones first by due date, undated last, then
 done ones, most recently done first), `CreateTodo { title, notes, due,
-message }` (titles are non-empty, due dates real dates, the message
-must exist), `EditTodo { todo, edit }`, `DeleteTodo { todo }`.
+message, room_event }` (titles are non-empty, due dates real dates, the
+message, of mail or of a room, must exist, and is one or the other), `EditTodo { todo, edit }`, `DeleteTodo { todo }`.
 
 ### 11.2 Flag for follow-up
 
@@ -3825,6 +3829,17 @@ follow-up flag. Mirroring M365's would be a reconciled desired state
 A to-do flagged from a message opens it at `/message/:message`, the
 message by itself (its entry in each account that has it; the first is
 shown), and back is back to where it was opened from.
+
+A room's message is flagged the same (as Slack's "Add to To-Do"), by
+`Shift+T` on its line or its menu, in the timeline or a thread: the
+to-do has `room_event` set (`Todo::room_event` says its room too), and
+is titled by who said it and its first line. Flagged, its line shows
+the flag, which links to the to-dos. Its to-do opens the room at it,
+`/rooms/:room/at/:event`: the event is asked for by its id
+(`ListRoomEvents`), then shown as a search's result is, in its thread or
+in the timeline, earlier pages loading until it is there, and its line
+has the focus, for the keys to act on it. Ops logged before room
+messages were flagged have no `room_event`, and read as none.
 
 ---
 
@@ -3975,7 +3990,8 @@ them (so `Enter` writes only from no line). Its bindings count only
 while the focus is in its list: a component's window bindings may be
 scoped so, and of those of the same keys, one scoped where the focus is
 fires, as nearer, before the latest component's.
-`m` shows the room's info beside it, or hides it.
+`m` shows the room's info beside it, or hides it; `Shift+T`, on a
+message's line, flags it for follow-up, or unflags it (§11.2).
 `PageUp`/`PageDown` scroll the timeline a page
 (less an eighth), from the box too, as Element's; from a thread's box,
 the thread. The room's box unfocused is then the exception
@@ -5592,6 +5608,7 @@ visible. Routes (handled by `preact-iso`):
 | `/drafts`                              | Drafts                                 |
 | `/rooms/:room`                         | Room timeline (uplink's room id)       |
 | `/rooms/:room/search/:words`           | The timeline, and its messages searched (§12.11) |
+| `/rooms/:room/at/:event`               | The timeline, at one of its messages, its line focused (§11.2) |
 | `/matrix/:account/space/:space`        | Space overview (deferred)              |
 | `/calendar/:view/:date`                | Calendar, `week` or `agenda` (§10.2)   |
 | `/todos`                               | Todo list                              |

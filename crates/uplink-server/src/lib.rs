@@ -1384,7 +1384,12 @@ impl Backend for Services {
                 notes,
                 due,
                 message,
-            } => self.todos.create(title, notes, due, message).await,
+                room_event,
+            } => {
+                self.todos
+                    .create(title, notes, due, message, room_event)
+                    .await
+            }
             ClientRequest::EditTodo { todo, edit } => self.todos.edit(todo, edit).await,
             ClientRequest::DeleteTodo { todo } => self.todos.delete(todo).await,
         };

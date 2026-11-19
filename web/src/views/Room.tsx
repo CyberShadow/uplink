@@ -51,7 +51,12 @@ export function roomSearchPath(room: number, words: string): string {
   return `${roomPath(room)}/search/${encodeURIComponent(words)}`
 }
 
-export function RoomView(props: { room?: string; words?: string }) {
+/** The room, at one of its messages: shown, and its line focused. */
+export function roomEventPath(room: number, event: number): string {
+  return `${roomPath(room)}/at/${event}`
+}
+
+export function RoomView(props: { room?: string; words?: string; event?: string }) {
   const { matrix } = useServices()
   const rooms = matrix.rooms.value
   const room = rooms?.find((r) => String(r.id) === props.room)
@@ -59,13 +64,19 @@ export function RoomView(props: { room?: string; words?: string }) {
   if (!rooms) return <p class={styles.placeholder}>Loading…</p>
   if (!room) return <p class={styles.placeholder}>No such room.</p>
   return (
-    <Timeline key={room.id} room={room} words={props.words === undefined ? null : decodeURIComponent(props.words)} />
+    <Timeline
+      key={room.id}
+      room={room}
+      words={props.words === undefined ? null : decodeURIComponent(props.words)}
+      at={props.event === undefined ? null : Number(props.event)}
+    />
   )
 }
 
-/** `words`: those its messages are searched for, if any. */
-function Timeline(props: { room: Room; words: string | null }) {
-  const { room, words } = props
+/** `words`: those its messages are searched for, if any; `at`: the
+ * message it is opened at. */
+function Timeline(props: { room: Room; words: string | null; at: RoomEventId | null }) {
+  const { room, words, at: opened_at } = props
   const { route } = useLocation()
   const { matrix } = useServices()
   const timeline = matrix.timeline(room.id)
@@ -118,6 +129,34 @@ function Timeline(props: { room: Room; words: string | null }) {
     // Else, home (`Shell`).
     ...(panel ? { up: () => setPanel(null) } : behind && { up: reading.markRead }),
   })
+
+  /** Shows the event: in its thread; or its line in the timeline, once
+   * loaded and rendered. */
+  const show = async (event: RoomEvent) => {
+    if (event.thread_root !== null) {
+      setPanel({ type: 'thread', root: event.thread_root, focus: 'box' })
+      return
+    }
+    await timeline.loadUntil(event.pos)
+    await new Promise(requestAnimationFrame)
+    reveal(event.id)
+  }
+  // Opened at a message, it is shown, and its line has the focus, for
+  // the keys to act on it.
+  const showing = useRef(show)
+  showing.current = show
+  useEffect(() => {
+    if (opened_at === null) return
+    let current = true
+    void matrix.event(room.id, opened_at).then(async (event) => {
+      if (!current || event === null) return
+      await showing.current(event)
+      lineOf(listed.current!, event.id)?.focus()
+    })
+    return () => {
+      current = false
+    }
+  }, [matrix, room.id, opened_at])
 
   const [overlay, outgoing] = useMemo(() => overlaid(events ?? [], sends, null), [events, sends])
   const receipts = timeline.receipts.value
@@ -274,15 +313,7 @@ function Timeline(props: { room: Room; words: string | null }) {
           room={room}
           words={panel.words}
           close={() => route(roomPath(room.id))}
-          open={async (event) => {
-            if (event.thread_root !== null) {
-              setPanel({ type: 'thread', root: event.thread_root, focus: 'box' })
-              return
-            }
-            await timeline.loadUntil(event.pos)
-            // Once rendered.
-            requestAnimationFrame(() => reveal(event.id))
-          }}
+          open={show}
         />
       )}
       {panel?.type === 'thread' && (
@@ -366,7 +397,7 @@ export function Events(props: {
   closePanel: (() => void) | null
 }) {
   const { room, me, overlay, act, openThread, details, openMember, closePanel } = props
-  const { matrix } = useServices()
+  const services = useServices()
   const [reacting, setReacting] = useState<{ event: RoomEventId; how: Reacting } | null>(null)
   // The line whose deleting is being asked about.
   const [confirming, setConfirming] = useState<RoomEventId | null>(null)
@@ -389,7 +420,7 @@ export function Events(props: {
     const row = props.rows.find((r) => r.type === 'event' && r.event.id === id)
     // The focus may be in the list, but on none of its lines: on a
     // button loading more, say.
-    return row?.type === 'event' ? { id, ...lineActions(line(row.event, true), matrix) } : { id }
+    return row?.type === 'event' ? { id, ...lineActions(line(row.event, true), services) } : { id }
   }
   useKeymap(
     {
@@ -423,6 +454,7 @@ export function Events(props: {
         if (can.delete) setConfirming(can.id)
       },
       pin: () => focused().pin?.toggle(),
+      flag: () => focused().flag?.toggle(),
       ...(closePanel && { up: closePanel }),
       ...(details && {
         open: () => {

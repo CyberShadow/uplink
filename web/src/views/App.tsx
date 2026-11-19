@@ -165,6 +165,7 @@ function Shell() {
           <Route path="/drafts" component={Drafts} />
           <Route path="/rooms/:room" component={RoomView} />
           <Route path="/rooms/:room/search/:words" component={RoomView} />
+          <Route path="/rooms/:room/at/:event" component={RoomView} />
           <Route path="/matrix/:account/security" component={SecurityView} />
           <Route default component={NotFound} />
         </Router>

@@ -1,6 +1,7 @@
 //! To-dos (SPEC §11).
 
 use crate::mail::MessageId;
+use crate::matrix::{RoomEventId, RoomId};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -20,10 +21,22 @@ pub struct Todo {
     pub done_at: Option<i64>,
     /// The message it was flagged from, which is flagged while it is open.
     pub message: Option<MessageId>,
+    /// The room's message it was flagged from, likewise. Not of to-dos
+    /// logged before there were such.
+    #[serde(default)]
+    pub room_event: Option<TodoRoomEvent>,
     /// Ms since the Unix epoch.
     pub created_at: i64,
     /// When it last changed, ms since the Unix epoch.
     pub updated_at: i64,
+}
+
+/// A room's message a to-do was flagged from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct TodoRoomEvent {
+    pub room: RoomId,
+    pub event: RoomEventId,
 }
 
 /// A change to one of a to-do's fields.

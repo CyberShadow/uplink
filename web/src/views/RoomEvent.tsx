@@ -17,6 +17,7 @@ import type {
 } from '../generated/protocol'
 import { useServices } from '../context'
 import { isLocal, type MatrixStore, type Outgoing } from '../stores/matrix'
+import type { TodoStore } from '../stores/todos'
 import { keepFocus, useEscape } from '../keymap'
 import { dateTime, time } from '../format'
 import {
@@ -85,9 +86,15 @@ export interface LineActions {
   react?: (key: string, shortcode: string | null) => void
   delete?: () => void
   pin?: { pinned: boolean; toggle: () => void }
+  /** Flags it for follow-up, by a to-do of it; or, flagged, unflags it. */
+  flag?: { flagged: boolean; toggle: () => void }
 }
 
-export function lineActions(line: Line, matrix: MatrixStore): LineActions {
+/** How much of a message its to-do's title says. */
+const TITLE_LENGTH = 80
+
+export function lineActions(line: Line, services: { matrix: MatrixStore; todos: TodoStore }): LineActions {
+  const { matrix, todos } = services
   const { room, event, me } = line
   const summary = stateSummary(event)
   const message = event.kind === 'm.room.message' || event.kind === 'm.sticker'
@@ -120,6 +127,16 @@ export function lineActions(line: Line, matrix: MatrixStore): LineActions {
   if (threadable) actions.replyInThread = line.openThread!
   if (own && !event.redacted && !deleting && event.encryption !== 'undecryptable' && summary === null) {
     actions.delete = () => matrix.send(room.id, { type: 'redaction', event: event.event_id })
+  }
+  if (event.kind === 'm.room.message' && !event.redacted) {
+    actions.flag = {
+      flagged: todos.flaggedEvents.value.has(event.id),
+      // Titled by who said what: its first line.
+      toggle: () => {
+        const said = (content.body ?? '').split('\n')[0].slice(0, TITLE_LENGTH)
+        void todos.toggleEventFlag(event.id, `${displayName(event.sender, event.sender_name)}: ${said}`)
+      },
+    }
   }
   if (joined && room.may_pin && message && !event.redacted && !deleting) {
     actions.pin = { pinned, toggle: () => matrix.setPinned(room.id, event.event_id, !pinned) }
@@ -156,8 +173,7 @@ export function EventRow(
     deleting && styles.pending,
     props.target && styles.target,
   ]
-  const { matrix } = useServices()
-  const can = lineActions(props, matrix)
+  const can = lineActions(props, useServices())
   const row = useRef<HTMLLIElement>(null)
   // Replied to or edited (by Up too), it shows, and is in view.
   useEffect(() => {
@@ -166,6 +182,7 @@ export function EventRow(
   const menu: MenuItem[] = []
   if (can.delete) menu.push({ label: 'Delete', icon: 'trash', action: () => props.setConfirming(true) })
   if (can.pin) menu.push({ label: can.pin.pinned ? 'Unpin' : 'Pin', icon: 'pin', action: can.pin.toggle })
+  if (can.flag) menu.push({ label: can.flag.flagged ? 'Unflag' : 'Flag for follow-up', icon: 'flag', action: can.flag.toggle })
   menu.push({ label: source ? 'Hide source' : 'View source', icon: 'code', action: () => setSource(!source) })
   const joined = room.membership === 'joined'
 
@@ -189,6 +206,11 @@ export function EventRow(
         />
       )}
       <div class={styles.content}>
+        {can.flag?.flagged && (
+          <a href="/todos" class={styles.flag} title="Flagged: a to-do follows it up (Shift+T unflags)" aria-label="Flagged">
+            ⚑
+          </a>
+        )}
         {event.replied && !event.redacted && <ReplyPreview replied={event.replied} />}
         {deleting ? (
           <span class={styles.muted}>Deleting…</span>

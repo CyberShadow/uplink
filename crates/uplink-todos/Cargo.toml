@@ -13,6 +13,7 @@ anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
+serde_json = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["rt", "macros"] }
 uplink-realtime = { path = "../uplink-realtime" }

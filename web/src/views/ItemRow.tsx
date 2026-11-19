@@ -15,7 +15,7 @@ import { calendarPath } from './Calendar'
 import { Icon } from './Icon'
 import { roomPath, roomSearchPath } from './Room'
 import { RoomAvatar } from './RoomAvatar'
-import { messagePath } from './Todos'
+import { flaggedPath } from './Todos'
 import styles from './ItemRow.module.css'
 
 /** The row's class: the cells' grid. */
@@ -90,7 +90,7 @@ export function pathOf(row: OtherItemRow): string {
     case 'room':
       return row.hits === null ? roomPath(row.room.id) : roomSearchPath(row.room.id, row.query)
     case 'todo':
-      return row.todo.message === null ? '/todos' : messagePath(row.todo.message)
+      return flaggedPath(row.todo) ?? '/todos'
     case 'event':
       return calendarPath('agenda', date(new Date(row.event.start)), row.event.id)
   }

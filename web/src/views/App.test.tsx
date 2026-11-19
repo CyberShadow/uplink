@@ -1921,6 +1921,41 @@ describe('matrix', () => {
     expect(line(other)).not.toBe(document.activeElement)
   })
 
+  it('flags a message of a room for follow-up, which its to-do opens the room at', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const asked = server.receive(room.id, { body: 'Can you review this?\nBy Friday.', sender: '@bob:example.org', sender_name: 'Bob' })
+    server.receive(room.id, { body: 'Later talk' })
+    const user = await start(`/rooms/${room.id}`)
+    const list = () => screen.getByRole('list', { name: 'Timeline' })
+    await within(list()).findByText('Later talk')
+    const line = () => list().querySelector<HTMLElement>(`[data-event="${asked.id}"]`)!
+
+    // Shift+T, on its line, flags it: a to-do of it, titled by who said what.
+    await user.keyboard('{Escape}kk{Shift>}t{/Shift}')
+    expect(server.requests).toContainEqual({
+      type: 'create_todo',
+      title: 'Bob: Can you review this?',
+      notes: '',
+      due: null,
+      message: null,
+      room_event: asked.id,
+    })
+    await within(line()).findByRole('link', { name: 'Flagged' })
+
+    // The to-do opens the room at the message, its line focused.
+    await user.keyboard('gk')
+    const todos = await screen.findByRole('list', { name: 'To-do list' })
+    expect(within(todos).getByRole('link', { name: 'message' }).getAttribute('href')).toBe(`/rooms/${room.id}/at/${asked.id}`)
+    await user.keyboard('{Enter}')
+    expect(location.pathname).toBe(`/rooms/${room.id}/at/${asked.id}`)
+    await waitFor(() => expect(document.activeElement).toBe(line()))
+    // Flagged, Shift+T unflags it: its to-do is done.
+    await user.keyboard('{Shift>}t{/Shift}')
+    await waitFor(() => expect(within(line()).queryByRole('link', { name: 'Flagged' })).toBeNull())
+    expect(server.requests).toContainEqual({ type: 'edit_todo', todo: expect.any(Number), edit: { field: 'done', done: true } })
+  })
+
   it('moves through the parts of the window by F6, and within the nav and a panel by its keys', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')

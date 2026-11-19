@@ -163,7 +163,7 @@ export const KEYMAP: Binding[] = [
   { action: 'move', keys: ['v'], label: 'v', help: 'Move to a label (out of the one on show, or the Inbox)' },
   { action: 'important', keys: ['[Shift]++', '='], label: '+, =', help: 'Mark as important' },
   { action: 'notImportant', keys: ['-'], label: '-', help: 'Mark as not important' },
-  { action: 'flag', keys: ['Shift+t'], label: 'Shift+t', help: 'Flag for follow-up (adds a to-do), or unflag' },
+  { action: 'flag', keys: ['Shift+t'], label: 'Shift+t', help: "Flag for follow-up (adds a to-do), or unflag (in a room: the message)" },
   { action: 'done', keys: ['e'], label: 'e', help: 'Mark done, or not done (in to-dos); at home: archive, read the room, or finish the to-do' },
   {
     action: 'delete',

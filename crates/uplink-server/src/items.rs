@@ -1521,7 +1521,7 @@ mod tests {
                 }
                 4 => {
                     let created = todos
-                        .create(format!("To do {step}"), String::new(), None, None)
+                        .create(format!("To do {step}"), String::new(), None, None, None)
                         .await
                         .unwrap();
                     let ServerResponse::Dispatched { .. } = created else {
@@ -1692,6 +1692,7 @@ mod tests {
                 "Later".into(),
                 String::new(),
                 Some("2999-01-01".into()),
+                None,
                 None,
             )
             .await
@@ -2015,6 +2016,7 @@ mod tests {
                 String::new(),
                 Some("2026-11-10".into()),
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -2268,7 +2270,7 @@ mod tests {
             .unwrap();
         assert_eq!(dots().await, (false, false));
         todos
-            .create("Pay bills".into(), String::new(), None, None)
+            .create("Pay bills".into(), String::new(), None, None, None)
             .await
             .unwrap();
         assert_eq!(dots().await, (true, true));

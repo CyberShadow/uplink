@@ -7,10 +7,19 @@ import type { Todo } from '../generated/protocol'
 import { useServices } from '../context'
 import { useTitle } from '../title'
 import { keepFocus, lines, useKeymap } from '../keymap'
+import { roomEventPath } from './Room'
 import styles from './Todos.module.css'
 
 export function messagePath(message: number): string {
   return `/message/${message}`
+}
+
+/** What a to-do flagged from a message opens: the message, of mail or of
+ * a room; `null` of one that is its own. */
+export function flaggedPath(todo: Todo): string | null {
+  if (todo.message !== null) return messagePath(todo.message)
+  if (todo.room_event !== null) return roomEventPath(todo.room_event.room, todo.room_event.event)
+  return null
 }
 
 export function Todos() {
@@ -38,8 +47,9 @@ export function Todos() {
     // A flagged message's to-do is about the message: opening it opens that.
     open: () => {
       if (!current) return
-      if (current.message === null) setEditing(current.id)
-      else route(messagePath(current.message))
+      const flagged = flaggedPath(current)
+      if (flagged === null) setEditing(current.id)
+      else route(flagged)
     },
     done: () => current && todos.edit(current.id, { field: 'done', done: current.done_at === null }),
     delete: () => current && todos.delete(current.id),
@@ -101,6 +111,7 @@ function Item(props: {
   const { todo } = props
   const { todos } = useServices()
   const done = todo.done_at !== null
+  const flagged = flaggedPath(todo)
   return (
     <li
       ref={props.itemRef}
@@ -124,8 +135,8 @@ function Item(props: {
       )}
       {/* A cell either way, so the columns line up. */}
       <span>
-        {todo.message !== null && (
-          <a class={styles.message} href={messagePath(todo.message)}>
+        {flagged !== null && (
+          <a class={styles.message} href={flagged}>
             message
           </a>
         )}

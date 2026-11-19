@@ -1740,10 +1740,17 @@ export class FakeServer implements Requester, Subscriber, Blobs {
           due: body.due,
           done_at: null,
           message: body.message,
+          room_event:
+            body.room_event === null
+              ? null
+              : {
+                  room: [...this.events].find(([, events]) => events.some((e) => e.id === body.room_event))![0],
+                  event: body.room_event,
+                },
           created_at: Date.now(),
           updated_at: Date.now(),
         }
-        return this.putTodo(todo, body.message === null ? `Added '${todo.title}'` : `Flagged '${todo.title}'`)
+        return this.putTodo(todo, body.message === null && body.room_event === null ? `Added '${todo.title}'` : `Flagged '${todo.title}'`)
       }
       case 'edit_todo':
         return { type: 'dispatched', tx_log_id: this.editTodo(body.todo, body.edit, `Edited '${body.todo}'`) }

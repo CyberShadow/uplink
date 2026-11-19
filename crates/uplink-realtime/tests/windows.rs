@@ -105,6 +105,7 @@ fn todo(id: i64, updated_at: i64) -> Item {
             due: None,
             done_at: None,
             message: None,
+            room_event: None,
             created_at: 0,
             updated_at,
         },

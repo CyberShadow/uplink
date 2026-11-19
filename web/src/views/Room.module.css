@@ -997,3 +997,11 @@ button.sender:hover .name {
   background: none;
   cursor: pointer;
 }
+
+/* A message flagged for follow-up: at its line's end. */
+.flag {
+  float: right;
+  margin-left: 6px;
+  color: var(--accent);
+  text-decoration: none;
+}

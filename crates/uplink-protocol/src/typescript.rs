@@ -199,6 +199,7 @@ fn declarations() -> String {
         RoomDraftsChanged,
         TodoId,
         Todo,
+        TodoRoomEvent,
         TodoEdit,
         TodosChanged,
         EventId,

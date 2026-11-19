@@ -3,6 +3,7 @@
 use crate::{is_date, CreateTodo, DeleteTodo, EditTodo};
 use uplink_protocol::{
     mail::MessageId,
+    matrix::RoomEventId,
     todos::{TodoEdit, TodoId},
     ErrorCode, ServerError, ServerResponse,
 };
@@ -45,20 +46,32 @@ impl Todos {
         notes: String,
         due: Option<String>,
         message: Option<MessageId>,
+        room_event: Option<RoomEventId>,
     ) -> Response {
         check_title(&title)?;
         if let Some(due) = &due {
             check_due(due)?;
         }
-        if let Some(message) = message {
+        if message.is_some() && room_event.is_some() {
+            return Err(error(
+                ErrorCode::Invalid,
+                "a to-do is flagged from one message".into(),
+            ));
+        }
+        let linked = message
+            .map(|m| ("message", m.0))
+            .or(room_event.map(|e| ("matrix_event", e.0)));
+        if let Some((table, id)) = linked {
             self.reader
                 .read(move |conn| {
-                    conn.query_row("SELECT 1 FROM message WHERE id = ?1", [message.0], |_| {
-                        Ok(())
-                    })
+                    conn.query_row(
+                        &format!("SELECT 1 FROM {table} WHERE id = ?1"),
+                        [id],
+                        |_| Ok(()),
+                    )
                     .optional()
                     .map_err(|e| internal(e.into()))?
-                    .ok_or_else(|| error(ErrorCode::NotFound, format!("no message {}", message.0)))
+                    .ok_or_else(|| error(ErrorCode::NotFound, format!("no message {id}")))
                 })
                 .await?;
         }
@@ -68,6 +81,7 @@ impl Todos {
                 notes,
                 due,
                 message,
+                room_event,
             })
             .await
     }

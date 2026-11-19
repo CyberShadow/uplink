@@ -348,6 +348,7 @@ mod tests {
                 notes: String::new(),
                 due: None,
                 message: None,
+                room_event: None,
                 created_at: 0,
                 updated_at,
                 done_at: None,

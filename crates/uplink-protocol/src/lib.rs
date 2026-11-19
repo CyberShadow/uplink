@@ -553,6 +553,7 @@ pub enum ClientRequest {
         notes: String,
         due: Option<String>,
         message: Option<MessageId>,
+        room_event: Option<RoomEventId>,
     },
     EditTodo {
         todo: TodoId,

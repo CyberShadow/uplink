@@ -7,7 +7,8 @@ use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use uplink_protocol::{
     mail::MessageId,
-    todos::{Todo, TodoEdit, TodoId, TodosChanged},
+    matrix::{RoomEventId, RoomId},
+    todos::{Todo, TodoEdit, TodoId, TodoRoomEvent, TodosChanged},
     ServerEvent,
 };
 use uplink_query::{text_matches, Kind, Query, Term};
@@ -26,7 +27,11 @@ pub fn register(registry: &mut Registry) {
     registry.register::<EditTodo>();
 }
 
-const COLUMNS: &str = "id, title, notes, due, done_at, message, created_at, updated_at";
+const COLUMNS: &str = "id, title, notes, due, done_at, message, created_at, updated_at, room_event";
+
+/// A to-do's `COLUMNS`, and the room of its event.
+const SELECT: &str = "SELECT id, title, notes, due, done_at, message, created_at, updated_at, \
+     room_event, (SELECT room FROM matrix_event WHERE id = todo.room_event) FROM todo";
 
 fn todo_row(r: &Row) -> uplink_storage::rusqlite::Result<Todo> {
     Ok(Todo {
@@ -36,6 +41,15 @@ fn todo_row(r: &Row) -> uplink_storage::rusqlite::Result<Todo> {
         due: r.get(3)?,
         done_at: r.get(4)?,
         message: r.get::<_, Option<i64>>(5)?.map(MessageId),
+        room_event: r
+            .get::<_, Option<i64>>(8)?
+            .map(|event| {
+                Ok::<_, uplink_storage::rusqlite::Error>(TodoRoomEvent {
+                    room: RoomId(r.get(9)?),
+                    event: RoomEventId(event),
+                })
+            })
+            .transpose()?,
         created_at: r.get(6)?,
         updated_at: r.get(7)?,
     })
@@ -46,7 +60,7 @@ fn todo_row(r: &Row) -> uplink_storage::rusqlite::Result<Todo> {
 pub fn todos(conn: &Connection) -> Result<Vec<Todo>> {
     Ok(conn
         .prepare(&format!(
-            "SELECT {COLUMNS} FROM todo
+            "{SELECT}
              ORDER BY done_at IS NOT NULL, done_at DESC, due IS NULL, due, created_at, id"
         ))?
         .query_map([], todo_row)?
@@ -118,13 +132,9 @@ fn term_matches(todo: &Todo, term: &Term, today: &str) -> bool {
 }
 
 fn todo(tx: &Transaction, id: TodoId) -> Result<Todo> {
-    tx.query_row(
-        &format!("SELECT {COLUMNS} FROM todo WHERE id = ?1"),
-        [id.0],
-        todo_row,
-    )
-    .optional()?
-    .ok_or_else(|| Conflict("the to-do no longer exists".into()).into())
+    tx.query_row(&format!("{SELECT} WHERE id = ?1"), [id.0], todo_row)
+        .optional()?
+        .ok_or_else(|| Conflict("the to-do no longer exists".into()).into())
 }
 
 fn changed(id: TodoId) -> Vec<ServerEvent> {
@@ -151,6 +161,9 @@ pub struct CreateTodo {
     pub notes: String,
     pub due: Option<String>,
     pub message: Option<MessageId>,
+    /// Not of those logged before there were such.
+    #[serde(default)]
+    pub room_event: Option<RoomEventId>,
 }
 
 impl Op for CreateTodo {
@@ -159,21 +172,23 @@ impl Op for CreateTodo {
     fn apply(self, tx: &Transaction) -> Result<Applied> {
         let now = now_ms();
         let id = TodoId(tx.query_row(
-            "INSERT INTO todo (title, notes, due, message, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5) RETURNING id",
+            "INSERT INTO todo (title, notes, due, message, room_event, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6) RETURNING id",
             params![
                 self.title,
                 self.notes,
                 self.due,
                 self.message.map(|m| m.0),
+                self.room_event.map(|e| e.0),
                 now
             ],
             |r| r.get(0),
         )?);
         Ok(Applied {
-            description: match self.message {
-                Some(_) => format!("Flagged '{}'", self.title),
-                None => format!("Added '{}'", self.title),
+            description: if self.message.is_some() || self.room_event.is_some() {
+                format!("Flagged '{}'", self.title)
+            } else {
+                format!("Added '{}'", self.title)
             },
             inverse: Inverse::of(&DeleteTodo { id }),
             events: changed(id),
@@ -195,7 +210,7 @@ impl Op for PutTodo {
         let t = &self.todo;
         let inserted = tx.execute(
             &format!(
-                "INSERT INTO todo ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                "INSERT INTO todo ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                  ON CONFLICT (id) DO NOTHING"
             ),
             params![
@@ -207,6 +222,7 @@ impl Op for PutTodo {
                 t.message.map(|m| m.0),
                 t.created_at,
                 t.updated_at,
+                t.room_event.map(|e| e.event.0),
             ],
         )?;
         if inserted == 0 {
