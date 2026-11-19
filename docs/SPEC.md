@@ -4201,7 +4201,10 @@ as a native list does), `Enter` chooses and `Esc` closes.
   controls of the cursor's row; a room's messages, at them all with none
   chosen, else at the line chosen, and then what it holds (its sender,
   links, buttons); a thread's, at the line the focus was on, or else the
-  latest. The controls of other rows and lines take no `Tab`. Toolbars,
+  latest. The controls of other rows and lines take no `Tab`; nor
+  do a room's buttons that load earlier events, or fetch missing ones:
+  each does so by coming into view, as the focus would bring it, and
+  would move from under it. Toolbars,
   a room's header and the other panels' controls are each their own
   stop. A test walks `Tab` over a mail list and a room, and names every
   stop.

@@ -541,7 +541,10 @@ function Earlier(props: { room: Room }) {
   useLoadInView(element, timeline.events.value?.[0]?.id, () => timeline.loadEarlier())
   return (
     <li ref={element} class={styles.earlier}>
-      <button type="button" onMouseDown={keepFocus} onClick={() => timeline.loadEarlier()}>
+      {/* No Tab stop: given the focus, it comes into view, which loads
+          them, and moves it from under the focus. The keys reach it by
+          going up (`Home`, `k`), which shows it. */}
+      <button type="button" tabIndex={-1} onMouseDown={keepFocus} onClick={() => timeline.loadEarlier()}>
         Load earlier events
       </button>
     </li>
@@ -560,7 +563,8 @@ function Gap(props: { room: Room; gap: GapId }) {
   return (
     <li ref={element} class={styles.gap} role="separator" aria-label="Events missing">
       <span>Earlier events are missing here.</span>
-      <button type="button" disabled={filling} onMouseDown={keepFocus} onClick={() => timeline.fill(props.gap)}>
+      {/* No Tab stop, as the start's (`Earlier`): shown, it fetches. */}
+      <button type="button" tabIndex={-1} disabled={filling} onMouseDown={keepFocus} onClick={() => timeline.fill(props.gap)}>
         {filling ? 'Fetching…' : 'Fetch them'}
       </button>
     </li>
