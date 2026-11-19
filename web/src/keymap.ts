@@ -34,6 +34,7 @@ export type Action =
   | 'archiveOlder'
   | 'markRead'
   | 'markUnread'
+  | 'markAllRead'
   | 'star'
   | 'label'
   | 'move'
@@ -162,7 +163,8 @@ export const KEYMAP: Binding[] = [
   { action: 'archiveNewer', keys: ['['], label: '[', help: 'Archive, and open the newer conversation (in one)' },
   { action: 'archiveOlder', keys: [']'], label: ']', help: 'Archive, and open the older conversation (in one)' },
   { action: 'markRead', keys: ['Shift+i'], label: 'Shift+i', help: 'Mark as read' },
-  { action: 'markUnread', keys: ['Shift+u'], label: 'Shift+u', help: 'Mark as unread' },
+  { action: 'markUnread', keys: ['Shift+u'], label: 'Shift+u', help: 'Mark as unread (in a room: from the message on, until it is marked read or opened again)' },
+  { action: 'markAllRead', keys: ['Shift+Escape'], label: 'Shift+Esc', help: "Mark every room read, once asked, as Slack's (where the browser leaves the key to the page: Chrome's own window takes it for its task manager)" },
   { action: 'star', keys: ['s'], label: 's', help: 'Star or unstar (a room: favourite it)' },
   { action: 'label', keys: ['l'], label: 'l', help: 'Label (in a room: tag it)' },
   { action: 'move', keys: ['v'], label: 'v', help: 'Move to a label (out of the one on show, or the Inbox)' },
@@ -421,7 +423,7 @@ const windowKeys = sequences(
   // bound where the focus is (a panel opened from a line closes first).
   (event) => {
     const focused = document.activeElement as HTMLElement
-    if (event.key !== 'Escape' || focused === document.body) return false
+    if (event.key !== 'Escape' || event.shiftKey || focused === document.body) return false
     focused.blur()
     return true
   },

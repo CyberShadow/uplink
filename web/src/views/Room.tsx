@@ -86,9 +86,6 @@ function Timeline(props: { room: Room; words: string | null; at: RoomEventId | n
   const composer = useRef<HTMLTextAreaElement>(null)
   const at = useMemo(() => ({ room: room.id, thread: null }), [room.id])
   const [mode, setMode] = useMode(at)
-  // Where catching up was when the room was opened: reading moves the
-  // marker, but not the line, while it is on show (SPEC §12.15).
-  const [caughtUp] = useState(room.fully_read)
   // A search shows over another panel, which closing it shows again.
   const [opened, setOpened] = useState<Panel>(null)
   const panel: Panel = words !== null ? { type: 'search', words } : opened
@@ -162,7 +159,7 @@ function Timeline(props: { room: Room; words: string | null; at: RoomEventId | n
   const receipts = timeline.receipts.value
   const readers = useMemo(() => readersByEvent(events ?? [], receipts), [events, receipts])
   const gaps = timeline.gaps.value
-  const list = useMemo(() => rows(events ?? [], caughtUp, me, gaps), [events, caughtUp, me, gaps])
+  const list = useMemo(() => rows(events ?? [], reading.line, me, gaps), [events, reading.line, me, gaps])
   const own = useMemo(
     () =>
       events?.filter(
@@ -261,6 +258,7 @@ function Timeline(props: { room: Room; words: string | null; at: RoomEventId | n
               readers={readers}
               act={act}
               openThread={(root, focus) => setPanel({ type: 'thread', root, focus })}
+              markUnreadFrom={reading.markUnreadFrom}
               details={(event) => setPanel({ type: 'message', event })}
               openMember={openMember}
               target={mode.type === 'new' ? null : mode.event.id}
@@ -386,6 +384,8 @@ export function Events(props: {
   /** Of the main timeline, opens a thread by its root, and what of it
    * has the focus then. */
   openThread: ((root: RoomEventId, focus: ThreadOpened['focus']) => void) | null
+  /** Of the main timeline, marks it unread from an event on. */
+  markUnreadFrom: ((event: RoomEventId) => void) | null
   /** Of the main timeline, shows a message's details. */
   details: ((event: RoomEventId) => void) | null
   /** Opens a member's profile, by their user id. */
@@ -412,6 +412,7 @@ export function Events(props: {
     reply: () => act({ type: 'reply', event, back }),
     edit: () => act({ type: 'edit', event, back }),
     openThread: openThread && (() => openThread(event.id, 'box')),
+    markUnread: props.markUnreadFrom && (() => props.markUnreadFrom!(event.id)),
     openMember,
   })
   /** What keys can do to the event of the line that has the focus. */
@@ -455,6 +456,7 @@ export function Events(props: {
       },
       pin: () => focused().pin?.toggle(),
       flag: () => focused().flag?.toggle(),
+      markUnread: () => focused().markUnread?.(),
       ...(closePanel && { up: closePanel }),
       ...(details && {
         open: () => {
@@ -797,8 +799,13 @@ interface Reading {
   more: boolean
   /** Of those, the mentions not yet on screen. */
   mentions: readonly RoomEvent[]
+  /** Where the "New" line is: after it. */
+  line: ReadMarker | null
   /** Done with it: read and caught up on, to its latest. */
   markRead: () => void
+  /** Not done with it, from the event on: read and caught up on to the
+   * one before it only, and so it stays while the room is on show. */
+  markUnreadFrom: (event: RoomEventId) => void
   jumpToFirstUnread: () => void
   /** To the oldest mention not yet on screen. */
   nextMention: () => void
@@ -822,6 +829,13 @@ function useReading(
   // they come, so rendered anew.
   const onScreen = useRef(new Set<RoomEventId>())
   const [reported, setReported] = useState(0)
+  // Where catching up was when the room was opened: reading moves the
+  // marker, but not the line, while it is on show (SPEC §12.15); the
+  // user's hand moves both, marking it read, or unread from a message.
+  const [line, setLine] = useState(room.fully_read)
+  // Marked unread by hand, what shows reads it no more, until it is
+  // marked read, or opened again.
+  const held = useRef(false)
   useEffect(() => {
     if (!visible) return
     const observer = new IntersectionObserver(
@@ -845,7 +859,7 @@ function useReading(
   const read = room.read_up_to?.pos
   const fully = room.fully_read
   useEffect(() => {
-    if (!visible || events === null) return
+    if (!visible || events === null || held.current) return
     const seen = onScreen.current
     const latest = events.findLast((e) => e.sender !== me && seen.has(e.id))
     if (latest && (read === undefined || latest.pos > read) && marked.current !== latest.id) {
@@ -889,9 +903,25 @@ function useReading(
     behind,
     more: !loaded,
     mentions,
+    line,
     markRead: () => {
       const latest = room.latest ?? events?.at(-1)?.id
-      if (latest !== undefined) matrix.markRead(room.id, latest, false, true)
+      if (latest === undefined) return
+      matrix.markRead(room.id, latest, false, true)
+      held.current = false
+      // The line goes: nothing loaded is after it.
+      const last = events?.at(-1)
+      if (last) setLine({ event: last.id, pos: last.pos })
+    },
+    markUnreadFrom: (event) => {
+      const before = events![events!.findIndex((e) => e.id === event) - 1]
+      // The first loaded has none before it to be read up to.
+      if (before === undefined) return
+      held.current = true
+      marked.current = null
+      caught.current = null
+      setLine({ event: before.id, pos: before.pos })
+      matrix.markRead(room.id, before.id, false, true)
     },
     jumpToFirstUnread: () => {
       void show(at, () => timeline.events.value?.find((e) => e.pos > at && e.sender !== me)?.id)

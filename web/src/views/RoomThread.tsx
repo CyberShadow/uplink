@@ -76,6 +76,7 @@ export function ThreadPanel(props: {
             readers={NO_READERS_BY_EVENT}
             act={act}
             openThread={null}
+            markUnreadFrom={null}
             details={null}
             openMember={props.openMember}
             target={mode.type === 'new' ? null : mode.event.id}

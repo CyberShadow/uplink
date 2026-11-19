@@ -1943,6 +1943,47 @@ describe('matrix', () => {
     expect(line(other)).not.toBe(document.activeElement)
   })
 
+  it('marks a room unread from a message, read again, and every room read, by keys', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const other = server.addRoom('Hall')
+    const first = server.receive(room.id, { body: 'one' })
+    const second = server.receive(room.id, { body: 'two' })
+    const third = server.receive(room.id, { body: 'three' })
+    const elsewhere = server.receive(other.id, { body: 'unread there' })
+    const user = await start(`/rooms/${room.id}`)
+    const list = screen.getByRole('list', { name: 'Timeline' })
+    await within(list).findByText('three')
+    const marks = () => server.requests.filter((r) => r.type === 'mark_room_read')
+    const newLine = () => within(list).queryByRole('separator', { name: 'New messages' })
+
+    // Done with it, by Esc (out of the box, then of the room): no line.
+    await user.keyboard('{Escape}{Escape}')
+    await waitFor(() => expect(marks()).toContainEqual({ type: 'mark_room_read', room: room.id, event: third.id, shown: false, fully: true }))
+    expect(newLine()).toBeNull()
+
+    // Shift+U on a line: unread from it on, the line before it; and so it
+    // stays, though the messages are on screen.
+    await user.keyboard('kk{Shift>}u{/Shift}')
+    expect(marks().at(-1)).toEqual({ type: 'mark_room_read', room: room.id, event: first.id, shown: false, fully: true })
+    await waitFor(() => expect(newLine()!.nextElementSibling).toBe(list.querySelector(`[data-event="${second.id}"]`)))
+    const held = marks().length
+    scrolledTo(list.querySelector(`[data-event="${third.id}"]`)!)
+    await screen.findByRole('toolbar', { name: 'Catching up' })
+    expect(marks()).toHaveLength(held)
+    // Esc, from the line, then from nothing, marks it read again.
+    await user.keyboard('{Escape}{Escape}')
+    expect(marks().at(-1)).toEqual({ type: 'mark_room_read', room: room.id, event: third.id, shown: false, fully: true })
+    await waitFor(() => expect(newLine()).toBeNull())
+
+    // Shift+Esc: every room, once asked.
+    await user.keyboard('{Shift>}{Escape}{/Shift}')
+    expect(screen.getByRole('alertdialog', { name: 'Mark every room read' })).toBeTruthy()
+    await user.keyboard('{Enter}')
+    expect(marks().at(-1)).toEqual({ type: 'mark_room_read', room: other.id, event: elsewhere.id, shown: false, fully: true })
+    expect(marks().filter((m) => m.room === room.id && m.event === third.id)).toHaveLength(2)
+  })
+
   it('flags a message of a room for follow-up, which its to-do opens the room at', async () => {
     server.addMatrixAccount()
     const room = server.addRoom('Lounge')

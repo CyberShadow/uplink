@@ -4689,7 +4689,24 @@ have their own ways in. A room keeps two points, as Matrix does:
   home's room: `MarkRoomRead`'s `fully`). V0044
   `matrix_room.fully_read`, `fully_read_pushed`; `MarkFullyRead`,
   `MarkRoomFullyRead`. The line "New" marks it in the
-  timeline (instead of where the unread began when the room was opened).
+  timeline (instead of where the unread began when the room was opened):
+  where it was as the room was opened, since reading moves the marker,
+  but not the line, while the room is on show, as Slack's and Discord's
+  lines stay where one began. The user's hand moves both: done with the
+  room (`Esc`, "Mark as read"), the line goes, as theirs do; and
+  `Shift+U` on a message's line, or "Mark unread from here" in its menu
+  (their Alt+click), marks the room unread from it on: both markers go
+  back to the message before it (`MarkRoomRead`, not as shown, so `z`
+  undoes it; only uplink's, as the homeserver's go forward alone), the
+  line is there, and what shows reads it no more until it is marked
+  read or the room is opened again, as theirs hold a channel marked
+  unread while it is on show.
+- **Every room is marked read** by `Shift+Esc`, as Slack's, once asked
+  (a dialog, as it is many rooms' doing, each its own entry to undo):
+  those not caught up to their latest. Of rooms only: mail's unread is
+  the provider's flag. Chrome's own window keeps the key for its task
+  manager; an installed or packaged app, and other browsers, leave it to
+  the page.
 
 While the fully-read marker is above what is on screen, a bar at the
 top says how many messages are after it, with "Jump to first unread"

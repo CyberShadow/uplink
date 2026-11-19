@@ -69,6 +69,8 @@ export interface Line {
   /** Opens the thread the event is the root of, or would be; `null` in
    * a thread. */
   openThread: (() => void) | null
+  /** Marks the room unread from the event on; `null` in a thread. */
+  markUnread: (() => void) | null
   /** Opens a user's profile, by their user id. */
   openMember: (user: string) => void
 }
@@ -87,6 +89,8 @@ export interface LineActions {
   react?: (key: string, shortcode: string | null) => void
   delete?: () => void
   pin?: { pinned: boolean; toggle: () => void }
+  /** Marks the room unread from it on. */
+  markUnread?: () => void
   /** Flags it for follow-up, by a to-do of it; or, flagged, unflags it. */
   flag?: { flagged: boolean; toggle: () => void }
 }
@@ -129,6 +133,7 @@ export function lineActions(line: Line, services: { matrix: MatrixStore; todos: 
   if (own && !event.redacted && !deleting && event.encryption !== 'undecryptable' && summary === null) {
     actions.delete = () => matrix.send(room.id, { type: 'redaction', event: event.event_id })
   }
+  if (line.markUnread !== null) actions.markUnread = line.markUnread
   if (event.kind === 'm.room.message' && !event.redacted) {
     actions.flag = {
       flagged: todos.flaggedEvents.value.has(event.id),
@@ -183,6 +188,7 @@ export function EventRow(
   const menu: MenuItem[] = []
   if (can.delete) menu.push({ label: 'Delete', icon: 'trash', action: () => props.setConfirming(true) })
   if (can.pin) menu.push({ label: can.pin.pinned ? 'Unpin' : 'Pin', icon: 'pin', action: can.pin.toggle })
+  if (can.markUnread) menu.push({ label: 'Mark unread from here', icon: 'mail', action: can.markUnread })
   if (can.flag) menu.push({ label: can.flag.flagged ? 'Unflag' : 'Flag for follow-up', icon: 'flag', action: can.flag.toggle })
   menu.push({ label: source ? 'Hide source' : 'View source', icon: 'code', action: () => setSource(!source) })
   const joined = room.membership === 'joined'

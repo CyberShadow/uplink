@@ -12,6 +12,7 @@ import { cycleRegion, enterRegion, useRegion } from '../regions'
 import { keepFocus, useKeymap } from '../keymap'
 import type { Client } from '../stores/client'
 import { Backdrop } from './Backdrop'
+import { Confirm } from './Confirm'
 import { Calendar, calendarPath, defaultView, today } from './Calendar'
 import { Help, WhichKey } from './Help'
 import { Icon } from './Icon'
@@ -53,6 +54,7 @@ function Shell() {
   const { mail, drafts, matrix, todos, history, calendar, home, status } = useServices()
   const { route, path } = useLocation()
   const [help, setHelp] = useState(false)
+  const [markingRead, setMarkingRead] = useState(false)
   const [goingToLabel, setGoingToLabel] = useState(false)
   const [switching, setSwitching] = useState(false)
   // Narrow, the nav is a drawer; going anywhere closes it.
@@ -117,6 +119,7 @@ function Shell() {
     previousRegion: () => cycleRegion(-1),
     switch: () => setSwitching((shown) => !shown),
     help: () => setHelp((shown) => !shown),
+    markAllRead: () => setMarkingRead(true),
   })
 
   const error = mail.error.value ?? drafts.error.value ?? matrix.error.value ?? todos.error.value ?? history.error.value ?? calendar.error.value ?? home.error.value
@@ -174,6 +177,19 @@ function Shell() {
       <NoticeBar />
       <RecordVisits />
       {help && <Help close={() => setHelp(false)} />}
+      {markingRead && (
+        <Confirm
+          title="Mark every room read"
+          text="Each room is read, and caught up on, to its latest message. Each is undone on its own, in the history."
+          action="Mark read"
+          confirm={() => {
+            for (const room of matrix.rooms.value ?? []) {
+              if (room.latest !== null && room.fully_read?.event !== room.latest) matrix.markRead(room.id, room.latest, false, true)
+            }
+          }}
+          close={() => setMarkingRead(false)}
+        />
+      )}
       <WhichKey />
       {switching && <Switcher close={() => setSwitching(false)} />}
       {goingToLabel && (
