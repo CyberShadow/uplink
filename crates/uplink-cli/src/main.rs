@@ -8,6 +8,16 @@ use uplink_email::{
 use uplink_matrix::client;
 use uplink_storage::seal::MasterKey;
 
+/// mimalloc rather than the system's allocator: glibc's, with an arena
+/// per thread up to eight per core, keeps what each arena freed (a
+/// sync's or a query's passing peak, SQLite's page cache that each write
+/// discards from every reader) rather than returning it, so that a server
+/// up a day held 3 GB of which 220 MB was in use. Its `override` feature
+/// has it `malloc` too (but on Windows), as SQLite, a shared library,
+/// allocates with that rather than with Rust's allocator.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// uplink — self-hosted personal communication hub.
 #[derive(Parser)]
 #[command(version)]

@@ -22,3 +22,4 @@ uplink-config = { version = "0.1.0", path = "../uplink-config" }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
 tokio = { version = "1.54.1", features = ["io-std", "io-util", "rt-multi-thread", "macros"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+mimalloc = { version = "0.1.52", features = ["override"] }
