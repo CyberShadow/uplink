@@ -28,6 +28,7 @@ use matrix_sdk::{
             FeatureFlag,
         },
         events::room::member::MembershipState,
+        push::{ConditionalPushRule, PushConditionRoomCtx, Ruleset},
         EventId, OwnedEventId, UserId,
     },
     Client, Room,
@@ -613,19 +614,10 @@ impl Evaluator<'_> {
         }
         let followed = Arc::new(Mutex::new(followed));
         let rules = self.client.account().push_rules().await?;
-        let context = context.with_has_thread_subscription_fn({
-            let followed = followed.clone();
-            move |root: &EventId| {
-                let is = followed
-                    .lock()
-                    .expect("not poisoned")
-                    .get(root.as_str())
-                    .copied()
-                    .unwrap_or(false);
-                Box::pin(async move { is })
-            }
-        });
-        let push = PushContext::new(context, rules);
+        let (push, completed) = thread_context(context, rules, followed.clone());
+        if completed {
+            warn_once(self.account);
+        }
         let own = room.own_user_id().to_owned();
         for (event, timeline) in events.iter_mut().zip(timeline) {
             if event.relation.rel_type.as_deref() != Some("m.thread") {
@@ -645,7 +637,7 @@ impl Evaluator<'_> {
                 continue;
             };
             let is_followed = followed.lock().expect("not poisoned").get(&root).copied();
-            let mentions = event.push.notify
+            let mentions = mentions(event.push)
                 && is_followed != Some(true)
                 && !pending.contains(&root)
                 && event.ts >= news_since
@@ -719,6 +711,69 @@ pub fn followed(conn: &Connection, room: RoomId) -> Result<HashMap<String, bool>
         .query_map([room.0], |r| Ok((r.get(0)?, true)))?
         .collect::<Result<_, _>>()
         .map_err(Into::into)
+}
+
+/// The push rules of a room's messages, with its threads followed as
+/// `followed` says (by root; one not in it is not); and whether the
+/// rules lacked MSC4306's (`postcontent`), which they then have as by
+/// default. A homeserver may advertise thread subscriptions and send
+/// none of their rules: a thread's message would notify then as the
+/// room's rules say, of a thread not followed too, and be taken for a
+/// mention, following every thread of a room that notifies of all.
+/// Those it sent are kept as it sent them, disabled too.
+pub(crate) fn thread_context(
+    context: PushConditionRoomCtx,
+    mut rules: Ruleset,
+    followed: Arc<Mutex<HashMap<String, bool>>>,
+) -> (PushContext, bool) {
+    let mut completed = false;
+    for rule in [
+        ConditionalPushRule::unsubscribed_thread(),
+        ConditionalPushRule::subscribed_thread(),
+    ] {
+        if !rules.postcontent.iter().any(|r| r.rule_id == rule.rule_id) {
+            rules.postcontent.insert(rule);
+            completed = true;
+        }
+    }
+    let context = context.with_has_thread_subscription_fn(move |root: &EventId| {
+        let is = followed
+            .lock()
+            .expect("not poisoned")
+            .get(root.as_str())
+            .copied()
+            .unwrap_or(false);
+        Box::pin(async move { is })
+    });
+    (PushContext::new(context, rules), completed)
+}
+
+/// Says, once per account, that its homeserver sent no rules of thread
+/// subscriptions, though it advertises them.
+fn warn_once(account: &str) {
+    static WARNED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+    if WARNED
+        .lock()
+        .expect("not poisoned")
+        .insert(account.to_owned())
+    {
+        tracing::warn!(
+            account,
+            "the homeserver advertises thread subscriptions (MSC4306) but sent \
+             no thread push rules; evaluating with the default ones"
+        );
+    }
+}
+
+/// Whether a message of a thread not followed, so evaluated, mentions the
+/// account, so as to follow the thread: it notifies, as MSC4306 says, and
+/// highlights. Of the default rules, whatever notifies in a thread not
+/// followed highlights (a mention, the account's name, `@room`, a
+/// keyword); the highlight guards against rules that notify of more,
+/// before `postcontent` (an `override` of the user's, or a homeserver's
+/// own), which would follow every thread they notify of.
+pub(crate) fn mentions(push: Push) -> bool {
+    push.notify && push.highlight
 }
 
 /// Of the account's room (by its Matrix id), the threads of `roots` as

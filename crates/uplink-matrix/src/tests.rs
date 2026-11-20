@@ -3924,3 +3924,111 @@ async fn receipts_of_one_sync_are_all_stored() {
     assert_eq!(readers(&first).await, [owned_user_id!("@bob:localhost")]);
     assert_eq!(readers(&second).await, [owned_user_id!("@alice:localhost")]);
 }
+
+/// The push rules of threads' messages, as uplink evaluates them again
+/// (MSC4306): of a homeserver that advertises thread subscriptions but
+/// sends none of their rules too.
+mod thread_rules {
+    use super::*;
+    use crate::follows::{mentions, thread_context};
+    use crate::rooms::Push;
+    use matrix_sdk::ruma::{
+        events::AnySyncTimelineEvent,
+        push::{PushConditionRoomCtx, Ruleset},
+        serde::Raw,
+        uint, OwnedRoomId, OwnedUserId,
+    };
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    /// The default rules, with the legacy one of the account's name that
+    /// homeservers still send (`.m.rule.contains_display_name`, which
+    /// ruma's no longer have), a room rule notifying of every message of
+    /// the room, and as `postcontent`, what `edit` makes of the default's.
+    fn rules(edit: impl FnOnce(&mut serde_json::Value)) -> Ruleset {
+        let me: OwnedUserId = ME.try_into().unwrap();
+        let mut rules = serde_json::to_value(Ruleset::server_default(&me)).unwrap();
+        rules["override"].as_array_mut().unwrap().push(json!({
+            "rule_id": ".m.rule.contains_display_name", "default": true, "enabled": true,
+            "conditions": [{ "kind": "contains_display_name" }],
+            "actions": ["notify", { "set_tweak": "sound", "value": "default" },
+                        { "set_tweak": "highlight" }] }));
+        rules["room"] = json!([{ "rule_id": ROOM, "default": false, "enabled": true,
+                                 "actions": ["notify"] }]);
+        edit(&mut rules["postcontent"]);
+        serde_json::from_value(rules).unwrap()
+    }
+
+    /// How a message `content` of bob's in the thread of `$root` is
+    /// pushed, the thread followed or not; and whether the rules lacked
+    /// MSC4306's.
+    async fn pushed(rules: Ruleset, followed: bool, content: serde_json::Value) -> (Push, bool) {
+        let room: OwnedRoomId = ROOM.try_into().unwrap();
+        let me: OwnedUserId = ME.try_into().unwrap();
+        let context = PushConditionRoomCtx::new(room, uint!(5), me, "Mallory".into());
+        let followed = Arc::new(Mutex::new(HashMap::from([("$root".to_owned(), followed)])));
+        let (push, completed) = thread_context(context, rules, followed);
+        let mut content = content;
+        content["msgtype"] = json!("m.text");
+        content["m.relates_to"] = json!({ "rel_type": "m.thread", "event_id": "$root" });
+        let event = json!({ "type": "m.room.message", "event_id": "$1", "sender": "@bob:x",
+                            "origin_server_ts": 1, "content": content });
+        let raw: Raw<AnySyncTimelineEvent> = Raw::from_json_string(event.to_string()).unwrap();
+        (
+            Push::of(Some(push.for_event(&raw).await.as_slice())),
+            completed,
+        )
+    }
+
+    fn quiet() -> Push {
+        Push {
+            notify: false,
+            highlight: false,
+        }
+    }
+
+    /// Without the homeserver's rules, the default ones: a reply in a
+    /// thread not followed is quiet, though the room notifies of all, and
+    /// follows nothing; a mention, by `m.mentions` or by name, notifies
+    /// and follows; a reply in a thread followed notifies.
+    #[tokio::test]
+    async fn rules_the_homeserver_did_not_send_are_the_defaults() {
+        let none = || rules(|p| *p = json!([]));
+        let (push, completed) = pushed(none(), false, json!({ "body": "hi" })).await;
+        assert!(completed);
+        assert_eq!(push, quiet());
+        assert!(!mentions(push));
+
+        let mention = json!({ "body": "look", "m.mentions": { "user_ids": [ME] } });
+        let (push, _) = pushed(none(), false, mention).await;
+        assert!(push.notify && push.highlight && mentions(push));
+        let (push, _) = pushed(none(), false, json!({ "body": "Mallory, look" })).await;
+        assert!(mentions(push), "{push:?}");
+
+        let (push, _) = pushed(none(), true, json!({ "body": "hi" })).await;
+        assert!(push.notify && !mentions(push));
+    }
+
+    /// The homeserver's rules are kept as it sent them: one the user
+    /// disabled stays so, and the reply notifies as the room's rule says;
+    /// but, not highlighting, it follows nothing.
+    #[tokio::test]
+    async fn rules_the_homeserver_sent_are_kept() {
+        let (push, completed) = pushed(rules(|_| {}), false, json!({ "body": "hi" })).await;
+        assert!(!completed);
+        assert_eq!(push, quiet());
+        let (push, _) = pushed(rules(|_| {}), true, json!({ "body": "hi" })).await;
+        assert!(push.notify);
+
+        let disabled = rules(|p| {
+            for rule in p.as_array_mut().unwrap() {
+                if rule["rule_id"] == ".io.element.msc4306.rule.unsubscribed_thread" {
+                    rule["enabled"] = json!(false);
+                }
+            }
+        });
+        let (push, completed) = pushed(disabled, false, json!({ "body": "hi" })).await;
+        assert!(!completed, "a rule disabled is sent");
+        assert!(push.notify && !mentions(push));
+    }
+}

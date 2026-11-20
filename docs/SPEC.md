@@ -3084,8 +3084,8 @@ asked for), a thread not yet started too. The user follows one:
   from another client (a bridged network's own app, through the
   bridge's double puppeting) follows nothing, unless that client does;
 - **by being mentioned in it**: a message of a thread not followed that
-  notifies (only mentions and keywords do, of a thread not followed),
-  news (§12.15) and not from the account, nor from a sender it ignores
+  notifies and highlights (§9.5: of a thread not followed, only
+  mentions and keywords notify, and they highlight), news (§12.15) and not from the account, nor from a sender it ignores
   or that is banned, follows its thread automatically (MSC4306's
   `automatic`, naming the message), which the homeserver skips if the
   user unfollowed the thread after the message came
@@ -3383,7 +3383,20 @@ which a verified device gives.
   had it. The SDK's own threading support is left off: under sync v2 its
   store of subscriptions is never caught up, so it would ask the
   homeserver of every thread message it evaluates, filling a gap
-  too. Only news notifies or highlights: what was sent once uplink
+  too. A homeserver may advertise thread subscriptions yet send no
+  `postcontent` rules (one did): the rules uplink evaluates by then have
+  the default ones it lacks (`follows::thread_context`; once per
+  account, a warning says so), those it sent kept as sent, disabled
+  too; else a thread's message would notify as the room's rules say,
+  followed or not. And a mention, which follows a thread not followed
+  (§9.2), is a message that notifies, as MSC4306 has it, *and*
+  highlights: by the default rules, whatever notifies in a thread not
+  followed highlights (`m.mentions`, the account's name, `@room`, a
+  keyword as clients set them), so this departs from MSC4306's wording
+  only where rules before `postcontent` notify of more (an `override`
+  of the user's or a homeserver's that notifies of a room's every
+  message), which would otherwise follow every thread of the room on
+  its first reply. Such a message still notifies. Only news notifies or highlights: what was sent once uplink
   began to sync the account (`account.news_since`, §12.15), found by
   position after the marker (its index), the time only checked: since
   news began is most of a room, as it is used. The
