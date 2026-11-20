@@ -1284,6 +1284,12 @@ impl Backend for Services {
                 shown,
                 fully,
             } => self.matrix.mark_read(room, event, shown, fully).await,
+            ClientRequest::MarkThreadRead {
+                room,
+                root,
+                event,
+                shown,
+            } => self.matrix.mark_thread_read(room, root, event, shown).await,
             ClientRequest::MarkRoomFullyRead { room, event } => {
                 self.matrix.mark_fully_read(room, event).await
             }

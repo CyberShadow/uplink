@@ -80,6 +80,7 @@ impl Db {
                         events,
                         limited,
                         own_receipts: vec![],
+                        own_thread_receipts: vec![],
                         fully_read: None,
                         image_packs: vec![],
                         invitation: None,
@@ -127,6 +128,7 @@ impl Db {
                     events,
                     start: true,
                     own_receipts: vec![],
+                    own_thread_receipts: vec![],
                     fully_read: None,
                 },
             )

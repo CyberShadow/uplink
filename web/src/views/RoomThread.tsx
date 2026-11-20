@@ -2,8 +2,9 @@
 // panel: its root, its messages, those being sent to it, and a box to
 // write to it.
 
-import { useLayoutEffect, useMemo, useRef } from 'preact/hooks'
-import type { Room } from '../generated/protocol'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks'
+import type { Room, RoomEvent, RoomEventId } from '../generated/protocol'
+import { useVisible } from '../marks'
 import { useServices } from '../context'
 import { focusShown, keepFocus, pages, useKeymap } from '../keymap'
 import { TEXT, shown } from '../matrix'
@@ -65,6 +66,7 @@ export function ThreadPanel(props: {
   )
   // From its messages, its own box is written in, not the room's.
   useKeymap({ write: () => composer.current?.focus() }, { focus: listed })
+  const reading = useThreadReading(room, root, state, me, listed, scroller)
   return (
     <SidePanel
       class={styles.thread}
@@ -72,6 +74,7 @@ export function ThreadPanel(props: {
       title="Thread"
       stops="[data-event]"
       back={null}
+      up={reading.unread.length > 0 ? reading.markRead : null}
       close={props.close}
       actions={
         state !== null &&
@@ -94,6 +97,14 @@ export function ThreadPanel(props: {
         <p class={styles.error} role="alert">
           {thread.error.value}
         </p>
+      )}
+      {reading.unread.length > 0 && (
+        <div class={styles.catchUp} role="toolbar" aria-label="Catching up on the thread">
+          <span>{reading.unread.length === 1 ? '1 new reply' : `${reading.unread.length} new replies`}</span>
+          <button type="button" class={styles.link} title="Mark as read (Esc)" onMouseDown={keepFocus} onClick={reading.markRead}>
+            Mark as read
+          </button>
+        </div>
       )}
       <div ref={scroller} class={styles.scroller}>
         <ol ref={listed} class={styles.events} aria-label="Thread messages">
@@ -132,4 +143,57 @@ export function ThreadPanel(props: {
       )}
     </SidePanel>
   )
+}
+
+/** Reads the thread as its replies come wholly on screen, in a visible
+ * tab, as the room's timeline is read (SPEC §12.15): its read marker
+ * (MSC3771) follows the latest from others shown. Its replies are read
+ * up to that, the room's read marker, or the account's own latest. */
+function useThreadReading(
+  room: Room,
+  root: RoomEventId,
+  state: { replies: readonly RoomEvent[]; read_up_to: { pos: number } | null } | null,
+  me: string,
+  list: { current: HTMLOListElement | null },
+  scroller: { current: HTMLDivElement | null },
+): { unread: readonly RoomEvent[]; markRead: () => void } {
+  const { matrix } = useServices()
+  const visible = useVisible()
+  const onScreen = useRef(new Set<RoomEventId>())
+  const [reported, setReported] = useState(0)
+  const replies = state?.replies
+  useEffect(() => {
+    if (!visible) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const shown = entries.filter((e) => e.isIntersecting && e.intersectionRatio >= 1)
+        for (const entry of shown) onScreen.current.add(Number((entry.target as HTMLElement).dataset.event))
+        if (shown.length > 0) setReported((n) => n + 1)
+      },
+      { root: scroller.current, threshold: 1 },
+    )
+    for (const line of list.current!.querySelectorAll('[data-event]')) observer.observe(line)
+    return () => observer.disconnect()
+  }, [visible, replies, list, scroller])
+  const own = replies?.findLast((e) => e.sender === me)?.pos ?? -Infinity
+  const at = Math.max(state?.read_up_to?.pos ?? -Infinity, room.read_up_to?.pos ?? -Infinity, own)
+  const unread = (replies ?? []).filter((e) => e.pos > at && e.sender !== me && e.kind === 'm.room.message' && !e.redacted)
+  // What was marked, so that a thread listed again meanwhile does not
+  // mark it again.
+  const marked = useRef<RoomEventId | null>(null)
+  useEffect(() => {
+    if (!visible) return
+    const latest = unread.findLast((e) => onScreen.current.has(e.id))
+    if (latest && marked.current !== latest.id) {
+      marked.current = latest.id
+      matrix.markThreadRead(room.id, root, latest.id, true)
+    }
+  }, [visible, unread, reported, matrix, room.id, root])
+  return {
+    unread,
+    markRead: () => {
+      const latest = replies?.at(-1)
+      if (latest) matrix.markThreadRead(room.id, root, latest.id, false)
+    },
+  }
 }

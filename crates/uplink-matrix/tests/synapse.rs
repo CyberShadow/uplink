@@ -452,3 +452,151 @@ async fn threads_followed_notify_of_their_replies() {
     let got = eventually("the reply in it", || async { uplink.stored("in reply") }).await;
     assert_eq!(got, (true, false, false));
 }
+
+/// The stored id of the event with this body.
+fn stored_id(uplink: &Uplink, body: &str) -> uplink_protocol::matrix::RoomEventId {
+    let conn = uplink_storage::open_reader(uplink.dir.path()).unwrap();
+    uplink_protocol::matrix::RoomEventId(
+        conn.query_row("SELECT id FROM matrix_event WHERE body = ?1", [body], |r| {
+            r.get(0)
+        })
+        .unwrap(),
+    )
+}
+
+/// Reading a thread marks its replies read, by a threaded receipt
+/// (MSC3771) the account's other clients see; and theirs read it here.
+#[tokio::test(flavor = "multi_thread")]
+async fn threads_are_read_by_threaded_receipts_both_ways() {
+    use matrix_sdk::ruma::{
+        api::client::receipt::create_receipt::v3::ReceiptType as SendReceipt,
+        events::receipt::{ReceiptThread, ReceiptType},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let homeserver = Homeserver::start(dir.path()).await;
+    let bob = homeserver.register(dir.path(), "bob").await;
+    let alice_phone = homeserver.register(dir.path(), "alice").await;
+    let uplink = Uplink::new(&homeserver);
+    let _sync = uplink.pair_and_sync().await;
+
+    let room = bob.create_room(Default::default()).await.unwrap();
+    room.invite_user_by_id(alice_phone.user_id().unwrap())
+        .await
+        .unwrap();
+    alice_phone
+        .sync_once(SyncSettings::default())
+        .await
+        .unwrap();
+    alice_phone.join_room_by_id(room.room_id()).await.unwrap();
+    let room_id: OwnedRoomId = room.room_id().to_owned();
+    let stored = eventually("uplink to see the room", || async {
+        uplink
+            .room(&room_id)
+            .await
+            .filter(|r| r.membership == Membership::Joined)
+    })
+    .await;
+    let root = room
+        .send_raw(
+            "m.room.message",
+            json!({ "msgtype": "m.text", "body": "the root" }),
+        )
+        .await
+        .unwrap()
+        .response
+        .event_id;
+    eventually("the root", || async { uplink.stored("the root") }).await;
+    let ServerResponse::Dispatched { .. } = uplink
+        .matrix
+        .set_followed(stored.id, root.to_string(), true)
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    // Read up to the root, from another client: the replies after it
+    // are the thread's to read.
+    alice_phone
+        .sync_once(SyncSettings::default().timeout(Duration::ZERO))
+        .await
+        .unwrap();
+    let phone_room = alice_phone.get_room(&room_id).unwrap();
+    phone_room
+        .send_single_receipt(SendReceipt::Read, ReceiptThread::Unthreaded, root.clone())
+        .await
+        .unwrap();
+    reply(&bob, &room_id, &root, "first", false).await;
+    reply(&bob, &room_id, &root, "second", false).await;
+    eventually("the replies unread", || async {
+        uplink
+            .room(&room_id)
+            .await
+            .filter(|r| r.unread == 2 && uplink.stored("second").is_some())
+    })
+    .await;
+
+    // Read here: a threaded receipt the phone sees.
+    let (root_id, second) = (stored_id(&uplink, "the root"), stored_id(&uplink, "second"));
+    uplink
+        .matrix
+        .mark_thread_read(stored.id, root_id, second, true)
+        .await
+        .unwrap();
+    assert_eq!(uplink.room(&room_id).await.unwrap().unread, 0);
+    let second_id = event_id(&uplink, "second");
+    eventually("the phone to see the threaded receipt", || async {
+        alice_phone
+            .sync_once(SyncSettings::default().timeout(Duration::ZERO))
+            .await
+            .unwrap();
+        phone_room
+            .load_user_receipt(
+                ReceiptType::Read,
+                &ReceiptThread::Thread(root.clone()),
+                alice_phone.user_id().unwrap(),
+            )
+            .await
+            .unwrap()
+            .filter(|(event, _)| *event == second_id)
+    })
+    .await;
+
+    // Read on the phone: read here too.
+    reply(&bob, &room_id, &root, "third", false).await;
+    eventually("the third unread", || async {
+        uplink.room(&room_id).await.filter(|r| r.unread == 1)
+    })
+    .await;
+    let third = event_id(&uplink, "third");
+    phone_room
+        .send_single_receipt(
+            SendReceipt::Read,
+            ReceiptThread::Thread(root.clone()),
+            third,
+        )
+        .await
+        .unwrap();
+    eventually("the phone's threaded receipt to read it", || async {
+        uplink.room(&room_id).await.filter(|r| r.unread == 0)
+    })
+    .await;
+    let ServerResponse::Thread { read_up_to, .. } =
+        uplink.matrix.list_thread(stored.id, root_id).await.unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(
+        read_up_to.map(|r| r.event),
+        Some(stored_id(&uplink, "third"))
+    );
+    assert_eq!(
+        uplink
+            .room(&room_id)
+            .await
+            .unwrap()
+            .read_up_to
+            .map(|r| r.event),
+        Some(root_id),
+        "the room's own marker is where it was"
+    );
+}

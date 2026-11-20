@@ -473,7 +473,7 @@ impl Syncer {
                     &room_id,
                     Membership::Left,
                     update.timeline,
-                    vec![],
+                    OwnReceipts::default(),
                     data,
                     evaluator,
                 )
@@ -486,7 +486,7 @@ impl Syncer {
                     &room_id,
                     Membership::Invited,
                     Timeline::default(),
-                    vec![],
+                    OwnReceipts::default(),
                     AccountData::default(),
                     evaluator,
                 )
@@ -503,7 +503,7 @@ impl Syncer {
         Timeline {
             events, limited, ..
         }: Timeline,
-        own_receipts: Vec<String>,
+        receipts: OwnReceipts,
         data: AccountData,
         evaluator: &mut Evaluator<'_>,
     ) -> Result<ObservedRoom> {
@@ -550,7 +550,8 @@ impl Syncer {
                 .to_string(),
             events: observed,
             limited,
-            own_receipts,
+            own_receipts: receipts.room,
+            own_thread_receipts: receipts.threads,
             fully_read: room.fully_read_event_id().map(|e| e.to_string()),
             image_packs: image_packs(&room).await?,
             invitation: match membership {
@@ -805,14 +806,30 @@ fn receipts_of_others(own: &UserId, event: &serde_json::Value) -> bool {
         })
 }
 
-/// The events `own`'s read receipts among `ephemeral` are for.
+/// What the account's own read receipts in a sync are for.
+#[derive(Debug, Default)]
+struct OwnReceipts {
+    /// Events of receipts of the room: unthreaded, or of its main
+    /// timeline.
+    room: Vec<String>,
+    /// Of threaded ones (MSC3771), the thread's root and the event.
+    threads: Vec<(String, String)>,
+}
+
+impl OwnReceipts {
+    fn is_empty(&self) -> bool {
+        self.room.is_empty() && self.threads.is_empty()
+    }
+}
+
+/// What `own`'s read receipts among `ephemeral` are for.
 fn own_receipts(
     own: &UserId,
     ephemeral: &[matrix_sdk::ruma::serde::Raw<
         matrix_sdk::ruma::events::AnySyncEphemeralRoomEvent,
     >],
-) -> Result<Vec<String>> {
-    let mut events = vec![];
+) -> Result<OwnReceipts> {
+    let mut events = OwnReceipts::default();
     for raw in ephemeral {
         let event: serde_json::Value = serde_json::from_str(raw.json().get())?;
         if event["type"] != "m.receipt" {
@@ -822,11 +839,14 @@ fn own_receipts(
             .as_object()
             .context("m.receipt without content")?;
         for (event_id, receipts) in content {
-            let ours = ["m.read", "m.read.private"]
-                .iter()
-                .any(|kind| receipts[kind].get(own.as_str()).is_some());
-            if ours {
-                events.push(event_id.clone());
+            for kind in ["m.read", "m.read.private"] {
+                let Some(receipt) = receipts[kind].get(own.as_str()) else {
+                    continue;
+                };
+                match receipt["thread_id"].as_str() {
+                    None | Some("main") => events.room.push(event_id.clone()),
+                    Some(root) => events.threads.push((root.to_owned(), event_id.clone())),
+                }
             }
         }
     }
@@ -1385,7 +1405,8 @@ impl Sender {
     }
 
     /// Sends a read receipt for each joined room whose read marker moved
-    /// past the latest receipt, and sets the fully-read marker of each
+    /// past the latest receipt, and for each thread alike (MSC3771), and
+    /// sets the fully-read marker of each
     /// whose fully-read marker moved past the latest set.
     async fn push_receipts(&self) -> Result<()> {
         let account = self.account.clone();
@@ -1403,9 +1424,15 @@ impl Sender {
                 false => ReceiptType::Read,
                 true => ReceiptType::FullyRead,
             };
+            let thread = match &receipt.thread {
+                None => ReceiptThread::Unthreaded,
+                Some(root) => {
+                    ReceiptThread::Thread(<&EventId>::try_from(root.as_str())?.to_owned())
+                }
+            };
             room.send_single_receipt(
                 kind,
-                ReceiptThread::Unthreaded,
+                thread,
                 <&EventId>::try_from(receipt.event_id.as_str())?.to_owned(),
             )
             .await?;
@@ -1413,6 +1440,7 @@ impl Sender {
                 room: receipt.room,
                 up_to: receipt.up_to,
                 fully_read: receipt.fully_read,
+                thread: receipt.thread,
             })
             .await?;
         }

@@ -1937,7 +1937,9 @@ describe('matrix', () => {
     expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Reply in thread' }))
     await user.keyboard('{Escape}')
     expect(document.activeElement).toBe(threadLine('lunch then'))
-    // Esc closes it, for its root's line.
+    // Read, Esc closes it, for its root's line.
+    scrolledTo(threadLine('lunch then')!)
+    await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'Catching up on the thread' })).toBeNull())
     await user.keyboard('{Escape}')
     expect(screen.queryByRole('complementary', { name: 'Thread' })).toBeNull()
     expect(document.activeElement).toBe(line(root))
@@ -2180,8 +2182,9 @@ describe('matrix', () => {
     const user = await start(`/rooms/${room.id}`)
     await user.click(await within(screen.getByRole('list', { name: 'Timeline' })).findByRole('button', { name: /1 reply/ }))
     const thread = screen.getByRole('list', { name: 'Thread messages' })
-    await within(thread).findByText('lunch then')
-    // Caught up on, Esc has no catching up to finish.
+    // Caught up on, the thread too, Esc has no catching up to finish.
+    scrolledTo((await within(thread).findByText('lunch then')).closest('li')!)
+    await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'Catching up on the thread' })).toBeNull())
     scrolledTo(document.getElementById(`event-${root.id}`)!)
     await waitFor(() => expect(screen.queryByRole('toolbar', { name: 'Catching up' })).toBeNull())
     expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Reply in thread' }))
@@ -3069,6 +3072,46 @@ describe('room timeline', () => {
     line('Plans?').focus()
     await user.keyboard('f')
     expect(server.requests.filter((r) => r.type === 'set_followed')).toEqual([])
+  })
+
+  it('reads a thread as its replies show, and by its Mark as read', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const root = server.receive(room.id, { body: 'Plans?' })
+    const saturday = server.receiveInThread(room.id, root, { body: 'Saturday' })
+    const sunday = server.receiveInThread(room.id, root, { body: 'Or Sunday' })
+    const user = await start(`/rooms/${room.id}`)
+    await user.click(await within(timeline()).findByRole('button', { name: /2 replies/ }))
+    const thread = screen.getByRole('complementary', { name: 'Thread' })
+    const bar = await within(thread).findByRole('toolbar', { name: 'Catching up on the thread' })
+    expect(bar.textContent).toContain('2 new replies')
+    // Shown, it is read up to it, quietly.
+    scrolledTo((await within(thread).findByText('Saturday')).closest('li')!)
+    await waitFor(() =>
+      expect(server.requests).toContainEqual({ type: 'mark_thread_read', room: room.id, root: root.id, event: saturday.id, shown: true }),
+    )
+    await waitFor(() => expect(within(thread).getByRole('toolbar').textContent).toContain('1 new reply'))
+    await user.click(within(thread).getByRole('button', { name: 'Mark as read' }))
+    expect(server.requests).toContainEqual({ type: 'mark_thread_read', room: room.id, root: root.id, event: sunday.id, shown: false })
+    await waitFor(() => expect(within(thread).queryByRole('toolbar')).toBeNull())
+  })
+
+  it('marks a thread read by Esc while behind, then closes it', async () => {
+    server.addMatrixAccount()
+    const room = server.addRoom('Lounge')
+    const root = server.receive(room.id, { body: 'Plans?' })
+    const saturday = server.receiveInThread(room.id, root, { body: 'Saturday' })
+    const user = await start(`/rooms/${room.id}`)
+    await user.click(await within(timeline()).findByRole('button', { name: /1 reply/ }))
+    const thread = screen.getByRole('complementary', { name: 'Thread' })
+    ;(await within(thread).findByText('Saturday')).closest('li')!.focus()
+    await user.keyboard('{Escape}')
+    expect(server.requests).toContainEqual({ type: 'mark_thread_read', room: room.id, root: root.id, event: saturday.id, shown: false })
+    await waitFor(() => expect(within(thread).queryByRole('toolbar')).toBeNull())
+    expect(screen.getByRole('complementary', { name: 'Thread' })).toBeTruthy()
+    ;(await within(thread).findByText('Saturday')).closest('li')!.focus()
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('complementary', { name: 'Thread' })).toBeNull())
   })
 
   it('opens threads beside the timeline, which sum them up, and replies in them', async () => {

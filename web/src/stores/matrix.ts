@@ -16,6 +16,7 @@ import type {
   MembershipChange,
   SpaceOrderChange,
   Room,
+  ReadMarker,
   RoomEvent,
   RoomEventId,
   RoomId,
@@ -351,6 +352,12 @@ export class MatrixStore {
     return this.ops.dispatch({ type: 'mark_room_read', room, event, shown, fully }, true)
   }
 
+  /** Reads the thread of `root` up to its message `event` (MSC3771):
+   * `shown`, by the thread being shown (SPEC §12.15). */
+  markThreadRead(room: RoomId, root: RoomEventId, event: RoomEventId, shown: boolean) {
+    return this.ops.dispatch({ type: 'mark_thread_read', room, root, event, shown }, true)
+  }
+
   /** Catching up got to `event`, by the room being shown (SPEC §12.15). */
   markFullyRead(room: RoomId, event: RoomEventId) {
     return this.ops.dispatch({ type: 'mark_room_fully_read', room, event }, true)
@@ -672,16 +679,18 @@ export class Pinned {
  * has them: loaded again whenever the room's timeline changes. */
 export class Thread {
   /** `null` until loaded. */
-  readonly state = signal<{ root: RoomEvent; replies: readonly RoomEvent[] } | null>(null)
+  readonly state = signal<{ root: RoomEvent; replies: readonly RoomEvent[]; read_up_to: ReadMarker | null } | null>(
+    null,
+  )
   readonly error = signal<string | null>(null)
   private loader = new Loader(async () => {
     try {
-      const { root, replies } = await query(
+      const { root, replies, read_up_to } = await query(
         this.server,
         { type: 'list_thread', room: this.room, root: this.root },
         'thread',
       )
-      this.state.value = { root, replies }
+      this.state.value = { root, replies, read_up_to }
       this.error.value = null
     } catch (error) {
       this.error.value = (error as Error).message

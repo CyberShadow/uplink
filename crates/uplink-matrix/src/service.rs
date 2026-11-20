@@ -12,7 +12,7 @@ use crate::{
     query::Rooms,
     room_tags::{self, SetRoomTags},
     room_view::RoomsView,
-    rooms::{self, FullyRead, MarkFullyRead, MarkRead},
+    rooms::{self, FullyRead, MarkFullyRead, MarkRead, MarkThreadRead},
     security,
     send::{self, CancelMessage, KeepSent, SendMessage},
     space_order::{self, OrderSpaces},
@@ -1000,7 +1000,7 @@ impl Matrix {
             .read(move |conn| {
                 let tx = conn.transaction().map_err(|e| internal(e.into()))?;
                 let as_of = uplink_tx_log::as_of(&tx).map_err(internal)?;
-                let (root, replies) = rooms::thread(&tx, room, root)
+                let (root, replies, read_up_to) = rooms::thread(&tx, room, root)
                     .map_err(internal)?
                     .ok_or_else(|| no_event(room, root))?;
                 Ok(ServerResponse::Thread {
@@ -1008,6 +1008,7 @@ impl Matrix {
                     room,
                     root: Box::new(root),
                     replies,
+                    read_up_to,
                 })
             })
             .await
@@ -1550,6 +1551,58 @@ impl Matrix {
                 up_to: Some(event),
                 shown,
                 fully_read: fully.then_some(FullyRead { up_to: Some(event) }),
+            })
+            .await
+    }
+
+    /// Marks the room's thread of `root` read up to its message `event`
+    /// (MSC3771).
+    pub async fn mark_thread_read(
+        &self,
+        room: RoomId,
+        root: RoomEventId,
+        event: RoomEventId,
+        shown: bool,
+    ) -> Response {
+        let root_id = self
+            .reader
+            .read(move |conn| {
+                let of = |id: RoomEventId| {
+                    conn.query_row(
+                        "SELECT event_id, rel_type, relates_to FROM matrix_event
+                         WHERE room = ?1 AND id = ?2",
+                        params![room.0, id.0],
+                        |r| {
+                            Ok((
+                                r.get::<_, String>(0)?,
+                                r.get::<_, Option<String>>(1)?,
+                                r.get::<_, Option<String>>(2)?,
+                            ))
+                        },
+                    )
+                    .optional()
+                    .map_err(|e| internal(e.into()))?
+                    .ok_or_else(|| no_event(room, id))
+                };
+                let (root_id, ..) = of(root)?;
+                let (_, rel_type, relates_to) = of(event)?;
+                if rel_type.as_deref() != Some("m.thread")
+                    || relates_to.as_deref() != Some(&root_id)
+                {
+                    return Err(error(
+                        ErrorCode::Invalid,
+                        format!("event {} is not of the thread of {}", event.0, root.0),
+                    ));
+                }
+                Ok(root_id)
+            })
+            .await?;
+        self.dispatcher
+            .answer(MarkThreadRead {
+                room,
+                root: root_id,
+                up_to: Some(event),
+                shown,
             })
             .await
     }

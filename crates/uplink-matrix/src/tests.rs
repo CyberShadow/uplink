@@ -138,6 +138,7 @@ impl Db {
             as_of: self.as_of(),
             rooms: vec![ObservedRoom {
                 own_receipts: own_receipts.iter().map(|r| r.to_string()).collect(),
+                own_thread_receipts: vec![],
                 fully_read: fully_read.map(str::to_owned),
                 pinned: pinned.iter().map(|p| p.to_string()).collect(),
                 ..joined(ROOM, events)
@@ -298,6 +299,7 @@ fn joined(room_id: &str, events: Vec<ObservedEvent>) -> ObservedRoom {
         events,
         limited: false,
         own_receipts: vec![],
+        own_thread_receipts: vec![],
         fully_read: None,
         image_packs: vec![],
         invitation: None,
@@ -825,6 +827,7 @@ async fn reading_moves_the_marker_and_undo_moves_it_back() {
         room: room.id,
         up_to: second,
         fully_read: false,
+        thread: None,
     })
     .await
     .unwrap();
@@ -880,6 +883,7 @@ async fn catching_up_moves_the_fully_read_marker_and_mentions_wait_for_it() {
         room: room.id,
         up_to: first,
         fully_read: true,
+        thread: None,
     })
     .await
     .unwrap();
@@ -966,6 +970,7 @@ mod membership {
                     events: vec![],
                     limited: false,
                     own_receipts: vec![],
+                    own_thread_receipts: vec![],
                     fully_read: None,
                     image_packs: vec![],
                     invitation: (membership == Membership::Invited).then(|| {
@@ -1257,6 +1262,7 @@ mod room_tags {
                     events: vec![],
                     limited: false,
                     own_receipts: vec![],
+                    own_thread_receipts: vec![],
                     fully_read: None,
                     image_packs: vec![],
                     invitation: None,
@@ -1596,6 +1602,7 @@ mod space_order {
                     events: vec![],
                     limited: false,
                     own_receipts: vec![],
+                    own_thread_receipts: vec![],
                     fully_read: None,
                     image_packs: vec![],
                     invitation: None,
@@ -2482,6 +2489,7 @@ mod query {
             events: vec![],
             limited: false,
             own_receipts: vec![],
+            own_thread_receipts: vec![],
             fully_read: None,
             image_packs: vec![],
             invitation: None,
@@ -3289,6 +3297,7 @@ async fn listing_rooms_costs_as_the_rooms_not_their_history() {
                 let read = messages - if r % 2 == 0 { 1 } else { 3 };
                 ObservedRoom {
                     own_receipts: vec![format!("$e{r}-{read}")],
+                    own_thread_receipts: vec![],
                     fully_read: Some(format!("$e{r}-{read}")),
                     ..joined(&format!("!r{r}:example.org"), events)
                 }
@@ -3866,9 +3875,11 @@ mod follows {
         db.sync_events(
             vec![
                 message("$root", "@bob:x"),
+                // The account's own reads what it answers.
+                in_thread("$0", "@bob:x", "$root", true, false),
+                in_thread("$mine", ME, "$root", true, false),
                 in_thread("$1", "@bob:x", "$root", true, false),
                 in_thread("$2", "@carol:x", "$root", false, false),
-                in_thread("$mine", ME, "$root", true, false),
                 message("$other", "@bob:x"),
                 in_thread("$3", "@bob:x", "$other", true, false),
             ],
@@ -4032,3 +4043,6 @@ mod thread_rules {
         assert!(push.notify && !mentions(push));
     }
 }
+
+#[path = "thread_read_tests.rs"]
+mod thread_read;

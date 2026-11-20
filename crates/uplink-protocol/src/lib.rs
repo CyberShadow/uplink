@@ -382,6 +382,16 @@ pub enum ClientRequest {
         /// Caught up on too: the user is done with it (SPEC §12.15).
         fully: bool,
     },
+    /// Move the read marker of the room's thread of root `root` to its
+    /// message `event` (MSC3771): it and the thread's messages before it
+    /// are read, and caught up on.
+    MarkThreadRead {
+        room: RoomId,
+        root: RoomEventId,
+        event: RoomEventId,
+        /// Done by the thread being shown, as it is read.
+        shown: bool,
+    },
     /// Move the room's fully-read marker to `event`, as catching up does,
     /// by the room being shown (SPEC §12.15).
     MarkRoomFullyRead {
@@ -743,6 +753,10 @@ pub enum ServerResponse {
         room: RoomId,
         root: Box<matrix::RoomEvent>,
         replies: Vec<matrix::RoomEvent>,
+        /// The thread's read marker (MSC3771), if set: its messages are
+        /// read up to it, or to the room's read marker, whichever is
+        /// later.
+        read_up_to: Option<matrix::ReadMarker>,
     },
     /// Of `ListReceipts`: as the homeserver last said, not logged.
     Receipts {

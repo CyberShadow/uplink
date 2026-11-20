@@ -718,8 +718,9 @@ enum Cond {
     Sender(String),
     /// Sent by one of the accounts.
     Mine,
-    /// After its room's read marker, of the main timeline, and not the
-    /// account's own: as its room counts it unread.
+    /// After its room's read marker (and its thread's), of the main
+    /// timeline or a thread followed, and not the account's own: as its
+    /// room counts it unread.
     Unread,
     /// After its room's fully-read marker, and not the account's own.
     New,
@@ -917,9 +918,14 @@ impl Sql {
                 format!("(e.sender LIKE {p} ESCAPE '\\' OR e.sender_name LIKE {p} ESCAPE '\\')")
             }
             Cond::Mine => format!("e.sender IN {}", self.mine()),
+            // Of the main timeline, and of threads followed (SPEC §9.2).
             Cond::Unread => {
                 let me = self.me();
-                format!("({} AND {MAIN})", after(Marker::Read, &me))
+                format!(
+                    "({} AND ({MAIN} OR {}))",
+                    after(Marker::Read, &me),
+                    crate::follows::FOLLOWED
+                )
             }
             Cond::New => {
                 let me = self.me();

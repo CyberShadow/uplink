@@ -273,6 +273,8 @@ export class FakeServer implements Requester, Subscriber, Blobs {
   private spaceOrders: PendingSpaceOrders[] = []
   private roomTags: PendingRoomTags[] = []
   private pins: PendingPins[] = []
+  /** Threads' read markers (MSC3771), by room and root. */
+  readonly threadRead = new Map<string, ReadMarker>()
   private follows: PendingFollows[] = []
   readonly events = new Map<RoomId, RoomEvent[]>()
   /** Of Matrix accounts, their security: unverified until recovered. */
@@ -1478,7 +1480,8 @@ export class FakeServer implements Requester, Subscriber, Blobs {
         const root = events.find((e) => e.id === body.root && e.thread_root === null)
         if (!root) throw new RequestError({ code: 'not_found', message: `no event ${body.root}` })
         const replies = events.filter((e) => e.thread_root === root.id)
-        return { type: 'thread', as_of: this.head(), room: body.room, root, replies }
+        const read_up_to = this.threadRead.get(`${body.room}/${root.id}`) ?? null
+        return { type: 'thread', as_of: this.head(), room: body.room, root, replies, read_up_to }
       }
       case 'fill_gap': {
         const gaps = this.gaps.get(body.room) ?? []
@@ -1769,6 +1772,25 @@ export class FakeServer implements Requester, Subscriber, Blobs {
         room.read_up_to = this.marker(body.room, body.event)
         if (body.fully) room.fully_read = room.read_up_to
         return this.dispatched('Read', [{ type: 'rooms_changed', rooms: [body.room] }])
+      }
+      case 'mark_thread_read': {
+        const key = `${body.room}/${body.root}`
+        const before = this.threadRead.get(key)
+        this.threadRead.set(key, this.marker(body.room, body.event))
+        const changed: ServerEvent[] = [
+          { type: 'rooms_changed', rooms: [body.room] },
+          { type: 'timeline_changed', room: body.room, events: [body.root] },
+        ]
+        const response = this.dispatched('Read a thread', changed)
+        this.undoable.set(this.head(), {
+          revert: () => {
+            if (before) this.threadRead.set(key, before)
+            else this.threadRead.delete(key)
+            return this.commit({ type: 'user' }, 'Undid it', changed)
+          },
+          undone: false,
+        })
+        return response
       }
       case 'mark_room_fully_read':
         this.rooms.find((r) => r.id === body.room)!.fully_read = this.marker(body.room, body.event)

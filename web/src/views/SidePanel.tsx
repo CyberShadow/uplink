@@ -23,6 +23,8 @@ export function SidePanel(props: {
   back: { label: string; go: () => void } | null
   /** Buttons of its header, before its close button. */
   actions?: ComponentChildren
+  /** What Esc does from within, if not to close it: once. */
+  up?: (() => void) | null
   close: () => void
   children: ComponentChildren
 }) {
@@ -37,6 +39,7 @@ export function SidePanel(props: {
       left: () => enterRegion('timeline'),
       // Esc, from within, closes it for the timeline.
       up: () => {
+        if (props.up) return props.up()
         props.close()
         enterRegion('timeline')
       },

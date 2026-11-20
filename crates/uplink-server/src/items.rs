@@ -1139,6 +1139,7 @@ mod tests {
                 events,
                 limited: false,
                 own_receipts: vec![],
+                own_thread_receipts: vec![],
                 fully_read: None,
                 image_packs: vec![],
                 invitation: (membership == Membership::Invited).then(|| {
@@ -1997,6 +1998,7 @@ mod tests {
                         events: vec![],
                         limited: false,
                         own_receipts: vec![],
+                        own_thread_receipts: vec![],
                         fully_read: None,
                         image_packs: vec![],
                         invitation: Some(uplink_matrix::rooms::ObservedInvitation {

@@ -133,6 +133,9 @@ pub struct ObservedRoom {
     pub limited: bool,
     /// Events the account's own read receipts in the response are for.
     pub own_receipts: Vec<String>,
+    /// Of its threaded read receipts (MSC3771), the thread's root and the
+    /// event, each.
+    pub own_thread_receipts: Vec<(String, String)>,
     /// The event the account's `m.fully_read` is at, if it has one.
     pub fully_read: Option<String>,
     /// Of a room invited to, the invitation: of no other.
@@ -378,6 +381,7 @@ impl Observation for Synced {
                 sent.push(id);
             }
             let read = observe_receipts(tx, id, &room.own_receipts)?
+                | observe_thread_receipts(tx, id, &room.own_thread_receipts)?
                 | observe_fully_read(tx, id, room.fully_read.as_deref())?;
             if changed || read || !added.is_empty() || !redacted.is_empty() {
                 changed_rooms.push(id);
@@ -912,6 +916,47 @@ fn observe_receipts(tx: &Transaction, room: RoomId, receipts: &[String]) -> Resu
     )? > 0)
 }
 
+/// Moves each thread's read marker forward to the event of the account's
+/// own receipt of it (`(root, event)`), if past the latest receipt of it
+/// already sent or observed; returns whether one moved.
+fn observe_thread_receipts(
+    tx: &Transaction,
+    room: RoomId,
+    receipts: &[(String, String)],
+) -> Result<bool> {
+    let mut moved = false;
+    for (root, event_id) in receipts {
+        let Some((pos, event)) = tx
+            .query_row(
+                "SELECT pos, id FROM matrix_event WHERE room = ?1 AND event_id = ?2",
+                params![room.0, event_id],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+            )
+            .optional()?
+        else {
+            continue;
+        };
+        tx.execute(
+            "INSERT INTO matrix_thread_read (room, root) VALUES (?1, ?2)
+             ON CONFLICT (room, root) DO NOTHING",
+            params![room.0, root],
+        )?;
+        moved |= tx.execute(
+            &format!(
+                "UPDATE matrix_thread_read
+                 SET read_pushed = ?1,
+                     read_up_to = CASE WHEN {up_to} IS NULL OR {up_to} < ?4
+                                  THEN ?1 ELSE read_up_to END
+                 WHERE room = ?2 AND root = ?3 AND ({pushed} IS NULL OR {pushed} < ?4)",
+                up_to = pos_of("read_up_to"),
+                pushed = pos_of("read_pushed"),
+            ),
+            params![event, room.0, root, pos],
+        )? > 0;
+    }
+    Ok(moved)
+}
+
 /// Moves the fully-read marker forward to the event the account's
 /// `m.fully_read` is at, if that is past the latest pushed or observed;
 /// returns whether it moved.
@@ -1170,14 +1215,94 @@ impl Op for MarkFullyRead {
     }
 }
 
-/// A read receipt was sent for the room's event `up_to`; or, if
-/// `fully_read`, the fully-read marker set at it.
+/// Sets the read marker of the room's thread of root `root` (a Matrix
+/// event id), as its message `up_to`, or before its first, `None`
+/// (MSC3771, SPEC §12.15); `shown`: by the thread being shown. Its
+/// inverse moves it back in uplink only, as receipts only move forward.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MarkThreadRead {
+    pub room: RoomId,
+    pub root: String,
+    pub up_to: Option<RoomEventId>,
+    #[serde(default)]
+    pub shown: bool,
+}
+
+impl Op for MarkThreadRead {
+    const KIND: &'static str = "matrix.mark_thread_read";
+
+    fn apply(self, tx: &Transaction) -> Result<Applied> {
+        let (account, name): (String, String) = tx
+            .query_row(
+                "SELECT account_id, name FROM matrix_room WHERE id = ?1",
+                [self.room.0],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .with_context(|| format!("no room {}", self.room.0))?;
+        let pending = outbox::pending_rooms(tx, &account)?;
+        let previous: Option<RoomEventId> = tx
+            .query_row(
+                "SELECT read_up_to FROM matrix_thread_read WHERE room = ?1 AND root = ?2",
+                params![self.room.0, self.root],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .optional()?
+            .flatten()
+            .map(RoomEventId);
+        tx.execute(
+            "INSERT INTO matrix_thread_read (room, root, read_up_to) VALUES (?1, ?2, ?3)
+             ON CONFLICT (room, root) DO UPDATE SET read_up_to = excluded.read_up_to",
+            params![self.room.0, self.root, self.up_to.map(|e| e.0)],
+        )?;
+        let mut events = vec![ServerEvent::RoomsChanged(RoomsChanged {
+            rooms: vec![self.room],
+        })];
+        // Its root, whose thread clients list again.
+        let root: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM matrix_event WHERE room = ?1 AND event_id = ?2",
+                params![self.room.0, self.root],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(root) = root {
+            events.push(ServerEvent::TimelineChanged(TimelineChanged {
+                room: self.room,
+                events: vec![RoomEventId(root)],
+            }));
+        }
+        // A receipt to send, or none.
+        if outbox::pending_rooms(tx, &account)? != pending {
+            events.push(outbox::outbox_changed(&account));
+        }
+        Ok(Applied {
+            description: format!("Read a thread of {name}"),
+            inverse: Inverse::of(&MarkThreadRead {
+                up_to: previous,
+                shown: false,
+                ..self
+            }),
+            events,
+        })
+    }
+
+    fn shown(&self) -> bool {
+        self.shown
+    }
+}
+
+/// A read receipt was sent for the room's event `up_to`: of its thread
+/// of root `thread`, if given (MSC3771); or, if `fully_read`, the
+/// fully-read marker set at it.
 #[derive(Debug, Serialize)]
 pub struct ReceiptSent {
     pub room: RoomId,
     pub up_to: RoomEventId,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub fully_read: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<String>,
 }
 
 impl Observation for ReceiptSent {
@@ -1189,15 +1314,27 @@ impl Observation for ReceiptSent {
             false => "read_pushed",
             true => "fully_read_pushed",
         };
-        tx.execute(
-            &format!(
-                "UPDATE matrix_room SET {column} = ?1
-                 WHERE id = ?2 AND ({pushed} IS NULL OR {pushed} < {sent})",
-                pushed = pos_of(column),
-                sent = pos_of("?1"),
-            ),
-            params![self.up_to.0, self.room.0],
-        )?;
+        match &self.thread {
+            None => tx.execute(
+                &format!(
+                    "UPDATE matrix_room SET {column} = ?1
+                     WHERE id = ?2 AND ({pushed} IS NULL OR {pushed} < {sent})",
+                    pushed = pos_of(column),
+                    sent = pos_of("?1"),
+                ),
+                params![self.up_to.0, self.room.0],
+            )?,
+            Some(root) => tx.execute(
+                &format!(
+                    "UPDATE matrix_thread_read SET read_pushed = ?1
+                     WHERE room = ?2 AND root = ?3
+                       AND ({pushed} IS NULL OR {pushed} < {sent})",
+                    pushed = pos_of("read_pushed"),
+                    sent = pos_of("?1"),
+                ),
+                params![self.up_to.0, self.room.0, root],
+            )?,
+        };
         // Nothing else clients show changed.
         let events = if outbox::pending_rooms(tx, account)? == pending {
             vec![]
@@ -1205,9 +1342,10 @@ impl Observation for ReceiptSent {
             vec![outbox::outbox_changed(account)]
         };
         Ok(Observed {
-            description: match self.fully_read {
-                false => "Sent a read receipt".to_owned(),
-                true => "Set the fully-read marker".to_owned(),
+            description: match (self.fully_read, &self.thread) {
+                (false, None) => "Sent a read receipt".to_owned(),
+                (false, Some(_)) => "Sent a read receipt of a thread".to_owned(),
+                (true, _) => "Set the fully-read marker".to_owned(),
             },
             events,
         })
@@ -1215,8 +1353,8 @@ impl Observation for ReceiptSent {
 }
 
 /// A read receipt to send: the room's read marker is past the latest
-/// receipt; or, if `fully_read`, its fully-read marker past the latest
-/// set.
+/// receipt, or that of its thread of root `thread`, if given; or, if
+/// `fully_read`, its fully-read marker past the latest set.
 #[derive(Debug, Clone)]
 pub struct UnsentReceipt {
     pub room: RoomId,
@@ -1224,6 +1362,7 @@ pub struct UnsentReceipt {
     pub up_to: RoomEventId,
     pub event_id: String,
     pub fully_read: bool,
+    pub thread: Option<String>,
 }
 
 pub fn unsent_receipts(conn: &Connection, account: &str) -> Result<Vec<UnsentReceipt>> {
@@ -1247,11 +1386,34 @@ pub fn unsent_receipts(conn: &Connection, account: &str) -> Result<Vec<UnsentRec
                 up_to: RoomEventId(r.get(2)?),
                 event_id: r.get(3)?,
                 fully_read,
+                thread: None,
             })
         })?;
         for row in rows {
             unsent.push(row?);
         }
+    }
+    let mut stmt = conn.prepare(&format!(
+        "SELECT r.id, r.room_id, e.id, e.event_id, t.root
+         FROM matrix_thread_read t JOIN matrix_room r ON r.id = t.room
+           JOIN matrix_event e ON e.id = t.read_up_to
+         WHERE r.account_id = ?1 AND r.membership = 'joined'
+           AND (t.read_pushed IS NULL OR e.pos > {pushed_pos})
+         ORDER BY r.id, t.root",
+        pushed_pos = pos_of("t.read_pushed"),
+    ))?;
+    let rows = stmt.query_map([account], |r| {
+        Ok(UnsentReceipt {
+            room: RoomId(r.get(0)?),
+            room_id: r.get(1)?,
+            up_to: RoomEventId(r.get(2)?),
+            event_id: r.get(3)?,
+            fully_read: false,
+            thread: Some(r.get(4)?),
+        })
+    })?;
+    for row in rows {
+        unsent.push(row?);
     }
     Ok(unsent)
 }
@@ -1306,7 +1468,9 @@ pub fn rooms(
     };
     let sql = format!(
             "SELECT r.id, r.account_id, r.room_id, r.name, r.encrypted, r.membership,
-                    (SELECT count(*) FROM matrix_event e WHERE {unread} AND {MAIN}),
+                    -- Of the main timeline, and of threads followed.
+                    (SELECT count(*) FROM matrix_event e
+                     WHERE {unread} AND ({MAIN} OR {followed})),
                     (SELECT max(ts) FROM matrix_event e WHERE e.room = r.id),
                     r.read_up_to, r.desired, r.membership_field, r.space, r.avatar,
                     -- In the space's order: by `order`, those without last.
@@ -1348,6 +1512,7 @@ pub fn rooms(
             fully_pos = pos_of("r.fully_read"),
             after_fully = after(Marker::FullyRead),
             unread = after(Marker::Read),
+            followed = crate::follows::FOLLOWED,
             shown_order = space_order::SHOWN,
             shown_tags = room_tags::SHOWN,
             fetched = fetched_whole("?3"),
@@ -1965,10 +2130,34 @@ pub(crate) fn marked(me: &str, filter: &str) -> String {
 /// account is no more unread, or new, than it notifies. Found by
 /// position, after the marker (few), its time only checked (`+`, not of
 /// an index): since news began is most of the room, as it is used.
+///
+/// A thread's message is read, and caught up on, once its thread's read
+/// marker is past it too, or the account's own latest message of the
+/// thread (MSC3771, SPEC §12.15): a thread has no fully-read marker, so
+/// its read marker is both. Each of those is found by a seek of the
+/// thread's root ([`thread_unread`]).
 pub(crate) fn after(marker: Marker, me: &str) -> String {
     format!(
-        "(e.pos > {pos} AND e.sender != {me} AND +e.ts >= r.news_since)",
-        pos = marker.pos()
+        "(e.pos > {pos} AND e.sender != {me} AND +e.ts >= r.news_since AND {thread})",
+        pos = marker.pos(),
+        thread = thread_unread(me),
+    )
+}
+
+/// Of an event `e`, that it is not of a thread, or is after how far its
+/// thread is read: its read marker (`matrix_thread_read`, by its
+/// primary key), or the latest message of `me` (SQL of the account's
+/// Matrix id) in it (`matrix_event_thread_by_sender`).
+pub(crate) fn thread_unread(me: &str) -> String {
+    format!(
+        "(e.rel_type IS NOT 'm.thread' OR e.pos > max(
+           coalesce((SELECT (SELECT p.pos FROM matrix_event p WHERE p.id = t.read_up_to)
+                     FROM matrix_thread_read t
+                     WHERE t.room = e.room AND t.root = e.relates_to), {min}),
+           coalesce((SELECT max(o.pos) FROM matrix_event o
+                     WHERE o.room = e.room AND o.relates_to = e.relates_to
+                       AND o.sender = {me} AND o.rel_type = 'm.thread'), {min})))",
+        min = i64::MIN
     )
 }
 
@@ -1984,7 +2173,10 @@ pub(crate) const UNSENT_RECEIPT: &str = "((r.read_up_to IS NOT NULL AND (r.read_
          > (SELECT pos FROM matrix_event WHERE id = r.read_pushed)))
     OR (r.fully_read IS NOT NULL AND (r.fully_read_pushed IS NULL
       OR (SELECT pos FROM matrix_event WHERE id = r.fully_read)
-         > (SELECT pos FROM matrix_event WHERE id = r.fully_read_pushed))))";
+         > (SELECT pos FROM matrix_event WHERE id = r.fully_read_pushed)))
+    OR EXISTS (SELECT 1 FROM matrix_thread_read t JOIN matrix_event u ON u.id = t.read_up_to
+               WHERE t.room = r.id AND (t.read_pushed IS NULL
+                 OR u.pos > (SELECT pos FROM matrix_event WHERE id = t.read_pushed))))";
 
 // ── filling gaps ──────────────────────────────────────────────────────────
 
@@ -2005,6 +2197,9 @@ pub struct Filled {
     /// The events of the account's own read receipts, and of its
     /// fully-read marker, which may be among those fetched (SPEC §9.5).
     pub own_receipts: Vec<String>,
+    /// Of its threaded receipts of the threads fetched, the thread's root
+    /// and the event, each.
+    pub own_thread_receipts: Vec<(String, String)>,
     pub fully_read: Option<String>,
 }
 
@@ -2100,6 +2295,7 @@ impl Observation for Filled {
         add_touched(&mut touched, name_unnamed(tx, self.room, &added)?);
         // What is before them is read, as of synced events.
         observe_receipts(tx, self.room, &self.own_receipts)?;
+        observe_thread_receipts(tx, self.room, &self.own_thread_receipts)?;
         observe_fully_read(tx, self.room, self.fully_read.as_deref())?;
         let listed: Vec<RoomEventId> = listed_events(tx, self.room, &added)?
             .into_iter()
@@ -2202,11 +2398,11 @@ pub fn pinned(tx: &Transaction, room: RoomId) -> Result<Vec<RoomEvent>> {
 
 /// The thread whose root is `root`, if the main timeline lists it: the
 /// root, and the thread's messages, in timeline order.
-pub fn thread(
-    tx: &Transaction,
-    room: RoomId,
-    root: RoomEventId,
-) -> Result<Option<(RoomEvent, Vec<RoomEvent>)>> {
+/// A thread: its root, its messages in timeline order, and its read
+/// marker, if set (MSC3771).
+pub type Thread = (RoomEvent, Vec<RoomEvent>, Option<ReadMarker>);
+
+pub fn thread(tx: &Transaction, room: RoomId, root: RoomEventId) -> Result<Option<Thread>> {
     let Some(root) = query_events(
         tx,
         room,
@@ -2229,7 +2425,20 @@ pub fn thread(
         ),
         params![room.0, root.event_id],
     )?;
-    Ok(Some((root, replies)))
+    let read = tx
+        .query_row(
+            "SELECT e.id, e.pos FROM matrix_thread_read t JOIN matrix_event e ON e.id = t.read_up_to
+             WHERE t.room = ?1 AND t.root = ?2",
+            params![room.0, root.event_id],
+            |r| {
+                Ok(ReadMarker {
+                    event: RoomEventId(r.get(0)?),
+                    pos: r.get(1)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(Some((root, replies, read)))
 }
 
 /// The latest message of the thread whose root is `root` (a Matrix event

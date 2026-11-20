@@ -91,6 +91,7 @@ async fn page(
     for event in &messages.chunk {
         events.push(timeline_event(room, event, &mut names).await?);
     }
+    let own_thread_receipts = own_thread_receipts(room, &events).await?;
     let filled = Filled {
         room: id,
         gap,
@@ -101,9 +102,37 @@ async fn page(
         events,
         start,
         own_receipts: own_receipts(room).await?,
+        own_thread_receipts,
         fully_read: room.fully_read_event_id().map(|e| e.to_string()),
     };
     Ok((filled, messages.chunk))
+}
+
+/// Of the threads of `events`, the account's own read receipts (MSC3771),
+/// as its client keeps them: each thread's root, and the event.
+async fn own_thread_receipts(
+    room: &Room,
+    events: &[crate::rooms::ObservedEvent],
+) -> Result<Vec<(String, String)>> {
+    let roots: std::collections::BTreeSet<&str> = events
+        .iter()
+        .filter(|e| e.relation.rel_type.as_deref() == Some("m.thread"))
+        .filter_map(|e| e.relation.relates_to.as_deref())
+        .collect();
+    let own = room.own_user_id();
+    let mut receipts = vec![];
+    for root in roots {
+        let Ok(root_id) = <&EventId>::try_from(root) else {
+            continue;
+        };
+        let thread = ReceiptThread::Thread(root_id.to_owned());
+        for kind in [ReceiptType::Read, ReceiptType::ReadPrivate] {
+            if let Some((event, _)) = room.load_user_receipt(kind, &thread, own).await? {
+                receipts.push((root.to_owned(), event.to_string()));
+            }
+        }
+    }
+    Ok(receipts)
 }
 
 /// The events of the account's own read receipts in the room, as its

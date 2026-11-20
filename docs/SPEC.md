@@ -2422,10 +2422,12 @@ among (a log entry's, checked again), or a room searched, not of every
 room's messages. A message's words match its text or an edit's (as a
 substring, as a room's search does, §12.11), `from:` its sender's id or
 name, `from:me` the accounts' own; `is:unread` is of one after the
-room's read marker, of the main timeline and not the account's (as the
-room counts it unread, §9.5), `is:new` of one after its fully-read
-marker and not the account's (not yet caught up on, §12.15; so
-`is:mention is:new` is of `Room.mentions`), `is:mention` and
+room's read marker, of the main timeline or of a thread followed, and
+not the account's (as the room counts it unread, §9.5), `is:new` of one
+after its fully-read marker and not the account's (not yet caught up
+on, §12.15; so `is:mention is:new` is of `Room.mentions`); of a
+thread's message, both only if after its thread's read marker too
+(§12.15), `is:mention` and
 `is:notifying` of one that highlights or notifies, by the push rules,
 read or not; `is:followed` of one of a thread the account follows
 (§9.2), as shown; dates are of the message. So a state is said, not implied:
@@ -2441,7 +2443,11 @@ so the rest is compiled to SQL of them, the rooms' terms as the rooms
 they hold of; if each of its alternatives is only of messages after a
 marker (`is:unread`, `is:new`), they are found by the index of
 positions after the room's marker, room by room, so that what is
-caught up on is not read however many messages a room has (the home
+caught up on is not read however many messages a room has (a thread's
+message among them is checked against its thread's marker by a seek
+of its root, `matrix_thread_read`'s key, and against the account's own
+latest of the thread, `matrix_event_thread_by_sender`, V0081: neither
+reads the thread) (the home
 view's buckets, and their badges on every change, cost what is unread,
 not the history). Of to-dos: `due:` (`today`, `tomorrow` or a
 date), `is:overdue` (open, and due before today), `has:due`, `is:done`,
@@ -3044,8 +3050,10 @@ too.
 **Threads.** A message of a thread (`m.thread`) whose root is stored is
 the thread's, not the main timeline's (`thread_root` names the root):
 the thread lists it (`ListThread { room, root }`: the root, and its
-messages in timeline order), and neither pages nor the unread count
-count it. The root sums its thread up (`thread`: how many messages,
+messages in timeline order, and its read marker, §12.15), and pages do
+not count it; the unread count does only if the thread is followed
+(MSC4306: a thread not followed is no activity), after both the room's
+read marker and the thread's. The root sums its thread up (`thread`: how many messages,
 and the latest, as a reply shows what it answers). A thread message's
 fallback reply (`is_falling_back`, to the thread's latest, for clients
 that do not know threads) is no reply; a reply within the thread is.
@@ -3436,6 +3444,20 @@ which a verified device gives.
 - The account's own receipts from other devices move the marker forward,
   when past the latest receipt uplink sent or saw (so the echo of its own
   receipt does not undo an undo).
+- A thread has a read marker of its own (MSC3771 threaded receipts,
+  V0081 `matrix_thread_read`, by room and root), kept, pushed and moved
+  by the account's own receipts alike: `MarkThreadRead { room, root,
+  event, shown }` (`matrix.mark_thread_read`, of a message of the
+  thread) sets it; the sending loop pushes an `m.read` receipt with the
+  root as `thread_id`; the account's own receipts with a `thread_id`
+  (synced, or of the threads a gap's page holds) move it, and only it:
+  those unthreaded or of the main timeline (`main`) are the room's, as
+  before. Its undo moves it back in uplink only. A thread's message
+  counts (unread, notifying, highlighted, mentioning) only while after
+  its thread's marker as well as the room's: so the room's unthreaded
+  receipt, which reads every thread before it as MSC3771 has it, still
+  reads them, and what was read before threads had markers (V0081 gave
+  none) stays read.
 - Spaces nest the rooms they list (by `m.space.child` events with
   `via`), as Element shows them: a joined space has its joined subspaces,
   in its `order` (those without one last, then by room id), then its
@@ -4852,8 +4874,23 @@ before it is caught up on, or the user is done). The bar says how many
 of those loaded have not been on screen (`@ 2`) and jumps to the oldest
 of them (`Shift+PageDown`), as Telegram's does.
 
+**A thread is read as it is shown.** Both markers move only as the main
+timeline is read, so a thread has its own (MSC3771, §9.5): showing its
+panel, in a visible tab, marks it read up to the latest reply from
+others wholly on screen (`MarkThreadRead`, quietly, as shown), as the
+room's read marker follows its timeline. While replies from others are
+after it (and after the room's read marker, and the account's own
+latest reply), a bar atop the panel says how many ("2 new replies"),
+with "Mark as read", which reads it to its latest, as `Esc` from within
+the panel does before it closes it. A thread has no fully-read marker:
+its read marker is both, so a reply is unread (`is:unread`, of a thread
+followed) and new (`is:new`) until its thread is read past it, or the
+room's markers pass it; `is:followed is:notifying is:new` in Urgent is
+so let go of by reading the thread, as `is:mention is:new` of the
+room's by catching up.
+
 **Showing is not doing.** What a view dispatches by being shown, not by
-the user's hand — `MarkSeen`, `MarkRoomRead` and the fully-read
+the user's hand — `MarkSeen`, `MarkRoomRead`, `MarkThreadRead` and the fully-read
 marker's moves as messages come on screen, and opening a conversation,
 which reads it (`ActOnConversations`) — is logged and undoable as any
 op, quietly (no notice, §12.6), but recorded as shown (V0043

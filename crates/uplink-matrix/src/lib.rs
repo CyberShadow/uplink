@@ -39,6 +39,7 @@ use uplink_tx_log::Registry;
 pub fn register(registry: &mut Registry) {
     registry.register::<rooms::MarkRead>();
     registry.register::<rooms::MarkFullyRead>();
+    registry.register::<rooms::MarkThreadRead>();
     registry.register::<send::SendMessage>();
     registry.register::<send::CancelMessage>();
     registry.register::<send::KeepSent>();
